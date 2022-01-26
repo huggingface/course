@@ -16,7 +16,7 @@ re_framework_end = re.compile(r"^{/if}\s*$")
 re_html_line = re.compile(r"^<[^>]*/>\s*$")
 re_html_tag = re.compile(r"<([^/>]*)>\s*$")
 
-re_python_code = re.compile(r"^```(?:py|python)\s*$")
+re_python_code = re.compile(r"^```(?:py|python|py no\-format|python no\-format)\s*$")
 re_output_code = re.compile(r"^```(?:py|python)\s+out\s*$")
 re_end_code = re.compile(r"^```\s*$")
 
@@ -109,12 +109,50 @@ def convert_to_nb_cell(cell):
     return nbformat.notebooknode.NotebookNode(nb_cell)
 
 
+def nb_cell(source, code=True):
+    if not code:
+        return nbformat.notebooknode.NotebookNode(
+            {"cell_type": "markdown", "source": source, "metadata": {}}
+        )
+    return nbformat.notebooknode.NotebookNode(
+        {"cell_type": "code", "metadata": {}, "source": source, "execution_count": None, "outputs": []}
+    )
+
+
 def build_notebook(fname, title, output_dir="."):
     """
     Build the notebook for fname with a given title in output_dir.
     """
     sections = read_and_split_frameworks(fname)
-    sections_with_accelerate = ["A full training"]
+    sections_with_accelerate = [
+        "A full training",
+        "Token classification (PyTorch)",
+        "Fine-tuning a masked language model (PyTorch)",
+        "Translation (PyTorch)",
+        "Summarization (PyTorch)",
+        "Training a causal language model from scratch (PyTorch)",
+        "Question answering (PyTorch)",
+    ]
+    sections_with_hf_hub = [
+        "Sharing pretrained models (PyTorch)",
+        "Sharing pretrained models (TensorFlow)",
+        "Creating your own dataset",
+        "Token classification (PyTorch)",
+        "Token classification (TensorFlow)",
+        "Training a new tokenizer from an old one",
+        "Fine-tuning a masked language model (PyTorch)",
+        "Fine-tuning a masked language model (TensorFlow)",
+        "Translation (PyTorch)",
+        "Translation (TensorFlow)",
+        "Summarization (PyTorch)",
+        "Summarization (TensorFlow)",
+        "Training a causal language model from scratch (PyTorch)",
+        "Training a causal language model from scratch (TensorFlow)",
+        "Question answering (PyTorch)",
+        "Question answering (TensorFlow)",
+        "What to do when you get an error",
+    ]
+    sections_with_faiss = ["Semantic search with FAISS (PyTorch)", "Semantic search with FAISS (TensorFlow)"]
     stem = Path(fname).stem
     if not isinstance(sections, dict):
         contents = [sections]
@@ -134,30 +172,31 @@ def build_notebook(fname, title, output_dir="."):
         if len(cells) == 0:
             continue
         
-        nb_cells = [nbformat.notebooknode.NotebookNode(
-            {"cell_type": "markdown", "source": f"# {title}", "metadata": {}}
-        )]
-        nb_cells += [nbformat.notebooknode.NotebookNode({
-            "cell_type": "markdown",
-            "source": f"Install the Transformers and Datasets libraries to run this notebook.",
-            "metadata": {}
-        })]
-        nb_cells += [nbformat.notebooknode.NotebookNode({
-            "cell_type": "code",
-            "metadata": {},
-            "source": "! pip install datasets transformers[sentencepiece]",
-            "execution_count": None,
-            "outputs": [],
-        })]
+        nb_cells = [
+            nb_cell(f"# {title}", code=False),
+            nb_cell("Install the Transformers and Datasets libraries to run this notebook.", code=False)
+        ]
+
+        # Install cell
+        installs = ["!pip install datasets transformers[sentencepiece]"]
         if title in sections_with_accelerate:
-            # Make sure the tpu-pytorch wheel matches the PyTorch version installed in Colab
-            nb_cells += [nbformat.notebooknode.NotebookNode({
-                "cell_type": "code",
-                "metadata": {},
-                "source": "! pip install accelerate cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl",
-                "execution_count": None,
-                "outputs": [],
-            })]
+            installs.append("!pip install accelerate")
+            installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
+            installs.append("# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl")
+        if title in sections_with_hf_hub:
+            installs.append("!apt install git-lfs")
+        if title in sections_with_faiss:
+            installs.append("!pip install faiss-gpu")
+        
+        nb_cells.append(nb_cell("\n".join(installs)))
+
+        if title in sections_with_hf_hub:
+            nb_cells.extend([
+                nb_cell("You will need to setup git, adapt your email and name in the following cell.", code=False),
+                nb_cell("!git config --global user.email \"you@example.com\"\n!git config --global user.name \"Your Name\""),
+                nb_cell("You will also need to be logged in to the Hugging Face Hub. Execute the following and enter your credentials.", code=False),
+                nb_cell("from huggingface_hub import notebook_login\n\nnotebook_login()"),
+            ])
         nb_cells += [convert_to_nb_cell(cell) for cell in cells]
         metadata = {"colab": {"name": title, "provenance": []}}
         nb_dict = {"cells": nb_cells, "metadata": metadata, "nbformat": 4, "nbformat_minor": 4}
