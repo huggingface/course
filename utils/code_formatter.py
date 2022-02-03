@@ -38,7 +38,7 @@ def blackify(filename, check_only=False):
     delimiter = "\n\n### New cell ###\n"
     full_code = delimiter.join([sample["code"] for sample in code_samples])
     formatted_code = full_code.replace("\t", "    ")
-    formatted_code = black.format_str(formatted_code, mode=black.FileMode([black.TargetVersion.PY37], line_length=90))
+    formatted_code = black.format_str(formatted_code, mode=black.FileMode({black.TargetVersion.PY37}, line_length=90))
     
     # Black adds last new lines we don't want, so we strip individual code samples.
     cells = formatted_code.split(delimiter)
