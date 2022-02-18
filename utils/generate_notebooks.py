@@ -7,7 +7,7 @@ import yaml
 
 from pathlib import Path
 
-PATH_TO_COURSE = "chapters"
+PATH_TO_COURSE = "chapters/en/"
 
 re_framework_test = re.compile(r"^{#if\s+fw\s+===\s+'([^']+)'}\s*$")
 re_framework_else = re.compile(r"^{:else}\s*$")
