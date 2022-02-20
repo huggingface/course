@@ -50,9 +50,10 @@ Now comes the fun part - translating the text! The first thing we recommend is t
   - Setting up a working environment  # Translate this!
 ```
 
-Once you have translated the `_chapters.yml` file, you can start translating the [MDX](https://mdxjs.com/) files associated with each chapter. We recommend opening a pull request once you've translated Chapter 0 so that we can test that the website renders correctly. 
+Once you have translated the `_chapters.yml` file, you can start translating the [MDX](https://mdxjs.com/) files associated with each chapter. We recommend opening a pull request once you've translated Chapter 0 so that we can test that the website renders correctly.
 
-> 🙋 If you'd like others to help you with the translation, you can either [open an issue](https://github.com/huggingface/course/issues), post in our [forums](https://discuss.huggingface.co/c/course/20), or tag @_lewtun on Twitter to gain some visibility. 
+> 🙋 If you'd like others to help you with the translation, you can either [open an issue](https://github.com/huggingface/course/issues), post in our [forums](https://discuss.huggingface.co/c/course/20), or tag @_lewtun on Twitter to gain some visibility.
+
 ## Jupyter notebooks
 
 The Jupyter notebooks containing all the code from the course are hosted on the [`huggingface/notebooks`](https://github.com/huggingface/notebooks) repo. If you wish to generate them locally, first install the required dependencies:
