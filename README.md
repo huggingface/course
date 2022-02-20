@@ -81,3 +81,5 @@ Adding a new chapter to the course is quite simple:
 3. Update the `_chapters.yml` file to include your chapter sections -- this information will render the table of contents on the website. If your section involves both the PyTorch and TensorFlow APIs of `transformers`, make sure you include links to both Colabs in the `colab` field.
 
 If you get stuck, check out one of the existing chapters -- this will often show you the expected syntax.
+
+Once you are happy with the content, open a pull request and tag [@lewtun](https://github.com/lewtun) for a review. We recommend adding the first chapter draft as a single pull request -- the team will then provide feedback internally to iterate on the content 🤗!
