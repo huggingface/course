@@ -6,7 +6,7 @@ This repo contains the content that's used to create the **[Hugging Face course]
 
 | Language                                               | Source        | Authors                                                                                                                                                                                                                                                                                                        |
 |:-------------------------------------------------------|:--------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [English](https://huggingface.co/course/en/chapter1/1) | `chapters/en` | [@sgugger](https://github.com/sgugger), [@lewtun](https://github.com/lewtun), [@LysandreJik](https://github.com/LysandreJik), [@Rocketknight1](https://github.com/Rocketknight1), [@sashavor](https://github.com/sashavor), [@osanseviero](https://github.com/osanseviero), [@SaulLu](https://github.com/SaulLu), [@lvwerra](https://github.com/lvwerra) |
+| [English](https://huggingface.co/course/en/chapter1/1) | [`chapters/en`](https://github.com/huggingface/course/tree/master/chapters/en) | [@sgugger](https://github.com/sgugger), [@lewtun](https://github.com/lewtun), [@LysandreJik](https://github.com/LysandreJik), [@Rocketknight1](https://github.com/Rocketknight1), [@sashavor](https://github.com/sashavor), [@osanseviero](https://github.com/osanseviero), [@SaulLu](https://github.com/SaulLu), [@lvwerra](https://github.com/lvwerra) |
 
 ### Translating the course into your language
 
@@ -54,7 +54,7 @@ Once you have translated the `_chapters.yml` file, you can start translating the
 
 > 🙋 If you'd like others to help you with the translation, you can either [open an issue](https://github.com/huggingface/course/issues), post in our [forums](https://discuss.huggingface.co/c/course/20), or tag @_lewtun on Twitter to gain some visibility.
 
-## Jupyter notebooks
+## 📔 Jupyter notebooks
 
 The Jupyter notebooks containing all the code from the course are hosted on the [`huggingface/notebooks`](https://github.com/huggingface/notebooks) repo. If you wish to generate them locally, first install the required dependencies:
 
@@ -70,7 +70,7 @@ python utils/generate_notebooks.py --output_dir nbs
 
 This script extracts all the code snippets from the English chapters and stores them as notebooks in the `nbs` folder (which is ignored by Git by default).
 
-## Contributing a new chapter
+## ✍️ Contributing a new chapter
 
 > Note: we are not currently accepting community contributions for new chapters. These instructions are for the Hugging Face authors.
 
@@ -83,3 +83,7 @@ Adding a new chapter to the course is quite simple:
 If you get stuck, check out one of the existing chapters -- this will often show you the expected syntax.
 
 Once you are happy with the content, open a pull request and tag [@lewtun](https://github.com/lewtun) for a review. We recommend adding the first chapter draft as a single pull request -- the team will then provide feedback internally to iterate on the content 🤗!
+
+## 🙌 Acknowledgements
+
+The structure of this repo and README are inspired by the wonderful [Advanced NLP with spaCy](https://github.com/ines/spacy-course) course.
