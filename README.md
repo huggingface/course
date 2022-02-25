@@ -33,10 +33,10 @@ You'll only need to copy the files in the [`chapters/en`](https://github.com/hug
 
 ```bash
 cd ~/path/to/course
-cp -r chapters/en chapters/YOUR-LANG-ID
+cp -r chapters/en chapters/LANG-ID
 ```
 
-Here, `YOUR-LANG-ID` should be one of the ISO 639-1 or ISO 639-2 language codes -- see [here](https://www.loc.gov/standards/iso639-2/php/code_list.php) for a handy table.
+Here, `LANG-ID` should be one of the ISO 639-1 or ISO 639-2 language codes -- see [here](https://www.loc.gov/standards/iso639-2/php/code_list.php) for a handy table.
 
 **✍️ Start translating**
 
