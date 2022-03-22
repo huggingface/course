@@ -12,9 +12,13 @@ This repo contains the content that's used to create the **[Hugging Face course]
 
 As part of our mission to democratise machine learning, we'd love to have the course available in many more languages! Please follow the steps below if you'd like to help translate the course into your language 🙏.
 
+**🗞️ Open an issue**
+
+To get started, navigate to the [_Issues_](https://github.com/huggingface/course/issues) page of this repo and check if anyone else has opened an issue for your language. If not, open a new issue by selecting the _Translation template_ from the _New issue_ button.
+
 **🍴 Fork the repository**
 
-To get started, you'll first need to [fork this repo](https://docs.github.com/en/get-started/quickstart/fork-a-repo). You can do this by clicking on the **Fork** button on the top-right corner of this repo's page.
+Next, you'll need to [fork this repo](https://docs.github.com/en/get-started/quickstart/fork-a-repo). You can do this by clicking on the **Fork** button on the top-right corner of this repo's page.
 
 Once you've forked the repo, you'll want to get the files on your local machine for editing. You can do that by cloning the fork with Git as follows:
 
@@ -22,7 +26,7 @@ Once you've forked the repo, you'll want to get the files on your local machine 
 git clone https://github.com/YOUR-USERNAME/course
 ```
 
-**📋 Copy-paste the English version with a new language code**
+**📋 Copy-paste the English files with a new language code**
 
 The course files are organised into two main directories:
 
