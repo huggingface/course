@@ -27,7 +27,7 @@ git clone https://github.com/YOUR-USERNAME/course
 The course files are organised into two main directories:
 
 * [`chapters`](https://github.com/huggingface/course/tree/master/chapters): all the text and code snippets associated with the course.
-* [`static`](https://github.com/huggingface/course/tree/master/static): all the images and GIFs for the course website.
+* [`huggingface-course/documentation-images`](https://huggingface.co/datasets/huggingface-course/documentation-images): repository that contains all the images and GIFs for the course website.
 
 You'll only need to copy the files in the [`chapters/en`](https://github.com/huggingface/course/tree/master/chapters/en) directory, so first navigate to your fork of the repo and run the following:
 
@@ -43,8 +43,7 @@ Here, `LANG-ID` should be one of the ISO 639-1 or ISO 639-2 language codes -- se
 Now comes the fun part - translating the text! The first thing we recommend is translating the `_chapters.yml` file. This file is used to render the table of contents on the website and provide the links to the Colab notebooks. The only fields you should change are `title`, `subtitle`, and `sections`. For example, here are the parts of `_chapters.yml` that we'd translate for [Chapter 0](https://huggingface.co/course/chapter0/1?fw=pt):
 
 ```yaml
-- local: chapter0
-  title: Setup  # Translate this!
+- title: Setup  # Translate this!
   subtitle: This course looks cool, how can I run its code?  # Translate this!
   sections:
   - Setting up a working environment  # Translate this!
@@ -77,7 +76,7 @@ This script extracts all the code snippets from the English chapters and stores 
 Adding a new chapter to the course is quite simple:
 
 1. Create a new directory under `chapters/en/chapterX`, where `chapterX` is the chapter you'd like to add.
-2. Add numbered MDX files `sectionX.mdx` for each section. If you need to include images, place them in the `static` directory and use the [HTML Images Syntax](https://www.w3schools.com/html/html_images.asp) with the path `/course/static/chapterX/your-image.png`.
+2. Add numbered MDX files `sectionX.mdx` for each section. If you need to include images, place them in the [huggingface-course/documentation-images](https://huggingface.co/datasets/huggingface-course/documentation-images) repository and use the [HTML Images Syntax](https://www.w3schools.com/html/html_images.asp) with the path `https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/{langY}/{chapterX}/{your-image.png}`.
 3. Update the `_chapters.yml` file to include your chapter sections -- this information will render the table of contents on the website. If your section involves both the PyTorch and TensorFlow APIs of `transformers`, make sure you include links to both Colabs in the `colab` field.
 
 If you get stuck, check out one of the existing chapters -- this will often show you the expected syntax.
