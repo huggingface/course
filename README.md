@@ -45,14 +45,18 @@ Here, `CHAPTER-NUMBER` refers to the chapter you'd like to work on and `LANG-ID`
 
 **✍️ Start translating**
 
-Now comes the fun part - translating the text! The first thing we recommend is translating the `_toctree.yml` file. This file is used to render the table of contents on the website and provide the links to the Colab notebooks. The only fields you should change are `title`, `subtitle`, and `sections`. For example, here are the parts of `_toctree.yml` that we'd translate for [Chapter 0](https://huggingface.co/course/chapter0/1?fw=pt):
+Now comes the fun part - translating the text! The first thing we recommend is translating the part of the `_toctree.yml` file that corresponds to your chapter. This file is used to render the table of contents on the website and provide the links to the Colab notebooks. The only fields you should change are the `title`, ones -- for example, here are the parts of `_toctree.yml` that we'd translate for [Chapter 0](https://huggingface.co/course/chapter0/1?fw=pt):
 
 ```yaml
 - title: 0. Setup # Translate this!
-  subtitle: This course looks cool, how can I run its code?
+  sections:
+  - local: chapter0/1 # Do not change this!
+    title: Introduction # Translate this!
 ```
 
-Once you have translated the `_toctree.yml` file, you can start translating the [MDX](https://mdxjs.com/) files associated with each chapter.
+Once you have translated the `_toctree.yml` file, you can start translating the [MDX](https://mdxjs.com/) files associated with your chapter.
+
+> 🙋 If the `_toctree.yml` file doesn't yet exist for your language, you can simply create one by copy-pasting from the English version and deleting the sections that aren't related to your chapter. Just make sure it exists in the `chapters/LANG-ID/` directory!
 
 ## 📔 Jupyter notebooks
 
