@@ -19,10 +19,10 @@ Below are the chapters and files that need translating - let us know here if you
 
 ## Chapters
 
-**Chapter 0**
+**0 - Setup**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter0/1.mdx)
 
-**Chapter 1**
+**1 - Transformer models**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter1/1.mdx)
 - [ ] [`2.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter1/2.mdx)
 - [ ] [`3.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter1/3.mdx)
@@ -34,7 +34,7 @@ Below are the chapters and files that need translating - let us know here if you
 - [ ] [`9.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter1/9.mdx)
 - [ ] [`10.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter1/10.mdx)
 
-**Chapter 2**
+**2 - Using 🤗 Transformers**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter2/1.mdx)
 - [ ] [`2.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter2/2.mdx)
 - [ ] [`3.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter2/3.mdx)
@@ -44,7 +44,7 @@ Below are the chapters and files that need translating - let us know here if you
 - [ ] [`7.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter2/7.mdx)
 - [ ] [`8.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter2/8.mdx)
 
-**Chapter 3**
+**3 - Fine-tuning a pretrained model**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter3/1.mdx)
 - [ ] [`2.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter3/2.mdx)
 - [ ] [`3.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter3/3.mdx)
@@ -53,7 +53,7 @@ Below are the chapters and files that need translating - let us know here if you
 - [ ] [`5.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter3/5.mdx)
 - [ ] [`6.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter3/6.mdx)
 
-**Chapter 4**
+**4 - Sharing models and tokenizers**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter4/1.mdx)
 - [ ] [`2.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter4/2.mdx)
 - [ ] [`3.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter4/3.mdx)
@@ -61,7 +61,7 @@ Below are the chapters and files that need translating - let us know here if you
 - [ ] [`5.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter4/5.mdx)
 - [ ] [`6.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter4/6.mdx)
 
-**Chapter 5**
+**5 - The 🤗 Datasets library**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter5/1.mdx)
 - [ ] [`2.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter5/2.mdx)
 - [ ] [`3.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter5/3.mdx)
@@ -71,7 +71,7 @@ Below are the chapters and files that need translating - let us know here if you
 - [ ] [`7.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter5/7.mdx)
 - [ ] [`8.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter5/8.mdx)
 
-**Chapter 6**
+**6 -  The 🤗 Tokenizers library**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/1.mdx)
 - [ ] [`2.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/2.mdx)
 - [ ] [`3.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/3.mdx)
@@ -84,7 +84,7 @@ Below are the chapters and files that need translating - let us know here if you
 - [ ] [`9.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/8.mdx)
 - [ ] [`10.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/8.mdx)
 
-**Chapter 7**
+**7 - Main NLP tasks**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter7/1.mdx)
 - [ ] [`2.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter7/2.mdx)
 - [ ] [`3.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter7/3.mdx)
@@ -95,7 +95,7 @@ Below are the chapters and files that need translating - let us know here if you
 - [ ] [`8.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter7/8.mdx)
 - [ ] [`9.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter7/9.mdx)
 
-**Chapter 8**
+**8 - How to ask for help**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter8/1.mdx)
 - [ ] [`2.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter8/2.mdx)
 - [ ] [`3.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter8/3.mdx)
