@@ -81,8 +81,8 @@ Below are the chapters and files that need translating - let us know here if you
 - [ ] [`6.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/6.mdx)
 - [ ] [`7.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/7.mdx)
 - [ ] [`8.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/8.mdx)
-- [ ] [`9.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/8.mdx)
-- [ ] [`10.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/8.mdx)
+- [ ] [`9.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/9.mdx)
+- [ ] [`10.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter6/10.mdx)
 
 **7 - Main NLP tasks**
 - [ ] [`1.mdx`](https://github.com/huggingface/course/blob/main/chapters/en/chapter7/1.mdx)
