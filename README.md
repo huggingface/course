@@ -9,6 +9,7 @@ This repo contains the content that's used to create the **[Hugging Face course]
 | [English](https://huggingface.co/course/en/chapter1/1) | [`chapters/en`](https://github.com/huggingface/course/tree/main/chapters/en) | [@sgugger](https://github.com/sgugger), [@lewtun](https://github.com/lewtun), [@LysandreJik](https://github.com/LysandreJik), [@Rocketknight1](https://github.com/Rocketknight1), [@sashavor](https://github.com/sashavor), [@osanseviero](https://github.com/osanseviero), [@SaulLu](https://github.com/SaulLu), [@lvwerra](https://github.com/lvwerra) |
 | [Spanish](https://huggingface.co/course/es/chapter1/1) (WIP) | [`chapters/es`](https://github.com/huggingface/course/tree/main/chapters/es) | [@camartinezbu](https://github.com/camartinezbu) |
 | [Thai](https://huggingface.co/course/th/chapter1/1) (WIP) | [`chapters/th`](https://github.com/huggingface/course/tree/main/chapters/th) | [@peeraponw](https://github.com/peeraponw) |
+| [Hindi](https://huggingface.co/course/hi/chapter1/1) (WIP) | [`chapters/hi`](https://github.com/huggingface/course/tree/main/chapters/hi) | [@pandyaved98](https://github.com/pandyaved98) |
 
 ### Translating the course into your language
 
