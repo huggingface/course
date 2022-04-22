@@ -14,6 +14,7 @@ This repo contains the content that's used to create the **[Hugging Face course]
 | [Russian](https://huggingface.co/course/ru/chapter1/1) (WIP) | [`chapters/ru`](https://github.com/huggingface/course/tree/main/chapters/ru) | [@pdumin](https://github.com/pdumin) |
 | [Spanish](https://huggingface.co/course/es/chapter1/1) (WIP) | [`chapters/es`](https://github.com/huggingface/course/tree/main/chapters/es) | [@camartinezbu](https://github.com/camartinezbu), [@munozariasjm](https://github.com/munozariasjm) |
 | [Thai](https://huggingface.co/course/th/chapter1/1) (WIP) | [`chapters/th`](https://github.com/huggingface/course/tree/main/chapters/th) | [@peeraponw](https://github.com/peeraponw), [@a-krirk](https://github.com/a-krirk), [@jomariya23156](https://github.com/jomariya23156) |
+| [Georgian](https://huggingface.co/course/ka/chapter0/0) (WIP) | [`chapters/ka`](https://github.com/huggingface/course/tree/main/chapters/ka) | [@deepconsc](https://github.com/deepconsc) |
 
 ### Translating the course into your language
 
