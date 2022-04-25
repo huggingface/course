@@ -1,0 +1,376 @@
+<FrameworkSwitchCourse {fw} />
+
+# Préparer les données
+
+{#if fw === 'pt'}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter3/section2_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter3/section2_pt.ipynb"},
+]} />
+
+{:else}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter3/section2_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter3/section2_tf.ipynb"},
+]} />
+
+{/if}
+
+{#if fw === 'pt'}
+Continuons avec [l'exemple précédent](/course/chapter2), voilà comment on entraîne un classifieur de séquences sur un batch avec PyTorch :
+s
+```python
+import torch
+from transformers import AdamW, AutoTokenizer, AutoModelForSequenceClassification
+
+# Same as before
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+sequences = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "This course is amazing!",
+]
+batch = tokenizer(sequences, padding=True, truncation=True, return_tensors="pt")
+
+# This is new
+batch["labels"] = torch.tensor([1, 1])
+
+optimizer = AdamW(model.parameters())
+loss = model(**batch).loss
+loss.backward()
+optimizer.step()
+```
+{:else}
+Continuons avec [l'exemple précédent](/course/chapter2), voilà comment on entraîne un classifieur de séquences sur un batch avec TensorFlow :
+
+```python
+import tensorflow as tf
+import numpy as np
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
+
+# Same as before
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+sequences = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "This course is amazing!",
+]
+batch = dict(tokenizer(sequences, padding=True, truncation=True, return_tensors="tf"))
+
+# This is new
+model.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
+labels = tf.convert_to_tensor([1, 1])
+model.train_on_batch(batch, labels)
+```
+{/if}
+Evidemment, entraîner un modèle avec seulement deux phrases ne va pas donner de bons résultats. Pour obtenir de meilleurs résultats, vous allez avoir à préparer un plus grand jeu de données. 
+
+Dans cette section, nous allons utiliser comme exemple le jeu de données (dataset) MRPC (Microsoft Research Paraphrase Corpus) présenté dans un [papier](https://www.aclweb.org/anthology/I05-5002.pdf) de William B. Dolan et Chris Brockett. Ce jeu de données contient 5801 paires de phrases avec un label indiquant si ces paires sont des paraphrases ou non (i.e. si elles ont la même signification). Nous l'avons choisi pour ce chapitre parce que c'est un petit jeu de données, et cela rend donc facile les expériences d'entraînement sur ce dataset. 
+
+### Charger un jeu de données depuis le Hub
+
+{#if fw === 'pt'}
+<Youtube id="_BZearw7f0w"/>
+{:else}
+<Youtube id="W_gMJF0xomE"/>
+{/if}
+
+Le hub ne contient pas juste des modèles; il contient aussi plusieurs jeux de données dans un tas de langages différents. Vous pouvez explorer les jeux de données [ici](https://huggingface.co/datasets), et nous vous conseillons d'essayer de charger un nouveau jeu de données une fois que vous avez étudié cette section (voir la documentation générale [ici](https://huggingface.co/docs/datasets/loading_datasets.html#from-the-huggingface-hub)). Mais pour l'instant, concentrons nous sur le jeu de données MRPC! Il s'agit de l'un des 10 jeux de données qui constituent le [benchmark GLUE](https://gluebenchmark.com/) qui est un benchmark académique utilisé pour mesurer les performances des modèles de Machine Learning sur 10 tâches de classification de textes.  
+
+La librairie de datasets de 🤗 propose une commande très simple pour télécharger et mettre en cache un jeu de données à partir du Hub. On peut télécharger le jeu de données MRPC comme ceci :   
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("glue", "mrpc")
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 3668
+    })
+    validation: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 408
+    })
+    test: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 1725
+    })
+})
+```
+
+Comme vous le voyez, on obtient un objet de type `DatasetDict` qui contient le jeu de données d'entraînement, celui de validation et celui de test. Chacun d'eux contient plusieurs colonnes (`sentence1`, `sentence2`, `label` et `idx`) et une variable nombre de lignes qui contient le nombre d'éléments dans chaque jeu de données (il y a donc 3.668 paires de phrases dans le jeu d'entraînement, 408 dans celui de validation et 1.725 dans celui de test).
+
+Cette commande télécharge et met en cache le jeu de données dans *~/.cache/huggingface/dataset*. Rappelez-vous que comme vu au chapitre 2, vous pouvez personnaliser votre dossier cache en modifiant la variable d'environnement `HF_HOME`.
+
+Nous pouvons accéder à chaque paire de phrase de notre objet `raw_datasets` par les indices, comme avec un dictionnaire :
+
+```py
+raw_train_dataset = raw_datasets["train"]
+raw_train_dataset[0]
+```
+
+```python out
+{'idx': 0,
+ 'label': 1,
+ 'sentence1': 'Amrozi accused his brother , whom he called " the witness " , of deliberately distorting his evidence .',
+ 'sentence2': 'Referring to him as only " the witness " , Amrozi accused his brother of deliberately distorting his evidence .'}
+```
+Nous pouvons voir que les labels sont déjà des entiers, nous n'avons donc aucun preprocessing à faire sur les labels. Pour savoir quel entier correspond à quel label, on peut inspecter les `features` de notre `raw_train_dataset`. Cela nous dira le type de chaque colonne :   
+
+```py
+raw_train_dataset.features
+```
+
+```python out
+{'sentence1': Value(dtype='string', id=None),
+ 'sentence2': Value(dtype='string', id=None),
+ 'label': ClassLabel(num_classes=2, names=['not_equivalent', 'equivalent'], names_file=None, id=None),
+ 'idx': Value(dtype='int32', id=None)}
+```
+
+En réalité, `label` est de type `ClassLabel`, et la correspondance des entiers aux noms des labels est enregistrée le dossier *names*. `0` correspond à  `not_equivalent` (pas équivalent), et `1` correspond à `equivalent`.
+
+<Tip>
+
+✏️ **Essayez ceci!** Regardez l'élément 15 du jeu d'entraînement et l'élément 87 du jeu de validation. Quels sont leurs labels? 
+
+</Tip>
+
+### Preprocessing d'un jeu de donnée
+
+{#if fw === 'pt'}
+<Youtube id="0u3ioSwev3s"/>
+{:else}
+<Youtube id="P-rZWqcB6CE"/>
+{/if}
+
+Pour prétraiter l'ensemble de données, nous devons convertir le texte en nombres que le modèle peut comprendre. Comme vous l'avez vu dans le [chapitre précédent](/course/chapter2), cela se fait avec un tokenizer. Nous pouvons passer au tokenizer une phrase ou une liste de phrases, ainsi nous pouvons directement tokeniser toutes les premières phrases et toutes les deuxièmes phrases de chaque paire comme ceci :
+
+```py
+from transformers import AutoTokenizer
+
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+tokenized_sentences_1 = tokenizer(raw_datasets["train"]["sentence1"])
+tokenized_sentences_2 = tokenizer(raw_datasets["train"]["sentence2"])
+```
+
+Néanmoins, nous ne pouvons pas simplement transmettre deux séquences au modèle et obtenir une prédiction indiquant si les deux phrases sont des paraphrases ou non. Nous devons gérer les deux séquences comme une paire et appliquer le prétraitement approprié. Heureusement, le tokenizer peut également prendre une paire de séquences et la mettre dans le format attendu par notre modèle BERT :
+
+```py
+inputs = tokenizer("This is the first sentence.", "This is the second one.")
+inputs
+```
+
+```python out
+{ 
+  'input_ids': [101, 2023, 2003, 1996, 2034, 6251, 1012, 102, 2023, 2003, 1996, 2117, 2028, 1012, 102],
+  'token_type_ids': [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+  'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+}
+```
+
+Nous avons vu les clés `input_ids` et `attention_mask` au [chapitre 2](/course/chapter2), mais nous avons omis de parler des `token_type_ids`. Dans cet exemple, c'est ce qui indique au modèle quelle partie de l'entrée représente la première phrase et quelle partie représente la deuxième phrase.
+
+<Tip>
+
+✏️ **Essayez ceci!** Prenez l'élément 15 de l'ensemble d'entraînement et tokenisez les deux phrases séparément et comme une paire. Quelle est la différence entre les deux résultats ?
+
+</Tip>
+
+Si nous décodons les IDs contenus dans `input_ids` pour réobtenir des mots :
+
+```py
+tokenizer.convert_ids_to_tokens(inputs["input_ids"])
+```
+
+Nous obtiendrons : 
+
+```python out
+['[CLS]', 'this', 'is', 'the', 'first', 'sentence', '.', '[SEP]', 'this', 'is', 'the', 'second', 'one', '.', '[SEP]']
+```
+
+Nous pouvons donc voir que le modèle attend une entrée de la forme  `[CLS] sentence1 [SEP] sentence2 [SEP]` lorsqu'il y a deux phrases. Aligner cette représentation avec `token_type_ids` nous donne :
+
+```python out
+['[CLS]', 'this', 'is', 'the', 'first', 'sentence', '.', '[SEP]', 'this', 'is', 'the', 'second', 'one', '.', '[SEP]']
+[      0,      0,    0,     0,       0,          0,   0,       0,      1,    1,     1,        1,     1,   1,       1]
+```
+
+Comme vous pouvez le voir, les parties correspondant à `[CLS] sentence1 [SEP]` ont toutes `0` comme ID de type de token, alors que les autres parties qui correspondent à `sentence2 [SEP]`, ont toute `1` comme ID de type de token.
+
+Notez que si vous sélectionnez un checkpoint différent, vous n'aurez pas nécessairement les `token_type_ids` dans vos entrées tokenisées (par exemple, ils ne sont pas retournés lorsque vous utilisez le modèle DistilBERT). Ils ne sont renvoyés que lorsque le modèle sait les utiliser, pour les avoir vu pendant le pré-entraînement. 
+
+Ici, BERT est pré-entraîné avec des IDs de type de token, et en plus de la fonction de coût MLM (Masked Language Modelling) dont nous avons parlé au [chapitre 1](/course/chapter1), il a un coût supplémentaire appelé _prédiction de la phrase suivante_(_next sentence prediction_). Le but de cette tâche est de modéliser la relation entre des paires de phrases.
+
+Pour la prédiction de la phrase suivante, le modèle reçoit des paires de phrases (avec des tokens masqués de manière aléatoire) et on lui demande de prédire si la deuxième phrase suit la première. Pour rendre la tâche non triviale, la moitié du temps les phrases se suivent dans le document original dont elles sont extraites, et l'autre moitié du temps les deux phrases proviennent de deux documents différents.
+
+En général, vous n'avez pas à vous soucier de savoir s'il y a ou non des `token_type_ids` dans vos entrées tokenisées : tant que vous utilisez le même checkpoint pour le tokenizer et le modèle, tout ira bien car le tokenizer sait quoi fournir à son modèle.
+
+Maintenant que nous avons vu comment notre tokenizer peut traiter une paire de phrases, nous pouvons l'utiliser pour tokeniser l'ensemble de nos données : comme dans le [chapitre précédent](/course/chapter2), nous pouvons fournir au tokenizer une liste de paires de phrases en lui donnant la liste des premières phrases, puis la liste des secondes phrases. Ceci est également compatible avec les options de padding et de troncature que nous avons vues au [chapitre 2](/course/chapter2). Ainsi, une façon de prétraiter l'ensemble de données d'entraînement est :
+
+```py
+tokenized_dataset = tokenizer(
+    raw_datasets["train"]["sentence1"],
+    raw_datasets["train"]["sentence2"],
+    padding=True,
+    truncation=True,
+)
+```
+
+Cela marche bien, mais a le désavantage de retourner un dictionnaire (avec nos clés, `input_ids`, `attention_mask` et `token_type_ids`, et des valeurs qui sont des listes de listes). Cela ne marchera que si vous avez assez de RAM pour contenir tout le jeu de données pendant la tokenisation (tandis que les jeux de données de la librairie de 🤗 sont des fichiers [Apache Arrow](https://arrow.apache.org/) chargées sur le disque, de sorte que vous ne gardez que les exemples dont vous avez besoin en mémoire )
+
+Pour garder les données sous forme de dataset (jeu de données), nous allons utiliser la méthode [`Dataset.map()`](https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map). Cela nous permet d'avoir plus de flexibilité si nous avons besoin de faire plus que juste tokeniser pendant la phase de pré-traîtement. La méthode `map()` fonctionne en applicant une fonction à chaque élément du dataset, définissons alors une fonction qui tokenise nos entrées :
+
+```py
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+```
+
+Cette prend en entrée un dictionnaire (comme les items de notre dataset) and renvioe un nouveau dictionnaire avec les clés `input_ids`, `attention_mask` et `token_type_ids`. Notez que cela marche aussi si le dictionnaire `example` contient plusieurs exemples puisque le tokenizer fonctionne aussi sur des listes de paires de phrases, comme nous l'avons vu précédemment. Cela permettra d'utiliser l'option `batched=True` dans notre appel de la méthode `map()`, ce qui permettra d'accélérer la tokenisation.  Le `tokenizer` est aidé par  un tokenizer écrit en Rust  provenant de la librairie [Tokenizers](https://github.com/huggingface/tokenizers) de 🤗. Ce tokenizer peut être très rapide, mais seulement si on lui donne beaucoup d'entrées en même temps.
+
+Notez que nous avons ignorer l'argument `padding` dans notre fonction de tokenisation pour l'instant. Ceci parce que faire le padding de tous les exemples à la longueur maximale n'est pas efficace : il vaut mieux faire le padding lorsque nous construisons un batch, puisque dans ce cas nous allons seulement faire le padding pour la longueur maximale dans ce batch, et non pour la longueur maximale de tout le dataset. Cela permet d'économiser beaucoup de temps et de puissance de calcul lorsqu'on traite des entrées avec des longueurs trés variées!   
+
+Voilà comment on applique la fonction de tokenisation à tous nos datasets en même temps. Nous utilisons `batched=True` dans notre appel de `map` pour que la fonction soit appliquée à plusieurs éléments de notre dataset en même temps, et non sur chaque élément séparément. Cela permet d'avoir un pré-traîtement plus rapide.
+
+```py
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+tokenized_datasets
+```
+
+La librairie Datasets de 🤗 applique le processing en ajoutant de nouveaux champs aux datasets, un nouveau pour chaque clé retournée par la fonction de preprocessing : 
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 3668
+    })
+    validation: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 408
+    })
+    test: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 1725
+    })
+})
+```
+
+Vous pouvez même utiliser le multiprocessing en appliquant votre pré-traîtement avec `map()` en lui passant l'argument `num_proc`. Nous ne l'avons pas utilisé ici parce que la librairie Tokenizers de 🤗 utilise plusieurs threads pour tokeniser nos exemples plus rapidement, mais si vous n'utilisez pas de tokenizer rapide qui s'aide de cette librairie, cela pourrait accélérer votre pré-traîtement.
+
+Notre `tokenize_function` retourne un dictionnaire avec les clés `input_ids`, `attention_mask` et `token_type_ids`, donc ces trois champs sont ajoutés à toutes les parties (entraînement, validation et test) de notre dataset. Notez que nous aurions aussi pu changer des champs existants si notre pré-traîtement retournait une nouvelle valeur pour une clé qui existait déjà dans le dataset sur lequel nous avons appelé `map()`.
+
+La dernière chose que nous aurons besoin de faire est le padding de tous les éléments pour que leur longueur atteigne la longueur de la plus longue séquence du batch lorsque nous construisons les batchs — une technique que nous appelons *padding dynamique*.
+
+### Padding dynamique
+
+<Youtube id="7q5NyFT8REg"/>
+
+{#if fw === 'pt'}
+La fonction responsable de mettre en ensemble les éléments pour en faire un batch est appelée *fonction d'assemblage* -*collate function*-. C'est un argument que vous pouvez fournir lorsque vous construisez un `DataLoader`, par défaut il s'agit d'une fonction qui va juste convertir les éléments en type tensor de Pytorch et les concaténer (récursivement si les éléments sont des listes, des tuples ou des dictionnaires). Cela -la concaténation- ne sera pas possible dans notre cas puisque toutes les entrées n'auront pas la même taille. Nous avons volontairement reporter à plus tard le padding, pour n'appliquer que le padding nécessaire pour chaque batch et éviter d'avoir des entrées excessivement longues avec beaucoup de padding. Cela va beaucoup accélérer l'entraînement, notez cependant que si vous faites l'entraînement sur TPU cela peut poser des problèmes — Les TPUs préfèrent une taille fixe même si cela requiert beaucoup de padding. 
+
+{:else}
+La fonction responsable de mettre en ensemble les éléments pour en faire un batch est appelée *fonction d'assemblage* -*collate function*-. C'est un argument que vous pouvez fournir lorsque vous construisez un `DataLoader`, par défaut il s'agit d'une fonction qui va juste convertir les éléments en type tf.Tensor et les concaténer (récursivement si les éléments sont des listes, des tuples ou des dictionnaires). Cela -la concaténation- ne sera pas possible dans notre cas puisque toutes les entrées n'auront pas la même taille. Nous avons volontairement reporter à plus tard le padding, pour n'appliquer que le padding nécessaire pour chaque batch et éviter d'avoir des entrées excessivement longues avec beaucoup de padding. Cela va beaucoup accélérer l'entraînement, notez cependant que si vous faites l'entraînement sur TPU cela peut poser des problèmes — Les TPUs préfèrent une taille fixe même si cela requiert beaucoup de padding.
+
+{/if}
+En pratique, pour faire cela, on utilise une fonction d'assemblage qui va mettre la bonne quantité de padding aux éléments du dataset que nous mettre ensemble pour former un batch.  Heureusement,  la librairie Transformers de 🤗 fournit une telle fonction via  `DataCollatorWithPadding`. Elle prend un tokenizer lorsqu'on l'instancie (pour savoir quel token utiliser pour le padding, et aussi s'il faut faire le padding à gauche ou à droite en fonction des attentes du  modèle) et va faire le nécessaire:
+
+{#if fw === 'pt'}
+```py
+from transformers import DataCollatorWithPadding
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+{:else}
+```py
+from transformers import DataCollatorWithPadding
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="tf")
+```
+{/if}
+
+Pour tester notre nouveau jouet, prenons quelques éléments de notre jeu d'entraînement avec lesquels nous allons former un batch. Ici, on supprime les colonnes `idx`, `sentence1` et `sentence2` puisque nous n'en aurons pas besoin et qu'elles contiennent des strings ( et nous ne pouvons pas créer des tensors avec des strings) et on regarde la longueur de chaque entrée du batch : 
+
+```py
+samples = tokenized_datasets["train"][:8]
+samples = {k: v for k, v in samples.items() if k not in ["idx", "sentence1", "sentence2"]}
+[len(x) for x in samples["input_ids"]]
+```
+
+```python out
+[50, 59, 47, 67, 59, 50, 62, 32]
+```
+
+Sans surprise, nous obtenons des éléments de longueurs différentes, allant de 32 à 67. Le padding dynamique signifie que nous allons utiliser le padding sur tous les éléments du batch pour obtenir une longueur de 67, la longueur maximale pour ce batch. Sans le padding dynamique, on appliquerait un padding à tous les éléments pour atteindre la longueur maximale de tout le dataset, ou la longueur maximale que le modèle peut accepter. Vérifions que notre `data_collator` effectue correctement le padding dynamique : 
+
+```py
+batch = data_collator(samples)
+{k: v.shape for k, v in batch.items()}
+```
+
+{#if fw === 'tf'}
+
+```python out
+{'attention_mask': TensorShape([8, 67]),
+ 'input_ids': TensorShape([8, 67]),
+ 'token_type_ids': TensorShape([8, 67]),
+ 'labels': TensorShape([8])}
+```
+
+{:else}
+
+```python out
+{'attention_mask': torch.Size([8, 67]),
+ 'input_ids': torch.Size([8, 67]),
+ 'token_type_ids': torch.Size([8, 67]),
+ 'labels': torch.Size([8])}
+```
+Bien! Maintenant que nous sommes passés du texte brut aux batchs que notre modèle peut exploiter, nous sommes prêt à procéder au fine-tuning!
+
+{/if}
+
+<Tip>
+
+✏️ **Essayez ceci!** Reproduisez le preprocessing  sur le dataset GLUE SST-2. Il est un peu différent puisqu'il est composé d'uniques phrases et non de paires de phrases, mais le reste de ce que nous avons fait devrait être similaire. Pour un défi plus corsé, essayez d'écrire une fonction de préprocessing qui marche pour toutes les tâches de GLUE.   
+
+</Tip>
+
+{#if fw === 'tf'}
+
+Maintenant que nous avons notre dataset et notre assembleur de données, nous devons les mettre ensemble. On pourrait charger manuellement les batchs et les assembler, mais cela représente beaucoup de travail, et ce n'est pas très performant non plus. Au lieu de faire cela, il y a une simple méthode qui offre une solution performante à ce problème : `to_tf_dataset()`.  Cette méthode va passer `tf.data.Dataset` sur votre dataset, avec une fonction d'assemblage optionnelle. `tf.data.Dataset` est un format natif de Tensorflow que Keras peut utiliser avec `model.fit()`, donc cette méthode à elle seule convertit un dataset de 🤗 à un format prêt pour l'entraînement. Voyons la à l'œuvre avec notre dataset!
+
+```py
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+
+tf_validation_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=False,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+```
+
+Et c'est tout! Nous pouvons utiliser ces datasets dans le prochain cours, où l'entraînement va être agréablement facile après tout le difficile travail de préprocessing.
+
+{/if}
