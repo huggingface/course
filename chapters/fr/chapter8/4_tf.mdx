@@ -9,17 +9,17 @@
     {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter8/section4_tf.ipynb"},
 ]} />
 
-Vous avez écrit un magnifique script pour entraîner ou *finetuner* un modèle sur une tâche donnée, en suivant consciencieusement les conseils du [Chapitre 7](/course/fr/chapter7). Mais lorsque vous lancez la commande `model.fit()`, quelque chose d'horrible se produit : vous obtenez une erreur 😱 ! Ou pire, tout semble aller bien et l'entraînement se déroule sans erreur, mais le modèle résultant est merdique. Dans cette section, nous allons vous montrer ce que vous pouvez faire pour déboguer ce genre de problèmes.
+Vous avez écrit un magnifique script pour entraîner ou *finetuner* un modèle sur une tâche donnée en suivant consciencieusement les conseils du [chapitre 7](/course/fr/chapter7). Mais lorsque vous lancez la commande `model.fit()`, quelque chose d'horrible se produit : vous obtenez une erreur 😱 ! Ou pire, tout semble aller bien et l'entraînement se déroule sans erreur mais le modèle résultant est mauvais. Dans cette section, nous allons vous montrer ce que vous pouvez faire pour déboguer ce genre de problèmes.
 
 ## Déboguer le pipeline d'entraînement
 
 <Youtube id="N9kO52itd0Q"/>
 
-Le problème lorsque vous rencontrez une erreur dans `trainer.train()` est qu'elle peut provenir de plusieurs sources, car le `Trainer` assemble généralement des batchs de choses. Il convertit les jeux de données en chargeurs de données, donc le problème pourrait être quelque chose d'erroné dans votre jeu de données, ou un problème en essayant de regrouper les éléments des jeux de données ensemble. Ensuite, il prend un batch de données et le transmet au modèle, le problème peut donc se situer dans le code du modèle. Après cela, il calcule les gradients et effectue l'étape d'optimisation, le problème peut donc également se situer dans votre optimiseur. Et même si tout se passe bien pendant l'entraînement, quelque chose peut encore mal tourner pendant l'évaluation si votre métrique pose problème.
+Le problème lorsque vous rencontrez une erreur dans `trainer.train()` est qu'elle peut provenir de plusieurs sources, car la fonction `Trainer` assemble généralement des batchs de choses. Elle convertit les jeux de données en chargeurs de données donc le problème pourrait être quelque chose d'erroné dans votre jeu de données, ou un problème en essayant de regrouper les éléments des jeux de données ensemble. Ensuite, elle prend un batch de données et le transmet au modèle, le problème peut donc se situer dans le code du modèle. Après cela, elle calcule les gradients et effectue l'étape d'optimisation, le problème peut donc également se situer dans votre optimiseur. Et même si tout se passe bien pendant l'entraînement, quelque chose peut encore mal tourner pendant l'évaluation si votre métrique pose problème.
 
 La meilleure façon de déboguer une erreur qui survient dans `trainer.train()` est de passer manuellement en revue tout le pipeline pour voir où les choses se sont mal passées. L'erreur est alors souvent très facile à résoudre.
 
-Pour le démontrer, nous utiliserons le script suivant qui tente d'ajuster un modèle DistilBERT sur le [jeu de données MNLI](https://huggingface.co/datasets/glue) :
+Pour le démontrer, nous utiliserons le script suivant qui tente de *finetuner* un modèle DistilBERT sur le [jeu de données MNLI](https://huggingface.co/datasets/glue) :
 
 ```py
 from datasets import load_dataset, load_metric
@@ -55,28 +55,28 @@ model.compile(loss="sparse_categorical_crossentropy", optimizer="adam")
 model.fit(train_dataset)
 ```
 
-Si vous essayez de l'exécuter, il se peut que vous obteniez des `VisibleDeprecationWarning`s lors de la conversion du jeu de données. Il s'agit d'un problème UX connu que nous avons, donc veuillez l'ignorer. Si vous lisez le cours après, disons, novembre 2021 et que cela se produit encore, envoyez des tweets de rage à @carrigmat jusqu'à ce qu'il le corrige.
+Si vous essayez de l'exécuter, il se peut que vous obteniez des `VisibleDeprecationWarning`s lors de la conversion du jeu de données. Il s'agit d'un problème UX connu par l'équipe d'Hugging Face, donc veuillez l'ignorer. Si vous lisez le cours après novembre 2021 et que cela se produit encore, envoyez des tweets de rage à @carrigmat jusqu'à ce qu'il le corrige.
 
-Le problème le plus grave, cependant, c'est que nous avons une erreur flagrante. Et c'est vraiment, terriblement long :
+Le problème cependant est que nous avons une erreur flagrante. Et c'est vraiment, terriblement long :
 
 ```python out
 ValueError: No gradients provided for any variable: ['tf_distil_bert_for_sequence_classification/distilbert/embeddings/word_embeddings/weight:0', '...']
 ```
 
-Qu'est-ce que cela signifie ? Nous avons essayé de nous entraîner sur nos données, mais nous n'avons pas obtenu de gradient ? C'est assez déconcertant ; comment commencer à déboguer quelque chose comme ça ? Lorsque l'erreur que vous obtenez ne suggère pas immédiatement l'origine du problème, la meilleure solution consiste souvent à procéder par étapes, en s'assurant à chaque fois que tout semble correct. Et bien sûr, il faut toujours commencer par...
+Qu'est-ce que cela signifie ? Nous avons essayé d'entraîner sur nos données mais nous n'avons pas obtenu de gradient. C'est assez déconcertant. Comment commencer à déboguer quelque chose comme ça ? Lorsque l'erreur que vous obtenez ne suggère pas immédiatement l'origine du problème, la meilleure solution consiste souvent à procéder par étapes, en s'assurant à chaque fois que tout semble correct. Et bien sûr, il faut toujours commencer par...
 
 ### Vérifier vos données
 
 Cela va sans dire, mais si vos données sont corrompues, Keras ne sera pas en mesure de les réparer pour vous. Avant toute chose, vous devez donc jeter un coup d'œil à ce que contient votre ensemble d'entraînement.
 
-Bien qu'il soit tentant de regarder dans les `raw_datasets` et les `tokenized_datasets`, nous vous recommandons fortement d'aller voir les données au moment où elles vont entrer dans le modèle. Cela signifie lire une sortie du `tf.data.Dataset` que vous avez créé avec la fonction `to_tf_dataset()` ! Alors comment faire ? Les objets `tf.data.Dataset` nous donnent des batchs entiers à la fois et ne supportent pas l'indexation, donc nous ne pouvons pas simplement demander `train_dataset[0]`. Nous pouvons, cependant, lui demander poliment un batch :
+Bien qu'il soit tentant de regarder dans `raw_datasets` et `tokenized_datasets`, nous vous recommandons fortement d'aller voir les données au moment où elles vont entrer dans le modèle. Cela signifie lire une sortie du `tf.data.Dataset` que vous avez créé avec la fonction `to_tf_dataset()` ! Alors comment faire ? Les objets `tf.data.Dataset` nous donnent des batchs entiers à la fois et ne supportent pas l'indexation, donc nous ne pouvons pas simplement demander `train_dataset[0]`. Nous pouvons, cependant, lui demander poliment un batch :
 
 ```py
 for batch in train_dataset:
     break
 ```
 
-`break` ends the loop after one iteration, so this grabs the first batch that comes out of `train_dataset` and saves it as `batch`. Now, let's take a look at what's inside:
+`break` termine la boucle après une itération, donc cela prend le premier batch qui sort de `train_dataset` et l'enregistre comme `batch`. Maintenant, jetons un coup d'oeil à ce qu'il y a à l'intérieur :
 
 ```python out
 {'attention_mask': <tf.Tensor: shape=(16, 76), dtype=int64, numpy=
@@ -98,9 +98,9 @@ for batch in train_dataset:
         [ 101, 1999, 2070, ...,    0,    0,    0]])>}
 ```
 
-Cela semble correct, n'est-ce pas ? Nous passons les `labels`, `attention_mask`, et `input_ids` au modèle, ce qui devrait être tout ce dont il a besoin pour calculer les sorties et la perte. Alors pourquoi n'avons-nous pas de gradient ? Regardez de plus près : nous passons un seul dictionnaire en entrée, mais un batch d'entraînement est généralement un tenseur ou un dictionnaire d'entrée, plus un tenseur d'étiquettes. Nos étiquettes sont juste une clé dans notre dictionnaire d'entrée.
+Cela semble correct. Nous passons les `labels`, `attention_mask`, et `input_ids` au modèle, ce qui devrait être tout ce dont il a besoin pour calculer les sorties et la perte. Alors pourquoi n'avons-nous pas de gradient ? Regardez de plus près : nous passons un seul dictionnaire en entrée mais un batch d'entraînement est généralement un tenseur ou un dictionnaire d'entrée, plus un tenseur d'étiquettes. Nos étiquettes sont juste une clé dans notre dictionnaire d'entrée.
 
-Est-ce un problème ? Pas toujours, en fait ! Mais c'est l'un des problèmes les plus courants que vous rencontrerez lorsque vous entraînerez des modèles Transformer avec TensorFlow. Nos modèles peuvent tous calculer la perte en interne, mais pour ce faire, les étiquettes doivent être transmises dans le dictionnaire d'entrée. C'est la perte qui est utilisée lorsque nous ne spécifions pas de valeur de perte à `compile()`. Keras, d'autre part, s'attend généralement à ce que les étiquettes soient passées séparément du dictionnaire d'entrée, et les calculs de perte échoueront généralement si vous ne le faites pas.
+Est-ce un problème ? Pas toujours, en fait ! Mais c'est l'un des problèmes les plus courants que vous rencontrerez lorsque vous entraînerez des *transformers* avec TensorFlow. Nos modèles peuvent tous calculer la perte en interne, mais pour ce faire, les étiquettes doivent être transmises dans le dictionnaire d'entrée. C'est la perte qui est utilisée lorsque nous ne spécifions pas de valeur de perte à `compile()`. Keras, d'autre part, s'attend généralement à ce que les étiquettes soient passées séparément du dictionnaire d'entrée, et les calculs de perte échoueront généralement si vous ne le faites pas.
 
 Le problème est maintenant devenu plus clair : nous avons passé un argument `loss`, ce qui signifie que nous demandons à Keras de calculer les pertes pour nous, mais nous avons passé nos étiquettes comme entrées au modèle, et non comme étiquettes à l'endroit où Keras les attend ! Nous devons choisir l'un ou l'autre : soit nous utilisons la perte interne du modèle et gardons les étiquettes où elles sont, soit nous continuons à utiliser les pertes de Keras, mais nous déplaçons les étiquettes à l'endroit où Keras les attend. Pour simplifier, prenons la première approche. Changez l'appel à `compile()` pour lire :
 
@@ -108,11 +108,11 @@ Le problème est maintenant devenu plus clair : nous avons passé un argument `l
 model.compile(optimizer="adam")
 ```
 
-Maintenant, nous allons utiliser la perte interne du modèle, et ce problème devrait être résolu !
+Maintenant, nous allons utiliser la perte interne du modèle et ce problème devrait être résolu !
 
 <Tip>
 
-✏️ *A votre tour !* Comme défi optionnel après avoir résolu les autres problèmes, vous pouvez essayer de revenir à cette étape et faire fonctionner le modèle avec la perte originale calculée par Keras au lieu de la perte interne. Vous devrez ajouter `"labels"` à l'argument `label_cols` de `to_tf_dataset()` pour vous assurer que les labels sont correctement sortis, ce qui vous donnera des gradients -- mais il y a un autre problème avec la perte que nous avons spécifiée. L'Entraînement fonctionnera toujours avec ce problème, mais l'apprentissage sera très lent et se stabilisera à une perte d'entraînement élevée. Pouvez-vous trouver ce que c'est ?
+✏️ *A votre tour !* Comme défi optionnel après avoir résolu les autres problèmes, vous pouvez essayer de revenir à cette étape et faire fonctionner le modèle avec la perte originale calculée par Keras au lieu de la perte interne. Vous devrez ajouter `"labels"` à l'argument `label_cols` de `to_tf_dataset()` pour vous assurer que les labels sont correctement sortis, ce qui vous donnera des gradients. Mais il y a un autre problème avec la perte que nous avons spécifiée. L'entraînement fonctionnera toujours avec ce problème mais l'apprentissage sera très lent et se stabilisera à une perte d'entraînement élevée. Pouvez-vous trouver ce que c'est ?
 
 Un indice codé en ROT13, si vous êtes coincé : Vs lbh ybbx ng gur bhgchgf bs FrdhraprPynffvsvpngvba zbqryf va Genafsbezref, gurve svefg bhgchg vf `ybtvgf`. Jung ner ybtvgf ?
 
@@ -120,7 +120,7 @@ Et un deuxième indice : Jura lbh fcrpvsl bcgvzvmref, npgvingvbaf be ybffrf jvgu
 
 </Tip>
 
-Maintenant, essayons de nous entraîner. Nous devrions obtenir des gradients maintenant, donc avec un peu de chance (la musique de mauvais augure joue ici) nous pouvons juste appeler `model.fit()` et tout fonctionnera bien !
+Maintenant, essayons d'entraîner. Nous devrions obtenir des gradients maintenant, donc avec un peu de chance nous pouvons juste appeler `model.fit()` et tout fonctionnera bien !
 
 ```python out
   246/24543 [..............................] - ETA: 15:52 - loss: nan
@@ -128,11 +128,11 @@ Maintenant, essayons de nous entraîner. Nous devrions obtenir des gradients mai
 
 Oh non. 
 
-`nan` n'est pas une valeur de perte très encourageante. Pourtant, nous avons vérifié nos données, et elles semblent plutôt bonnes. Si ce n'est pas le problème, quelle est la prochaine étape ? La prochaine étape évidente est de...
+`nan` n'est pas une valeur de perte très encourageante. Pourtant, nous avons vérifié nos données et elles semblent plutôt bonnes. Si ce n'est pas le problème, quelle est la prochaine étape ? La prochaine étape évidente est de...
 
 ### Vérifier votre modèle
 
-`model.fit()` est une fonction très pratique dans Keras, mais elle fait beaucoup de choses pour vous, et cela peut rendre plus difficile de trouver exactement où un problème est survenu. Si vous déboguez votre modèle, une stratégie qui peut vraiment vous aider est de passer un seul batch au modèle et d'examiner les sorties de ce batch en détail. Une autre astuce vraiment utile si le modèle jette des erreurs est de `compiler()` le modèle avec `run_eagerly=True`. Cela le rendra beaucoup plus lent, mais les messages d'erreur seront beaucoup plus compréhensibles, car ils indiqueront exactement où le problème est survenu dans le code de votre modèle.
+`model.fit()` est une fonction très pratique dans Keras, mais elle fait beaucoup de choses pour vous. Cela peut rendre plus difficile de trouver exactement où un problème est survenu. Si vous déboguez votre modèle, une stratégie qui peut vraiment vous aider est de passer un seul batch au modèle et d'examiner les sorties de ce batch en détail. Une autre astuce vraiment utile est de `compiler()` le modèle avec `run_eagerly=True`. Cela le rendra beaucoup plus lent mais les messages d'erreur seront beaucoup plus compréhensibles car ils indiqueront exactement où le problème est survenu dans le code de votre modèle.
 
 Pour l'instant, cependant, nous n'avons pas besoin de `run_eagerly`. Exécutons le `batch` que nous avons obtenu précédemment à travers le modèle et voyons à quoi ressemblent les résultats :
 
@@ -162,7 +162,8 @@ array([[nan, nan],
        [nan, nan]], dtype=float32)>, hidden_states=None, attentions=None)
 ```
 
-Eh bien, c'est délicat. Tout est "nan" ! Mais c'est étrange, n'est-ce pas ? Comment tous nos logits pourraient-ils devenir `nan` ? "NAN" signifie "not a number". Les valeurs `nan` apparaissent souvent quand on effectue une opération interdite, comme la division par zéro. Mais une chose très importante à savoir sur `nan` en apprentissage automatique est que cette valeur a tendance à *se propager*. Si vous multipliez un nombre par `nan`, le résultat sera également `nan`. Et si vous obtenez une valeur `nan` n'importe où dans votre sortie, votre perte ou votre gradient, alors elle se propagera rapidement à travers tout votre modèle. Ceci parce que lorsque cette valeur `nan` est propagée à travers votre réseau, vous obtiendrez des gradients `nan`, et lorsque les mises à jour des poids sont calculées avec ces gradients, vous obtiendrez des poids `nan`, et ces poids calculeront encore plus de sorties `nan` ! Très vite, le réseau entier ne sera plus qu'un gros bloc de `nan`. Une fois que cela arrive, il est assez difficile de voir où le problème a commencé. Comment peut-on isoler l'endroit où les `nan` se sont introduits en premier ?
+Eh bien, c'est délicat. Tout est "nan" ! Mais c'est étrange, n'est-ce pas ? Comment tous nos logits pourraient-ils devenir `nan` ? "NAN" signifie "*not a number*". Les valeurs `nan` apparaissent souvent quand on effectue une opération interdite comme la division par zéro. Mais une chose très importante à savoir sur `nan` en apprentissage automatique est que cette valeur a tendance à *se propager*. Si vous multipliez un nombre par `nan`, le résultat sera également `nan`. Et si vous obtenez une valeur `nan` n'importe où dans votre sortie, votre perte ou votre gradient, alors elle se propagera rapidement à travers tout votre modèle. 
+Ceci parce que lorsque cette valeur `nan` est propagée à travers votre réseau, vous obtiendrez des gradients `nan`, et lorsque les mises à jour des poids sont calculées avec ces gradients, vous obtiendrez des poids `nan`, et ces poids calculeront encore plus de sorties `nan` ! Très vite, le réseau entier ne sera plus qu'un gros bloc de `nan`. Une fois que cela arrive, il est assez difficile de voir où le problème a commencé. Comment peut-on isoler l'endroit où les `nan` se sont introduits en premier ?
 
 La réponse est d'essayer de *reinitialiser* notre modèle. Une fois que nous avons commencé l'entraînement, nous avons eu un `nan` quelque part et il s'est rapidement propagé à travers tout le modèle. Donc, chargeons le modèle à partir d'un checkpoint et ne faisons aucune mise à jour de poids, et voyons où nous obtenons une valeur `nan` :
 
@@ -197,7 +198,7 @@ array([[-0.04761693, -0.06509043],
        [-0.08141848, -0.07110836]], dtype=float32)>, hidden_states=None, attentions=None)
 ```
 
-*Maintenant* on arrive à quelque chose ! Il n'y a pas de valeurs `nan` dans nos logits, ce qui est rassurant. Mais nous voyons quelques valeurs `nan` dans notre perte ! Y a-t-il quelque chose dans ces échantillons en particulier qui cause ce problème ? Voyons de quels échantillons il s'agit (notez que si vous exécutez ce code vous-même, vous pouvez obtenir des indices différents parce que l'ensemble de données a été mélangé) :
+*Maintenant* on arrive à quelque chose ! Il n'y a pas de valeurs `nan` dans nos logits, ce qui est rassurant. Mais nous voyons quelques valeurs `nan` dans notre perte ! Y a-t-il quelque chose dans ces échantillons en particulier qui cause ce problème ? Voyons de quels échantillons il s'agit (notez que si vous exécutez ce code vous-même, vous pouvez obtenir des indices différents parce que le jeu de données a été mélangé) :
 
 ```python
 import numpy as np
@@ -211,7 +212,7 @@ indices
 array([ 1,  2,  5,  7,  9, 10, 11, 13, 14])
 ```
 
-Let's look at the samples these indices came from:
+Examinons les échantillons d'où proviennent ces indices :
 
 ```python
 input_ids = batch["input_ids"].numpy()
@@ -311,7 +312,7 @@ array([[  101,  2007,  2032,  2001,  1037, 16480,  3917,  2594,  4135,
             0,     0,     0,     0]])
 ```
 
-Il y a beaucoup de batchs ici, mais rien d'inhabituel. Regardons les étiquettes :
+Il y a beaucoup de batchs ici mais rien d'inhabituel. Regardons les étiquettes :
 
 ```python out
 labels = batch['labels'].numpy()
@@ -322,7 +323,7 @@ labels[indices]
 array([2, 2, 2, 2, 2, 2, 2, 2, 2])
 ```
 
-Ah ! Les échantillons `nan` ont tous le même label, et c'est le label 2. C'est un indice très fort. Le fait que nous n'obtenions une perte de `nan` que lorsque notre étiquette est 2 suggère que c'est un très bon moment pour vérifier le nombre d'étiquettes dans notre modèle :
+Ah ! Les échantillons `nan` ont tous le même label. C'est un gros indice. Le fait que nous n'obtenions une perte de `nan` que lorsque notre étiquette vaut 2 suggère que c'est un très bon moment pour vérifier le nombre d'étiquettes dans notre modèle :
 
 ```python
 model.config.num_labels
@@ -332,7 +333,7 @@ model.config.num_labels
 2
 ```
 
-Nous voyons maintenant le problème : le modèle pense qu'il n'y a que deux classes, mais les étiquettes vont jusqu'à 2, ce qui signifie qu'il y a en fait trois classes (car 0 est aussi une classe). C'est ainsi que nous avons obtenu un `nan` - en essayant de calculer la perte pour une classe inexistante ! Essayons de changer cela et de réajuster le modèle :
+Nous voyons maintenant le problème : le modèle pense qu'il n'y a que deux classes, mais les étiquettes vont jusqu'à 2, ce qui signifie qu'il y a en fait trois classes (car 0 est aussi une classe). C'est ainsi que nous avons obtenu un `nan`. En essayant de calculer la perte pour une classe inexistante ! Essayons de changer cela et de réajuster le modèle :
 
 ```
 model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
@@ -344,15 +345,15 @@ model.fit(train_dataset)
   869/24543 [>.............................] - ETA: 15:29 - loss: 1.1032
 ```
 
-On s'entraîne ! Plus de `nan`, et nos pertes diminuent... en quelque sorte. Si vous le regardez pendant un certain temps, vous pouvez commencer à vous impatienter, car la valeur des pertes reste obstinément élevée. Arrêtons l'entraînement ici et essayons de réfléchir à ce qui pourrait causer ce problème. À ce stade, nous sommes pratiquement sûrs que les données et le modèle sont corrects, mais notre modèle n'apprend pas bien. Que reste-t-il d'autre ? Il est temps de...
+On entraîne ! Plus de `nan` et nos pertes diminuent... en quelque sorte. Si vous regardez pendant un certain temps, vous pouvez commencer à vous impatienter car la valeur des pertes reste obstinément élevée. Arrêtons l'entraînement ici et essayons de réfléchir à ce qui pourrait causer ce problème. À ce stade, nous sommes pratiquement sûrs que les données et le modèle sont corrects, mais notre modèle n'apprend pas bien. Que reste-t-il d'autre ? Il est temps de...
 
-### Vérifier vos hyperparamètres
+### Vérifier les hyperparamètres
 
-Si vous regardez le code ci-dessus, vous ne verrez peut-être aucun hyperparamètre, sauf peut-être le `batch_size`, et cela ne semble pas être un coupable probable. Ne soyez pas dupe, cependant ; il y a toujours des hyperparamètres, et si vous ne pouvez pas les voir, cela signifie simplement que vous ne savez pas à quoi ils sont réglés. En particulier, souvenez-vous d'une chose essentielle à propos de Keras : si vous définissez une fonction de perte, d'optimisation ou d'activation avec une chaîne, _tous ses arguments seront définis sur leurs valeurs par défaut_. Cela signifie que, même si l'utilisation de chaînes de caractères est très pratique, vous devez être très prudent, car cela peut facilement vous cacher des éléments critiques. (Toute personne essayant le défi optionnel ci-dessus devrait prendre bonne note de ce fait).
+Si vous regardez le code ci-dessus, vous ne verrez peut-être aucun hyperparamètre, sauf peut-être le `batch_size` qui ne semble pas être un coupable probable. Cependant, ne soyez pas dupe, il y a toujours des hyperparamètres. Si vous ne pouvez pas les voir, cela signifie simplement que vous ne connaissez pas leur réglage. En particulier, souvenez-vous d'une chose essentielle à propos de Keras : si vous définissez une fonction de perte, d'optimisation ou d'activation avec une chaîne, _tous ses arguments seront définis sur leurs valeurs par défaut_. Cela signifie que, même si l'utilisation de chaînes de caractères est très pratique, vous devez être très prudent car cela peut facilement vous cacher des éléments critiques. (Toute personne essayant le défi optionnel ci-dessus devrait prendre bonne note de ce fait).
 
-Dans ce cas, où avons-nous défini un argument avec une chaîne ? Au départ, nous définissions la perte avec une chaîne, mais nous ne le faisons plus. Cependant, nous définissons l'optimiseur avec une chaîne de caractères. Cela pourrait-il nous cacher quelque chose ? Jetons un coup d'œil à [ses arguments](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/Adam).
+Dans ce cas, où avons-nous défini un argument avec une chaîne de caractères ? Au départ, nous définissions la perte avec une chaîne de caractères, mais nous ne le faisons plus. Cependant, nous le faisons pour l'optimiseur. Cela pourrait-il nous cacher quelque chose ? Jetons un coup d'œil à [ses arguments](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/Adam).
 
-Y a-t-il quelque chose qui ressort ? C'est exact : le taux d'apprentissage ! Lorsque nous utilisons simplement la chaîne `'adam'`, nous allons obtenir le taux d'apprentissage par défaut, qui est de 0.001, ou 1e-3. C'est beaucoup trop élevé pour un modèle Transformer ! En général, nous recommandons d'essayer des taux d'apprentissage entre 1e-5 et 1e-4 pour vos modèles ; c'est quelque part entre 10X et 100X plus petit que la valeur que nous utilisons ici. Cela semble être un problème majeur, alors essayons de le réduire. Pour ce faire, nous devons importer l'objet `optimizer`. Pendant que nous y sommes, réinitialisons le modèle à partir du point de contrôle, au cas où l'entraînement avec un taux d'apprentissage élevé aurait endommagé ses poids :
+Y a-t-il quelque chose qui ressort ? C'est exact : le taux d'apprentissage ! Lorsque nous indiquons simplement `'adam'` nous allons obtenir le taux d'apprentissage par défaut qui est de 0.001 (ou 1e-3). C'est beaucoup trop élevé pour un *transformer* ! En général, nous recommandons d'essayer des taux d'apprentissage entre 1e-5 et 1e-4 pour vos modèles soit entre 10X et 100X plus petit que la valeur que nous utilisons ici. Cela semble être un problème majeur, alors essayons de le réduire. Pour ce faire, nous devons importer l'objet `optimizer`. Pendant que nous y sommes, réinitialisons le modèle à partir du *checkpoint* au cas où l'entraînement avec un taux d'apprentissage élevé aurait endommagé ses poids :
 
 ```python
 from tensorflow.keras.optimizers import Adam
@@ -363,11 +364,11 @@ model.compile(optimizer=Adam(5e-5))
 
 <Tip>
 
-💡 Vous pouvez également importer la fonction `create_optimizer()` de 🤗 *Transformers*, qui vous donnera un optimiseur AdamW avec une décroissance de poids correcte ainsi qu'un réchauffement et une décroissance du taux d'apprentissage. Cet optimiseur produira souvent des résultats légèrement meilleurs que ceux que vous obtenez avec l'optimiseur Adam par défaut.
+💡 Vous pouvez également importer la fonction `create_optimizer()` de 🤗 <i>Transformers</i> qui vous donnera un optimiseur AdamW avec une décroissance du taux des poids correcte ainsi qu'un réchauffement et une décroissance du taux d'apprentissage. Cet optimiseur produira souvent des résultats légèrement meilleurs que ceux que vous obtenez avec l'optimiseur Adam par défaut.
 
 </Tip>
 
-Maintenant, nous pouvons essayer d'ajuster le modèle avec le nouveau taux d'apprentissage amélioré :
+Maintenant, nous pouvons essayer de *finetuner* le modèle avec le nouveau taux d'apprentissage :
 
 ```python
 model.fit(train_dataset)
@@ -377,7 +378,7 @@ model.fit(train_dataset)
 319/24543 [..............................] - ETA: 16:07 - loss: 0.9718
 ```
 
-Maintenant notre perte va vraiment aller quelque part ! L'entraînement semble enfin fonctionner. Il y a une leçon à tirer ici : lorsque votre modèle fonctionne mais que la perte ne diminue pas, et que vous êtes sûr que vos données sont correctes, c'est une bonne idée de vérifier les hyperparamètres comme le taux d'apprentissage et la décroissance du poids. Un réglage trop élevé de l'un ou l'autre de ces paramètres risque fort de faire " caler " l'entraînement à une valeur de perte élevée.
+Maintenant notre perte va vraiment aller quelque part ! L'entraînement semble enfin fonctionner. Il y a une leçon à tirer ici : lorsque votre modèle fonctionne mais que la perte ne diminue pas, et que vous êtes sûr que vos données sont correctes, c'est une bonne idée de vérifier les hyperparamètres comme le taux d'apprentissage et le taux de décroissance des poids. Un réglage trop élevé de l'un ou l'autre de ces paramètres risque fort de faire « caler »  l'entraînement à une valeur de perte élevée.
 
 ## Autres problèmes potentiels 
 
@@ -385,26 +386,26 @@ Nous avons couvert les problèmes dans le script ci-dessus, mais il existe plusi
 
 ### Gérer les erreurs de manque de mémoire
 
-Le signe révélateur d'un manque de mémoire est une erreur du type "OOM when allocating tensor" -- OOM est l'abréviation de "out of memory". Il s'agit d'un risque très courant lorsque l'on traite de grands modèles de langage. Si vous rencontrez ce problème, une bonne stratégie consiste à diviser par deux la taille de votre batch et à réessayer. Gardez à l'esprit, cependant, que certains modèles sont *très* grands. Par exemple, le modèle GPT-2 complet possède 1,5 Go de paramètres, ce qui signifie que vous aurez besoin de 6 Go de mémoire rien que pour stocker le modèle, et 6 autres Go pour ses gradients ! Entraîner le modèle GPT-2 complet nécessite généralement plus de 20 Go de VRAM, quelle que soit la taille du batch utilisé, ce dont seuls quelques GPU sont dotés. Des modèles plus légers comme `distilbert-base-cased` sont beaucoup plus faciles à exécuter, et s'entraînent aussi beaucoup plus rapidement.
+Le signe révélateur d'un manque de mémoire est une erreur du type "OOM when allocating tensor" (OOM étant l'abréviation de *out of memory*). Il s'agit d'un risque très courant lorsque l'on utilise de grands modèles de langage. Si vous rencontrez ce problème, une bonne stratégie consiste à diviser par deux la taille de votre batch et à réessayer. Gardez à l'esprit, cependant, que certains modèles sont *très* grands. Par exemple, le modèle GPT-2 complet possède 1,5 Go de paramètres, ce qui signifie que vous aurez besoin de 6 Go de mémoire rien que pour stocker le modèle, et 6 autres Go pour ses gradients ! Entraîner le modèle GPT-2 complet nécessite généralement plus de 20 Go de VRAM, quelle que soit la taille du batch utilisé, ce dont seuls quelques GPUs sont dotés. Des modèles plus légers comme `distilbert-base-cased` sont beaucoup plus faciles à exécuter et s'entraînent aussi beaucoup plus rapidement.
 
 <Tip>
 
-Dans la prochaine partie du cours, nous examinerons des techniques plus avancées qui peuvent vous aider à réduire votre empreinte mémoire et vous permettre d'affiner les plus grands modèles.
+Dans la prochaine partie du cours, nous examinerons des techniques plus avancées qui peuvent vous aider à réduire votre empreinte mémoire et vous permettre de <i>finetuner</i> les plus grands modèles.
 
 </Tip>
 
-### Hungry Hungry TensorFlow 🦛
+### TensorFlow affamé 🦛
 
-Une bizarrerie particulière de TensorFlow dont vous devez être conscient est qu'il s'alloue *toute* la mémoire de votre GPU dès que vous chargez un modèle ou que vous effectuez un entraînement, puis il divise cette mémoire selon les besoins. Ce comportement est différent de celui d'autres frameworks, comme PyTorch, qui alloue la mémoire selon les besoins avec CUDA plutôt que de le faire en interne. L'un des avantages de l'approche de TensorFlow est qu'elle peut souvent donner des erreurs utiles lorsque vous manquez de mémoire, et qu'elle peut récupérer de cet état sans planter tout le noyau CUDA. Mais il y a aussi un inconvénient important : si vous exécutez deux processus TensorFlow en même temps, alors **vous allez passer un mauvais moment**.
+Une bizarrerie particulière de TensorFlow dont vous devez être conscient est qu'il s'alloue *toute* la mémoire de votre GPU dès que vous chargez un modèle ou que vous effectuez un entraînement. Puis il divise cette mémoire selon les besoins. Ce comportement est différent de celui d'autres *frameworks*, comme PyTorch, qui alloue la mémoire selon les besoins avec CUDA plutôt que de le faire en interne. L'un des avantages de l'approche de TensorFlow est qu'elle peut souvent donner des erreurs utiles lorsque vous manquez de mémoire et qu'elle peut récupérer de cet état sans planter tout le noyau CUDA. Mais il y a aussi un inconvénient important : si vous exécutez deux processus TensorFlow en même temps alors **vous allez passer un mauvais moment**.
 
-Si vous travaillez sur Colab, vous n'avez pas à vous soucier de cela, mais si vous travaillez localement, vous devez absolument faire attention. En particulier, sachez que la fermeture d'un onglet de notebook n'entraîne pas nécessairement la fermeture de ce *notebook* ! Vous devrez peut-être sélectionner les blocs-notes en cours d'exécution (ceux qui ont une icône verte) et les fermer manuellement dans la liste des répertoires. Tout *notebook* en cours d'exécution qui utilisait TensorFlow peut encore utiliser une grande partie de la mémoire de votre GPU, ce qui signifie que tout nouveau notebook que vous démarrez peut rencontrer des problèmes très étranges.
+Si vous travaillez sur Colab, vous n'avez pas à vous soucier de cela. Si vous travaillez localement, vous devez absolument faire attention. En particulier, sachez que la fermeture d'un onglet de *notebook* n'entraîne pas nécessairement la fermeture de ce *notebook* ! Vous devrez peut-être sélectionner les *notebooks* en cours d'exécution (ceux qui ont une icône verte) et les fermer manuellement dans la liste des répertoires. Tout *notebook* en cours d'exécution qui utilisait TensorFlow peut encore utiliser une grande partie de la mémoire de votre GPU, ce qui signifie que tout nouveau *notebook* que vous démarrez peut rencontrer des problèmes très étranges.
 
-Si vous commencez à obtenir des erreurs concernant CUDA, BLAS ou cuBLAS dans du code qui fonctionnait auparavant, c'est très souvent le coupable. Vous pouvez utiliser une commande comme `nvidia-smi` pour vérifier - quand vous éteignez ou redémarrez votre *notebook* actuel, est-ce que la plupart de votre mémoire est libre, ou est-elle toujours utilisée ? Si elle est toujours utilisée, c'est que quelque chose d'autre s'y accroche !
+Si vous commencez à obtenir des erreurs concernant CUDA, BLAS ou cuBLAS dans du code qui fonctionnait auparavant, c'est très souvent le coupable. Vous pouvez utiliser une commande comme `nvidia-smi` pour vérifier si la plupart de votre mémoire est libre ou toujours utilisée. Si elle est toujours utilisée, c'est que quelque chose d'autre s'y accroche !
 
 
 ### Vérifiez vos données (encore !)
 
-Votre modèle n'apprendra quelque chose que s'il est réellement possible d'apprendre quelque chose de vos données. S'il y a un bug qui corrompt les données ou si les étiquettes sont attribuées de manière aléatoire, il est très probable que vous n'obtiendrez aucun entraînement de modèle sur votre jeu de données. Un outil utile ici est `tokenizer.decode()`. Cela transformera les `input_ids` en chaînes de caractères, afin que vous puissiez visualiser les données et voir si vos données d'entraînement enseignent ce que vous voulez qu'elles enseignent. Par exemple, après avoir obtenu un `batch` de votre `tf.data.Dataset` comme nous l'avons fait ci-dessus, vous pouvez décoder le premier élément comme suit :
+Votre modèle n'apprendra quelque chose que s'il est réellement possible d'apprendre quelque chose de vos données. S'il y a un *bug* qui corrompt les données ou si les étiquettes sont attribuées de manière aléatoire, il est très probable que vous n'obtiendrez aucun entraînement de modèle sur votre jeu de données. Un outil utile ici est `tokenizer.decode()`. Il transformera les `input_ids` en chaînes de caractères, afin que vous puissiez visualiser les données et voir si vos données d'entraînement renseignent ce que vous voulez. Par exemple, après avoir obtenu un `batch` de votre `tf.data.Dataset` comme nous l'avons fait ci-dessus, vous pouvez décoder le premier élément comme suit :
 
 
 ```py
@@ -424,27 +425,27 @@ Une fois que vous pouvez visualiser vos données de cette manière, vous pouvez 
 - les données décodées sont-elles compréhensibles ?
 - êtes-vous d'accord avec les étiquettes ?
 - y a-t-il une étiquette qui est plus courante que les autres ?
-- quelle devrait être la perte/métrie si le modèle prédisait une réponse aléatoire/toujours la même réponse ?
+- quelle devrait être la perte/métrique si le modèle prédisait une réponse aléatoire/toujours la même réponse ?
 
-Après avoir examiné vos données, examinez quelques-unes des prédictions du modèle - si votre modèle produit des tokens, essayez aussi de les décoder ! Si le modèle prédit toujours la même chose, cela peut être dû au fait que votre ensemble de données est biaisé en faveur d'une catégorie (pour les problèmes de classification), des techniques telles que le suréchantillonnage des classes rares peuvent aider. Des techniques telles que le suréchantillonnage des classes rares peuvent donc être utiles. D'autre part, cela peut également être dû à des problèmes d'entraînement tels que de mauvais réglages des hyperparamètres.
+Après avoir examiné vos données, examinez quelques-unes des prédictions du modèle. Si votre modèle produit des *tokens*, essayez aussi de les décoder ! Si le modèle prédit toujours la même chose, cela peut être dû au fait que votre jeu de données est biaisé en faveur d'une catégorie (pour les problèmes de classification). Des techniques telles que le suréchantillonnage des classes rares peuvent aider. D'autre part, cela peut également être dû à des problèmes d'entraînement tels que de mauvais réglages des hyperparamètres.
 
-Si la perte/la métrique que vous obtenez sur votre modèle initial avant tout entraînement est très différente de la perte/la métrique à laquelle vous vous attendez pour des prédictions aléatoires, vérifiez la façon dont votre perte ou votre métrique est calculée, car il y a probablement un bug. Si vous utilisez plusieurs pertes que vous ajoutez à la fin, assurez-vous qu'elles sont de la même échelle.
+Si la perte/la métrique que vous obtenez sur votre modèle initial avant entraînement est très différente de la perte/la métrique à laquelle vous vous attendez pour des prédictions aléatoires, vérifiez la façon dont votre perte ou votre métrique est calculée. Il y a probablement un bug. Si vous utilisez plusieurs pertes que vous ajoutez à la fin, assurez-vous qu'elles sont de la même échelle.
 
 Lorsque vous êtes sûr que vos données sont parfaites, vous pouvez voir si le modèle est capable de s'entraîner sur elles grâce à un test simple.
 
 ### Surentraînement du modèle sur un seul batch
 
-Le surentrâinement est généralement une chose que nous essayons d'éviter lors de l'entraînement, car cela signifie que le modèle n'apprend pas à reconnaître les caractéristiques générales que nous voulons qu'il reconnaisse, mais qu'il se contente de mémoriser les échantillons d'entraînement. Cependant, essayer d'entraîner votre modèle sur un batch encore et encore est un bon test pour vérifier si le problème tel que vous l'avez formulé peut être résolu par le modèle que vous essayez d'entraîner. Cela vous aidera également à voir si votre taux d'apprentissage initial est trop élevé.
+Le surentraînement est généralement une chose que nous essayons d'éviter lors de l'entraînement car cela signifie que le modèle n'apprend pas à reconnaître les caractéristiques générales que nous voulons qu'il reconnaisse et se contente de mémoriser les échantillons d'entraînement. Cependant, essayer d'entraîner votre modèle sur un batch encore et encore est un bon test pour vérifier si le problème tel que vous l'avez formulé peut être résolu par le modèle que vous essayez d'entraîner. Cela vous aidera également à voir si votre taux d'apprentissage initial est trop élevé.
 
-Une fois que vous avez défini votre `modèle`, c'est très facile ; il suffit de prendre un batch de données d'entraînement, puis de traiter ce `batch` comme votre ensemble de données entier, en l'ajustant sur un grand nombre d'époques :
+Une fois que vous avez défini votre `modèle`, c'est très facile. Il suffit de prendre un batch de données d'entraînement, puis de le traiter comme votre jeu de données entier que vous *finetunez* sur un grand nombre d'époques :
 
 
 ```py
 for batch in train_dataset:
     break
 
-# Make sure you have run model.compile() and set your optimizer,
-# and your loss/metrics if you're using them
+# Assurez-vous que vous avez exécuté model.compile() et défini votre optimiseur,
+# et vos pertes/métriques si vous les utilisez.
 
 model.fit(batch, epochs=20)
 ```
@@ -457,7 +458,7 @@ model.fit(batch, epochs=20)
 
 Le modèle résultant devrait avoir des résultats proches de la perfection sur le `batch`, avec une perte diminuant rapidement vers 0 (ou la valeur minimale pour la perte que vous utilisez).
 
-Si vous ne parvenez pas à ce que votre modèle obtienne des résultats parfaits comme celui-ci, cela signifie qu'il y a quelque chose qui ne va pas dans la façon dont vous avez formulé le problème ou dans vos données, et vous devez donc y remédier. Ce n'est que lorsque vous parviendrez à passer le test de surentraînement que vous pourrez être sûr que votre modèle peut réellement apprendre quelque chose.
+Si vous ne parvenez pas à ce que votre modèle obtienne des résultats parfaits comme celui-ci, cela signifie qu'il y a quelque chose qui ne va pas dans la façon dont vous avez formulé le problème ou dans vos données et vous devez donc y remédier. Ce n'est que lorsque vous parviendrez à passer le test de surentraînement que vous pourrez être sûr que votre modèle peut réellement apprendre quelque chose.
 
 <Tip warning={true}>
 
@@ -467,21 +468,21 @@ Si vous ne parvenez pas à ce que votre modèle obtienne des résultats parfaits
 
 ### Ne réglez rien tant que vous n'avez pas une première ligne de base
 
-Le réglage des hyperparamètres est toujours considéré comme la partie la plus difficile de l'apprentissage automatique, mais c'est juste la dernière étape pour vous aider à gagner un peu sur la métrique. La plupart du temps, les hyperparamètres par défaut du `Trainer` fonctionneront très bien pour vous donner de bons résultats, donc ne vous lancez pas dans une recherche d'hyperparamètres longue et coûteuse jusqu'à ce que vous ayez quelque chose qui batte la ligne de base que vous avez sur votre jeu de données.
+Le réglage des hyperparamètres est toujours considéré comme la partie la plus difficile de l'apprentissage automatique mais c'est juste la dernière étape pour vous aider à gagner un peu sur la métrique. La plupart du temps, les hyperparamètres par défaut du `Trainer` fonctionneront très bien pour vous donner de bons résultats. Donc ne vous lancez pas dans une recherche d'hyperparamètres longue et coûteuse jusqu'à ce que vous ayez quelque chose qui batte la ligne de base que vous avez sur votre jeu de données.
 
-Une fois que vous avez un modèle suffisamment bon, vous pouvez commencer à l'affiner un peu. N'essayez pas de lancer un millier d'exécutions avec différents hyperparamètres, mais comparez quelques exécutions avec différentes valeurs pour un hyperparamètre afin de vous faire une idée de celui qui a le plus d'impact.
+Une fois que vous avez un modèle suffisamment bon, vous pouvez commencer à le *finetuner* un peu. N'essayez pas de lancer un millier d'exécutions avec différents hyperparamètres mais comparez quelques exécutions avec différentes valeurs pour un hyperparamètre afin de vous faire une idée de celui qui a le plus d'impact.
 
 Si vous modifiez le modèle lui-même, restez simple et n'essayez rien que vous ne puissiez raisonnablement justifier. Veillez toujours à revenir au test de surentraînement pour vérifier que votre modification n'a pas eu de conséquences inattendues.
 
 ### Demander de l'aide
 
-Nous espérons que vous avez trouvé dans cette section des conseils qui vous ont aidé à résoudre votre problème, mais si ce n'est pas le cas, n'oubliez pas que vous pouvez toujours demander de l'aide à la communauté sur le [forum](https://discuss.huggingface.co/). 
+Nous espérons que vous avez trouvé dans cette section des conseils qui vous ont aidé à résoudre votre problème. Si ce n'est pas le cas, n'oubliez pas que vous pouvez toujours demander de l'aide à la communauté sur le [forum](https://discuss.huggingface.co/). 
 
 Voici quelques ressources (en anglais) supplémentaires qui peuvent s'avérer utiles :
 
-- ["La reproductibilité comme vecteur des meilleures pratiques d'ingénierie"](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p) par Joel Grus
-- ["Liste de contrôle pour le débogage des réseaux neuronaux"](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21) par Cecelia Shao
-- ["Comment tester unitairement le code d'apprentissage automatique"](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765) par Chase Roberts
-- ["Une recette pour Entraîner les réseaux neuronaux"](http://karpathy.github.io/2019/04/25/recipe/) par Andrej Karpathy
+- [La reproductibilité comme vecteur des meilleures pratiques d'ingénierie](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p) par Joel Grus
+- [Liste de contrôle pour le débogage des réseaux de neurones](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21) par Cecelia Shao
+- [Comment tester unitairement le code d'apprentissage automatique](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765) par Chase Roberts
+- [Une recette pour entraîner les réseaux de neurones](http://karpathy.github.io/2019/04/25/recipe/) par Andrej Karpathy
 
-Bien sûr, tous les problèmes rencontrés lors de l'Entraînement des réseaux neuronaux ne sont pas forcément de votre faute ! Si vous rencontrez quelque chose dans la bibliothèque 🤗 *Transformers* ou 🤗 *Datasets* qui ne semble pas correct, vous avez peut-être rencontré un bogue. Vous devez absolument nous en parler, et dans la section suivante, nous allons vous expliquer exactement comment faire.
+Bien sûr, tous les problèmes rencontrés lors de l'entraînement ne sont pas forcément de votre faute ! Si vous rencontrez quelque chose dans la bibliothèque 🤗 *Transformers* ou 🤗 *Datasets* qui ne semble pas correct, vous avez peut-être trouver un *bug*. Vous devez absolument nous en parler pour qu'on puisse le corriger. Dans la section suivante, nous allons vous expliquer exactement comment faire.
