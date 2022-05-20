@@ -60,6 +60,17 @@ def read_and_split_frameworks(fname):
     else:
         return "".join(content)
 
+Machine Learning
+
+Browser Extension Development
+
+Cloud Computing
+
+Data Analysis
+
+Continuous Integration and Continuous Delivery (CI/CD)
+
+Containerization
 
 def extract_cells(content):
     """
