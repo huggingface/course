@@ -29,7 +29,7 @@ Once an issue is created, post a comment to indicate which chapters you'd like t
 
 **🗣 Join our Discord**
 
-Since it can be difficult to discuss translation details quickly over GitHub issues, we have created dedicated channels for each language on our Discord server. If you'd like to jon, just following the instructions at this channel 👉: [https://discord.gg/fvRrmu27](https://discord.gg/fvRrmu27)
+Since it can be difficult to discuss translation details quickly over GitHub issues, we have created dedicated channels for each language on our Discord server. If you'd like to jon, just following the instructions at this channel 👉: [https://discord.gg/JfAtkvEtRb](https://discord.gg/JfAtkvEtRb)
 
 **🍴 Fork the repository**
 
