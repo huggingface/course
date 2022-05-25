@@ -289,32 +289,32 @@ def tokenize_function(examples):
     return tokenizer(examples["review"], truncation=True)
 ```
 
-As you saw in [Chapter 3](/course/chapter3), we can pass one or several examples to the tokenizer, so we can use this function with or without `batched=True`. Let's take this opportunity to compare the performance of the different options. In a notebook, you can time a one-line instruction by adding `%time` before the line of code you wish to measure:
+Como você viu no [Capítulo 3](/course/chapter3), podemos passar um ou vários exemplos para o tokenizer, então podemos usar esta função com ou sem `batched=True`. Vamos aproveitar esta oportunidade para comparar o desempenho das diferentes opções. Em um notebook, você pode cronometrar uma instrução de uma linha adicionando `%time` antes da linha de código que deseja medir:
 
 ```python no-format
 %time tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
 ```
 
-You can also time a whole cell by putting `%%time` at the beginning of the cell. On the hardware we executed this on, it showed 10.8s for this instruction (it's the number written after "Wall time").
+Você também pode cronometrar uma célula inteira colocando `%%time` no início da célula. No hardware em que executamos isso, ele mostrava 10,8s para esta instrução (é o número escrito depois de "Wall time").
 
 <Tip>
 
-✏️ **Try it out!** Execute the same instruction with and without `batched=True`, then try it with a slow tokenizer (add `use_fast=False` in the `AutoTokenizer.from_pretrained()` method) so you can see what numbers you get on your hardware.
+✏️ **Experimente!** Execute a mesma instrução com e sem `batched=True`, então tente com um tokenizer lento (adicione `use_fast=False` no método `AutoTokenizer.from_pretrained()`) para que você possa veja quais números você obtém em seu hardware.
 
 </Tip>
 
-Here are the results we obtained with and without batching, with a fast and a slow tokenizer:
+Aqui estão os resultados que obtivemos com e sem batching, com um tokenizer rápido e lento:
 
-Options         | Fast tokenizer | Slow tokenizer
-:--------------:|:--------------:|:-------------:
-`batched=True`  | 10.8s          | 4min41s
-`batched=False` | 59.2s          | 5min3s
+Opções          | Tokenizador rápido | Tokenizador lento
+:--------------:|:------------------:|:-------------:
+`batched=True`  | 10.8s              | 4min41s
+`batched=False` | 59.2s              | 5min3s
 
-This means that using a fast tokenizer with the `batched=True` option is 30 times faster than its slow counterpart with no batching -- this is truly amazing! That's the main reason why fast tokenizers are the default when using `AutoTokenizer` (and why they are called "fast"). They're able to achieve such a speedup because behind the scenes the tokenization code is executed in Rust, which is a language that makes it easy to parallelize code execution.
+Isso significa que usar um tokenizer rápido com a opção `batched=True` é 30 vezes mais rápido do que seu equivalente lento sem batching -- isso é realmente incrível! Essa é a principal razão pela qual os tokenizers rápidos são o padrão ao usar o `AutoTokenizer` (e porque eles são chamados de "rápidos"). Eles são capazes de alcançar essa aceleração porque nos bastidores o código de tokenização é executado em Rust, que é uma linguagem que facilita a execução de código paralelizado.
 
-Parallelization is also the reason for the nearly 6x speedup the fast tokenizer achieves with batching: you can't parallelize a single tokenization operation, but when you want to tokenize lots of texts at the same time you can just split the execution across several processes, each responsible for its own texts.
+A paralelização também é a razão para a aceleração de quase 6x que o tokenizer rápido alcança com o batching: você não pode paralelizar uma única operação de tokenização, mas quando você deseja tokenizar muitos textos ao mesmo tempo, você pode simplesmente dividir a execução em vários processos, cada um responsável por seus próprios textos.
 
-`Dataset.map()` also has some parallelization capabilities of its own. Since they are not backed by Rust, they won't let a slow tokenizer catch up with a fast one, but they can still be helpful (especially if you're using a tokenizer that doesn't have a fast version). To enable multiprocessing, use the `num_proc` argument and specify the number of processes to use in your call to `Dataset.map()`:
+`Dataset.map()` também possui alguns recursos de paralelização próprios. Como eles não são suportados pelo Rust, eles não permitem que um tokenizer lento alcance um rápido, mas ainda podem ser úteis (especialmente se você estiver usando um tokenizer que não possui uma versão rápida). Para ativar o multiprocessamento, use o argumento `num_proc` e especifique o número de processos a serem usados ​​em sua chamada para `Dataset.map()`:
 
 ```py
 slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False)
@@ -327,33 +327,32 @@ def slow_tokenize_function(examples):
 tokenized_dataset = drug_dataset.map(slow_tokenize_function, batched=True, num_proc=8)
 ```
 
-You can experiment a little with timing to determine the optimal number of processes to use; in our case 8 seemed to produce the best speed gain. Here are the numbers we got with and without multiprocessing:
+Você pode experimentar um pouco o tempo para determinar o número ideal de processos a serem usados; no nosso caso, 8 pareceu produzir o melhor ganho de velocidade. Aqui estão os números que obtivemos com e sem multiprocessamento:
 
-Options         | Fast tokenizer | Slow tokenizer
-:--------------:|:--------------:|:-------------:
-`batched=True`  | 10.8s          | 4min41s
-`batched=False` | 59.2s          | 5min3s
-`batched=True`, `num_proc=8`  | 6.52s          | 41.3s
-`batched=False`, `num_proc=8` | 9.49s          | 45.2s
+Opções                          | Tokenizador rápido | Tokenizador lento
+:------------------------------:|:------------------:|:-------------:
+`batched=True`                  | 10.8s              | 4min41s
+`batched=False`                 | 59.2s              | 5min3s
+`batched=True`, `num_proc=8`    | 6.52s              | 41.3s
+`batched=False`, `num_proc=8`   | 9.49s              | 45.2s
 
-Those are much more reasonable results for the slow tokenizer, but the performance of the fast tokenizer was also substantially improved. Note, however, that won't always be the case -- for values of `num_proc` other than 8, our tests showed that it was faster to use `batched=True` without that option. In general, we don't recommend using Python multiprocessing for fast tokenizers with `batched=True`.
-
-<Tip>
-
-Using `num_proc` to speed up your processing is usually a great idea, as long as the function you are using is not already doing some kind of multiprocessing of its own.
-
-</Tip>
-
-All of this functionality condensed into a single method is already pretty amazing, but there's more! With `Dataset.map()` and `batched=True` you can change the number of elements in your dataset. This is super useful in many situations where you want to create several training features from one example, and we will need to do this as part of the preprocessing for several of the NLP tasks we'll undertake in [Chapter 7](/course/chapter7).
+Esses são resultados muito mais razoáveis ​​para o tokenizer lento, mas o desempenho do tokenizer rápido também foi substancialmente melhorado. Observe, no entanto, que nem sempre será o caso -- para valores de `num_proc` diferentes de 8, nossos testes mostraram que era mais rápido usar `batched=True` sem essa opção. Em geral, não recomendamos o uso de multiprocessamento Python para tokenizers rápidos com `batched=True`.
 
 <Tip>
 
-💡 In machine learning, an _example_ is usually defined as the set of _features_ that we feed to the model. In some contexts, these features will be the set of columns in a `Dataset`, but in others (like here and for question answering), multiple features can be extracted from a single example and belong to a single column.
+Usar `num_proc` para acelerar seu processamento geralmente é uma ótima idéia, desde que a função que você está usando não esteja fazendo algum tipo de multiprocessamento próprio.
 
 </Tip>
 
-Let's have a look at how it works! Here we will tokenize our examples and truncate them to a maximum length of 128, but we will ask the tokenizer to return *all* the chunks of the texts instead of just the first one. This can be done with `return_overflowing_tokens=True`:
+Toda essa funcionalidade condensada em um único método já é incrível, mas tem mais! Com `Dataset.map()` e `batched=True` você pode alterar o número de elementos em seu conjunto de dados. Isso é super útil em muitas situações em que você deseja criar vários recursos de treinamento a partir de um exemplo, e precisaremos fazer isso como parte do pré-processamento de várias das tarefas de PNL que realizaremos no [Capítulo 7](/course/chapter7).
 
+<Tip>
+
+💡 No aprendizado de máquina, um _exemplo_ geralmente é definido como o conjunto de _recursos_ que alimentamos o modelo. Em alguns contextos, esses recursos serão o conjunto de colunas em um `Dataset`, mas em outros (como aqui e para resposta a perguntas), vários recursos podem ser extraídos de um único exemplo e pertencer a uma única coluna.
+
+</Tip>
+
+Vamos dar uma olhada em como funciona! Aqui vamos tokenizar nossos exemplos e truncá-los para um comprimento máximo de 128, mas pediremos ao tokenizer para retornar *todos* os pedaços dos textos em vez de apenas o primeiro. Isso pode ser feito com `return_overflowing_tokens=True`:
 ```py
 def tokenize_and_split(examples):
     return tokenizer(
@@ -364,7 +363,7 @@ def tokenize_and_split(examples):
     )
 ```
 
-Let's test this on one example before using `Dataset.map()` on the whole dataset:
+Vamos testar isso em um exemplo antes de usar `Dataset.map()` em todo o conjunto de dados:
 
 ```py
 result = tokenize_and_split(drug_dataset["train"][0])
@@ -375,7 +374,7 @@ result = tokenize_and_split(drug_dataset["train"][0])
 [128, 49]
 ```
 
-So, our first example in the training set became two features because it was tokenized to more than the maximum number of tokens we specified: the first one of length 128 and the second one of length 49. Now let's do this for all elements of the dataset!
+Assim, nosso primeiro exemplo no conjunto de treinamento se tornou dois recursos porque foi tokenizado para mais do que o número máximo de tokens que especificamos: o primeiro de comprimento 128 e o segundo de comprimento 49. Agora vamos fazer isso para todos os elementos do conjunto de dados!
 
 ```py
 tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
@@ -385,9 +384,9 @@ tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
 ArrowInvalid: Column 1 named condition expected length 1463 but got length 1000
 ```
 
-Oh no! That didn't work! Why not? Looking at the error message will give us a clue: there is a mismatch in the lengths of one of the columns, one being of length 1,463 and the other of length 1,000. If you've looked at the `Dataset.map()` [documentation](https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map), you may recall that it's the number of samples passed to the function that we are mapping; here those 1,000 examples gave 1,463 new features, resulting in a shape error.
+Oh não! Isso não funcionou! Por que não? Observar a mensagem de erro nos dará uma pista: há uma incompatibilidade nos comprimentos de uma das colunas, sendo uma de comprimento 1.463 e a outra de comprimento 1.000. Se você consultou a [documentação] do `Dataset.map()` (https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map), você deve se lembrar de que é o número de amostras passadas para a função que estamos mapeando; aqui, esses 1.000 exemplos forneceram 1.463 novos recursos, resultando em um erro de forma.
 
-The problem is that we're trying to mix two different datasets of different sizes: the `drug_dataset` columns will have a certain number of examples (the 1,000 in our error), but the `tokenized_dataset` we are building will have more (the 1,463 in the error message). That doesn't work for a `Dataset`, so we need to either remove the columns from the old dataset or make them the same size as they are in the new dataset. We can do the former with the `remove_columns` argument:
+O problema é que estamos tentando misturar dois conjuntos de dados diferentes de tamanhos diferentes: as colunas `drug_dataset` terão um certo número de exemplos (os 1.000 em nosso erro), mas o `tokenized_dataset` que estamos construindo terá mais (o 1.463 na mensagem de erro). Isso não funciona para um `Dataset`, portanto, precisamos remover as colunas do conjunto de dados antigo ou torná-las do mesmo tamanho do novo conjunto de dados. Podemos fazer o primeiro com o argumento `remove_columns`:
 
 ```py
 tokenized_dataset = drug_dataset.map(
@@ -395,7 +394,7 @@ tokenized_dataset = drug_dataset.map(
 )
 ```
 
-Now this works without error. We can check that our new dataset has many more elements than the original dataset by comparing the lengths:
+Agora isso funciona sem erro. Podemos verificar que nosso novo conjunto de dados tem muito mais elementos do que o conjunto de dados original comparando os comprimentos:
 
 ```py
 len(tokenized_dataset["train"]), len(drug_dataset["train"])
@@ -405,7 +404,7 @@ len(tokenized_dataset["train"]), len(drug_dataset["train"])
 (206772, 138514)
 ```
 
-We mentioned that we can also deal with the mismatched length problem by making the old columns the same size as the new ones. To do this, we will need the `overflow_to_sample_mapping` field the tokenizer returns when we set `return_overflowing_tokens=True`. It gives us a mapping from a new feature index to the index of the sample it originated from. Using this, we can associate each key present in our original dataset with a list of values of the right size by repeating the values of each example as many times as it generates new features:
+Mencionamos que também podemos lidar com o problema de comprimento incompatível tornando as colunas antigas do mesmo tamanho das novas. Para fazer isso, precisaremos do campo `overflow_to_sample_mapping` que o tokenizer retorna quando configuramos `return_overflowing_tokens=True`. Ele nos fornece um mapeamento de um novo índice de recurso para o índice da amostra da qual ele se originou. Usando isso, podemos associar cada chave presente em nosso conjunto de dados original a uma lista de valores do tamanho certo, repetindo os valores de cada exemplo quantas vezes ele gerar novos recursos:
 
 ```py
 def tokenize_and_split(examples):
@@ -422,7 +421,7 @@ def tokenize_and_split(examples):
     return result
 ```
 
-We can see it works with `Dataset.map()` without us needing to remove the old columns:
+Podemos ver que funciona com `Dataset.map()` sem precisarmos remover as colunas antigas:
 
 ```py
 tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
@@ -442,22 +441,21 @@ DatasetDict({
 })
 ```
 
-We get the same number of training features as before, but here we've kept all the old fields. If you need them for some post-processing after applying your model, you might want to use this approach.
+Obtemos o mesmo número de recursos de treinamento de antes, mas aqui mantivemos todos os campos antigos. Se você precisar deles para algum pós-processamento após aplicar seu modelo, convém usar essa abordagem.
 
-You've now seen how 🤗 Datasets can be used to preprocess a dataset in various ways. Although the processing functions of 🤗 Datasets will cover most of your model training needs,
-there may be times when you'll need to switch to Pandas to access more powerful features, like `DataFrame.groupby()` or high-level APIs for visualization. Fortunately, 🤗 Datasets is designed to be interoperable with libraries such as Pandas, NumPy, PyTorch, TensorFlow, and JAX. Let's take a look at how this works.
+Agora você viu como 🤗 Datasets podem ser usados ​​para pré-processar um conjunto de dados de várias maneiras. Embora as funções de processamento de 🤗 Datasets cubram a maioria das suas necessidades de treinamento de modelo, pode haver momentos em que você precisará mudar para o Pandas para acessar recursos mais poderosos, como `DataFrame.groupby()` ou APIs de alto nível para visualização. Felizmente, 🤗 Datasets foi projetado para ser interoperável com bibliotecas como Pandas, NumPy, PyTorch, TensorFlow e JAX. Vamos dar uma olhada em como isso funciona.
 
-## From `Dataset`s to `DataFrame`s and back
+## De `Dataset`s para `DataFrame`s e vice-versa
 
 <Youtube id="tfcY1067A5Q"/>
 
-To enable the conversion between various third-party libraries, 🤗 Datasets provides a `Dataset.set_format()` function. This function only changes the _output format_ of the dataset, so you can easily switch to another format without affecting the underlying _data format_, which is Apache Arrow. The formatting is done in place. To demonstrate, let's convert our dataset to Pandas:
+Para habilitar a conversão entre várias bibliotecas de terceiros, 🤗 Datasets fornece uma função `Dataset.set_format()`. Essa função altera apenas o _formato de saída_ do conjunto de dados, para que você possa alternar facilmente para outro formato sem afetar o _formato de dados_ subjacente, que é o Apache Arrow. A formatação é feita no local. Para demonstrar, vamos converter nosso conjunto de dados para Pandas:
 
 ```py
 drug_dataset.set_format("pandas")
 ```
 
-Now when we access elements of the dataset we get a `pandas.DataFrame` instead of a dictionary:
+Agora, quando acessamos os elementos do dataset, obtemos um `pandas.DataFrame` em vez de um dicionário:
 
 ```py
 drug_dataset["train"][:3]
@@ -514,7 +512,7 @@ drug_dataset["train"][:3]
   </tbody>
 </table>
 
-Let's create a `pandas.DataFrame` for the whole training set by selecting all the elements of `drug_dataset["train"]`:
+Vamos criar um `pandas.DataFrame` para todo o conjunto de treinamento selecionando todos os elementos de `drug_dataset["train"]`:
 
 ```py
 train_df = drug_dataset["train"][:]
@@ -522,12 +520,12 @@ train_df = drug_dataset["train"][:]
 
 <Tip>
 
-🚨 Under the hood, `Dataset.set_format()` changes the return format for the dataset's `__getitem__()` dunder method. This means that when we want to create a new object like `train_df` from a `Dataset` in the `"pandas"` format, we need to slice the whole dataset to obtain a `pandas.DataFrame`. You can verify for yourself that the type of `drug_dataset["train"]` is `Dataset`, irrespective of the output format.
+🚨 `Dataset.set_format()` altera o formato de retorno para o método dunder `__getitem__()` do conjunto de dados. Isso significa que quando queremos criar um novo objeto como `train_df` a partir de um `Dataset` no formato `"pandas"`, precisamos dividir todo o conjunto de dados para obter um `pandas.DataFrame`. Você pode verificar por si mesmo que o tipo de `drug_dataset["train"]` é `Dataset`, independentemente do formato de saída.
 
 </Tip>
 
 
-From here we can use all the Pandas functionality that we want. For example, we can do fancy chaining to compute the class distribution among the `condition` entries:
+A partir daqui, podemos usar todas as funcionalidades do Pandas que queremos. Por exemplo, podemos fazer um encadeamento sofisticado para calcular a distribuição de classes entre as entradas `condition`:
 
 ```py
 frequencies = (
@@ -578,7 +576,7 @@ frequencies.head()
 </table>
 
 
-And once we're done with our Pandas analysis, we can always create a new `Dataset` object by using the `Dataset.from_pandas()` function as follows:
+E uma vez que terminamos nossa análise de Pandas, sempre podemos criar um novo objeto `Dataset` usando a função `Dataset.from_pandas()` da seguinte forma:
 
 
 ```py
@@ -597,21 +595,21 @@ Dataset({
 
 <Tip>
 
-✏️ **Try it out!** Compute the average rating per drug and store the result in a new `Dataset`.
+✏️ **Experimente!** Calcule a classificação média por medicamento e armazene o resultado em um novo `Dataset`.
 
 </Tip>
 
-This wraps up our tour of the various preprocessing techniques available in 🤗 Datasets. To round out the section, let's create a validation set to prepare the dataset for training a classifier on. Before doing so, we'll reset the output format of `drug_dataset` from `"pandas"` to `"arrow"`:
+Isso encerra nosso tour pelas várias técnicas de pré-processamento disponíveis em 🤗 Datasets. Para completar a seção, vamos criar um conjunto de validação para preparar o conjunto de dados para treinar um classificador. Antes de fazer isso, vamos redefinir o formato de saída de `drug_dataset` de `"pandas"` para `"arrow"`:
 
 ```python
 drug_dataset.reset_format()
 ```
 
-## Creating a validation set
+## Criando um conjunto de validação
 
-Although we have a test set we could use for evaluation, it's a good practice to leave the test set untouched and create a separate validation set during development. Once you are happy with the performance of your models on the validation set, you can do a final sanity check on the test set. This process helps mitigate the risk that you'll overfit to the test set and deploy a model that fails on real-world data.
+Embora tenhamos um conjunto de teste que poderíamos usar para avaliação, é uma boa prática deixar o conjunto de teste intocado e criar um conjunto de validação separado durante o desenvolvimento. Quando estiver satisfeito com o desempenho de seus modelos no conjunto de validação, você poderá fazer uma verificação final de sanidade no conjunto de teste. Esse processo ajuda a mitigar o risco de você se ajustar demais ao conjunto de teste e implantar um modelo que falha em dados do mundo real.
 
-🤗 Datasets provides a `Dataset.train_test_split()` function that is based on the famous functionality from `scikit-learn`. Let's use it to split our training set into `train` and `validation` splits (we set the `seed` argument for reproducibility):
+🤗 Datasets fornece uma função `Dataset.train_test_split()` que é baseada na famosa funcionalidade do `scikit-learn`. Vamos usá-lo para dividir nosso conjunto de treinamento em divisões `train` e `validation` (definimos o argumento `seed` para reprodutibilidade):
 
 ```py
 drug_dataset_clean = drug_dataset["train"].train_test_split(train_size=0.8, seed=42)
@@ -639,27 +637,27 @@ DatasetDict({
 })
 ```
 
-Great, we've now prepared a dataset that's ready for training some models on! In [section 5](/course/chapter5/5) we'll show you how to upload datasets to the Hugging Face Hub, but for now let's cap off our analysis by looking at a few ways you can save datasets on your local machine.
+Ótimo, agora preparamos um conjunto de dados pronto para treinar alguns modelos! Na [seção 5](/course/chapter5/5), mostraremos como fazer upload de conjuntos de dados para o Hugging Face Hub, mas, por enquanto, vamos encerrar nossa análise analisando algumas maneiras de salvar conjuntos de dados em sua máquina local .
 
-## Saving a dataset
+## Salvando um conjunto de dados
 
 <Youtube id="blF9uxYcKHo"/>
 
-Although 🤗 Datasets will cache every downloaded dataset and the operations performed on it, there are times when you'll want to save a dataset to disk (e.g., in case the cache gets deleted). As shown in the table below, 🤗 Datasets provides three main functions to save your dataset in different formats:
+Embora 🤗 Datasets armazene em cache todos os conjuntos de dados baixados e as operações realizadas nele, há momentos em que você deseja salvar um conjunto de dados em disco (por exemplo, caso o cache seja excluído). Conforme mostrado na tabela abaixo, 🤗 Datasets fornece três funções principais para salvar seu conjunto de dados em diferentes formatos:
 
-| Data format |        Function        |
-| :---------: | :--------------------: |
+| Formato dos dados | Função |
+| :---------: | :-----------------------------------: |
 |    Arrow    | `Dataset.save_to_disk()` |
 |     CSV     |    `Dataset.to_csv()`    |
 |    JSON     |   `Dataset.to_json()`    |
 
-For example, let's save our cleaned dataset in the Arrow format:
+Por exemplo, vamos salvar nosso conjunto de dados limpo no formato Arrow:
 
 ```py
 drug_dataset_clean.save_to_disk("drug-reviews")
 ```
 
-This will create a directory with the following structure:
+Isso criará um diretório com a seguinte estrutura:
 
 ```
 drug-reviews/
@@ -680,9 +678,9 @@ drug-reviews/
     └── state.json
 ```
 
-where we can see that each split is associated with its own *dataset.arrow* table, and some metadata in *dataset_info.json* and *state.json*. You can think of the Arrow format as a fancy table of columns and rows that is optimized for building high-performance applications that process and transport large datasets.
+onde podemos ver que cada divisão está associada a sua própria tabela *dataset.arrow* e alguns metadados em *dataset_info.json* e *state.json*. Você pode pensar no formato Arrow como uma tabela sofisticada de colunas e linhas otimizada para criar aplicativos de alto desempenho que processam e transportam grandes conjuntos de dados.
 
-Once the dataset is saved, we can load it by using the `load_from_disk()` function as follows:
+Uma vez que o conjunto de dados é salvo, podemos carregá-lo usando a função `load_from_disk()` da seguinte forma:
 
 ```py
 from datasets import load_from_disk
@@ -708,14 +706,14 @@ DatasetDict({
 })
 ```
 
-For the CSV and JSON formats, we have to store each split as a separate file. One way to do this is by iterating over the keys and values in the `DatasetDict` object:
+Para os formatos CSV e JSON, temos que armazenar cada divisão como um arquivo separado. Uma maneira de fazer isso é iterando as chaves e os valores no objeto `DatasetDict`:
 
 ```py
 for split, dataset in drug_dataset_clean.items():
     dataset.to_json(f"drug-reviews-{split}.jsonl")
 ```
 
-This saves each split in [JSON Lines format](https://jsonlines.org), where each row in the dataset is stored as a single line of JSON. Here's what the first example looks like:
+Isso salva cada divisão em [formato de linhas JSON](https://jsonlines.org), em que cada linha no conjunto de dados é armazenada como uma única linha de JSON. Veja como é o primeiro exemplo:
 
 ```py
 !head -n 1 drug-reviews-train.jsonl
@@ -725,7 +723,7 @@ This saves each split in [JSON Lines format](https://jsonlines.org), where each 
 {"patient_id":141780,"drugName":"Escitalopram","condition":"depression","review":"\"I seemed to experience the regular side effects of LEXAPRO, insomnia, low sex drive, sleepiness during the day. I am taking it at night because my doctor said if it made me tired to take it at night. I assumed it would and started out taking it at night. Strange dreams, some pleasant. I was diagnosed with fibromyalgia. Seems to be helping with the pain. Have had anxiety and depression in my family, and have tried quite a few other medications that haven't worked. Only have been on it for two weeks but feel more positive in my mind, want to accomplish more in my life. Hopefully the side effects will dwindle away, worth it to stick with it from hearing others responses. Great medication.\"","rating":9.0,"date":"May 29, 2011","usefulCount":10,"review_length":125}
 ```
 
-We can then use the techniques from [section 2](/course/chapter5/2) to load the JSON files as follows:
+Podemos então usar as técnicas da [seção 2](/course/chapter5/2) para carregar os arquivos JSON da seguinte forma:
 
 ```py
 data_files = {
@@ -736,9 +734,9 @@ data_files = {
 drug_dataset_reloaded = load_dataset("json", data_files=data_files)
 ```
 
-And that's it for our excursion into data wrangling with 🤗 Datasets! Now that we have a cleaned dataset for training a model on, here are a few ideas that you could try out:
+E é isso para nossa excursão em dados com 🤗 Datasets! Agora que temos um conjunto de dados limpo para treinar um modelo, aqui estão algumas ideias que você pode experimentar:
 
-1. Use the techniques from [Chapter 3](/course/chapter3) to train a classifier that can predict the patient condition based on the drug review.
-2. Use the `summarization` pipeline from [Chapter 1](/course/chapter1) to generate summaries of the reviews.
+1. Use as técnicas do [Capítulo 3](/course/chapter3) para treinar um classificador que possa prever a condição do paciente com base na revisão do medicamento.
+2. Use o pipeline `summarization` do [Capítulo 1](/course/chapter1) para gerar resumos das revisões.
 
-Next, we'll take a look at how 🤗 Datasets can enable you to work with huge datasets without blowing up your laptop!
+A seguir, veremos como 🤗 Datasets pode permitir que você trabalhe com grandes conjuntos de dados sem explodir seu laptop!
