@@ -60,7 +60,6 @@ def read_and_split_frameworks(fname):
     else:
         return "".join(content)
 
-
 def extract_cells(content):
     """
     Extract the code/output cells from content.
