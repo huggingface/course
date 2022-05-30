@@ -168,7 +168,7 @@ def build_notebook(fname, title, output_dir="."):
     if not isinstance(sections, dict):
         contents = [sections]
         titles = [title]
-        fnames = [f"{stem}.ipynb"]
+        fnames = [f"section{stem}.ipynb"]
     else:
         contents = []
         titles = []
@@ -176,7 +176,7 @@ def build_notebook(fname, title, output_dir="."):
         for key, section in sections.items():
             contents.append(section)
             titles.append(f"{title} ({frameworks[key]})")
-            fnames.append(f"{stem}_{key}.ipynb")
+            fnames.append(f"section{stem}_{key}.ipynb")
 
     for title, content, fname in zip(titles, contents, fnames):
         cells = extract_cells(content)
@@ -189,19 +189,19 @@ def build_notebook(fname, title, output_dir="."):
         ]
 
         # Install cell
-        installs = ["%pip install datasets transformers[sentencepiece]"]
+        installs = ["!pip install datasets transformers[sentencepiece]"]
         if title in sections_with_accelerate:
-            installs.append("%pip install accelerate")
+            installs.append("!pip install accelerate")
             installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
             installs.append(
-                "# %pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
+                "# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
             )
         if title in sections_with_hf_hub:
             installs.append("!apt install git-lfs")
         if title in sections_with_faiss:
-            installs.append("%pip install faiss-gpu")
+            installs.append("!pip install faiss-gpu")
         if title in sections_with_gradio:
-            installs.append("%pip install gradio")
+            installs.append("!pip install gradio")
 
         nb_cells.append(nb_cell("\n".join(installs)))
 
@@ -235,19 +235,16 @@ def get_titles():
     """
     table = yaml.safe_load(open(os.path.join(PATH_TO_COURSE, "_toctree.yml"), "r"))
     result = {}
-    print(table)
     for entry in table:
-        sections = []
-        for i, section in enumerate(entry["sections"]):
-            section_name = section["local"]
+        for section in entry["sections"]:
             section_title = section["title"]
-            if isinstance(section_name, str):
-                result[section_name] = section_title
+            if "local_fw" in section:
+                section_names = section["local_fw"]
+                result[section_names["pt"]] = section_title
+                result[section_names["tf"]] = section_title
             else:
-                if isinstance(section_title, str):
-                    section_title = {key: section_title for key in section_name.keys()}
-                for key in section_name.keys():
-                    result[os.path.join(chapter_name, section_name[key])] = section_title[key]
+                section_name = section["local"]
+                result[section_name] = section_title
     return {k: v for k, v in result.items() if "quiz" not in v}
 
 
@@ -257,7 +254,6 @@ def create_notebooks(output_dir):
             shutil.rmtree(os.path.join(output_dir, folder))
     titles = get_titles()
     for fname, title in titles.items():
-        print(f"fname: {fname}, title: {title}")
         build_notebook(
             os.path.join(PATH_TO_COURSE, f"{fname}.mdx"),
             title,
