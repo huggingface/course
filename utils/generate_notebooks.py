@@ -22,15 +22,16 @@ re_end_code = re.compile(r"^```\s*$")
 
 frameworks = {"pt": "PyTorch", "tf": "TensorFlow"}
 
+
 def read_and_split_frameworks(fname):
     """
     Read the MDX in fname and creates two versions (if necessary) for each framework.
     """
     with open(fname, "r") as f:
         content = f.readlines()
-    
+
     contents = {"pt": [], "tf": []}
-    
+
     differences = False
     current_content = []
     line_idx = 0
@@ -54,7 +55,7 @@ def read_and_split_frameworks(fname):
     if len(current_content) > 0:
         for key in contents:
             contents[key].extend(current_content)
-    
+
     if differences:
         return {k: "".join(content) for k, content in contents.items()}
     else:
@@ -97,12 +98,16 @@ def convert_to_nb_cell(cell):
     nb_cell = {"cell_type": "code", "execution_count": None, "metadata": {}}
     if isinstance(cell, tuple):
         nb_cell["source"] = cell[0]
-        nb_cell["outputs"] = [nbformat.notebooknode.NotebookNode({
-            'data': {'text/plain': cell[1]},
-            'execution_count': None,
-            'metadata': {},
-            'output_type': 'execute_result',
-        })]
+        nb_cell["outputs"] = [
+            nbformat.notebooknode.NotebookNode(
+                {
+                    "data": {"text/plain": cell[1]},
+                    "execution_count": None,
+                    "metadata": {},
+                    "output_type": "execute_result",
+                }
+            )
+        ]
     else:
         nb_cell["source"] = cell
         nb_cell["outputs"] = []
@@ -111,9 +116,7 @@ def convert_to_nb_cell(cell):
 
 def nb_cell(source, code=True):
     if not code:
-        return nbformat.notebooknode.NotebookNode(
-            {"cell_type": "markdown", "source": source, "metadata": {}}
-        )
+        return nbformat.notebooknode.NotebookNode({"cell_type": "markdown", "source": source, "metadata": {}})
     return nbformat.notebooknode.NotebookNode(
         {"cell_type": "code", "metadata": {}, "source": source, "execution_count": None, "outputs": []}
     )
@@ -153,11 +156,19 @@ def build_notebook(fname, title, output_dir="."):
         "What to do when you get an error",
     ]
     sections_with_faiss = ["Semantic search with FAISS (PyTorch)", "Semantic search with FAISS (TensorFlow)"]
+    sections_with_gradio = [
+        "Building your first demo",
+        "Understanding the Interface class",
+        "Sharing demos with others",
+        "Integrations with the Hugging Face Hub",
+        "Advanced Interface features",
+        "Introduction to Blocks",
+    ]
     stem = Path(fname).stem
     if not isinstance(sections, dict):
         contents = [sections]
         titles = [title]
-        fnames = [f"{stem}.ipynb"]
+        fnames = [f"section{stem}.ipynb"]
     else:
         contents = []
         titles = []
@@ -165,16 +176,16 @@ def build_notebook(fname, title, output_dir="."):
         for key, section in sections.items():
             contents.append(section)
             titles.append(f"{title} ({frameworks[key]})")
-            fnames.append(f"{stem}_{key}.ipynb")
-    
+            fnames.append(f"section{stem}_{key}.ipynb")
+
     for title, content, fname in zip(titles, contents, fnames):
         cells = extract_cells(content)
         if len(cells) == 0:
             continue
-        
+
         nb_cells = [
             nb_cell(f"# {title}", code=False),
-            nb_cell("Install the Transformers and Datasets libraries to run this notebook.", code=False)
+            nb_cell("Install the Transformers and Datasets libraries to run this notebook.", code=False),
         ]
 
         # Install cell
@@ -182,21 +193,34 @@ def build_notebook(fname, title, output_dir="."):
         if title in sections_with_accelerate:
             installs.append("!pip install accelerate")
             installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
-            installs.append("# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl")
+            installs.append(
+                "# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
+            )
         if title in sections_with_hf_hub:
             installs.append("!apt install git-lfs")
         if title in sections_with_faiss:
             installs.append("!pip install faiss-gpu")
-        
+        if title in sections_with_gradio:
+            installs.append("!pip install gradio")
+
         nb_cells.append(nb_cell("\n".join(installs)))
 
         if title in sections_with_hf_hub:
-            nb_cells.extend([
-                nb_cell("You will need to setup git, adapt your email and name in the following cell.", code=False),
-                nb_cell("!git config --global user.email \"you@example.com\"\n!git config --global user.name \"Your Name\""),
-                nb_cell("You will also need to be logged in to the Hugging Face Hub. Execute the following and enter your credentials.", code=False),
-                nb_cell("from huggingface_hub import notebook_login\n\nnotebook_login()"),
-            ])
+            nb_cells.extend(
+                [
+                    nb_cell(
+                        "You will need to setup git, adapt your email and name in the following cell.", code=False
+                    ),
+                    nb_cell(
+                        '!git config --global user.email "you@example.com"\n!git config --global user.name "Your Name"'
+                    ),
+                    nb_cell(
+                        "You will also need to be logged in to the Hugging Face Hub. Execute the following and enter your credentials.",
+                        code=False,
+                    ),
+                    nb_cell("from huggingface_hub import notebook_login\n\nnotebook_login()"),
+                ]
+            )
         nb_cells += [convert_to_nb_cell(cell) for cell in cells]
         metadata = {"colab": {"name": title, "provenance": []}}
         nb_dict = {"cells": nb_cells, "metadata": metadata, "nbformat": 4, "nbformat_minor": 4}
@@ -207,26 +231,20 @@ def build_notebook(fname, title, output_dir="."):
 
 def get_titles():
     """
-    Parse the yaml _chapters.yml to get the correspondence filename to title
+    Parse the _toctree.yml file to get the correspondence filename to title
     """
-    table = yaml.safe_load(open(os.path.join(PATH_TO_COURSE, "_chapters.yml"), "r"))
+    table = yaml.safe_load(open(os.path.join(PATH_TO_COURSE, "_toctree.yml"), "r"))
     result = {}
     for entry in table:
-        chapter_name = entry["local"]
-        sections = []
-        for i, section in enumerate(entry["sections"]):
-            if isinstance(section, str):
-                result[os.path.join(chapter_name, f"section{i+1}")] = section
+        for section in entry["sections"]:
+            section_title = section["title"]
+            if "local_fw" in section:
+                section_names = section["local_fw"]
+                result[section_names["pt"]] = section_title
+                result[section_names["tf"]] = section_title
             else:
                 section_name = section["local"]
-                section_title = section["title"]
-                if isinstance(section_name, str):
-                    result[os.path.join(chapter_name, section_name)] = section_title
-                else:
-                    if isinstance(section_title, str):
-                        section_title = {key: section_title for key in section_name.keys()}
-                    for key in section_name.keys():
-                        result[os.path.join(chapter_name, section_name[key])] = section_title[key]
+                result[section_name] = section_title
     return {k: v for k, v in result.items() if "quiz" not in v}
 
 
