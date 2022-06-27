@@ -7,89 +7,97 @@
     {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter6/section5.ipynb"},
 ]} />
 
-Byte-Pair Encoding (BPE) was initially developed as an algorithm to compress texts, and then used by OpenAI for tokenization when pretraining the GPT model. It's used by a lot of Transformer models, including GPT, GPT-2, RoBERTa, BART, and DeBERTa.
+ดั้งเดิมแล้ว Byte-Pair Encoding (BPE) เป็นอัลกอริทึมที่ถูกสร้างเพื่อใช้บีบอัดข้อความให้เล็กลง (compress texts) ภายหลัง OpenAI ได้นำอัลกอริทึมนี้มาใช้ในการตัดคำ ในขั้นตอนเตรียมข้อมูลเพื่อเทรน GPT อัลกอริทึมตัวนี้ยังถูกนำมาใช้อย่างกว้างขวางกับโมเดลประเภท Transformer เช่น GPT, GPT-2, RoBERTa, BART, และ DeBERTa
 
 <Youtube id="HEikzVL-lZU"/>
 
 <Tip>
 
-💡 This section covers BPE in depth, going as far as showing a full implementation. You can skip to the end if you just want a general overview of the tokenization algorithm.
+💡 บทนี้จะพูดถึง BPE อย่างละเอียด เราจะเรียนถึงการ implement มัน คุณสามารถข้ามไปตอนท้ายได้ ถ้าคุณสนใจเพียงแค่ภาพรวมคร่าวๆของมัน
 
 </Tip>
 
-## Training algorithm
+## อัลกอริทึมที่ใช้ในการเทรน
 
-BPE training starts by computing the unique set of words used in the corpus (after the normalization and pre-tokenization steps are completed), then building the vocabulary by taking all the symbols used to write those words. As a very simple example, let's say our corpus uses these five words:
+BPE เริ่มการเทรนด้วยการคำนวณรายการของคำที่อยู่ในคลังข้อมูล (คลังข้อมูลจะต้องผ่านการ normalization และ pre-tokenization มาแล้ว) จากนั้นมันจะเริ่มสร้างชุดคำศัพท์ (vocabulary) จากตัวอักษรที่อยู่ในแต่ละคำ มาดูตัวอย่างง่ายๆกัน เราจะสมมติว่าคลังข้อมูลของเรามีเพียงห้าคำเท่านั้น :
 
 ```
 "hug", "pug", "pun", "bun", "hugs"
 ```
 
-The base vocabulary will then be `["b", "g", "h", "n", "p", "s", "u"]`. For real-world cases, that base vocabulary will contain all the ASCII characters, at the very least, and probably some Unicode characters as well. If an example you are tokenizing uses a character that is not in the training corpus, that character will be converted to the unknown token. That's one reason why lots of NLP models are very bad at analyzing content with emojis, for instance.
+vocabulary ตั้งต้นสำหรับชุดข้อมูลนี้คือ `["b", "g", "h", "n", "p", "s", "u"]`  ในการใช้งานจริง vocabulary ตั้งต้นจะประกอบด้วยตัวอักษร ASCII เป็นอย่างต่ำ หรืออาจจะมีตัวอักษร Unicode ได้ด้วย
+
+ถ้าข้อความใหม่ที่คุณต้องการจะตัดคำ มีสัญลักษณ์ที่ไม่ได้อยู่ใน training corpus สัญลักษณ์พวกนี้จะถูกแปลงเป็น unknown token นี่เป็นเหตุผลว่าทำไมโมเดล NLP จึงประมวลผลข้อความที่มีอีโมจิได้ไม่ดีนัก
 
 <Tip>
 
-The GPT-2 and RoBERTa tokenizers (which are pretty similar) have a clever way to deal with this: they don't look at words as being written with Unicode characters, but with bytes. This way the base vocabulary has a small size (256), but every character you can think of will still be included and not end up being converted to the unknown token. This trick is called *byte-level BPE*.
+Tokenizer ของ GPT-2 และ RoBERTa (ซึ่งค่อนข้างคล้ายกัน) มีวิธีการจัดการกับปัญหานี้ได้อย่างประสิทธิภาพ มันจะไม่มองแต่ละคำเป็น Unicode แต่จะมองว่าเป็น byte การทำแบบนี้ทำให้ vocabulary ตั้งต้น มีขนาดที่เล็ก (256) แต่ยังสามารถบันทึกทุกๆสัญลักษณ์ได้ โดยไม่ต้องแปลงสัญลักษณ์พิเศษต่างๆเป็น unknown token เทคนิคนี้เรียกว่า *byte-level BPE*
 
 </Tip>
 
-After getting this base vocabulary, we add new tokens until the desired vocabulary size is reached by learning *merges*, which are rules to merge two elements of the existing vocabulary together into a new one. So, at the beginning these merges will create tokens with two characters, and then, as training progresses, longer subwords.
+หลังจากสร้าง vocabulary ตั้งต้นแล้ว เราจะเพิ่ม token ใหม่ๆ เข้าไปจนว่าจะได้ vocabulary ขนาดใหญ่พอกับที่เราต้องการ โดยเราจะเทรน BPE ให้เรียน กฎที่เรียกว่า *merges* ซึ่งเป็นกฎสำหรับการรวมสองหน่วยใน vocabulary เข้าด้วยกัน
+ตอนช่วงเริ่มต้น กฎ merges พวกนี้จะสร้างคำย่อยที่ประกอบด้วยตัวอักษรสองตัว ระหว่างที่เราเทรนต่อไปเรื่อยๆ คำย่อยที่ได้ก็จะยาวขึ้น
+ในแต่ละรอบของการเทรน BPE จะคำนวณหาคู่ของคำย่อยที่พบบ่อยที่สุด (คู่ของคำย่อย ในที่นี้เราหมายถึง token ที่อยู่ติดกัน)
+คู่ที่มีความถี่มากที่สุดจะถูกรวมเข้าด้วยกัน จากนั้นโมเดลจะทำแบบเดิมอีกในการเทรนรอบต่อไป
 
-At any step during the tokenizer training, the BPE algorithm will search for the most frequent pair of existing tokens (by "pair," here we mean two consecutive tokens in a word). That most frequent pair is the one that will be merged, and we rinse and repeat for the next step.
-
-Going back to our previous example, let's assume the words had the following frequencies:
+กลับมาที่ตัวอย่างของเรา สมมติว่าแต่ละคำมีความถี่ดังต่อไปนี้ :
 
 ```
 ("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
 ```
 
-meaning `"hug"` was present 10 times in the corpus, `"pug"` 5 times, `"pun"` 12 times, `"bun"` 4 times, and `"hugs"` 5 times. We start the training by splitting each word into characters (the ones that form our initial vocabulary) so we can see each word as a list of tokens:
+ซึ่งแปลว่า `"hug"` พบ 10 ครั้งใน corpus, `"pug"` พบ 5 ครั้ง, `"pun"` พบ 12 ครั้ง, `"bun"` พบ 4 ครั้ง, และ `"hugs"` พบ 5 ครั้ง
+
+เราจะเริ่มการเทรน โดยแยกแต่ละคำออกเป็นตัวอักษร (ตัวอักษรจะต้องมาจาก vocabulary ตั้งต้นที่เราสร้างมาก่อนหน้านี้แล้ว) ตอนนี้คุณจะเห็นว่าแต่ละคำถูกแปลงเป็น list ที่ประกอบไปด้วยหลายๆ token
 
 ```
 ("h" "u" "g", 10), ("p" "u" "g", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "u" "g" "s", 5)
 ```
 
-Then we look at pairs. The pair `("h", "u")` is present in the words `"hug"` and `"hugs"`, so 15 times total in the corpus. It's not the most frequent pair, though: that honor belongs to `("u", "g")`, which is present in `"hug"`, `"pug"`, and `"hugs"`, for a grand total of 20 times in the vocabulary.
+จากนั้น เราจะดูทีละคู่ ตัวอย่างเช่น คู่ `("h", "u")` ซึ่งมาจากคำว่า `"hug"` และ `"hugs"` และพบ 15 ครั้งใน corpus
+อย่างไรก็ตาม คู่นี้ไม่ใช่คู่ที่พบบ่อยที่สุด คู่ที่พบบ่อยที่สุดคือ `("u", "g")` ซึ่งพบใน คำว่า `"hug"`, `"pug"`, และ `"hugs"` ซึ่งความถี่รวมของมันคือ 20 ครั้ง
+ดังนั้น กฎแรกของการ merge ที่ tokenizer เรียนคือ `("u", "g") -> "ug"` แปลว่ามันจะเพิ่ม `"ug"` เข้าไปใน vocabulary และใน corpus คู่นี้ก็จะถูกรวมเป็น token เดียวด้วย
 
-Thus, the first merge rule learned by the tokenizer is `("u", "g") -> "ug"`, which means that `"ug"` will be added to the vocabulary, and the pair should be merged in all the words of the corpus. At the end of this stage, the vocabulary and corpus look like this:
+หลังจากขั้นตอนนี้ vocabulary และ corpus จะมีค่าดังนี้ :
 
 ```
 Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug"]
 Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "ug" "s", 5)
 ```
 
-Now we have some pairs that result in a token longer than two characters: the pair `("h", "ug")`, for instance (present 15 times in the corpus). The most frequent pair at this stage is `("u", "n")`, however, present 16 times in the corpus, so the second merge rule learned is `("u", "n") -> "un"`. Adding that to the vocabulary and merging all existing occurrences leads us to:
+ตอนนี้ จะเห็นว่าเรามีคู่ที่เมื่อรวมกันจะได้ token ที่ยาวกว่าสองตัวอักษร ตัวอย่างเช่น คู่ `("h", "ug")` ซึ่งพบ 15 ครั้งใน corpus
+อย่างไรก็ตาม คู่ที่พบบ่อยที่สุดคือ `("u", "n")` ซึ่งพบ 16 ครั้ง ดังนั้นกฎที่สองก็คือ `("u", "n") -> "un"` หลังจากที่เราเพิ่มคู่นี้ไปใน vocabulary และ merge token ใน corpus เข้าด้วยกันแล้ว เราจะได้ :
 
 ```
 Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un"]
 Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("h" "ug" "s", 5)
 ```
 
-Now the most frequent pair is `("h", "ug")`, so we learn the merge rule `("h", "ug") -> "hug"`, which gives us our first three-letter token. After the merge, the corpus looks like this:
+ตอนนี้ คู่ที่พบบ่อยที่สุดคือ `("h", "ug")` ดังนั้นกฎที่ได้คือ `("h", "ug") -> "hug"` ซึ่งจะทำให้เราได้ token ที่มีสามตัวอักษร หลังจากการ merge เราจะได้ :
 
 ```
 Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un", "hug"]
 Corpus: ("hug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("hug" "s", 5)
 ```
 
-And we continue like this until we reach the desired vocabulary size.
+เราจะทำแบบนี้ต่อไปเรื่อยๆ จนกว่าจะได้ขนาดของ vocabulary ที่ต้องการ
 
 <Tip>
 
-✏️ **Now your turn!** What do you think the next merge rule will be?
+✏️ **ตาคุณแล้ว!** คุณคิดว่ากฎ merge ต่อไปคืออะไร
 
 </Tip>
 
 ## Tokenization algorithm
 
-Tokenization follows the training process closely, in the sense that new inputs are tokenized by applying the following steps:
+การ tokenization เป็นขั้นตอนหลังจากการเทรน โดย input ใหม่จะถูก tokenize ด้วยขั้นตอนดังต่อไปนี้
 
-1. Normalization
-2. Pre-tokenization
-3. Splitting the words into individual characters
-4. Applying the merge rules learned in order on those splits
+1. Normalization (การปรับข้อความให้เป็นมาตรฐาน)
+2. Pre-tokenization (การเตรียมข้อความให้พร้อมสำหรับการ tokenize จริง)
+3. แยกคำออกเป็นตัวอักษรเดี่ยว
+4. ใช้กฎ merge ที่ได้จากการเทรนเพื่อรวมตัวอักษรที่เราได้จากขั้นตอนก่อนหน้า
 
-Let's take the example we used during training, with the three merge rules learned:
+มาดูกฎสามตัวที่เราได้จากการเทรนก่อนหน้านี้ :
 
 ```
 ("u", "g") -> "ug"
@@ -97,19 +105,20 @@ Let's take the example we used during training, with the three merge rules learn
 ("h", "ug") -> "hug"
 ```
 
-The word `"bug"` will be tokenized as `["b", "ug"]`. `"mug"`, however, will be tokenized as `["[UNK]", "ug"]` since the letter `"m"` was not in the base vocabulary. Likewise, the word `"thug"` will be tokenized as `["[UNK]", "hug"]`: the letter `"t"` is not in the base vocabulary, and applying the merge rules results first in `"u"` and `"g"` being merged and then `"hu"` and `"g"` being merged.
+คำว่า`"bug"` จะถูกแยกเป็น `["b", "ug"]` ส่วนคำว่า `"mug"` จะถูกแยกเป็น `["[UNK]", "ug"]` เพราะว่า `"m"` ไม่ได้อยู่ใน vocabulary ของเรา
+้เช่นเดียวกัน คำว่า `"thug"` จะถูกแยกเป็น `["[UNK]", "hug"]` เพราะว่า `"t"` ไม่ได้อยู่ใน vocabulary กฎแรกจะรวม `"u"` และ `"g"` เข้าด้วยกัน จากนั้น `"hu"` และ `"g"` ก็จะถูกรวมเข้าด้วยกัน
 
 <Tip>
 
-✏️ **Now your turn!** How do you think  the word `"unhug"` will be tokenized?
+✏️ **ตาคุณแล้ว!** คุณคิดว่าคำว่า `"unhug"` จะถูกแยกอย่างไร
 
 </Tip>
 
-## Implementing BPE
+## การสร้าง BPE (Implementing BPE)
 
-Now let's take a look at an implementation of the BPE algorithm. This won't be an optimized version you can actually use on a big corpus; we just want to show you the code so you can understand the algorithm a little bit better.
+ตอนนี้เราจะมาดูกันว่า คุณจะสามารถ implement อัลกอริทึม BPE ได้อย่างไร สิ่งที่เราจะเรียนต่อไปนี้ไม่ใช่ implementation ที่ดีที่สุด เราเพียงต้องการให้คุณเข้าใจโค้ดและเข้าใจว่า BPE ทำงานอย่างไร
 
-First we need a corpus, so let's create a simple one with a few sentences:
+อันดับแรก เราต้องการ corpus ดังนั้น เราจะสร้าง corpus แบบง่ายๆขึ้นมา โดยประกอบไปด้วยไม่กี่ประโยค :
 
 ```python
 corpus = [
@@ -120,7 +129,7 @@ corpus = [
 ]
 ```
 
-Next, we need to pre-tokenize that corpus into words. Since we are replicating a BPE tokenizer (like GPT-2), we will use the `gpt2` tokenizer for the pre-tokenization:
+จากนั้นเราจะทำการ pre-tokenize corpus นี้ เพื่อแยกข้อความออกเป็นคำๆ เนื่องจากเราจะสร้าง BPE tokenizer ตามตัวที่ใช้ใน GPT-2 เราจึงต้องใช้ `gpt2` tokenizer ในการ pre-tokenize
 
 ```python
 from transformers import AutoTokenizer
@@ -128,7 +137,7 @@ from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
 ```
 
-Then we compute the frequencies of each word in the corpus as we do the pre-tokenization:
+จากนั้นเราจะคำนวนความถี่ของแต่ละคำ:
 
 ```python
 from collections import defaultdict
@@ -151,7 +160,7 @@ defaultdict(int, {'This': 3, 'Ġis': 2, 'Ġthe': 1, 'ĠHugging': 1, 'ĠFace': 1,
     'Ġthey': 1, 'Ġare': 1, 'Ġtrained': 1, 'Ġand': 1, 'Ġgenerate': 1, 'Ġtokens': 1})
 ```
 
-The next step is to compute the base vocabulary, formed by all the characters used in the corpus:
+ขั้นตอนต่อไป คือการคำนวณ vocabulary ตั้งต้น ซึ่งสร้างจากแต่ละตัวอักษรใน corpus :
 
 ```python
 alphabet = []
@@ -170,19 +179,19 @@ print(alphabet)
   't', 'u', 'v', 'w', 'y', 'z', 'Ġ']
 ```
 
-We also add the special tokens used by the model at the beginning of that vocabulary. In the case of GPT-2, the only special token is `"<|endoftext|>"`:
+เราจะเพิ่ม token พิเศษเข้าไปในข้างหน้า list นี้ด้วย GPT-2 ใช้ token พิเศษคือ `"<|endoftext|>"` :
 
 ```python
 vocab = ["<|endoftext|>"] + alphabet.copy()
 ```
 
-We now need to split each word into individual characters, to be able to start training:
+จากนั้นเราจะแยกแต่ละคำใน corpus ให้เป็นตัวอักษร เพื่อที่เราจะได้เริ่มการเทรน :
 
 ```python
 splits = {word: [c for c in word] for word in word_freqs.keys()}
 ```
 
-Now that we are ready for training, let's write a function that computes the frequency of each pair. We'll need to use this at each step of the training:
+ตอนนี้เราก็พร้อมที่จะเทรนแล้ว เราจะเริ่มด้วยการเขียนฟังก์ชันที่คำนวณความถี่ของแต่ละคู่ token :
 
 ```python
 def compute_pair_freqs(splits):
@@ -197,7 +206,7 @@ def compute_pair_freqs(splits):
     return pair_freqs
 ```
 
-Let's have a look at a part of this dictionary after the initial splits:
+มาดูส่วนผลลัพธ์ (ซึ่งเป็น dictionary) กัน :
 
 ```python
 pair_freqs = compute_pair_freqs(splits)
@@ -217,7 +226,7 @@ for i, key in enumerate(pair_freqs.keys()):
 ('t', 'h'): 3
 ```
 
-Now, finding the most frequent pair only takes a quick loop:
+จากนั้นเราจะหาคู่ที่พบบ่อยที่สุด ซึ่งทำได้ง่ายๆดังนี้ :
 
 ```python
 best_pair = ""
@@ -235,14 +244,14 @@ print(best_pair, max_freq)
 ('Ġ', 't') 7
 ```
 
-So the first merge to learn is `('Ġ', 't') -> 'Ġt'`, and we add `'Ġt'` to the vocabulary:
+ดังนั้น กฎแรกที่เราได้ก็คือ `('Ġ', 't') -> 'Ġt'` และเราจะต้องเพิ่ม `'Ġt'` เข้าไปใน vocabulary :
 
 ```python
 merges = {("Ġ", "t"): "Ġt"}
 vocab.append("Ġt")
 ```
 
-To continue, we need to apply that merge in our `splits` dictionary. Let's write another function for this:
+จากนั้น เราจะต้องทำการ merge คำย่อยที่อยู่ใน dictionary `splits` ด้วย โดยเราจะเขียนฟังก์ชันต่อไปนี้ :
 
 ```python
 def merge_pair(a, b, splits):
@@ -261,7 +270,7 @@ def merge_pair(a, b, splits):
     return splits
 ```
 
-And we can have a look at the result of the first merge:
+และนี่ก็คือผลลัพธ์จากการ merge ครั้งแรก :
 
 ```py
 splits = merge_pair("Ġ", "t", splits)
@@ -272,7 +281,7 @@ print(splits["Ġtrained"])
 ['Ġt', 'r', 'a', 'i', 'n', 'e', 'd']
 ```
 
-Now we have everything we need to loop until we have learned all the merges we want. Let's aim for a vocab size of 50:
+ตอนนี้เราก็มีทุกอย่างพร้อมสำหรับการเทรนแล้ว เราจะเทรนจนกว่าขนาดของ vocabulary จะเท่ากับ 50 :
 
 ```python
 vocab_size = 50
@@ -290,7 +299,7 @@ while len(vocab) < vocab_size:
     vocab.append(best_pair[0] + best_pair[1])
 ```
 
-As a result, we've learned 19 merge rules (the initial vocabulary had a size of 31 -- 30 characters in the alphabet, plus the special token):
+ผลลัพธ์ที่ได้คือ tokenizer ของเราได้เรียน 19 กฎ (vocabulary ตั้งต้นมี 31 token ซึ่งมาจากตัวอักษรที่เรามี 30 ตัวและ token พิเศษอีกหนึ่งตัว) :
 
 ```py
 print(merges)
@@ -303,7 +312,7 @@ print(merges)
  ('i', 'n'): 'in', ('Ġa', 'b'): 'Ġab', ('Ġtoken', 'i'): 'Ġtokeni'}
 ```
 
-And the vocabulary is composed of the special token, the initial alphabet, and all the results of the merges:
+ส่วน vocabulary ที่ได้จะประกอบไปด้วย token พิเศษ, ตัวอักษรตั้งต้น, และผลลัพธ์จากการ merge แต่ละครั้ง :
 
 ```py
 print(vocab)
@@ -317,11 +326,11 @@ print(vocab)
 
 <Tip>
 
-💡 Using `train_new_from_iterator()` on the same corpus won't result in the exact same vocabulary. This is because when there is a choice of the most frequent pair, we selected the first one encountered, while the 🤗 Tokenizers library selects the first one based on its inner IDs.
+💡 ถ้าคุณใช้ `train_new_from_iterator()` กับ corpus เดียวกันนี้ คุณจะไม่ได้ vocabulary เดียวกัน เพราะว่าอาจจะมีหลายคู่ token ที่มีความถี่สูงสุดเท่ากัน ในตัวอย่างของเรา เราเลือกคู่แรกที่โค้ดของเราอ่านเจอ ส่วน 🤗 Tokenizers library เลือกคู่แรกโดยเรียงตาม ID
 
 </Tip>
 
-To tokenize a new text, we pre-tokenize it, split it, then apply all the merge rules learned:
+หากเราต้องการ tokenize ข้อความใดข้อความหนึ่ง สิ่งที่ต้องทำคือ pre-tokenize จากนั้นจึงทำการ tokenize และสุดท้าย apply กฎ merge :
 
 ```python
 def tokenize(text):
@@ -341,7 +350,7 @@ def tokenize(text):
     return sum(splits, [])
 ```
 
-We can try this on any text composed of characters in the alphabet:
+คุณสามารถทดลองโค้ดนี้ได้กับข้อความทุกข้อความ ที่ประกอบไปด้วยตัวอักษรเท่านั้น :
 
 ```py
 tokenize("This is not a token.")
@@ -353,8 +362,10 @@ tokenize("This is not a token.")
 
 <Tip warning={true}>
 
-⚠️ Our implementation will throw an error if there is an unknown character since we didn't do anything to handle them. GPT-2 doesn't actually have an unknown token (it's impossible to get an unknown character when using byte-level BPE), but this could happen here because we did not include all the possible bytes in the initial vocabulary. This aspect of BPE is beyond the scope of this section, so we've left the details out.
+⚠️ การ implementation ในตัวอย่างของเราจะ return error ถ้าโปรแกรมอ่านเจอตัวอักษรที่ไม่มีใน vocabulary นั่นเพราะว่าเราไม่ได้เขียนโค้ดเพื่อจัดการกับกรณีแบบนี้
+ใน GPT-2 ปกติจะไม่มี unknown token แบบนี้ เพราะว่า ถ้าเราใช้ byte-level BPE เราจะไม่มีทางได้ตัวอักษรที่ unknown อย่างไรก็ตามในตัวอย่างของเรา เราไม่ได้ใช้ทุกๆ byte เพื่อสร้าง vocabulary ตั้งต้น
+อย่างไรก็ตาม หัวข้อนี้นั้นค่อนข้างลึก เราจึงจะไม่ขอพูดถึงรายละเอียดไปมากกว่านี้
 
 </Tip>
 
-That's it for the BPE algorithm! Next, we'll have a look at WordPiece.
+นี่ก็คือ อัลกอริทึม BPE ในบทต่อไป เราจะมาดู WordPiece กัน
