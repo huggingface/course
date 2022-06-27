@@ -7,13 +7,15 @@
     {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter6/section6.ipynb"},
 ]} />
 
-WordPiece is the tokenization algorithm Google developed to pretrain BERT. It has since been reused in quite a few Transformer models based on BERT, such as DistilBERT, MobileBERT, Funnel Transformers, and MPNET. It's very similar to BPE in terms of the training, but the actual tokenization is done differently.
+WordPiece เป็นอัลกอริทึมสำหรับ tokenization ที่สร้างโดย Google เพื่อ pretrain โมเดล BERT หลังจากนั้นมันได้ถูกนำมาใช้กับโมเดลประเภท Transformer หลายตัวที่เป็นประเภทเดียวกับ BERT เช่น DistilBERT, MobileBERT, Funnel Transformers, และ MPNET
+
+WordPiece มีความคล้ายกับ BPE ในวิธีการเทรน แต่วิธีการแยกคำนั้นแตกต่างกัน
 
 <Youtube id="qpv6ms_t_1A"/>
 
 <Tip>
 
-💡 This section covers WordPiece in depth, going as far as showing a full implementation. You can skip to the end if you just want a general overview of the tokenization algorithm.
+💡 บทนี้จะพูดถึง WordPiece อย่างละเอียด เราจะเจาะลึกถึงไปถึงการ implement อัลกอริทึมนี้ คุณสามารถข้ามไปตอนท้ายได้ ถ้าคุณสนใจเพียงแค่ภาพรวมคร่าวๆเท่านั้น
 
 </Tip>
 
@@ -21,88 +23,104 @@ WordPiece is the tokenization algorithm Google developed to pretrain BERT. It ha
 
 <Tip warning={true}>
 
-⚠️ Google never open-sourced its implementation of the training algorithm of WordPiece, so what follows is our best guess based on the published literature. It may not be 100% accurate.
+⚠️ เนื่องจาก Google ไม่เปิดเผยโค้ดสำหรับการเทรน WordPiece ดังนั้นโค้ดที่เราจะสอนคุณต่อจากนี้ มาจากการพยายามทำตามข้อมูลที่บอกไว้ใน paper แปลว่าโค้ดอาจจะไม่แม่นยำ 100%
 
 </Tip>
 
-Like BPE, WordPiece starts from a small vocabulary including the special tokens used by the model and the initial alphabet. Since it identifies subwords by adding a prefix (like `##` for BERT), each word is initially split by adding that prefix to all the characters inside the word. So, for instance, `"word"` gets split like this:
+เช่นเดียวกับ BPE อัลกอริทึม WordPiece เริ่มจาก vocabulary ขนาดเล็ก ที่ประกอบไปด้วย token พิเศษที่โมเดลใช้ และตัวอักษรตั้งต้น
+เพื่อที่โมเดลจะได้รู้ว่าคำไหนเป็นคำย่อย มันจะเขียน prefix เช่น `##` (ใช้ใน BERT) ไว้ข้างหน้าของแต่ละคำย่อย ในขั้นตอนแรก แต่ละคำจะถูกแบ่งออกเป็นตัวอักษร โดยตัวอักษรที่ไม่ใช่ตัวแรกจะมี prefix นี้
+
+ตัวอย่างเช่น คำว่า `"word"` จะถูกแบ่งดังนี้ :
 
 ```
 w ##o ##r ##d
 ```
 
-Thus, the initial alphabet contains all the characters present at the beginning of a word and the characters present inside a word preceded by the WordPiece prefix.
+ดังนั้น vocabulary ตั้งต้น จะประกอบไปด้วยทุกๆตัวอักษรที่อยู่เริ่มต้นของแต่ละคำ และตัวอักษรอื่นๆที่อยู่ข้างในคำนั้น ซึ่งนำหน้าด้วย prefix พิเศษ
 
-Then, again like BPE, WordPiece learns merge rules. The main difference is the way the pair to be merged is selected. Instead of selecting the most frequent pair, WordPiece computes a score for each pair, using the following formula:
+เช่นเดียวกันกับ BPE เป้าหมายในการเทรน WordPiece คือเรียนกฎเพื่อการ merge แต่ความแตกต่างคือหลักการในการเลือกคู่ token ที่จะนำมา merge แทนที่จะเลือกคู่ที่พบบ่อยที่สุด WordPiece จะคำนวณ score ให้แต่ละคู่ โดยใช้สูตรต่อไปนี้
 
 $$\mathrm{score} = (\mathrm{freq\_of\_pair}) / (\mathrm{freq\_of\_first\_element} \times \mathrm{freq\_of\_second\_element})$$
 
-By dividing the frequency of the pair by the product of the frequencies of each of its parts, the algorithm prioritizes the merging of pairs where the individual parts are less frequent in the vocabulary. For instance, it won't necessarily merge `("un", "##able")` even if that pair occurs very frequently in the vocabulary, because the two pairs `"un"` and `"##able"` will likely each appear in a lot of other words and have a high frequency. In contrast, a pair like `("hu", "##gging")` will probably be merged faster (assuming the word "hugging" appears often in the vocabulary) since `"hu"` and `"##gging"` are likely to be less frequent individually.
+การที่เราหารความถี่ของคู่ token ด้วยผลคูณของความถี่ของแต่ละ token ในคู่ จะทำให้อัลกอริทึมให้คะแนนคู่ ที่แต่ละ token มีความถี่ไม่สูง
+ตัวอย่างเช่น เราไม่จำเป็นจำต้อง merge `("un", "##able")` ถึงแม้ว่าคู่นี้จะมีจำนวนมากที่สุดใน vocabulary เพราะว่าทั้ง `"un"` และ `"##able"` ต่างพบได้กับคำอื่นๆด้วย และแต่ละตัวก็มีจำนวนค่อนข้างสูง
+ตรงกันข้ามกับ คู่เช่น `("hu", "##gging")` ซึ่งอาจจะถูกรวมเร็วกว่า (ในกรณีที่ "hugging" มีจำนวนสูงใน vocabulary ) เพราะว่า ทั้ง`"hu"` และ `"##gging" ต่างก็พบได้ไม่บ่อย
 
-Let's look at the same vocabulary we used in the BPE training example:
+เราจะใช้ตัวอย่าง เดียวกันกับที่เราใช้ใน BPE :
 
 ```
 ("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
 ```
 
-The splits here will be:
+หลังจากการแยกแต่ละคำ เราจะได้ :
 
 ```
 ("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##g" "##s", 5)
 ```
 
-so the initial vocabulary will be `["b", "h", "p", "##g", "##n", "##s", "##u"]` (if we forget about special tokens for now). The most frequent pair is `("##u", "##g")` (present 20 times), but the individual frequency of `"##u"` is very high, so its score is not the highest (it's 1 / 36). All pairs with a `"##u"` actually have that same score (1 / 36), so the best score goes to the pair `("##g", "##s")` -- the only one without a `"##u"` -- at 1 / 20, and the first merge learned is `("##g", "##s") -> ("##gs")`.
+ดังนั้น vocabulary ตั้งต้น คือ `["b", "h", "p", "##g", "##n", "##s", "##u"]` (เราขอละไม่พูดถึง token พิเศษในที่นี้)
+คู่ที่พบบ่อยที่สุดคือ `("##u", "##g")` ซึ่งพบ 20 ครั้ง แต่ว่าถ้านับจำนวนของแต่ละ token `"##u"` จะมีจำนวนค่อนข้างสูง ทำให้ score ของคู่นี้ไม่ได้สูงที่สุด (1 / 36)
+ทุกๆคู่ที่ประกอบด้วย `"##u"` จะได้ score เดียวกันซึ่งคือ (1 / 36) ดังนั้น score ที่สูงที่สุดจึงมาจากคู่ `("##g", "##s")` เพราะว่ามันไม่มี `"##u"` ซึ่งมี score เป็น 1 / 20 และกฎแรกที่เราได้ก็คือ `("##g", "##s") -> ("##gs")`
 
-Note that when we merge, we remove the `##` between the two tokens, so we add `"##gs"` to the vocabulary and apply the merge in the words of the corpus:
+โปรดสังเกตว่า เวลาที่เรา merge เราจะลบ ตัว `##` ออกระหว่าง token สองตัวที่เราต้องการจะ merge แปลว่าเราจะได้ `"##gs"` และเราจะเพิ่ม token นี้เข้าไปใน vocabulary จากนั้นเราก็จะใช้กฎนี้กับทุกๆคำใน corpus ด้วย :
 
 ```
 Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs"]
 Corpus: ("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##gs", 5)
 ```
 
-At this point, `"##u"` is in all the possible pairs, so they all end up with the same score. Let's say that in this case, the first pair is merged, so `("h", "##u") -> "hu"`. This takes us to:
+ตอนนี้ `"##u"` มีอยู่ในทุกๆคู่ แปลว่า ทุกคู่จะมี score เท่ากัน
+
+ในกรณีนี้ เราจะเลือกกฎใดกฎหนึ่งเพื่อ merge ต่อไป เราจะเลือก `("h", "##u") -> "hu"` และได้ผลลัพธ์ต่อไปนี้ :
 
 ```
 Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu"]
 Corpus: ("hu" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
 ```
 
-Then the next best score is shared by `("hu", "##g")` and `("hu", "##gs")` (with 1/15, compared to 1/21 for all the other pairs), so the first pair with the biggest score is merged:
+ตอนนี้คู่ที่มี score สูงที่สุดคือ `("hu", "##g")` และ `("hu", "##gs")` ซึ่งทั้งสองมี score เท่ากับ 1/15 (ส่วนตัวอื่นๆที่เหลือ มี score เท่ากับ 1/21) เราจะเลือกคู่แรกใน list มาใช้ เพื่อ merge :
 
 ```
 Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu", "hug"]
 Corpus: ("hug", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
 ```
 
-and we continue like this until we reach the desired vocabulary size.
+เราจะทำแบบนี้จนกว่าจะได้ vocabulary ที่มีขนาดใหญ่มากพอ
 
 <Tip>
 
-✏️ **Now your turn!** What will the next merge rule be?
+✏️ **ตาคุณบ้างแล้ว!** กฎ merge ต่อไปคืออะไร
 
 </Tip>
 
 ## Tokenization algorithm
 
-Tokenization differs in WordPiece and BPE in that WordPiece only saves the final vocabulary, not the merge rules learned. Starting from the word to tokenize, WordPiece finds the longest subword that is in the vocabulary, then splits on it. For instance, if we use the vocabulary learned in the example above, for the word `"hugs"` the longest subword starting from the beginning that is inside the vocabulary is `"hug"`, so we split there and get `["hug", "##s"]`. We then continue with `"##s"`, which is in the vocabulary, so the tokenization of `"hugs"` is `["hug", "##s"]`.
+การ tokenization ใน WordPiece แตกต่างจาก BPE ตรงที่ WordPiece จะบันทึกเฉพาะ vocabulary สุดท้ายเท่านั้น และไม่ได้บันทึก กฎ merge
+หากเราจะ tokenize คำใดคำหนึ่ง WordPiece จะหาคำย่อยที่ยาวที่สุด ที่พบใน vocabulary จากนั้นจะแยกคำออกตามนั้น
+ตัวอย่างเช่น ถ้าเราใช้ vocabulary ที่เทรนแล้วจากตัวอย่างด้านบน และต้องการ tokenize คำว่า `"hugs"` คำย่อยที่ยาวที่สุดก็คือ `"hug"` ดังนั้น เราจะแบ่งมันออกเป็น `["hug", "##s"]`
+จากนั้นเราก็จะดูที่ `"##s"` เราพบว่าเป็น token ที่อยู่ใน vocabulary ดังนั้น เราจึงได้ `["hug", "##s"]`
+ถ้าเราใช้ BPE เราจะใช้กฎที่เทรนมาตามลำดับ ซึ่งมันจะ tokenize ตัวอย่างของเราออกเป็น `["hu", "##gs"]`
 
-With BPE, we would have applied the merges learned in order and tokenized this as `["hu", "##gs"]`, so the encoding is different.
+มาดูอีกตัวอย่างกัน เช่นคำว่า `"bugs"`
+เราจะเริ่มอ่านจากข้างหน้าของคำไปข้างหลัง คุณจะเห็นว่า `"b"` เป็นคำย่อยที่ยาวที่สุดที่พบใน vocabulary ดังนั้น เราจะแยกคำตรงนี้ และเราจะได้ `["b", "##ugs"]`
+จากนั้นเราจะดูคำว่า `"##ugs"` สำหรับคำนี้เราพบว่า `"##u"` คือคำย่อยที่ยาวที่สุดที่พบใน vocabulary ดังนั้น เราจึงจะแยกคำตรงนี้ และได้ผลลัพธ์เป็น  `["b", "##u, "##gs"]`
+สุดท้ายเราจะดูที่คำว่า `"##gs"` ซึ่งเราพบว่า มันอยู่ใน vocabulary แล้ว ดังนั้นเราไม่ต้องแบ่งมันอีก
 
-As another example, let's see how the word `"bugs"` would be tokenized. `"b"` is the longest subword starting at the beginning of the word that is in the vocabulary, so we split there and get `["b", "##ugs"]`. Then `"##u"` is the longest subword starting at the beginning of `"##ugs"` that is in the vocabulary, so we split there and get `["b", "##u, "##gs"]`. Finally, `"##gs"` is in the vocabulary, so this last list is the tokenization of `"bugs"`.
-
-When the tokenization gets to a stage where it's not possible to find a subword in the vocabulary, the whole word is tokenized as unknown -- so, for instance, `"mug"` would be tokenized as `["[UNK]"]`, as would `"bum"` (even if we can begin with `"b"` and `"##u"`, `"##m"` is not the vocabulary, and the resulting tokenization will just be `["[UNK]"]`, not `["b", "##u", "[UNK]"]`). This is another difference from BPE, which would only classify the individual characters not in the vocabulary as unknown.
+ในกรณีที่เราไม่สามารถหาคำย่อยที่อยู่ใน vocabulary ได้เลย คำหลักที่เรากำลังอ่านนั้นจะถูกแปลงเป็นคำ unknown
+ตัวอย่างเช่นคำว่า `"mug"` จะถูก tokenize ให้เป็น `["[UNK]"]` เช่นเดียวกันกับคำว่า `"bum"` ถึงแม้ว่าเราจะเจอ `"b"` และ `"##u"` ใน vocabulary แต่ว่า `"##m"` ไม่ได้อยู่ใน  vocabulary เราจะแปลงทั้งคำเป็น `["[UNK]"]` และจะไม่แยกมันเป็น `["b", "##u", "[UNK]"]`
+นี่เป็นสิ่งหนึ่งที่แตกต่างจาก BPE โดย BPE จะดูที่แต่ละตัวอักษร และถ้าตัวไหนไม่พบใน vocabulary ก็จะถูกคัดว่าเป็น unknown
 
 <Tip>
 
-✏️ **Now your turn!** How will the word `"pugs"` be tokenized?
+✏️ **ถึงตาคุณแล้ว!** คำว่า `"pugs"` จะถูก tokenize อย่างไร?
 
 </Tip>
 
 ## Implementing WordPiece
 
-Now let's take a look at an implementation of the WordPiece algorithm. Like with BPE, this is just pedagogical, and you won't able to use this on a big corpus.
-
-We will use the same corpus as in the BPE example:
+มาดูกันว่า เราจะ implement อัลกอริทึม WordPiece ได้อย่างไร
+เช่นเดียวกับตอนที่เราสอนเรื่อง BPE สิ่งที่เราจะสอนต่อไปนี้เป็นเพียงตัวอย่าง เพื่อให้คุณเข้าใจการทำงานของอัลกอริทึม โค้ดที่ได้อาจจะไม่สามารถใช้ได้กับ corpus ใหญ่ๆ
+เราจะใช้ corpus ตัวอย่างเดียวกับที่ใช้ในบท BPE :
 
 ```python
 corpus = [
@@ -113,7 +131,7 @@ corpus = [
 ]
 ```
 
-First, we need to pre-tokenize the corpus into words. Since we are replicating a WordPiece tokenizer (like BERT), we will use the `bert-base-cased` tokenizer for the pre-tokenization:
+ก่อนอื่นคุณจะต้อง pre-tokenize corpus เพื่อแยกข้อความเป็นคำๆ เนื่องจากเราจะจำลองการทำงานของ WordPiece tokenizer (เช่น BERT) เราจะใช้ `bert-base-cased` tokenizer ในการ pre-tokenize
 
 ```python
 from transformers import AutoTokenizer
@@ -121,7 +139,7 @@ from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
 ```
 
-Then we compute the frequencies of each word in the corpus as we do the pre-tokenization:
+จากนั้นคำนวนความถี่ของแต่ละคำใน corpus :
 
 ```python
 from collections import defaultdict
@@ -144,7 +162,7 @@ defaultdict(
     'trained': 1, 'and': 1, 'generate': 1, 'tokens': 1})
 ```
 
-As we saw before, the alphabet is the unique set composed of all the first letters of words, and all the other letters that appear in words prefixed by `##`:
+เราจะมาสร้างเซ็ตของ alphabet กัน ซึ่งคือเซ็ตที่ประกอบไปด้วยตัวอักษรแรกของแต่ละคำ และอักษรอื่นๆที่ไม่ใช่ตัวแรกจะมีการใส่ `##` ไว้ข้างหน้า :
 
 ```python
 alphabet = []
@@ -167,13 +185,13 @@ print(alphabet)
  'w', 'y']
 ```
 
-We also add the special tokens used by the model at the beginning of that vocabulary. In the case of BERT, it's the list `["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]`:
+เราจะเพิ่ม token พิเศษ เข้าไปด้านหน้าของ list นี้ด้วย สำหรับ BERT คือ `["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]` :
 
 ```python
 vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + alphabet.copy()
 ```
 
-Next we need to split each word, with all the letters that are not the first prefixed by `##`:
+จากนั้น เราจะทำการแยกแต่ละคำกัน โดยแยกตัวอักษรแรกออกมา และตัวที่เหลือจะเพิ่ม `##` ไว้ข้างหน้า :
 
 ```python
 splits = {
@@ -182,7 +200,7 @@ splits = {
 }
 ```
 
-Now that we are ready for training, let's write a function that computes the score of each pair. We'll need to use this at each step of the training:
+ตอนนี้เราก็พร้อมที่จะเทรนแล้ว เราจะมาเขียนฟังก์ชันเพื่อคำนวณ score ให้แต่ละคู่ tokenกัน :
 
 ```python
 def compute_pair_scores(splits):
@@ -206,7 +224,7 @@ def compute_pair_scores(splits):
     return scores
 ```
 
-Let's have a look at a part of this dictionary after the initial splits:
+มาดูกันว่าผลลัพธ์ที่ได้หลังจากการรันครั้งแรกเป็นอย่างไร :
 
 ```python
 pair_scores = compute_pair_scores(splits)
@@ -225,7 +243,7 @@ for i, key in enumerate(pair_scores.keys()):
 ('##h', '##e'): 0.011904761904761904
 ```
 
-Now, finding the pair with the best score only takes a quick loop:
+จากนั้น เราจะหาคู่ที่มี score สูงที่สุด โดยใช้ loop ง่ายๆ ดังนี้ :
 
 ```python
 best_pair = ""
@@ -242,13 +260,13 @@ print(best_pair, max_score)
 ('a', '##b') 0.2
 ```
 
-So the first merge to learn is `('a', '##b') -> 'ab'`, and we add `'ab'` to the vocabulary:
+กฎที่ได้จากการเทรนครั้งแรกคือ `('a', '##b') -> 'ab'` ดังนั้นเราจะเพิ่ม `'ab'`  เข้าไปใน vocabulary :
 
 ```python
 vocab.append("ab")
 ```
 
-To continue, we need to apply that merge in our `splits` dictionary. Let's write another function for this:
+ก่อนที่จะทำต่อ เราจะต้องเพิ่มตัวที่ถูก merge เข้าไปใน dictionary `splits` ก่อน โดยเราจะเขียนฟังก์ชันเพื่อการคำนวณนี้ :
 
 ```python
 def merge_pair(a, b, splits):
@@ -267,7 +285,7 @@ def merge_pair(a, b, splits):
     return splits
 ```
 
-And we can have a look at the result of the first merge:
+นี่คือผลลัพธ์ของการ merge ครั้งแรก :
 
 ```py
 splits = merge_pair("a", "##b", splits)
@@ -278,7 +296,7 @@ splits["about"]
 ['ab', '##o', '##u', '##t']
 ```
 
-Now we have everything we need to loop until we have learned all the merges we want. Let's aim for a vocab size of 70:
+ตอนนี้เราก็มีทุกฟังก์ชันที่จำเป็นสำหรับการเทรนแล้ว เราจะเทรนจนกว่า tokenizer ได้เรียนเกี่ยวกับทุกๆ merge ที่เราต้องการ เราจะตั้งค่าขนาด vocabulary เป็น 70 สำหรับตัวอย่างนี้ :
 
 ```python
 vocab_size = 70
@@ -298,7 +316,7 @@ while len(vocab) < vocab_size:
     vocab.append(new_token)
 ```
 
-We can then look at the generated vocabulary:
+มาดูผลลัพธ์ของ vocabulary กัน :
 
 ```py
 print(vocab)
@@ -312,15 +330,17 @@ print(vocab)
  '##ut']
 ```
 
-As we can see, compared to BPE, this tokenizer learns parts of words as tokens a bit faster.
+ถ้าเทียบกับ BPE คุณจะเห็นว่า tokenizer ตัวนี้สามารถเรียนเกี่ยวกับคำย่อยได้เร็วกว่านิดหน่อย
 
 <Tip>
 
-💡 Using `train_new_from_iterator()` on the same corpus won't result in the exact same vocabulary. This is because the 🤗 Tokenizers library does not implement WordPiece for the training (since we are not completely sure of its internals), but uses BPE instead.
+💡 ถ้าคุณใช้ `train_new_from_iterator()` กับ corpus ตัวอย่างนี้ คุณอาจจะไม่ได้ vocabulary เดียวกัน นั่นก็เพราะ 🤗 Tokenizers library ไม่ได้ใช้ WordPiece ในการเทรน แต่เราใช้ BPE
+
 
 </Tip>
 
-To tokenize a new text, we pre-tokenize it, split it, then apply the tokenization algorithm on each word. That is, we look for the biggest subword starting at the beginning of the first word and split it, then we repeat the process on the second part, and so on for the rest of that word and the following words in the text:
+เมื่อคุณต้องการ tokenize ข้อความใหม่ คุณจะต้องทำการ pre-tokenize ข้อความแล้วจากนั้นจึง tokenize แต่ละคำ ตามหลักการของอัลกอริทึมนี้
+เราจะมองหาคำย่อยที่ยาวที่สุด โดยอ่านจากข้างหน้าคำไปข้างหลัง จากนั้นเราจะแยกคำหลักออกตรงคำย่อยนี้ จากนั้นทำขั้นตอนนี้ซ้ำกับส่วนต่อๆไปของคำนั้น แล้วทำเช่นเดียวกันกับคำต่อไป
 
 ```python
 def encode_word(word):
@@ -338,7 +358,7 @@ def encode_word(word):
     return tokens
 ```
 
-Let's test it on one word that's in the vocabulary, and another that isn't:
+มาทดลอง tokenize คำที่มีใน vocabulary และอีกคำที่ไม่ได้อยู่ใน vocabulary กัน :
 
 ```python
 print(encode_word("Hugging"))
@@ -350,7 +370,7 @@ print(encode_word("HOgging"))
 ['[UNK]']
 ```
 
-Now, let's write a function that tokenizes a text:
+ตอนนี้เราจะต้องเขียนฟังก์ชันเพื่อ tokenize ข้อความกัน :
 
 ```python
 def tokenize(text):
@@ -360,7 +380,7 @@ def tokenize(text):
     return sum(encoded_words, [])
 ```
 
-We can try it on any text:
+ทดลองฟังก์ชันของเรากับประโยคตัวอย่าง :
 
 ```python
 tokenize("This is the Hugging Face course!")
@@ -371,4 +391,4 @@ tokenize("This is the Hugging Face course!")
  '##e', '[UNK]']
 ```
 
-That's it for the WordPiece algorithm! Now let's take a look at Unigram.
+นี่คือทั้งหมดเกี่ยวกับ WordPiece ในบทถัดไปเราจะมาเรียนเกี่ยวกับ Unigram กัน
