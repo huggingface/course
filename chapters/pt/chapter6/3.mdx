@@ -1,0 +1,471 @@
+<FrameworkSwitchCourse {fw} />
+
+# Os poderes especiais dos tokenizadores rápidos
+
+{#if fw === 'pt'}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter6/section3_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter6/section3_pt.ipynb"},
+]} />
+
+{:else}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter6/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter6/section3_tf.ipynb"},
+]} />
+
+{/if}
+
+Nesta seção, examinaremos mais de perto os recursos dos tokenizadores em 🤗 Transformers. Até agora, só os usamos para tokenizar entradas ou decodificar IDs de volta em texto, mas tokenizadores - especialmente aqueles apoiados pela biblioteca 🤗 Tokenizers - podem fazer muito mais. Para ilustrar esses recursos adicionais, exploraremos como reproduzir os resultados dos pipelines `token-classification` (que chamamos de `ner`) e `question-answering` que encontramos pela primeira vez no [Capítulo 1](/course/chapter1).
+<Youtube id="g8quOxoqhHQ"/>
+
+Na discussão a seguir, muitas vezes faremos a distinção entre tokenizadores "lentos" e "rápidos". Tokenizadores lentos são aqueles escritos em Python dentro da biblioteca 🤗 Transformers, enquanto as versões rápidas são aquelas fornecidas por 🤗 Tokenizers, que são escritos em Rust. Se você se lembrar da tabela do [Capítulo 5](/course/chapter5/3) que informava quanto tempo levou um tokenizador rápido e um lento para tokenizar o conjunto de dados de revisão de medicamentos, você deve ter uma ideia do motivo pelo qual os chamamos de rápido e lento:
+
+                | Fast tokenizer | Slow tokenizer
+:--------------:|:--------------:|:-------------:
+`batched=True`  | 10.8s          | 4min41s
+`batched=False` | 59.2s          | 5min3s
+
+<Tip warning={true}>
+
+⚠️ Ao tokenizar uma única frase, você nem sempre verá uma diferença de velocidade entre as versões lenta e rápida do mesmo tokenizador. Na verdade, a versão rápida pode ser mais lenta! É somente ao tokenizar muitos textos em paralelo ao mesmo tempo que você poderá ver a diferença com maior nitidez.
+</Tip>
+
+## Codificação em lote
+
+<Youtube id="3umI3tm27Vw"/>
+
+A saída de um tokenizador não é um simples dicionário em Python; o que obtemos é, na verdade, um objeto especial chamado `BatchEncoding`. Este objeto é uma subclasse de um dicionário (e é por isso que conseguimos indexar esse resultado sem nenhum problema antes), mas com métodos adicionais que são usados ​​principalmente por tokenizadores rápidos.
+
+Além de seus recursos de paralelização, uma funcionalidade importante dos tokenizadores rápidos é que eles sempre acompanham o intervalo original de textos dos quais os tokens finais vêm - um recurso que chamamos de *mapeamento de offset*. Isso, por sua vez, desbloqueia recursos como o mapeamento de cada palavra para os tokens gerados ou mapeamento de cada caractere do texto original para o token que está dentro e vice-versa.
+
+Vamos analisar um exemplo:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+encoding = tokenizer(example)
+print(type(encoding))
+```
+
+Como mencionado anteriormente, nós obtemos um objeto `BatchEncoding` na saída do tokenizador:
+
+```python out
+<class 'transformers.tokenization_utils_base.BatchEncoding'>
+```
+
+Como a classe `AutoTokenizer` escolhe o tokenizador rápido como padrão, podemos usar os métodos adicionais que o objeto `BatchEncoding` fornece. Temos duas formas de verificar se o nosso tokenizador é rápido ou lento. Podemos, por exemplo, avaliar o atributo `is_fast` do tokenizador:
+
+```python
+tokenizer.is_fast
+```
+
+```python out
+True
+```
+
+ou checar o mesmo atributo do nosso `encoding`:
+
+```python
+encoding.is_fast
+```
+
+```python out
+True
+```
+
+Vejamos o que um tokenizador rápido nos permite fazer. Primeiro, podemos acessar os tokens sem precisar converter os IDs de volta em tokens:
+
+```py
+encoding.tokens()
+```
+
+```python out
+['[CLS]', 'My', 'name', 'is', 'S', '##yl', '##va', '##in', 'and', 'I', 'work', 'at', 'Hu', '##gging', 'Face', 'in',
+ 'Brooklyn', '.', '[SEP]']
+```
+
+No caso, o token no índice 5 é `##yl`, que faz parte da palavra "Sylvain" na sentença original. Nós podemos também usar o metodo `words_ids()` para obter o índice da palavra de onde cada palavra vem:
+
+```py
+encoding.word_ids()
+```
+
+```python out
+[None, 0, 1, 2, 3, 3, 3, 3, 4, 5, 6, 7, 8, 8, 9, 10, 11, 12, None]
+```
+
+Podemos observar que as palavras especiais do tokenizador `[CLS]` e `[SEP]` são mapeados para `None`, e então cada token é mapeada para a palavra de onde se origina. Isso é especialmente útil para determinar se um token está no início da palavra ou se dois tokens estão em uma mesma palavra. Poderíamos contar com o prefix `##` para isso, mas apenas para tokenizadores do tipo BERT; este método funciona para qualquer tipo de tokenizador, desde que seja do tipo rápido. No próximo capítulo, nós veremos como podemos usar esse recurso para aplicar os rótulos que temos para cada palavra adequadamente aos tokens em tarefas como reconhecimento de entidade nomeada (em inglês, Named Entity Recognition, ou NER) e marcação de parte da fala (em inglês, part-of-speech, ou POS). Também podemos usá-lo para mascarar todos os tokens provenientes da mesma palavra na modelagem de linguagem mascarada (uma técnica chamada _mascaramento da palavra inteira_)
+
+<Tip>
+
+A noção do que é uma palavra é complicada. Por exemplo, "d'água" (uma contração de "da água") conta como uma ou duas palavras? Na verdade, depende do tokenizador e da operação de pré-tokenização que é aplicada. Alguns tokenizadores apenas dividem em espaços, então eles considerarão isso como uma palavra. Outros usam pontuação em cima dos espaços, então considerarão duas palavras.
+
+✏️ **Experimente!** Crie um tokenizador a partir dos checkpoints de `bert-base-cased `e `roberta-base` e tokenize "81s" com eles. O que você observa? Quais são os IDs das palavras?
+
+</Tip>
+
+Da mesma forma, existe um método `sentence_ids()` que podemos usar para mapear um token para a sentença de onde veio (embora, neste caso, o `token_type_ids` retornado pelo tokenizador possa nos dar a mesma informação).
+
+Por fim, podemos mapear qualquer palavra ou token para caracteres no texto original (e vice-versa) através dos métodos `word_to_chars()` ou `token_to_chars()` e `char_to_word()` ou `char_to_token()`. Por exemplo, o método `word_ids()` nos diz que `##yl` é parte da palavra no índice 3, mas qual palavra está na frase? Podemos descobrir da seguinte forma:
+
+```py
+start, end = encoding.word_to_chars(3)
+example[start:end]
+```
+
+```python out
+Sylvain
+```
+
+Como mencionamos anteriormente, isso é apoiado pelo fato de que o tokenizador rápido acompanha o intervalo de texto de cada token em uma lista de *offsets*. Para ilustrar seu uso, mostraremos a seguir como replicar manualmente os resultados do pipeline `token-classification`. 
+
+<Tip>
+
+✏️ **Experimente!** Crie seu próprio texto de exemplo e veja se você consegue entender quais tokens estão associados ao ID da palavra e também como extrair os intervalos de caracteres para uma única palavra. Como bônus, tente usar duas frases como entrada e veja se os IDs das frases fazem sentido para você.
+
+</Tip>
+
+## Dentro do pipeline `token-classification`
+
+No [Capítulo 1](/course/chapter1) tivemos o primeiro gosto de aplicar o NER -- onde a tarefa é identificar quais partes do texto correspondem a entidades como pessoas, locais ou organizações -- com a função do 🤗 Transformers `pipeline()`. Então, no [Capítulo 2](/course/chapter2), vimos como um pipeline agrupa os três estágios necessários para obter as previsões de um texto: tokenização, passagem das entradas pelo modelo e pós-processamento. As duas primeiras etapas do pipeline `token-classification` são as mesmas de qualquer outro pipeline, mas o pós-processamento é um pouco mais complexo -- vejamos como! 
+
+
+{#if fw === 'pt'}
+
+<Youtube id="0E7ltQB7fM8"/>
+
+{:else}
+
+<Youtube id="PrX4CjrVnNc"/>
+
+{/if}
+
+### Obtendo os resultados básicos com o pipeline 
+
+Primeiro, vamos usar um pipeline de classificação de token para que possamos obter alguns resultados para comparar manualmente. O modelo usado por padrão é [`dbmdz/bert-large-cased-finetuned-conll03-english`](https://huggingface.co/dbmdz/bert-large-cased-finetuned-conll03-english); ele executa NER em frases:
+
+```py
+from transformers import pipeline
+
+token_classifier = pipeline("token-classification")
+token_classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S', 'start': 11, 'end': 12},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl', 'start': 12, 'end': 14},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va', 'start': 14, 'end': 16},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in', 'start': 16, 'end': 18},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu', 'start': 33, 'end': 35},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging', 'start': 35, 'end': 40},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face', 'start': 41, 'end': 45},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+O modelo identificou corretamente cada token gerado por "Sylvain" como uma pessoa, cada token gerado por "Hugging Face" como uma organização e o token "Brooklyn" como um local. Também podemos pedir ao pipeline para agrupar os tokens que correspondem à mesma entidade:
+
+```py
+from transformers import pipeline
+
+token_classifier = pipeline("token-classification", aggregation_strategy="simple")
+token_classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+```
+
+```python out
+[{'entity_group': 'PER', 'score': 0.9981694, 'word': 'Sylvain', 'start': 11, 'end': 18},
+ {'entity_group': 'ORG', 'score': 0.97960204, 'word': 'Hugging Face', 'start': 33, 'end': 45},
+ {'entity_group': 'LOC', 'score': 0.99321055, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+O parâmetro `aggregation_strategy` escolhido mudará as pontuações calculadas para cada entidade agrupada. Com o valor `"simple"`, a pontuação é apenas a média das pontuações de cada token na entidade dada: por exemplo, a pontuação de "Sylvain" é a média das pontuações que vimos no exemplo anterior para os tokens `S`, `##yl`, `##va`, e `##in`. Outras estratégias disponíveis são: 
+
+- `"first"`, onde a pontuação de cada entidade é a pontuação do primeiro token dessa entidade (portanto, para "Sylvain" seria 0.993828, a pontuação do token `S`)
+- `"max"`, onde a pontuação de cada entidade é a pontuação máxima dos tokens naquela entidade (portanto, para "Hugging Face" seria 0.98879766, a pontuação do token `"Face"`)
+- `"average"`, onde a pontuação de cada entidade é a média das pontuações das palavras que compõem aquela entidade (assim para "Sylvain" não haveria diferença da estratégia `"simple"`, mas `"Hugging Face"` teria uma pontuação de 0.9819, a média das pontuações para `"Hugging"`, 0.975, e `"Face"`, 0.98879)
+
+Agora vejamos como obter esses resultados sem usar a função `pipeline()`!
+
+### Das entradas às previsões
+
+{#if fw === 'pt'}
+
+Primeiro, precisamos tokenizar nossa entrada e passá-la pelo modelo. Isso é feito exatamente como no [Capítulo 2](/course/chapter3); instanciamos o tokenizador e o modelo usando as classes `AutoXxx` e depois as usamos em nosso exemplo:
+
+```py
+from transformers import AutoTokenizer, AutoModelForTokenClassification
+
+model_checkpoint = "dbmdz/bert-large-cased-finetuned-conll03-english"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForTokenClassification.from_pretrained(model_checkpoint)
+
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+inputs = tokenizer(example, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+Como estamos usando `AutoModelForTokenClassification` neste caso, obtemos um conjunto de logits para cada token na sequência de entrada:
+
+```py
+print(inputs["input_ids"].shape)
+print(outputs.logits.shape)
+```
+
+```python out
+torch.Size([1, 19])
+torch.Size([1, 19, 9])
+```
+
+{:else}
+
+Primeiro, precisamos tokenizar nossa entrada e passá-la pelo modelo. Isso é feito exatamente como no [Capítulo 2](/course/chapter2); instanciamos o tokenizador e o modelo usando as classes `TFAutoXxx` e depois as usamos em nosso exemplo:
+
+```py
+from transformers import AutoTokenizer, TFAutoModelForTokenClassification
+
+model_checkpoint = "dbmdz/bert-large-cased-finetuned-conll03-english"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = TFAutoModelForTokenClassification.from_pretrained(model_checkpoint)
+
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+inputs = tokenizer(example, return_tensors="tf")
+outputs = model(**inputs)
+```
+
+Como estamos usando `TFAutoModelForTokenClassification` neste caso, obtemos um conjunto de logits para cada token na sequência de entrada:
+
+```py
+print(inputs["input_ids"].shape)
+print(outputs.logits.shape)
+```
+
+```python out
+(1, 19)
+(1, 19, 9)
+```
+
+{/if}
+
+Temos um lote com 1 sequência de 19 tokens e o modelo tem 9 rótulos diferentes, então a saída do modelo tem um tamanho de 1 x 19 x 9. Assim como para o pipeline de classificação de texto, usamos uma função softmax para converter esses logits para probabilidades, e pegamos o argmax para obter previsões (note que podemos pegar o argmax nos logits porque o softmax não altera a ordem): 
+
+{#if fw === 'pt'}
+
+```py
+import torch
+
+probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)[0].tolist()
+predictions = outputs.logits.argmax(dim=-1)[0].tolist()
+print(predictions)
+```
+
+{:else}
+
+```py
+import tensorflow as tf
+
+probabilities = tf.math.softmax(outputs.logits, axis=-1)[0]
+probabilities = probabilities.numpy().tolist()
+predictions = tf.math.argmax(outputs.logits, axis=-1)[0]
+predictions = predictions.numpy().tolist()
+print(predictions)
+```
+
+{/if}
+
+```python out
+[0, 0, 0, 0, 4, 4, 4, 4, 0, 0, 0, 0, 6, 6, 6, 0, 8, 0, 0]
+```
+
+O atributo `model.config.id2label` contém o mapeamento de índices para rótulos que podemos usar para entender as previsões:
+
+```py
+model.config.id2label
+```
+
+```python out
+{0: 'O',
+ 1: 'B-MISC',
+ 2: 'I-MISC',
+ 3: 'B-PER',
+ 4: 'I-PER',
+ 5: 'B-ORG',
+ 6: 'I-ORG',
+ 7: 'B-LOC',
+ 8: 'I-LOC'}
+```
+
+Como vimos anteriormente, existem 9 rótulos: `O` é o rótulo para os tokens que não estão em nenhuma entidade nomeada, e então temos dois rótulos para cada tipo de entidade (miscelânia, pessoa, organização e localização). O rótulo `B-XXX` indica que o token está no início de uma entidade `XXX` e o rótulo `I-XXX` indica que o token está dentro da entidade `XXX`. No caso do exemplo atual, esperaríamos que o nosso modelo classificasse o token `S` como `B-PER` (início de uma entidade pessoa) e os tokens `##yl`, `##va` e `##in` como `I-PER` (dentro da entidade pessoa).
+
+Você pode pensar que o modelo estava errado neste caso, pois deu o rótulo `I-PER` a todos esses quatro tokens, mas isso não é totalmente verdade. Na realidade, existem dois formatos para esses rótulos: `B-` e `I-`: *IOB1* e *IOB2*. O formato IOB2 (em rosa abaixo), é o que introduzimos, enquanto que no formato IOB1 (em azul), os rótulos que começam com `B-` são usados apenas para separar duas entidades adjacentes do mesmo tipo. O modelo que estamos usando foi ajustado em um conjunto de dados usando esse formato, e é por isso que ele atribui o rótulo `I-PER` ao token `S`. 
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/IOB_versions.svg" alt="IOB1 vs IOB2 format"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/IOB_versions-dark.svg" alt="IOB1 vs IOB2 format"/>
+</div>
+
+Com este mapa, estamos prontos para reproduzir (quase inteiramente) os resultados do primeiro pipeline -- podemos apenas pegar a pontuação e o rótulo de cada token que não foi classificado como `O`:
+
+```py
+results = []
+tokens = inputs.tokens()
+
+for idx, pred in enumerate(predictions):
+    label = model.config.id2label[pred]
+    if label != "O":
+        results.append(
+            {"entity": label, "score": probabilities[idx][pred], "word": tokens[idx]}
+        )
+
+print(results)
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S'},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl'},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va'},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in'},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu'},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging'},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face'},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn'}]
+```
+
+Isso é muito parecido com o que tínhamos antes, com uma exceção: o pipeline também nos dava informações sobre o `start` e `end` de cada entidade na frase original. É aqui que nosso mapeamento de offset entrará em ação. Para obter tais offsets, basta definir `return_offsets_mapping=True` quando aplicamos o tokenizador às nossas entradas:
+
+```py
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+inputs_with_offsets["offset_mapping"]
+```
+
+```python out
+[(0, 0), (0, 2), (3, 7), (8, 10), (11, 12), (12, 14), (14, 16), (16, 18), (19, 22), (23, 24), (25, 29), (30, 32),
+ (33, 35), (35, 40), (41, 45), (46, 48), (49, 57), (57, 58), (0, 0)]
+```
+
+Cada tupla é o intervalo de texto correspondente a cada token, onde `(0, 0)` é reservado para os tokens especiais. Vimos antes que o token no índice 5 é `##yl`, que tem `(12, 14)` como offset aqui. Se pegarmos a fatia correspondente em nosso exemplo:
+
+```py
+example[12:14]
+```
+
+obtemos o intervalo adequado de texto sem o `##`:
+
+```python out
+yl
+```
+
+Usando isso, agora podemos completar os resultados anteriores:
+
+```py
+results = []
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+tokens = inputs_with_offsets.tokens()
+offsets = inputs_with_offsets["offset_mapping"]
+
+for idx, pred in enumerate(predictions):
+    label = model.config.id2label[pred]
+    if label != "O":
+        start, end = offsets[idx]
+        results.append(
+            {
+                "entity": label,
+                "score": probabilities[idx][pred],
+                "word": tokens[idx],
+                "start": start,
+                "end": end,
+            }
+        )
+
+print(results)
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S', 'start': 11, 'end': 12},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl', 'start': 12, 'end': 14},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va', 'start': 14, 'end': 16},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in', 'start': 16, 'end': 18},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu', 'start': 33, 'end': 35},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging', 'start': 35, 'end': 40},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face', 'start': 41, 'end': 45},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Este é o mesmo resultado que obtivemos no primeiro pipeline!
+
+### Agrupando entidades 
+
+Usar os offsets para determinar as chaves inicial e final de cada entidade é útil, mas essa informação não é estritamente necessária. Quando queremos agrupar as entidades, no entanto, os offsets nos pouparão muito código confuso. Por exemplo, se quisermos agrupar os tokens `Hu`, `##gging` e `Face`, podemos fazer regras especiais que digam que os dois primeiros devem ser anexados e removido o `##`, e o `Face` deve ser adicionado com um espaço, pois não começa com `##` -- mas isso só funcionaria para esse tipo específico de tokenizador. Teríamos que escrever outro conjunto de regras para um tokenizador SentencePiece ou Byte-Pair-Encoding (discutido mais adiante neste capítulo).
+
+Com os offsets, todo esse código personalizado desaparece: podemos apenas pegar o intervalo no texto original que começa com o primeiro token e termina com o último token. Então, no caso dos tokens `Hu`, `##ging` e `Face`, devemos começar no caractere 33 (o início de `Hu`) e terminar antes do caractere 45 (o final de `Face`):
+
+```py
+example[33:45]
+```
+
+```python out
+Hugging Face
+```
+
+Para escrever o código para o pós-processamento das previsões ao agrupar entidades, agruparemos entidades consecutivas e rotuladas com `I-XXX`, excento a primeira, que pode ser rotulada como `B-XXX` ou `I-XXX` (portanto, paramos de agrupar uma entidade quando obtemos um `O`, um novo tipo de entidade ou um `B-XXX` que nos informa que uma entidade do mesmo tipo está iniciando):
+
+```py
+import numpy as np
+
+results = []
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+tokens = inputs_with_offsets.tokens()
+offsets = inputs_with_offsets["offset_mapping"]
+
+idx = 0
+while idx < len(predictions):
+    pred = predictions[idx]
+    label = model.config.id2label[pred]
+    if label != "O":
+        # Removendo o B- ou I-
+        label = label[2:]
+        start, _ = offsets[idx]
+
+        # Vamos pegar todos os tokens rotulados com I-
+        all_scores = []
+        while (
+            idx < len(predictions)
+            and model.config.id2label[predictions[idx]] == f"I-{label}"
+        ):
+            all_scores.append(probabilities[idx][pred])
+            _, end = offsets[idx]
+            idx += 1
+
+        # A pontuação é a média de todas as pontuações dos tokens da entidade agrupada
+        score = np.mean(all_scores).item()
+        word = example[start:end]
+        results.append(
+            {
+                "entity_group": label,
+                "score": score,
+                "word": word,
+                "start": start,
+                "end": end,
+            }
+        )
+    idx += 1
+
+print(results)
+```
+
+E obtemos os mesmos resultados do nosso segundo pipeline!
+
+```python out
+[{'entity_group': 'PER', 'score': 0.9981694, 'word': 'Sylvain', 'start': 11, 'end': 18},
+ {'entity_group': 'ORG', 'score': 0.97960204, 'word': 'Hugging Face', 'start': 33, 'end': 45},
+ {'entity_group': 'LOC', 'score': 0.99321055, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Outro exemplo de uma tarefa onde esses offsets são extremamente úteis é a resposta a perguntas. O conhecimento deste pipeline, que faremos na próxima seção, também nos permitirá dar uma olhada em um último recurso dos tokenizadores na biblioteca 🤗 Transformers: lidar com tokens em excesso quando truncamos uma entrada em um determinado comprimento.
