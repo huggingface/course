@@ -184,11 +184,11 @@ def build_notebook(fname, title, output_dir="."):
 
         nb_cells = [
             nb_cell(f"# {title}", code=False),
-            nb_cell("Install the Transformers and Datasets libraries to run this notebook.", code=False),
+            nb_cell("Install the Transformers, Datasets, and Evaluate libraries to run this notebook.", code=False),
         ]
 
         # Install cell
-        installs = ["!pip install datasets transformers[sentencepiece]"]
+        installs = ["!pip install datasets evaluate transformers[sentencepiece]"]
         if title in sections_with_accelerate:
             installs.append("!pip install accelerate")
             installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
