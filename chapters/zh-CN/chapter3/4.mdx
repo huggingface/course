@@ -1,0 +1,358 @@
+# 一个完整的训练
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter3/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter3/section4.ipynb"},
+]} />
+
+<Youtube id="Dh9CL8fyG80"/>
+
+现在，我们将了解如何在不使用`Trainer`类的情况下获得与上一节相同的结果。同样，我们假设您已经学习了第 2 节中的数据处理。下面是一个简短的总结，涵盖了您需要的所有内容:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### 训练前的准备
+
+在实际编写我们的训练循环之前，我们需要定义一些对象。第一个是我们将用于迭代批次的数据加载器。我们需要对我们的`tokenized_datasets`做一些处理，来处理`Trainer`自动为我们做的一些事情。具体来说，我们需要:
+
+- 删除与模型不期望的值相对应的列（如`sentence1`和`sentence2`列）。
+- 将列名`label`重命名为`labels`（因为模型期望参数是`labels`）。
+- 设置数据集的格式，使其返回 PyTorch 张量而不是列表。
+
+针对上面的每个步骤，我们的 `tokenized_datasets` 都有一个方法:
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+tokenized_datasets["train"].column_names
+```
+
+然后，我们可以检查结果中是否只有模型能够接受的列:
+
+```python
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+至此，我们可以轻松定义数据加载器:
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+为了快速检验数据处理中没有错误，我们可以这样检验其中的一个批次:
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+请注意，实际的形状可能与您略有不同，因为我们为训练数据加载器设置了`shuffle=True`，并且模型会将句子填充到`batch`中的最大长度。
+
+现在我们已经完全完成了数据预处理（对于任何 ML 从业者来说都是一个令人满意但难以实现的目标），让我们将注意力转向模型。我们完全像在上一节中所做的那样实例化它:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+为了确保训练过程中一切顺利，我们将`batch`传递给这个模型:
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+当我们提供 `labels` 时， 🤗 Transformers 模型都将返回这个`batch`的`loss`，我们还得到了 `logits`(`batch`中的每个输入有两个，所以张量大小为 8 x 2)。
+
+我们几乎准备好编写我们的训练循环了！我们只是缺少两件事：优化器和学习率调度器。由于我们试图自行实现 `Trainer`的功能，我们将使用相同的优化器和学习率调度器。`Trainer` 使用的优化器是 `AdamW` , 与 `Adam` 相同，但在权重衰减正则化方面有所不同(参见[“Decoupled Weight Decay Regularization”](https://arxiv.org/abs/1711.05101)作者:Ilya Loshchilov 和 Frank Hutter):
+
+```py
+from transformers import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+最后，默认使用的学习率调度器只是从最大值 (5e-5) 到 0 的线性衰减。 为了定义它，我们需要知道我们训练的次数，即所有数据训练的次数(epochs)乘以的数据量（这是我们所有训练数据的数量）。`Trainer`默认情况下使用三个`epochs`，因此我们定义训练过程如下:
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+### 训练循环
+
+最后一件事：如果我们可以访问 GPU,我们将希望使用 GPU(在 CPU 上，训练可能需要几个小时而不是几分钟)。为此，我们定义了一个 `device`,它在GPU可用的情况下指向GPU 我们将把我们的模型和`batche`放在`device`上:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+device
+```
+
+```python out
+device(type='cuda')
+```
+
+我们现在准备好训练了！为了了解训练何时结束，我们使用 `tqdm` 库,在训练步骤数上添加了一个进度条:
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+您可以看到训练循环的核心与介绍中的非常相似。我们没有要求任何检验，所以这个训练循环不会告诉我们任何关于模型目前的状态。我们需要为此添加一个评估循环。
+
+
+### 评估循环
+
+正如我们之前所做的那样，我们将使用 🤗 Evaluate 库提供的指标。我们已经了解了 `metric.compute()` 方法，当我们使用 `add_batch()`方法进行预测循环时，实际上该指标可以为我们累积所有 `batch` 的结果。一旦我们累积了所有 `batch` ，我们就可以使用 `metric.compute()` 得到最终结果 .以下是在评估循环中实现所有这些的方法:
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+同样，由于模型头部初始化和数据改组的随机性，您的结果会略有不同，但它们应该在同一个范围内。
+
+<Tip>
+
+✏️ **试试看！** 修改之前的训练循环以在 SST-2 数据集上微调您的模型。
+
+</Tip>
+
+### S使用🤗 Accelerate加速您的训练循环
+
+<Youtube id="s7dy8QRgjJ0" />
+
+我们之前定义的训练循环在单个 CPU 或 GPU 上运行良好。但是使用[🤗 Accelerate](https://github.com/huggingface/accelerate)库，只需进行一些调整，我们就可以在多个 GPU 或 TPU 上启用分布式训练。从创建训练和验证数据加载器开始，我们的手动训练循环如下所示：
+
+```py
+from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+以下是变化:
+
+```diff
++ from accelerate import Accelerator
+  from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
++ accelerator = Accelerator()
+
+  model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+  optimizer = AdamW(model.parameters(), lr=3e-5)
+
+- device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+- model.to(device)
+
++ train_dataloader, eval_dataloader, model, optimizer = accelerator.prepare(
++     train_dataloader, eval_dataloader, model, optimizer
++ )
+
+  num_epochs = 3
+  num_training_steps = num_epochs * len(train_dataloader)
+  lr_scheduler = get_scheduler(
+      "linear",
+      optimizer=optimizer,
+      num_warmup_steps=0,
+      num_training_steps=num_training_steps
+  )
+
+  progress_bar = tqdm(range(num_training_steps))
+
+  model.train()
+  for epoch in range(num_epochs):
+      for batch in train_dataloader:
+-         batch = {k: v.to(device) for k, v in batch.items()}
+          outputs = model(**batch)
+          loss = outputs.loss
+-         loss.backward()
++         accelerator.backward(loss)
+
+          optimizer.step()
+          lr_scheduler.step()
+          optimizer.zero_grad()
+          progress_bar.update(1)
+```
+
+要添加的第一行是导入`Accelerator`。第二行实例化一个 `Accelerator`对象 ，它将查看环境并初始化适当的分布式设置。 🤗 Accelerate 为您处理数据在设备间的传递，因此您可以删除将模型放在设备上的那行代码（或者，如果您愿意，可使用 `accelerator.device` 代替 `device` ）。
+
+然后大部分工作会在将数据加载器、模型和优化器发送到的`accelerator.prepare()`中完成。这将会把这些对象包装在适当的容器中，以确保您的分布式训练按预期工作。要进行的其余更改是删除将`batch`放在 `device` 的那行代码（同样，如果您想保留它，您可以将其更改为使用 `accelerator.device` ) 并将 `loss.backward()` 替换为`accelerator.backward(loss)`。
+
+<Tip>
+⚠️ 为了使云端 TPU 提供的加速发挥最大的效益，我们建议使用标记器(tokenizer)的 `padding=max_length` 和 `max_length` 参数将您的样本填充到固定长度。
+</Tip>
+
+如果您想复制并粘贴来直接运行，以下是 🤗 Accelerate 的完整训练循环:
+
+```py
+from accelerate import Accelerator
+from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+把这个放在 `train.py` 文件中，可以让它在任何类型的分布式设置上运行。要在分布式设置中试用它，请运行以下命令:
+
+```bash
+accelerate config
+```
+
+这将询问您几个配置的问题并将您的回答转储到此命令使用的配置文件中:
+
+```
+accelerate launch train.py
+```
+
+这将启动分布式训练
+
+这将启动分布式训练。如果您想在 Notebook 中尝试此操作（例如，在 Colab 上使用 TPU 进行测试），只需将代码粘贴到 `training_function()` 并使用以下命令运行最后一个单元格:
+
+```python
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+您可以在[🤗 Accelerate repo](https://github.com/huggingface/accelerate/tree/main/examples)找到更多的示例。
