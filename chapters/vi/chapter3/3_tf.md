@@ -9,9 +9,9 @@
     {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter3/section3_tf.ipynb"},
 ]} />
 
-Once you've done all the data preprocessing work in the last section, you have just a few steps left to train the model. Note, however, that the `model.fit()` command will run very slowly on a CPU. If you don't have a GPU set up, you can get access to free GPUs or TPUs on [Google Colab](https://colab.research.google.com/).
+Khi bạn đã hoàn thành tất cả công việc tiền xử lý dữ liệu trong phần trước, bạn chỉ còn một vài bước nữa để huấn luyện mô hình. Tuy nhiên, lưu ý rằng lệnh `model.fit()` sẽ chạy rất chậm trên CPU. Nếu bạn chưa thiết lập GPU, bạn có thể có quyền truy cập vào GPU hoặc TPU miễn phí trên [Google Colab](https://colab.research.google.com/).
 
-The code examples below assume you have already executed the examples in the previous section. Here is a short summary recapping what you need:
+Các đoạn mã ví dụ bên dưới giả sử bạn đã thực thi các ví dụ trong phần trước. Dưới đây là một bản tóm tắt ngắn gọn tóm tắt lại những gì bạn cần:
 
 ```py
 from datasets import load_dataset
@@ -48,17 +48,17 @@ tf_validation_dataset = tokenized_datasets["validation"].to_tf_dataset(
 )
 ```
 
-### Training
+### Huấn luyện
 
-TensorFlow models imported from 🤗 Transformers are already Keras models. Here is a short introduction to Keras.
+Các mô hình TensorFlow nhập từ 🤗 Transformers vốn là các mô hình Keras. Đây là phần giới thiệu ngắn về Keras.
 
 <Youtube id="rnTGBy2ax1c"/>
 
-That means that once we have our data, very little work is required to begin training on it.
+Điều đó có nghĩa là một khi chúng tôi có dữ liệu riêng mình, chúng ta chỉ cần thao tác ít bước nữa thôi để bắt đầu huấn luyện.
 
 <Youtube id="AUozVp78dhk"/>
 
-As in the [previous chapter](/course/chapter2), we will use the `TFAutoModelForSequenceClassification` class, with two labels: 
+Như trong [chương trước](/course/chapter2), chúng ta sẽ sử dụng lớp `TFAutoModelForSequenceClassification`, với hai nhãn:
 
 ```py
 from transformers import TFAutoModelForSequenceClassification
@@ -66,13 +66,13 @@ from transformers import TFAutoModelForSequenceClassification
 model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 ```
 
-You will notice that unlike in [Chapter 2](/course/chapter2), you get a warning after instantiating this pretrained model. This is because BERT has not been pretrained on classifying pairs of sentences, so the head of the pretrained model has been discarded and a new head suitable for sequence classification has been inserted instead. The warnings indicate that some weights were not used (the ones corresponding to the dropped pretraining head) and that some others were randomly initialized (the ones for the new head). It concludes by encouraging you to train the model, which is exactly what we are going to do now.
+Bạn sẽ nhận thấy rằng không như trong [Chương 2](/course/chapter2), bạn nhận được một cảnh báo sau khi khởi tạo mô hình được huấn luyện trước này. Đây là do BERT chưa được huấn luyện trước về phân loại các cặp câu, vì vậy phần đầu của mô hình được huấn luyện trước đã bị loại bỏ và phần đầu mới phù hợp để phân loại chuỗi đã được chèn vào thay thế. Các cảnh báo chỉ ra rằng một số trọng số đã không được sử dụng (những trọng số tương ứng với đầu huấn luyện trước bị rụng) và một số trọng số khác khác được khởi tạo ngẫu nhiên (những trọng số dành cho đầu mới). Nó kết thúc bằng cách khuyến khích bạn huấn luyện mô hình, đó chính xác là những gì chúng ta sẽ làm bây giờ.
 
-To fine-tune the model on our dataset, we just have to `compile()` our model and then pass our data to the `fit()` method. This will start the fine-tuning process (which should take a couple of minutes on a GPU) and report training loss as it goes, plus the validation loss at the end of each epoch.
+Để tinh chỉnh mô hình trên tập dữ liệu của mình, chúng ta chỉ cần `compile()` mô hình và sau đó chuyển dữ liệu của ta đến phương thức `fit()`. Thao tác này sẽ bắt đầu quá trình tinh chỉnh (sẽ mất vài phút trên GPU) và báo cáo sự mất mát ở tập huấn luyện khi nó diễn ra, cộng với mất mát ở tập kiểm định ở cuối mỗi epoch.
 
 <Tip>
 
-Note that 🤗 Transformers models have a special ability that most Keras models don't - they can automatically use an appropriate loss which they compute internally. They will use this loss by default if you don't set a loss argument in `compile()`. Note that to use the internal loss you'll need to pass your labels as part of the input, not as a separate label, which is the normal way to use labels with Keras models. You'll see examples of this in Part 2 of the course, where defining the correct loss function can be tricky. For sequence classification, however, a standard Keras loss function works fine, so that's what we'll use here.
+Lưu ý rằng 🤗 các mô hình Transformers có một khả năng đặc biệt mà hầu hết các mô hình Keras không có - chúng có thể tự động sử dụng một lượng mất mát thích hợp mà chúng tính toán bên trong. Chúng sẽ sử dụng sự mất mát này theo mặc định nếu bạn không đặt tham số mất mát bên trong `compile()`. Lưu ý rằng để sử dụng hàm mất mát trong nội bộ, bạn sẽ cần truyền các nhãn của mình như một phần của đầu vào, không phải dưới dạng nhãn riêng biệt, đây là cách thông thường để sử dụng nhãn với các mô hình Keras. Bạn sẽ thấy các ví dụ về điều này trong Phần 2 của khóa học, trong đó việc xác định hàm mất mát chính xác có thể khó khăn. Tuy nhiên, đối với phân loại chuỗi, một hàm mất mát Keras tiêu chuẩn hoạt động khá tốt, vì vậy đó là những gì chúng ta sẽ sử dụng ở đây.
 
 </Tip>
 
@@ -92,36 +92,27 @@ model.fit(
 
 <Tip warning={true}>
 
-Note a very common pitfall here — you *can* just pass the name of the loss as a string to Keras, but by default Keras will assume that you have already applied a softmax to your outputs. Many models, however, output the values right before the softmax is applied, which are also known as the *logits*. We need to tell the loss function that that's what our model does, and the only way to do that is to call it directly, rather than by name with a string.
+Lưu ý một lỗi rất phổ biến ở đây - bạn *có thể* chỉ cần truyền tên của hàm mất mát dưới dạng chuỗi cho Keras, nhưng theo mặc định, Keras sẽ cho rằng bạn đã áp dụng softmax cho đầu ra của mình. Tuy nhiên, nhiều mô hình xuất ra các giá trị ngay trước khi áp dụng softmax, còn được gọi là *logit*. Chúng ta cần nói với hàm mất mát rằng đó là những gì mô hình của chúng ta làm và cách duy nhất để làm điều đó là gọi nó trực tiếp, thay vì đặt tên bằng một chuỗi.
 
 </Tip>
 
-
-### Improving training performance
+### Cải thiện hiệu suất huấn luyện
 
 <Youtube id="cpzq6ESSM5c"/>
 
-If you try the above code, it certainly runs, but you'll find that the loss declines only slowly or sporadically. The primary cause
-is the *learning rate*. As with the loss, when we pass Keras the name of an optimizer as a string, Keras initializes
-that optimizer with default values for all parameters, including learning rate. From long experience, though, we know
-that transformer models benefit from a much lower learning rate than the default for Adam, which is 1e-3, also written
-as 10 to the power of -3, or 0.001. 5e-5 (0.00005), which is some twenty times lower, is a much better starting point.
+Nếu bạn thử đoạn mã trên, nó chắc chắn chạy, nhưng bạn sẽ thấy rằng hàm mất mát chỉ giảm từ từ hoặc không thường xuyên. Nguyên nhân chính là do *learning rate* hay *tốc độ học*. Với hàm mất mát, khi ta truyền cho Keras tên của trình tối ưu hóa dưới dạng một chuỗi, Keras sẽ khởi tạo trình tối ưu hóa đó với các giá trị mặc định cho tất cả các tham số, bao gồm cả tốc độ học. Tuy nhiên, từ kinh nghiệm lâu năm, chúng tôi biết
+rằng các mô hình Transformer được hưởng lợi từ tốc độ học thấp hơn nhiều so với tỷ lệ mặc định cho Adam, là 1e-3, cũng được viết bằng 10 lũy thừa của -3, hoặc 0,001. 5e-5 (0,00005), thấp hơn khoảng hai mươi lần, là một điểm khởi đầu tốt hơn nhiều.
 
-In addition to lowering the learning rate, we have a second trick up our sleeve: We can slowly reduce the learning rate
-over the course of training. In the literature, you will sometimes see this referred to as *decaying* or *annealing*
-the learning rate. In Keras, the best way to do this is to use a *learning rate scheduler*. A good one to use is
-`PolynomialDecay` — despite the name, with default settings it simply linearly decays the learning rate from the initial
-value to the final value over the course of training, which is exactly what we want. In order to use a scheduler correctly,
-though, we need to tell it how long training is going to be. We compute that as `num_train_steps` below.
+Ngoài việc giảm tốc độ học, chúng tôi có một mẹo thứ hai: Ta có thể từ từ giảm tốc độ học trong quá trình huấn luyện. Trong tài liệu, đôi khi bạn sẽ thấy điều này được gọi là *phân rã* hoặc *ủ* tốc độ học. Ở Keras, cách tốt nhất để làm điều này là sử dụng *learning rate scheduler* hay *công cụ lập lịch trình tốc độ học*. Một cái hay để sử dụng là `PolynomialDecay` - với cài đặt mặc định, nó chỉ đơn giản là giảm độ tuyến tính tốc độ học từ giá trị ban đầu đến giá trị cuối cùng trong quá trình huấn luyện, đó chính xác là những gì ta muốn. Tuy nhiên, để sử dụng bộ lập lịch một cách chính xác, chúng ta cần cho nó biết thời gian huấn luyện sẽ kéo dài. Chúng ta tính giá trị đó dưới dạng `num_train_steps` như sau.
 
 ```py
 from tensorflow.keras.optimizers.schedules import PolynomialDecay
 
 batch_size = 8
 num_epochs = 3
-# The number of training steps is the number of samples in the dataset, divided by the batch size then multiplied
-# by the total number of epochs. Note that the tf_train_dataset here is a batched tf.data.Dataset,
-# not the original Hugging Face Dataset, so its len() is already num_samples // batch_size.
+# Số bước huấn luyện là số lượng mẫu trong tập dữ liệu, chia cho kích thước lô sau đó nhân
+# với tổng số epoch. Lưu ý rằng tf_train_dataset ở đây là tf.data.Dataset theo lô,
+# không phải là Hugging Face Dataset, vì vậy len() của nó đã là num_samples // batch_size.
 num_train_steps = len(tf_train_dataset) * num_epochs
 lr_scheduler = PolynomialDecay(
     initial_learning_rate=5e-5, end_learning_rate=0.0, decay_steps=num_train_steps
@@ -133,11 +124,11 @@ opt = Adam(learning_rate=lr_scheduler)
 
 <Tip>
 
-The 🤗 Transformers library also has a `create_optimizer()` function that will create an `AdamW` optimizer with learning rate decay. This is a convenient shortcut that you'll see in detail in future sections of the course.
+Thư viện 🤗 Transformers cũng có một hàm `create_optimizer()` sẽ tạo ra một trình tối ưu hóa `AdamW` với sự giảm tốc độ học. Đây là một phím tắt thuận tiện mà bạn sẽ thấy chi tiết trong các phần sau của khóa học.
 
 </Tip>
 
-Now we have our all-new optimizer, and we can try training with it. First, let's reload the model, to reset the changes to the weights from the training run we just did, and then we can compile it with the new optimizer:
+Bây giờ chúng ta đã có trình tối ưu hóa hoàn toàn mới và ta có thể thử huấn luyện với nó. Đầu tiên, hãy tải lại mô hình, để đặt lại các thay đổi đối với trọng số từ lần chạy huấn luyện mà chúng ta vừa thực hiện và sau đó ta có thể biên dịch nó bằng trình tối ưu hóa mới:
 
 ```py
 import tensorflow as tf
@@ -147,7 +138,7 @@ loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 model.compile(optimizer=opt, loss=loss, metrics=["accuracy"])
 ```
 
-Now, we fit again:
+Giờ ta sẽ fit lại 1 lần nữa:
 
 ```py
 model.fit(tf_train_dataset, validation_data=tf_validation_dataset, epochs=3)
@@ -155,22 +146,21 @@ model.fit(tf_train_dataset, validation_data=tf_validation_dataset, epochs=3)
 
 <Tip>
 
-💡 If you want to automatically upload your model to the Hub during training, you can pass along a `PushToHubCallback` in the `model.fit()` method. We will learn more about this in [Chapter 4](/course/chapter4/3)
+💡 Nếu bạn muốn tự động tải mô hình của mình lên Hub trong quá trình huấn luyện, bạn có thể truyền `PushToHubCallback` vào trong phương thức `model.fit()`. Chúng ta sẽ tìm hiểu thêm về điều này trong [Chương 4](/course/chapter4/3)
 
 </Tip>
 
-### Model predictions
+### Các dự đoán của mô hình
 
 <Youtube id="nx10eh4CoOs"/>
 
-
-Training and watching the loss go down is all very nice, but what if we want to actually get outputs from the trained model, either to compute some metrics, or to use the model in production? To do that, we can just use the `predict()` method. This will return the *logits* from the output head of the model, one per class.
+Việc huấn luyện và theo dõi sự mất mát giảm xuống đều rất tốt, nhưng nếu chúng ta muốn thực sự có được kết quả đầu ra từ mô hình được huấn luyện, để tính toán một số chỉ số hoặc sử dụng mô hình đó trong sản xuất thì sao? Để làm điều đó, chúng ta chỉ có thể sử dụng phương thức `predict()`. Điều này sẽ trả về *logit* từ đầu ra của mô hình, một cho mỗi lớp.
 
 ```py
 preds = model.predict(tf_validation_dataset)["logits"]
 ```
 
-We can convert these logits into the model's class predictions by using `argmax` to find the highest logit, which corresponds to the most likely class:
+Chúng ta có thể chuyển đổi các logit này thành các dự đoán lớp của mô hình bằng cách sử dụng `argmax` để tìm logit cao nhất, tương ứng với lớp có nhiều khả năng nhất:
 
 ```py
 class_preds = np.argmax(preds, axis=1)
@@ -181,7 +171,7 @@ print(preds.shape, class_preds.shape)
 (408, 2) (408,)
 ```
 
-Now, let's use those `preds` to compute some metrics! We can load the metrics associated with the MRPC dataset as easily as we loaded the dataset, this time with the `evaluate.load()` function. The object returned has a `compute()` method we can use to do the metric calculation:
+Bây giờ, hãy sử dụng các `preds` đó để tính toán một số chỉ số! Chúng ta có thể tải các chỉ số được liên kết với tập dữ liệu MRPC dễ dàng như khi ta tải tập dữ liệu, lần này là với hàm `eval.load())`. Đối tượng được trả về có phương thức `compute()` mà chúng ta có thể sử dụng để thực hiện phép tính số liệu:
 
 ```py
 import evaluate
@@ -194,6 +184,6 @@ metric.compute(predictions=class_preds, references=raw_datasets["validation"]["l
 {'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
 ```
 
-The exact results you get may vary, as the random initialization of the model head might change the metrics it achieved. Here, we can see our model has an accuracy of 85.78% on the validation set and an F1 score of 89.97. Those are the two metrics used to evaluate results on the MRPC dataset for the GLUE benchmark. The table in the [BERT paper](https://arxiv.org/pdf/1810.04805.pdf) reported an F1 score of 88.9 for the base model. That was the `uncased` model while we are currently using the `cased` model, which explains the better result.
+Kết quả chính xác bạn nhận được có thể khác nhau, vì việc khởi tạo ngẫu nhiên phần đầu mô hình có thể thay đổi các chỉ số mà nó đạt được. Ở đây, chúng ta có thể thấy mô hình có độ chính xác 85.78% trên tập kiểm định và điểm F1 là 89.97. Đó là hai chỉ số được sử dụng để đánh giá kết quả trên tập dữ liệu MRPC theo điểm chuẩn GLUE. Bảng trong [bài báo BERT](https://arxiv.org/pdf/1810.04805.pdf) báo cáo điểm F1 là 88.9 cho mô hình cơ sở. Đó là mô hình `không phân biệt` viết hoa viết thường trong khi chúng ta hiện đang sử dụng mô hình `có phân biệt`, điều này giải thích kết quả tốt hơn.
 
-This concludes the introduction to fine-tuning using the Keras API. An example of doing this for most common NLP tasks will be given in [Chapter 7](/course/chapter7). If you would like to hone your skills on the Keras API, try to fine-tune a model on the GLUE SST-2 dataset, using the data processing you did in section 2.
+Phần này kết thúc phần giới thiệu về cách tinh chỉnh bằng Keras API. Một ví dụ về cách làm này đối với hầu hết các tác vụ NLP phổ biến sẽ được đưa ra trong [Chương 7](/course/chapter7). Nếu bạn muốn trau dồi kỹ năng của mình trên API Keras, hãy cố gắng tinh chỉnh một mô hình trên tập dữ liệu GLUE SST-2, bằng cách sử dụng xử lý dữ liệu bạn đã thực hiện trong phần 2.
