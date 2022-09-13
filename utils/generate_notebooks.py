@@ -127,43 +127,44 @@ def build_notebook(fname, title, output_dir="."):
     """
     sections = read_and_split_frameworks(fname)
     sections_with_accelerate = [
-        "chapter3/4" # "A full training",
-        "chapter7/2", # "Token classification (PyTorch)",
-        "chapter7/3", # "Fine-tuning a masked language model (PyTorch)"
-        "chapter7/4", # "Translation (PyTorch)"
-        "chapter7/5", # "Summarization (PyTorch)",
-        "chapter7/6", # "Training a causal language model from scratch (PyTorch)"
-        "chapter7/7", # "Question answering (PyTorch)"
+        "chapter3/4",       # "A full training",
+        "chapter7/2_pt",    # "Token classification (PyTorch)",
+        "chapter7/3_pt",    # "Fine-tuning a masked language model (PyTorch)"
+        "chapter7/4_pt",    # "Translation (PyTorch)"
+        "chapter7/5_pt",    # "Summarization (PyTorch)",
+        "chapter7/6_pt",    # "Training a causal language model from scratch (PyTorch)"
+        "chapter7/7_pt",    # "Question answering (PyTorch)"
     ]
     sections_with_hf_hub = [
-        "chapter4/3", # "Sharing pretrained models (PyTorch)"
-        # "Sharing pretrained models (TensorFlow)",
-        # "Creating your own dataset",
-        # "Token classification (PyTorch)",
-        # "Token classification (TensorFlow)",
-        # "Training a new tokenizer from an old one",
-        # "Fine-tuning a masked language model (PyTorch)",
-        # "Fine-tuning a masked language model (TensorFlow)",
-        # "Translation (PyTorch)",
-        # "Translation (TensorFlow)",
-        # "Summarization (PyTorch)",
-        # "Summarization (TensorFlow)",
-        # "Training a causal language model from scratch (PyTorch)",
-        # "Training a causal language model from scratch (TensorFlow)",
-        # "Question answering (PyTorch)",
-        # "Question answering (TensorFlow)",
-        # "What to do when you get an error",
+        "chapter4/3_pt",    # "Sharing pretrained models (PyTorch)"
+        "chapter4/3_tf",    # "Sharing pretrained models (TensorFlow)"
+        "chapter5/5",       # "Creating your own dataset"
+        "chapter7/2_pt",    # "Token classification (PyTorch)"
+        "chapter7/2_tf",    # "Token classification (TensorFlow)"
+        "chapter6/2",       # "Training a new tokenizer from an old one"
+        "chapter7/3_pt",    # "Fine-tuning a masked language model (PyTorch)"
+        "chapter7/3_tf",    # "Fine-tuning a masked language model (TensorFlow)"
+        "chapter7/4_pt",    # "Translation (PyTorch)"
+        "chapter7/4_tf",    # "Translation (TensorFlow)"
+        "chapter7/5_pt",    # "Summarization (PyTorch)"
+        "chapter7/5_tf",    # "Summarization (TensorFlow)"
+        "chapter7/6_pt",    # "Training a causal language model from scratch (PyTorch)"
+        "chapter7/6_tf",    # "Training a causal language model from scratch (TensorFlow)"
+        "chapter7/7_pt",    # "Question answering (PyTorch)"
+        "chapter7/7_tf",    # "Question answering (TensorFlow)"
+        "chapter8/2",       # "What to do when you get an error"
     ]
     sections_with_faiss = [
-        # "Semantic search with FAISS (PyTorch)", "Semantic search with FAISS (TensorFlow)"
+        "chapter5/6_pt",    # "Semantic search with FAISS (PyTorch)"
+        "chapter5/6_tf",    # "Semantic search with FAISS (TensorFlow)"
         ]
     sections_with_gradio = [
-        # "Building your first demo",
-        # "Understanding the Interface class",
-        # "Sharing demos with others",
-        # "Integrations with the Hugging Face Hub",
-        # "Advanced Interface features",
-        # "Introduction to Blocks",
+        "chapter9/2",       # "Building your first demo"
+        "chapter9/3",       # "Understanding the Interface class"
+        "chapter9/4",       # "Sharing demos with others"
+        "chapter9/5",       # "Integrations with the Hugging Face Hub"
+        "chapter9/6",       # "Advanced Interface features"
+        "chapter9/7",       # "Introduction to Blocks"
     ]
     stem = Path(fname).stem
     if not isinstance(sections, dict):
@@ -196,7 +197,7 @@ def build_notebook(fname, title, output_dir="."):
         installs = ["!pip install datasets evaluate transformers[sentencepiece]"]
         if section_name in sections_with_accelerate:
             installs.append("!pip install accelerate")
-            installs.append("# To run the training on TPU, you will need to uncomment the following line:")
+            installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
             installs.append(
                 "# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
             )
