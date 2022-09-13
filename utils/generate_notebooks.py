@@ -20,6 +20,8 @@ re_end_code = re.compile(r"^```\s*$")
 
 frameworks = {"pt": "PyTorch", "tf": "TensorFlow"}
 
+PATH_TO_COURSE = Path("chapters/")
+
 
 def read_and_split_frameworks(fname):
     """
@@ -269,8 +271,14 @@ def create_notebooks(language, output_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--language", type=str, default="en", help="Path to the course MDX files")
     parser.add_argument("--output_dir", type=str, help="Where to output the notebooks")
     args = parser.parse_args()
 
-    create_notebooks(args.language, args.output_dir)
+    languages = [f.stem for f in PATH_TO_COURSE.iterdir() if f.is_dir()]
+
+    for language in languages:
+        language_output_dir = f"{args.output_dir}/{language}"
+        create_notebooks(language, language_output_dir)
+        # Remove empty notebook folders
+        if not any(Path(language_output_dir).iterdir()):
+            shutil.rmtree(language_output_dir)
