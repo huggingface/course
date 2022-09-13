@@ -125,7 +125,7 @@ Then run the following script:
 python utils/generate_notebooks.py --output_dir nbs
 ```
 
-This script extracts all the code snippets from the English chapters and stores them as notebooks in the `nbs` folder (which is ignored by Git by default).
+This script extracts all the code snippets from the chapters and stores them as notebooks in the `nbs` folder (which is ignored by Git by default).
 
 ## ✍️ Contributing a new chapter
 

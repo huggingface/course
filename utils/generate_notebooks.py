@@ -7,8 +7,6 @@ import yaml
 
 from pathlib import Path
 
-PATH_TO_COURSE = "chapters/en/"
-
 re_framework_test = re.compile(r"^{#if\s+fw\s+===\s+'([^']+)'}\s*$")
 re_framework_else = re.compile(r"^{:else}\s*$")
 re_framework_end = re.compile(r"^{/if}\s*$")
@@ -21,6 +19,8 @@ re_output_code = re.compile(r"^```(?:py|python)\s+out\s*$")
 re_end_code = re.compile(r"^```\s*$")
 
 frameworks = {"pt": "PyTorch", "tf": "TensorFlow"}
+
+PATH_TO_COURSE = Path("chapters/")
 
 
 def read_and_split_frameworks(fname):
@@ -128,57 +128,63 @@ def build_notebook(fname, title, output_dir="."):
     """
     sections = read_and_split_frameworks(fname)
     sections_with_accelerate = [
-        "A full training",
-        "Token classification (PyTorch)",
-        "Fine-tuning a masked language model (PyTorch)",
-        "Translation (PyTorch)",
-        "Summarization (PyTorch)",
-        "Training a causal language model from scratch (PyTorch)",
-        "Question answering (PyTorch)",
+        "chapter3/4",  # "A full training",
+        "chapter7/2_pt",  # "Token classification (PyTorch)",
+        "chapter7/3_pt",  # "Fine-tuning a masked language model (PyTorch)"
+        "chapter7/4_pt",  # "Translation (PyTorch)"
+        "chapter7/5_pt",  # "Summarization (PyTorch)",
+        "chapter7/6_pt",  # "Training a causal language model from scratch (PyTorch)"
+        "chapter7/7_pt",  # "Question answering (PyTorch)"
     ]
     sections_with_hf_hub = [
-        "Sharing pretrained models (PyTorch)",
-        "Sharing pretrained models (TensorFlow)",
-        "Creating your own dataset",
-        "Token classification (PyTorch)",
-        "Token classification (TensorFlow)",
-        "Training a new tokenizer from an old one",
-        "Fine-tuning a masked language model (PyTorch)",
-        "Fine-tuning a masked language model (TensorFlow)",
-        "Translation (PyTorch)",
-        "Translation (TensorFlow)",
-        "Summarization (PyTorch)",
-        "Summarization (TensorFlow)",
-        "Training a causal language model from scratch (PyTorch)",
-        "Training a causal language model from scratch (TensorFlow)",
-        "Question answering (PyTorch)",
-        "Question answering (TensorFlow)",
-        "What to do when you get an error",
+        "chapter4/3_pt",  # "Sharing pretrained models (PyTorch)"
+        "chapter4/3_tf",  # "Sharing pretrained models (TensorFlow)"
+        "chapter5/5",  # "Creating your own dataset"
+        "chapter7/2_pt",  # "Token classification (PyTorch)"
+        "chapter7/2_tf",  # "Token classification (TensorFlow)"
+        "chapter6/2",  # "Training a new tokenizer from an old one"
+        "chapter7/3_pt",  # "Fine-tuning a masked language model (PyTorch)"
+        "chapter7/3_tf",  # "Fine-tuning a masked language model (TensorFlow)"
+        "chapter7/4_pt",  # "Translation (PyTorch)"
+        "chapter7/4_tf",  # "Translation (TensorFlow)"
+        "chapter7/5_pt",  # "Summarization (PyTorch)"
+        "chapter7/5_tf",  # "Summarization (TensorFlow)"
+        "chapter7/6_pt",  # "Training a causal language model from scratch (PyTorch)"
+        "chapter7/6_tf",  # "Training a causal language model from scratch (TensorFlow)"
+        "chapter7/7_pt",  # "Question answering (PyTorch)"
+        "chapter7/7_tf",  # "Question answering (TensorFlow)"
+        "chapter8/2",  # "What to do when you get an error"
     ]
-    sections_with_faiss = ["Semantic search with FAISS (PyTorch)", "Semantic search with FAISS (TensorFlow)"]
+    sections_with_faiss = [
+        "chapter5/6_pt",  # "Semantic search with FAISS (PyTorch)"
+        "chapter5/6_tf",  # "Semantic search with FAISS (TensorFlow)"
+    ]
     sections_with_gradio = [
-        "Building your first demo",
-        "Understanding the Interface class",
-        "Sharing demos with others",
-        "Integrations with the Hugging Face Hub",
-        "Advanced Interface features",
-        "Introduction to Blocks",
+        "chapter9/2",  # "Building your first demo"
+        "chapter9/3",  # "Understanding the Interface class"
+        "chapter9/4",  # "Sharing demos with others"
+        "chapter9/5",  # "Integrations with the Hugging Face Hub"
+        "chapter9/6",  # "Advanced Interface features"
+        "chapter9/7",  # "Introduction to Blocks"
     ]
     stem = Path(fname).stem
     if not isinstance(sections, dict):
         contents = [sections]
         titles = [title]
         fnames = [f"section{stem}.ipynb"]
+        section_names = [f"{Path(fname).parent.stem}/{stem}"]
     else:
         contents = []
         titles = []
         fnames = []
+        section_names = []
         for key, section in sections.items():
             contents.append(section)
             titles.append(f"{title} ({frameworks[key]})")
             fnames.append(f"section{stem}_{key}.ipynb")
+            section_names.append(f"{Path(fname).parent.stem}/{stem}_{key}")
 
-    for title, content, fname in zip(titles, contents, fnames):
+    for title, content, fname, section_name in zip(titles, contents, fnames, section_names):
         cells = extract_cells(content)
         if len(cells) == 0:
             continue
@@ -190,22 +196,22 @@ def build_notebook(fname, title, output_dir="."):
 
         # Install cell
         installs = ["!pip install datasets evaluate transformers[sentencepiece]"]
-        if title in sections_with_accelerate:
+        if section_name in sections_with_accelerate:
             installs.append("!pip install accelerate")
             installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
             installs.append(
                 "# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
             )
-        if title in sections_with_hf_hub:
+        if section_name in sections_with_hf_hub:
             installs.append("!apt install git-lfs")
-        if title in sections_with_faiss:
+        if section_name in sections_with_faiss:
             installs.append("!pip install faiss-gpu")
-        if title in sections_with_gradio:
+        if section_name in sections_with_gradio:
             installs.append("!pip install gradio")
 
         nb_cells.append(nb_cell("\n".join(installs)))
 
-        if title in sections_with_hf_hub:
+        if section_name in sections_with_hf_hub:
             nb_cells.extend(
                 [
                     nb_cell(
@@ -229,11 +235,11 @@ def build_notebook(fname, title, output_dir="."):
         nbformat.write(notebook, os.path.join(output_dir, fname), version=4)
 
 
-def get_titles():
+def get_titles(language):
     """
     Parse the _toctree.yml file to get the correspondence filename to title
     """
-    table = yaml.safe_load(open(os.path.join(PATH_TO_COURSE, "_toctree.yml"), "r"))
+    table = yaml.safe_load(open(os.path.join(f"chapters/{language}", "_toctree.yml"), "r"))
     result = {}
     for entry in table:
         for section in entry["sections"]:
@@ -248,14 +254,16 @@ def get_titles():
     return {k: v for k, v in result.items() if "quiz" not in v}
 
 
-def create_notebooks(output_dir):
+def create_notebooks(language, output_dir):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     for folder in os.listdir(output_dir):
         if folder.startswith("chapter"):
             shutil.rmtree(os.path.join(output_dir, folder))
-    titles = get_titles()
+    titles = get_titles(language)
     for fname, title in titles.items():
         build_notebook(
-            os.path.join(PATH_TO_COURSE, f"{fname}.mdx"),
+            os.path.join(f"chapters/{language}", f"{fname}.mdx"),
             title,
             os.path.join(output_dir, Path(fname).parent),
         )
@@ -266,4 +274,11 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, help="Where to output the notebooks")
     args = parser.parse_args()
 
-    create_notebooks(args.output_dir)
+    languages = [f.stem for f in PATH_TO_COURSE.iterdir() if f.is_dir()]
+
+    for language in languages:
+        language_output_dir = f"{args.output_dir}/{language}"
+        create_notebooks(language, language_output_dir)
+        # Remove empty notebook folders
+        if not any(Path(language_output_dir).iterdir()):
+            shutil.rmtree(language_output_dir)
