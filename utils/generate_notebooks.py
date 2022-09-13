@@ -121,64 +121,68 @@ def nb_cell(source, code=True):
         {"cell_type": "code", "metadata": {}, "source": source, "execution_count": None, "outputs": []}
     )
 
-
 def build_notebook(fname, title, output_dir="."):
     """
     Build the notebook for fname with a given title in output_dir.
     """
     sections = read_and_split_frameworks(fname)
     sections_with_accelerate = [
-        "A full training",
-        "Token classification (PyTorch)",
-        "Fine-tuning a masked language model (PyTorch)",
-        "Translation (PyTorch)",
-        "Summarization (PyTorch)",
-        "Training a causal language model from scratch (PyTorch)",
-        "Question answering (PyTorch)",
+        "chapter3/4" # "A full training",
+        "chapter7/2", # "Token classification (PyTorch)",
+        "chapter7/3", # "Fine-tuning a masked language model (PyTorch)"
+        "chapter7/4", # "Translation (PyTorch)"
+        "chapter7/5", # "Summarization (PyTorch)",
+        "chapter7/6", # "Training a causal language model from scratch (PyTorch)"
+        "chapter7/7", # "Question answering (PyTorch)"
     ]
     sections_with_hf_hub = [
-        "Sharing pretrained models (PyTorch)",
-        "Sharing pretrained models (TensorFlow)",
-        "Creating your own dataset",
-        "Token classification (PyTorch)",
-        "Token classification (TensorFlow)",
-        "Training a new tokenizer from an old one",
-        "Fine-tuning a masked language model (PyTorch)",
-        "Fine-tuning a masked language model (TensorFlow)",
-        "Translation (PyTorch)",
-        "Translation (TensorFlow)",
-        "Summarization (PyTorch)",
-        "Summarization (TensorFlow)",
-        "Training a causal language model from scratch (PyTorch)",
-        "Training a causal language model from scratch (TensorFlow)",
-        "Question answering (PyTorch)",
-        "Question answering (TensorFlow)",
-        "What to do when you get an error",
+        "chapter4/3", # "Sharing pretrained models (PyTorch)"
+        # "Sharing pretrained models (TensorFlow)",
+        # "Creating your own dataset",
+        # "Token classification (PyTorch)",
+        # "Token classification (TensorFlow)",
+        # "Training a new tokenizer from an old one",
+        # "Fine-tuning a masked language model (PyTorch)",
+        # "Fine-tuning a masked language model (TensorFlow)",
+        # "Translation (PyTorch)",
+        # "Translation (TensorFlow)",
+        # "Summarization (PyTorch)",
+        # "Summarization (TensorFlow)",
+        # "Training a causal language model from scratch (PyTorch)",
+        # "Training a causal language model from scratch (TensorFlow)",
+        # "Question answering (PyTorch)",
+        # "Question answering (TensorFlow)",
+        # "What to do when you get an error",
     ]
-    sections_with_faiss = ["Semantic search with FAISS (PyTorch)", "Semantic search with FAISS (TensorFlow)"]
+    sections_with_faiss = [
+        # "Semantic search with FAISS (PyTorch)", "Semantic search with FAISS (TensorFlow)"
+        ]
     sections_with_gradio = [
-        "Building your first demo",
-        "Understanding the Interface class",
-        "Sharing demos with others",
-        "Integrations with the Hugging Face Hub",
-        "Advanced Interface features",
-        "Introduction to Blocks",
+        # "Building your first demo",
+        # "Understanding the Interface class",
+        # "Sharing demos with others",
+        # "Integrations with the Hugging Face Hub",
+        # "Advanced Interface features",
+        # "Introduction to Blocks",
     ]
     stem = Path(fname).stem
     if not isinstance(sections, dict):
         contents = [sections]
         titles = [title]
         fnames = [f"section{stem}.ipynb"]
+        section_names = [f"{Path(fname).parent.stem}/{stem}"]
     else:
         contents = []
         titles = []
         fnames = []
+        section_names = []
         for key, section in sections.items():
             contents.append(section)
             titles.append(f"{title} ({frameworks[key]})")
             fnames.append(f"section{stem}_{key}.ipynb")
+            section_names.append(f"{Path(fname).parent.stem}/{stem}_{key}")
 
-    for title, content, fname in zip(titles, contents, fnames):
+    for title, content, fname, section_name in zip(titles, contents, fnames, section_names):
         cells = extract_cells(content)
         if len(cells) == 0:
             continue
@@ -190,22 +194,22 @@ def build_notebook(fname, title, output_dir="."):
 
         # Install cell
         installs = ["!pip install datasets evaluate transformers[sentencepiece]"]
-        if title in sections_with_accelerate:
+        if section_name in sections_with_accelerate:
             installs.append("!pip install accelerate")
-            installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
+            installs.append("# To run the training on TPU, you will need to uncomment the following line:")
             installs.append(
                 "# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
             )
-        if title in sections_with_hf_hub:
+        if section_name in sections_with_hf_hub:
             installs.append("!apt install git-lfs")
-        if title in sections_with_faiss:
+        if section_name in sections_with_faiss:
             installs.append("!pip install faiss-gpu")
-        if title in sections_with_gradio:
+        if section_name in sections_with_gradio:
             installs.append("!pip install gradio")
 
         nb_cells.append(nb_cell("\n".join(installs)))
 
-        if title in sections_with_hf_hub:
+        if section_name in sections_with_hf_hub:
             nb_cells.extend(
                 [
                     nb_cell(
@@ -249,6 +253,8 @@ def get_titles():
 
 
 def create_notebooks(output_dir):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     for folder in os.listdir(output_dir):
         if folder.startswith("chapter"):
             shutil.rmtree(os.path.join(output_dir, folder))
