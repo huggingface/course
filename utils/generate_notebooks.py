@@ -183,7 +183,6 @@ def build_notebook(fname, title, output_dir="."):
             section_names.append(f"{Path(fname).parent.stem}/{stem}_{key}")
 
     for title, content, fname, section_name in zip(titles, contents, fnames, section_names):
-        print(title)
         cells = extract_cells(content)
         if len(cells) == 0:
             continue
