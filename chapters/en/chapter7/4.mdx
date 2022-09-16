@@ -172,7 +172,7 @@ You should know the drill by now: the texts all need to be converted into sets o
 from transformers import AutoTokenizer
 
 model_checkpoint = "Helsinki-NLP/opus-mt-en-fr"
-tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, return_tensors="tf")
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, return_tensors="pt")
 ```
 
 You can also replace the `model_checkpoint` with any other model you prefer from the [Hub](https://huggingface.co/models), or a local folder where you've saved a pretrained model and a tokenizer.
@@ -183,36 +183,28 @@ You can also replace the `model_checkpoint` with any other model you prefer from
 
 </Tip>
 
-The preparation of our data is pretty straightforward. There's just one thing to remember: you process the inputs as usual, but for the targets, you need to wrap the tokenizer inside the context manager `as_target_tokenizer()`.
+The preparation of our data is pretty straightforward. There's just one thing to remember; you need to ensure that the tokenizer processes the targets in the output language (here, French). You can do this by passing the targets to the `text_targets` argument of the tokenizer's `__call__` method.
 
-A context manager in Python is introduced with the `with` statement and is useful when you have two related operations to execute as a pair. The most common example of this is when you write or read a file, which is often done inside an instruction like:
-
-```
-with open(file_path) as f:
-    content = f.read()
-```
-
-Here the two related operations that are executed as a pair are the actions of opening and closing the file. The object corresponding to the opened file `f` only exists inside the indented block under the `with`; the opening happens before that block and the closing at the end of the block.
-
-In the case at hand, the context manager `as_target_tokenizer()` will set the tokenizer in the output language (here, French) before the indented block is executed, then set it back in the input language (here, English).
-
-So, preprocessing one sample looks like this:
+To see how this works, let's process one sample of each language in the training set:
 
 ```python
 en_sentence = split_datasets["train"][1]["translation"]["en"]
 fr_sentence = split_datasets["train"][1]["translation"]["fr"]
 
-inputs = tokenizer(en_sentence)
-with tokenizer.as_target_tokenizer():
-    targets = tokenizer(fr_sentence)
+inputs = tokenizer(en_sentence, text_target=fr_sentence)
+inputs
 ```
 
-If we forget to tokenize the targets inside the context manager, they will be tokenized by the input tokenizer, which in the case of a Marian model is not going to go well at all:
+```python out
+{'input_ids': [47591, 12, 9842, 19634, 9, 0], 'attention_mask': [1, 1, 1, 1, 1, 1], 'labels': [577, 5891, 2, 3184, 16, 2542, 5, 1710, 0]}
+```
+
+As we can see, the output contains the input IDs associated with the English sentence, while the IDs associated with the French one are stored in the `labels` field. If you forget to indicate that you are tokenizing labels, they will be tokenized by the input tokenizer, which in the case of a Marian model is not going to go well at all:
 
 ```python
 wrong_targets = tokenizer(fr_sentence)
 print(tokenizer.convert_ids_to_tokens(wrong_targets["input_ids"]))
-print(tokenizer.convert_ids_to_tokens(targets["input_ids"]))
+print(tokenizer.convert_ids_to_tokens(inputs["labels"]))
 ```
 
 ```python out
@@ -232,13 +224,7 @@ max_target_length = 128
 def preprocess_function(examples):
     inputs = [ex["en"] for ex in examples["translation"]]
     targets = [ex["fr"] for ex in examples["translation"]]
-    model_inputs = tokenizer(inputs, max_length=max_input_length, truncation=True)
-
-    # Set up the tokenizer for targets
-    with tokenizer.as_target_tokenizer():
-        labels = tokenizer(targets, max_length=max_target_length, truncation=True)
-
-    model_inputs["labels"] = labels["input_ids"]
+    model_inputs = tokenizer(inputs, text_target=targets, max_length=max_input_length, truncation=True)
     return model_inputs
 ```
 
