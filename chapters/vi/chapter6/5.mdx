@@ -1,0 +1,361 @@
+# Byte-Pair Encoding tokenization
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter6/section5.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter6/section5.ipynb"},
+]} />
+
+Mã hóa theo cặp (BPE) tiền thân được phát triển như một thuật toán để nén văn bản, sau đó được OpenAI sử dụng để tokenize khi huấn luyện trước mô hình GPT. Nó được sử dụng bởi rất nhiều mô hình Transformer, bao gồm GPT, GPT-2, RoBERTa, BART và DeBERTa.
+
+<Youtube id="HEikzVL-lZU"/>
+
+<Tip>
+
+💡 Phần này trình bày sâu hơn về BPE, đi xa hơn nữa là trình bày cách triển khai đầy đủ. Bạn có thể bỏ qua phần cuối nếu bạn chỉ muốn có một cái nhìn tổng quan chung về thuật toán tokenize.
+
+</Tip>
+
+## Thuật toán huấn luyện
+
+Huấn luyện BPE bắt đầu bằng cách tính toán tập hợp các từ duy nhất được sử dụng trong kho ngữ liệu (sau khi hoàn thành các bước chuẩn hóa và pre-tokenization), sau đó xây dựng từ vựng bằng cách lấy tất cả các ký hiệu được sử dụng để viết những từ đó. Ví dụ rất đơn giản, giả sử kho dữ liệu của chúng ta sử dụng năm từ sau:
+
+```
+"hug", "pug", "pun", "bun", "hugs"
+```
+
+Từ vựng cơ sở khi đó sẽ là `["b", "g", "h", "n", "p", "s", "u"]`. Đối với các trường hợp trong thực tế, từ vựng cơ sở đó sẽ chứa tất cả các ký tự ASCII, ít nhất và có thể là một số ký tự Unicode. Nếu một mẫu bạn đang tokenize sử dụng một ký tự không có trong kho dữ liệu huấn luyện, thì ký tự đó sẽ được chuyển đổi thành token không xác định. Đó là một lý do tại sao nhiều mô hình NLP rất kém trong việc phân tích nội dung bằng biểu tượng cảm xúc.
+
+<Tip>
+
+GPT-2 và RoBERTa tokenizer (khá giống nhau) có một cách thông minh để giải quyết vấn đề này: chúng không xem các từ được viết bằng các ký tự Unicode mà là các byte. Bằng cách này, từ vựng cơ sở có kích thước nhỏ (256), nhưng mọi ký tự bạn có thể nghĩ đến sẽ vẫn được bao gồm và không bị chuyển đổi thành token không xác định. Thủ thuật này được gọi là *BPE cấp byte*.
+
+</Tip>
+
+Sau khi có được bộ từ vựng cơ bản này, chúng ta thêm các token mới cho đến khi đạt được kích thước từ vựng mong muốn bằng cách học *hợp nhất*, đây là các quy tắc để hợp nhất hai yếu tố của từ vựng hiện có với nhau thành một từ mới. Vì vậy, lúc đầu sự hợp nhất này sẽ tạo ra các token có hai ký tự và sau đó, khi quá trình huấn luyện tiến triển, các từ phụ sẽ dài hơn.
+
+Tại bất kỳ bước nào trong quá trình huấn luyện token, thuật toán BPE sẽ tìm kiếm cặp token hiện có thường xuyên nhất (theo "cặp", ở đây có nghĩa là hai token liên tiếp trong một từ). Cặp thường xuyên nhất đó là cặp sẽ được hợp nhất, và chúng ta xả và lặp lại cho bước tiếp theo.
+
+Quay trở lại ví dụ trước, giả sử các từ có tần số như sau:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+nghĩa là `"hug"` có mặt 10 lần trong kho ngữ liệu, `"pug"` 5 lần, `"pun"` 12 lần, `"bun"` 4 lần và `"hug"` 5 lần. Chúng ta bắt đầu huấn luyện bằng cách tách từng từ thành các ký tự (những ký tự hình thành từ vựng ban đầu của chúng ta) để có thể xem mỗi từ như một danh sách các token:
+
+```
+("h" "u" "g", 10), ("p" "u" "g", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "u" "g" "s", 5)
+```
+
+
+Sau đó, chúng ta xem xét các cặp. Cặp `("h", "u")` có trong các từ  `"hug"` và  `"hugs"`, vì vậy tổng cộng là 15 lần trong ngữ liệu. Tuy nhiên, đây không phải là cặp thường xuyên nhất: vinh dự đó thuộc về `("u", "g")`, có trong `"hug"`, `"pug"`, và `"hugs"`, với tổng cộng 20 lần xuất hiện trong bộ từ vựng.
+
+Do đó, quy tắc hợp nhất đầu tiên được học bởi tokenizer là `("u", "g") -> "ug"`, có nghĩa là `"ug"` sẽ được thêm vào từ vựng và cặp này sẽ được hợp nhất trong tất cả các từ của ngữ liệu. Vào cuối giai đoạn này, từ vựng và ngữ liệu sẽ giống như sau:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug"]
+Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "ug" "s", 5)
+```
+
+Bây giờ chúng ta có một số cặp dẫn đến một token dài hơn hai ký tự: ví dụ: cặp `("h", "ug")`, (hiện diện 15 lần trong kho ngữ liệu). Cặp thường gặp nhất ở giai đoạn này là `("u", "n")`, xuất hiện 16 lần trong kho ngữ liệu, vì vậy quy tắc hợp nhất thứ hai đã học là `("u", "n") -> "un"`. Thêm nó vào bộ từ vựng và hợp nhất tất cả các lần xuất hiện hiện có sẽ dẫn chúng ta đến:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un"]
+Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("h" "ug" "s", 5)
+```
+
+Giờ thì cặp xuất hiện nhiều nhất là `("h", "ug")`, nên chúng ta hợp nhất `("h", "ug") -> "hug"`, trả về cho chúng ta token gồn ba kí tự đầu tiên. Sau sự hợp nhất này, kho ngữ liệu sẽ như sau:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un", "hug"]
+Corpus: ("hug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("hug" "s", 5)
+```
+
+Và chúng ta tiếp túc làm vậy cho đến khi chúng ta chạm đến kích thước bộ tự điển ta mong muốn.
+
+<Tip>
+
+✏️ **Giờ thì đến lượt bạn!** Bạn nghĩ bước hợp nhất tiếp theo sẽ là gì?
+
+</Tip>
+
+## Thuật toán tokenize
+
+Tokenize tuân thủ chặt chẽ quá trình huấn luyện, theo nghĩa là các đầu vào mới được tokenize bằng cách áp dụng các bước sau:
+
+1. Chuẩn hoá
+2. Pre-tokenization
+3. Tách các từ thành các ký tự riêng lẻ
+4. Áp dụng các quy tắc hợp nhất đã học theo thứ tự trên các phần tách đó
+
+Lấy ví dụ mà ta đã sử dụng trong quá trình huấn luyện, với ba quy tắc hợp nhất đã học:
+
+```
+("u", "g") -> "ug"
+("u", "n") -> "un"
+("h", "ug") -> "hug"
+```
+
+Từ `"bug"` sẽ được tokenize thành `["b", "ug"]`. `"mug"`, tuy nhiên, sẽ tokenize thành `["[UNK]", "ug"]` vì kí tự `"m"` không có trong bộ tự vựng gốc. Tương tự, từ `"thug"` sẽ được tokenize thành  `["[UNK]", "hug"]`: kí tự `"t"` không có trong bộ tự vựng gốc, và áp dụng quy tắc hợp nhất ở `"u"` và `"g"` và sau đó `"hu"` và `"g"`.
+
+<Tip>
+
+✏️ **Giờ tới lượt bạn!** Bạn nghĩ rằng `"unhug"` sẽ được tokenize như thế nào?
+
+</Tip>
+
+## Triển khai BPE
+
+Hãy cùng xem các thuật toán BPE được triển khai. Đây không phải là phiên bản tối ưu mà bạn có thể thực sự sử dụng cho một kho ngữ liệu lớn; chúng tôi chỉ muốn cho bạn xem đoạn mã để bạn có thể hiểu thuật toán này tốt hơn.
+
+Đầu tiên chúng ta cần một kho ngữ liệu, vậy nên hay tạo ra một bản đơn giản với một vài câu:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+Tiếp theo, ta cần tiền tokenize kho ngữ liệu này thành các từ. Vì ta đang sao chép một bản BPE tokenizer (như GPT-2), ta vẫn có thể sử dụng `gpt2` tokenize cho bước pre-tokenization:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+Sau đó ta tính tần suất của từng từ trong kho ngữ liệu như khi làm với pre-tokenization:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+print(word_freqs)
+```
+
+```python out
+defaultdict(int, {'This': 3, 'Ġis': 2, 'Ġthe': 1, 'ĠHugging': 1, 'ĠFace': 1, 'ĠCourse': 1, '.': 4, 'Ġchapter': 1,
+    'Ġabout': 1, 'Ġtokenization': 1, 'Ġsection': 1, 'Ġshows': 1, 'Ġseveral': 1, 'Ġtokenizer': 1, 'Ġalgorithms': 1,
+    'Hopefully': 1, ',': 1, 'Ġyou': 1, 'Ġwill': 1, 'Ġbe': 1, 'Ġable': 1, 'Ġto': 1, 'Ġunderstand': 1, 'Ġhow': 1,
+    'Ġthey': 1, 'Ġare': 1, 'Ġtrained': 1, 'Ġand': 1, 'Ġgenerate': 1, 'Ġtokens': 1})
+```
+
+Tiếp theo chúng ta sẽ tính bộ từ vựng cơ sở từ các kí tự sử dụng trong kho ngữ liệu:
+
+```python
+alphabet = []
+
+for word in word_freqs.keys():
+    for letter in word:
+        if letter not in alphabet:
+            alphabet.append(letter)
+alphabet.sort()
+
+print(alphabet)
+```
+
+```python out
+[ ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's',
+  't', 'u', 'v', 'w', 'y', 'z', 'Ġ']
+```
+
+Ta cũng có thể thêm các token đặc biệt từ mô hình ở đầu của bộ tự vựng. Trong trường hợp của GPT-2, token đặc biệt duy nhất đó là `"<|endoftext|>"`:
+
+```python
+vocab = ["<|endoftext|>"] + alphabet.copy()
+```
+
+Ta giờ cần phải chia mỗi từ thành các kí tự riêng lẻ để có thể bắt đầu huấn luyện
+
+```python
+splits = {word: [c for c in word] for word in word_freqs.keys()}
+```
+
+Giờ ta đã sẵn sàng để huấn luyện, hãy cùng viết một hàm tính tần suất mỗi cặp. Ta sẽ cần sử dụng nó ở bước huấn luyện:
+
+```python
+def compute_pair_freqs(splits):
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            pair_freqs[pair] += freq
+    return pair_freqs
+```
+
+Hãy nhìn vào một phần từ điẻn sau khi tách:
+
+```python
+pair_freqs = compute_pair_freqs(splits)
+
+for i, key in enumerate(pair_freqs.keys()):
+    print(f"{key}: {pair_freqs[key]}")
+    if i >= 5:
+        break
+```
+
+```python out
+('T', 'h'): 3
+('h', 'i'): 3
+('i', 's'): 5
+('Ġ', 'i'): 2
+('Ġ', 't'): 7
+('t', 'h'): 3
+```
+
+Giờ thì, tìm xem cặp xuất hiện nhiều nhất bằng một vòng lặp nhanh:
+
+```python
+best_pair = ""
+max_freq = None
+
+for pair, freq in pair_freqs.items():
+    if max_freq is None or max_freq < freq:
+        best_pair = pair
+        max_freq = freq
+
+print(best_pair, max_freq)
+```
+
+```python out
+('Ġ', 't') 7
+```
+
+Vậy phép hợp nhất đầu tiên là `('Ġ', 't') -> 'Ġt'`, và ta thêm `'Ġt'` vào bộ từ vựng:
+
+```python
+merges = {("Ġ", "t"): "Ġt"}
+vocab.append("Ġt")
+```
+
+Để tiếp tục, ta cần áp dụng sự hợp nhất ở từ điển `splits`. Hãy cùng viết một hàm khác cho nó:
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                split = split[:i] + [a + b] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+Giờ ta có thể nhìn xem kết quả của lần hợp nhất đầu tiên:
+
+```py
+splits = merge_pair("Ġ", "t", splits)
+print(splits["Ġtrained"])
+```
+
+```python out
+['Ġt', 'r', 'a', 'i', 'n', 'e', 'd']
+```
+
+Giờ thì ta có tất cả những gì mình cần để lặp cho đến khi ta học tất các các hợp nhất mà ta muốn. Hãy cũng nhắm tới bộ tự vựng có kích cỡ là 50:
+
+```python
+vocab_size = 50
+
+while len(vocab) < vocab_size:
+    pair_freqs = compute_pair_freqs(splits)
+    best_pair = ""
+    max_freq = None
+    for pair, freq in pair_freqs.items():
+        if max_freq is None or max_freq < freq:
+            best_pair = pair
+            max_freq = freq
+    splits = merge_pair(*best_pair, splits)
+    merges[best_pair] = best_pair[0] + best_pair[1]
+    vocab.append(best_pair[0] + best_pair[1])
+```
+
+Kết quả là, chúng ta đã học 19 quy tắc hợp nhất (bộ từ điển gốc có kích cỡ là 31 tương ứng 30 kí tự trong bảng chữ cái cùng một token đặt biệt):
+
+```py
+print(merges)
+```
+
+```python out
+{('Ġ', 't'): 'Ġt', ('i', 's'): 'is', ('e', 'r'): 'er', ('Ġ', 'a'): 'Ġa', ('Ġt', 'o'): 'Ġto', ('e', 'n'): 'en',
+ ('T', 'h'): 'Th', ('Th', 'is'): 'This', ('o', 'u'): 'ou', ('s', 'e'): 'se', ('Ġto', 'k'): 'Ġtok',
+ ('Ġtok', 'en'): 'Ġtoken', ('n', 'd'): 'nd', ('Ġ', 'is'): 'Ġis', ('Ġt', 'h'): 'Ġth', ('Ġth', 'e'): 'Ġthe',
+ ('i', 'n'): 'in', ('Ġa', 'b'): 'Ġab', ('Ġtoken', 'i'): 'Ġtokeni'}
+```
+
+Và bộ tự vựng cấu thành bởi token đặc biết, các kí tự trong bảng chữ cái, và tất cả kết quả từ các quy tắc hợp nhất:
+
+```py
+print(vocab)
+```
+
+```python out
+['<|endoftext|>', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o',
+ 'p', 'r', 's', 't', 'u', 'v', 'w', 'y', 'z', 'Ġ', 'Ġt', 'is', 'er', 'Ġa', 'Ġto', 'en', 'Th', 'This', 'ou', 'se',
+ 'Ġtok', 'Ġtoken', 'nd', 'Ġis', 'Ġth', 'Ġthe', 'in', 'Ġab', 'Ġtokeni']
+```
+
+<Tip>
+
+💡 Sử dụng `train_new_from_iterator()` trên cùng kho ngữ liệu sẽ không mang về kết quả kho ngữ liệu y hệt. Đó là bởi khi có sự lựa chọn về cặp có tần suất cao nhất, ta đã chọn cái đầu tiên xuất hiện, trong khi thư viện 🤗 Tokenizers chọn cái đầu tiên dựa trên ID bên trong của nó.
+
+</Tip>
+
+Để tokenize văn bản mới, chúng ta tiền tokenize nó, tách ra, rồi áp dụng quy tắc hợp nhất được học:
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    splits = [[l for l in word] for word in pre_tokenized_text]
+    for pair, merge in merges.items():
+        for idx, split in enumerate(splits):
+            i = 0
+            while i < len(split) - 1:
+                if split[i] == pair[0] and split[i + 1] == pair[1]:
+                    split = split[:i] + [merge] + split[i + 2 :]
+                else:
+                    i += 1
+            splits[idx] = split
+
+    return sum(splits, [])
+```
+t
+Ta có thể thử các này với bất kì đoạn văn nào khác được tạo thành từ các kí tự trong bảng chữ cái:
+
+```py
+tokenize("This is not a token.")
+```
+
+```python out
+['This', 'Ġis', 'Ġ', 'n', 'o', 't', 'Ġa', 'Ġtoken', '.']
+```
+
+<Tip warning={true}>
+
+⚠️ Các triển khai của chúng ta sẽ gặp lỗi nếu có những kí tự vô danh vì chúng ta đã không làm gì để xử lý chúng. GPT-2 không thực sự có những token vô danh (không thể có kí tự vô danh khi sử dụng BPE cấp byte), nhưng nó có thể xảy ra ở đây vì ta không bao gồm tất cả các byte có thể có trong bộ từ vựng gốc. Khía cạnh này của BPE nằm ngoài phạm vi phần này, nên chúng tôi sẽ không đi sau vào chi tiết.
+
+</Tip>
+
+Đó là những gì ta cần biết về thuật toán BPE! Tiếp theo, chúng ta sẽ cùng tìm hiểu về WordPiece.
