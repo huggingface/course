@@ -1,0 +1,358 @@
+# Bản huấn luyện hoàn chỉnh
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter3/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter3/section4.ipynb"},
+]} />
+
+<Youtube id="Dh9CL8fyG80"/>
+
+Bây giờ chúng ta sẽ xem cách đạt được kết quả tương tự như chúng ta đã làm trong phần trước mà không cần sử dụng lớp `Trainer`. Một lần nữa, chúng tôi giả sử bạn đã thực hiện bước xử lý dữ liệu trong phần 2. Dưới đây là một bản tóm tắt ngắn bao gồm mọi thứ bạn cần:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### Chuẩn bị cho huấn luyện
+
+Trước khi thực sự viết vòng lặp huấn luyện của mình, chúng ta sẽ cần xác định một vài đối tượng. Đầu tiên là bộ dữ liệu dataloader mà chúng tôi sẽ sử dụng để lặp qua các lô. Nhưng trước khi chúng ta có thể xác định các bộ dữ liệu đó, chúng ta cần áp dụng một chút hậu xử lý cho `tokenized_datasets` của mình, để xử lý một số thứ mà `Trainer` đã làm cho chúng ta một cách tự động. Cụ thể, chúng ta cần:
+
+- Loại bỏ các cột tương ứng với các giá trị mà mô hình không mong đợi (như cột `sentence1` và `sentence2`).
+- Đổi tên cột `label` thành `labels` (vì mô hình mong đợi đối số được đặt tên là `labels`).
+- Đặt định dạng của bộ dữ liệu để chúng trả về các tensor PyTorch thay vì danh sách.
+
+`Tokenized_datasets` của chúng ta có phương thức cho mỗi bước đó:
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+tokenized_datasets["train"].column_names
+```
+
+Sau đó, chúng ta có thể kiểm tra xem kết quả có chỉ có các cột mà mô hình của chúng ta sẽ chấp nhận không:
+
+```python
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+Xong rồi, chúng ta có thể dễ dàng định nghĩa các bộ dữ liệu của mình:
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+Để nhanh chóng kiểm tra không có sai sót trong quá trình xử lý dữ liệu, chúng ta có thể kiểm tra một lô như sau:
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+Lưu ý rằng các hình dạng thực tế có thể sẽ hơi khác đối với bạn vì chúng tôi đặt `shuffle = True` cho dataloader huấn luyện và chúng tôi đang đệm đến độ dài tối đa bên trong lô.
+
+Bây giờ chúng ta đã hoàn thành việc xử lý trước dữ liệu (một mục tiêu thỏa mãn nhưng khó nắm bắt đối với bất kỳ người thực hành ML nào), hãy chuyển sang mô hình thôi. Chúng ta khởi tạo nó chính xác như đã làm trong phần trước:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+To make sure that everything will go smoothly during training, we pass our batch to this model:
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+Tất cả các mô hình 🤗 Transformers sẽ trả về lượng mất mát khi `labels` được cung cấp và chúng ta cũng nhận được logit (hai cho mỗi đầu vào trong lô, do đó, một tensor có kích thước 8 x 2).
+
+Chúng ta gần như đã sẵn sàng để viết vòng lặp huấn luyện của mình! Chúng ta chỉ thiếu hai thứ: một trình tối ưu hóa và một công cụ lập lịch tốc độ học tập. Vì chúng ta đang cố gắng tái tạo những gì mà `Trainer` đã làm bằng tay, nên ta sẽ sử dụng các giá trị mặc định tương tự. Trình tối ưu hóa được sử dụng bởi `Trainer` là `AdamW`, tương tự như Adam, nhưng có một bước ngoặt để điều chỉnh phân rã trọng số (xem ["Decoupled Weight Decay Regularization"](https://arxiv.org/abs/1711.05101) của Ilya Loshchilov và Frank Hutter):
+
+```py
+from transformers import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+Cuối cùng, bộ lập lịch tốc độ học được sử dụng theo mặc định chỉ là một phân rã tuyến tính từ giá trị lớn nhất (5e-5) xuống 0. Để xác định đúng, chúng ta cần biết số bước huấn luyện sẽ thực hiện, đó là số epoch muốn chạy nhân với số lô huấn luyện (là độ dài của bộ dữ liệu huấn luyện). `Trainer` sử dụng ba epoch theo mặc định, vì vậy chúng tôi sẽ tuân theo điều đó:
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+### Vòng lặp huấn luyện
+
+Một điều cuối cùng: chúng ta sẽ muốn sử dụng GPU nếu có quyền truy cập vào một GPU (trên CPU, quá trình huấn luyện có thể mất vài giờ thay vì vài phút). Để làm điều này, chúng ta xác định một `device`, ta sẽ đặt mô hình và các lô của ta trên đó:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+device
+```
+
+```python out
+device(type='cuda')
+```
+
+Giờ thì ta đã sẵn sàng để huấn luyện rồi! Để biết khi nào quá trình huấn luyện sẽ kết thúc, ta thêm thanh tiến trình qua số bước huấn luyện, sử dụng thư viện `tqdm`:
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+Bạn có thể thấy rằng cốt lõi của vòng lặp huấn luyện trông rất giống như trong phần giới thiệu. Chúng ta đã không yêu cầu bất kỳ báo cáo nào, vì vậy vòng huấn luyện này sẽ không cho ta biết bất kỳ điều gì về cái giá của mô hình. Chúng ta cần thêm một vòng lặp đánh giá cho điều đó.
+
+### Vòng lặp đánh giá
+
+Như đã làm trước đó, chúng ta sẽ sử dụng một chỉ số được cung cấp bởi thư viện 🤗 Evaluate. Chúng ta đã thấy phương thức `metric.compute()`, các chỉ số thực sự có thể tích lũy các lô cho ta khi xem qua vòng dự đoán với phương thức `add_batch()`. Khi ta đã tích lũy tất cả các lô, chúng ta có thể nhận được kết quả cuối cùng với `metric.compute()`. Dưới đây là cách thực hiện tất cả những điều này trong một vòng lặp đánh giá:
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+Một lần nữa, kết quả của bạn sẽ hơi khác một chút vì sự ngẫu nhiên trong quá trình khởi tạo đầu mô hình và xáo trộn dữ liệu, nhưng chúng phải ở trong cùng một khoảng.
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Sửa đổi vòng lặp huấn luyện trước đó để tinh chỉnh mô hình của bạn trên tập dữ liệu SST-2.
+
+</Tip>
+
+### Tăng cường trí thông minh của vòng huấn luyện với 🤗 Accelerate
+
+<Youtube id="s7dy8QRgjJ0" />
+
+Vòng lặp huấn luyện mà ta đã định nghĩa trước đó hoạt động tốt trên một CPU hoặc GPU. Nhưng bằng cách sử dụng thư viện [🤗 Accelerate](https://github.com/huggingface/accelerate), chỉ với một vài điều chỉnh, chúng ta có thể huấn luyện phân tán trên nhiều GPU hoặc TPU. Bắt đầu từ việc tạo bộ dữ liệu huấn luyện và kiểm định, đây là vòng lặp huấn luyện thủ công thực thi:
+
+```py
+from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+Và đây là một số thay đổi:
+
+```diff
++ from accelerate import Accelerator
+  from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
++ accelerator = Accelerator()
+
+  model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+  optimizer = AdamW(model.parameters(), lr=3e-5)
+
+- device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+- model.to(device)
+
++ train_dataloader, eval_dataloader, model, optimizer = accelerator.prepare(
++     train_dataloader, eval_dataloader, model, optimizer
++ )
+
+  num_epochs = 3
+  num_training_steps = num_epochs * len(train_dataloader)
+  lr_scheduler = get_scheduler(
+      "linear",
+      optimizer=optimizer,
+      num_warmup_steps=0,
+      num_training_steps=num_training_steps
+  )
+
+  progress_bar = tqdm(range(num_training_steps))
+
+  model.train()
+  for epoch in range(num_epochs):
+      for batch in train_dataloader:
+-         batch = {k: v.to(device) for k, v in batch.items()}
+          outputs = model(**batch)
+          loss = outputs.loss
+-         loss.backward()
++         accelerator.backward(loss)
+
+          optimizer.step()
+          lr_scheduler.step()
+          optimizer.zero_grad()
+          progress_bar.update(1)
+```
+
+Dòng đầu tiên cần thêm là dòng nhập. Dòng thứ hai khởi tạo một đối tượng `Accelerator` sẽ xem xét môi trường và khởi tạo thiết lập phân tán thích hợp. 🤗 Accelerate xử lý vị trí đặt thiết bị cho bạn, vì vậy bạn có thể xóa các dòng đặt mô hình trên thiết bị (hoặc, nếu bạn thích, hãy thay đổi chúng để sử dụng `accelerator.device` thay vì `device`).
+
+Sau đó, phần lớn công việc chính được thực hiện trong dòng gửi bộ lưu dữ liệu, mô hình và trình tối ưu hóa đến `accelerator.prepare()`. Thao tác này sẽ bọc các đối tượng đó trong hộp chứa thích hợp để đảm bảo việc huấn luyện được phân phối hoạt động như dự định. Các thay đổi còn lại cần thực hiện là loại bỏ dòng đặt lô trên `device` (một lần nữa, nếu bạn muốn giữ lại điều này, bạn chỉ cần thay đổi nó thành sử dụng `accelerator.device`) và thay thế `loss.backward()` bằng  `accelerator.backward(loss)`.
+
+<Tip>
+⚠️ Để hưởng lợi từ việc tăng tốc độ do Cloud TPUs cung cấp, chúng tôi khuyên bạn nên đệm các mẫu của mình theo độ dài cố định bằng các tham số `padding="max_length"` và `max_length` của tokenizer.
+</Tip>
+
+Nếu bạn muốn sao chép và dán nó để mày mò, đây là giao diện của vòng huấn luyện hoàn chỉnh với 🤗 Accelerate:
+
+```py
+from accelerate import Accelerator
+from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+Đặt điều này trong `train.py` sẽ làm cho tập lệnh đó có thể chạy được trên bất kỳ loại thiết lập phân tán nào. Để dùng thử trong thiết lập phân tán của bạn, hãy chạy lệnh:
+
+```bash
+accelerate config
+```
+
+điều này sẽ nhắc bạn trả lời một số câu hỏi và trích xuất câu trả lời của bạn vào tệp cấu hình bởi lệnh sau:
+
+```
+accelerate launch train.py
+```
+
+và nó sẽ khởi chạy chương trình huấn luyện phân tán.
+
+Nếu bạn muốn thử điều này trong Notebook (ví dụ: để kiểm tra nó với TPU trên Colab), chỉ cần dán đoạn mã vào `training_function()` và chạy ô cuối cùng với:
+
+```python
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+Bạn có thể tìm thêm các ví dụ tại [🤗 Accelerate repo](https://github.com/huggingface/accelerate/tree/main/examples).
