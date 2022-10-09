@@ -1,0 +1,170 @@
+<FrameworkSwitchCourse {fw} />
+
+# Tinh chỉnh một mô hình với Trainer API
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter3/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter3/section3.ipynb"},
+]} />
+
+<Youtube id="nvBXf7s7vTI"/>
+
+🤗 Transformers cung cấp lớp `Trainer` để giúp bạn tinh chỉnh bất kỳ mô hình huấn luyện trước nào mà nó cung cấp trên tập dữ liệu của bạn. Khi bạn đã hoàn thành tất cả công việc tiền xử lý dữ liệu trong phần cuối cùng, bạn chỉ còn một vài bước để định nghĩa `Trainer`. Phần khó nhất có thể là chuẩn bị môi trường để chạy `Trainer.train()`, vì nó sẽ chạy rất chậm trên CPU. Nếu bạn chưa thiết lập GPU, bạn có thể có quyền truy cập vào GPU hoặc TPU miễn phí trên [Google Colab](https://colab.research.google.com/).
+
+Các ví dụ mã bên dưới giả sử bạn đã thực hiện các ví dụ trong phần trước. Dưới đây là một bản tóm tắt ngắn tóm tắt lại những gì bạn cần:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### Huấn luyện
+
+Bước đầu tiên trước khi chúng ta có thể định nghĩa `Trainer` của mình là định nghĩa một lớp `TrainingArguments` sẽ chứa tất cả các siêu tham số mà `Trainer` sẽ sử dụng để huấn luyện và đánh giá. Tham số duy nhất bạn phải cung cấp là một thư mục nơi mô hình được huấn luyện sẽ được lưu, cũng như các checkpoint đi kèm. Đối với tất cả phần còn lại, bạn có thể để mặc định, nó sẽ hoạt động khá tốt với tinh chỉnh cơ bản.
+
+```py
+from transformers import TrainingArguments
+
+training_args = TrainingArguments("test-trainer")
+```
+
+<Tip>
+
+💡 Nếu bạn muốn tự động tải mô hình của mình lên Hub trong quá trình huấn luyện, hãy chuyển sang phần `push_to_hub=True` trong phần `TrainingArguments`. Chúng ta sẽ tìm hiểu thêm về điều này trong [Chương 4](/course/chapter4/3)
+
+</Tip>
+
+Bước thứ hai là xác định mô hình của chúng ta. Như trong [chương trước](/course/chapter2), chúng ta sẽ sử dụng lớp `AutoModelForSequenceClassification`, với hai nhãn:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+Bạn sẽ nhận thấy rằng không như trong [Chương 2](/course/chapter2), bạn nhận được một cảnh báo sau khi khởi tạo mô hình được huấn luyện trước này. Đây là do BERT chưa được huấn luyện trước về phân loại các cặp câu, vì vậy phần đầu của mô hình được huấn luyện trước đã bị loại bỏ và phần đầu mới phù hợp để phân loại chuỗi đã được chèn vào thay thế. Các cảnh báo chỉ ra rằng một số trọng số đã không được sử dụng (những trọng số tương ứng với đầu huấn luyện trước bị rụng) và một số trọng số khác khác được khởi tạo ngẫu nhiên (những trọng số dành cho đầu mới). Nó kết thúc bằng cách khuyến khích bạn huấn luyện mô hình, đó chính xác là những gì chúng ta sẽ làm bây giờ.
+
+Khi chúng ta có mô hình của mình, chúng ta có thể xác định một `Trainer` bằng cách truyền vào tất cả các đối tượng được xây dựng từ trước đến nay - `model`, `training_args`, tập huấn luyện và kiểm định,`data_collator` và `tokenizer`:
+
+```py
+from transformers import Trainer
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+Lưu ý rằng khi bạn truyền `tokenizer` như chúng ta đã làm ở đây, mặc định `data_collator` được sử dụng bởi `Trainer` sẽ là `DataCollatorWithPadding` như đã định nghĩa trước đó, vì vậy bạn có thể bỏ qua dòng `data_collator = data_collator` trong lệnh gọi này. Điều quan trọng là phải cho bạn thấy phần này của quá trình trong phần 2!
+
+Để tinh chỉnh mô hình trên tập dữ liệu, chúng ta chỉ cần gọi phương thức `train()` của `Trainer`:
+
+```py
+trainer.train()
+```
+
+Thao tác này sẽ bắt đầu quá trình tinh chỉnh (sẽ mất vài phút trên GPU) và báo cáo lỗi đào tạo sau mỗi 500 bước. Tuy nhiên, nó sẽ không cho bạn biết mô hình của bạn đang hoạt động tốt (hoặc tồi tệ như thế nào). Điều này là do:
+
+1. Chúng ta đã không yêu cầu `Trainer` đánh giá trong quá trình huấn luyện bằng cách cài đặt `eval_strategy` thành `"steps"` (đánh giá mọi `eval_steps`) hoặc `"epoch"` (đánh giá vào cuối mỗi epoch).
+2. Chúng ta đã không cung cấp cho `Trainer` một hàm `compute_metrics()` để tính toán chỉ số trong quá trình đánh giá nói trên (nếu không, đánh giá sẽ chỉ in ra lỗ, đây không phải là một chỉ số trực quan cho lắm).
+
+### Đánh giá
+
+Hãy xem cách chúng ta có thể xây dựng một hàm `compute_metrics()` hữu ích và sử dụng nó trong lần huấn luyện tiếp theo. Hàm phải nhận một đối tượng `EvalPrediction` (là một tuple được đặt tên với trường `predictions` và trường `label_ids`) và sẽ trả về một chuỗi ánh xạ từ thành số thực (các chuỗi là tên của các chỉ số được trả về và các giá trị của chúng ép về kiểu số thực). Để nhận được dự đoán từ mô hình, chúng ta có thể sử dụng lệnh `Trainer.predict()`:
+
+```py
+predictions = trainer.predict(tokenized_datasets["validation"])
+print(predictions.predictions.shape, predictions.label_ids.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+Đầu ra của phương thức `predict()` là một tuple có tên khác với ba trường: `predictions`, `label_ids`, và `metrics`. Trường `metrics` sẽ chỉ chứa sự mất mát trên tập dữ liệu đã truyền vào, cũng như một số chỉ số thời gian (tổng cộng và trung bình mất bao lâu để dự đoán). Sau khi chúng ta hoàn thành hàm `compute_metrics()` và truyền nó vào `Trainer`, trường đó cũng sẽ chứa các chỉ số được trả về bởi` compute_metrics()`.
+
+Như bạn có thể thấy, `predictions` là một mảng hai chiều có hình dạng 408 x 2 (408 là số phần tử trong tập dữ liệu ta đã sử dụng). Đó là các logit cho từng phần tử của tập dữ liệu mà chúng ta đã truyền vào cho`predict()` ( như bạn đã thấy trong [chương trước](/course/chapter2), tất cả các mô hình Transformer đều trả về logit). Để chuyển đổi chúng thành các dự đoán mà chúng ta có thể so sánh với các nhãn của mình, chúng ta cần lấy chỉ số có giá trị lớn nhất trên trục thứ hai:
+
+```py
+import numpy as np
+
+preds = np.argmax(predictions.predictions, axis=-1)
+```
+
+Giờ chúng ta có thể so sánh các `preds` đó với các nhãn. Để xây dựng hàm `compute_metric()`, chúng ta sẽ dựa vào các chỉ số từ thư viện 🤗 [Đánh giá](https://github.com/huggingface/evaluate/). Chúng ta có thể tải các chỉ số được liên kết với tập dữ liệu MRPC dễ dàng như khi chúng ta tải tập dữ liệu, lần này là với hàm `evaluate.load()`. Đối tượng được trả về có phương thức `compute()` mà chúng ta có thể sử dụng để thực hiện tính toán số liệu:
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+metric.compute(predictions=preds, references=predictions.label_ids)
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+Kết quả chính xác bạn nhận được có thể khác nhau, vì việc khởi tạo ngẫu nhiên phần đầu mô hình có thể thay đổi các chỉ số mà nó đạt được. Ở đây, chúng ta có thể thấy mô hình có độ chính xác 85.78% trên tập kiểm định và điểm F1 là 89.97. Đó là hai chỉ số được sử dụng để đánh giá kết quả trên tập dữ liệu MRPC theo điểm chuẩn GLUE. Bảng trong [bài báo BERT](https://arxiv.org/pdf/1810.04805.pdf) báo cáo điểm F1 là 88.9 cho mô hình cơ sở. Đó là mô hình `không phân biệt` viết hoa viết thường trong khi chúng ta hiện đang sử dụng mô hình `có phân biệt`, điều này giải thích kết quả tốt hơn.
+
+Kết hợp mọi thứ lại với nhau, chúng ta nhận được hàm `compute_metrics()`:
+
+```py
+def compute_metrics(eval_preds):
+    metric = evaluate.load("glue", "mrpc")
+    logits, labels = eval_preds
+    predictions = np.argmax(logits, axis=-1)
+    return metric.compute(predictions=predictions, references=labels)
+```
+
+Và để xem nó được sử dụng trong thực tiễn để báo cáo các chỉ số ở cuối mỗi epoch như thế nào, đây là cách chúng tôi định nghĩa một `Trainer` mới với hàm `compute_metrics()` này:
+
+
+```py
+training_args = TrainingArguments("test-trainer", evaluation_strategy="epoch")
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+Lưu ý rằng chúng ta tạo một `TrainingArguments` mới với `eval_strategy` của nó được đặt thành `"epoch"` và một mô hình mới - nếu không, chúng ta sẽ tiếp tục huấn luyện mô hình ta đã huấn luyện. Để khởi chạy một đợt huấn luyện mới, chúng ta thực hiện:
+
+```
+trainer.train()
+```
+
+Lần này, nó sẽ báo cáo thông số mất mát kiểm định và chỉ số ở cuối mỗi epoch ên cạnh thông số mất mát trên tập huấn luyện. Một lần nữa, độ chính xác tuyệt đối/điểm F1 mà bạn đạt được có thể hơi khác so với những gì chúng tôi tìm thấy, do việc khởi tạo đầu ngẫu nhiên của mô hình, nhưng nó phải ở trong cùng một khoảng.
+
+`Trainer` sẽ hoạt động hiệu quả trên nhiều GPU hoặc TPU và cung cấp nhiều tùy chọn, chẳng hạn như huấn luyện về độ chính xác hỗn hợp (sử dụng `fp16=True` trong tham số huấn luyện của bạn). Chúng ta sẽ xem xét mọi thứ mà nó hỗ trợ trong Chương 10.
+
+Phần này kết thúc phần giới thiệu về cách tinh chỉnh bằng API `Trainer`. Một ví dụ về việc thực hiện điều này đối với hầu hết các tác vụ NLP phổ biến sẽ được đưa ra trong [Chương 7](/course/chapter7), nhưng ở thời điểm này chúng ta hãy xem cách thực hiện điều tương tự trong PyTorch thuần túy.
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Tinh chỉnh mô hình trên tập dữ liệu GLUE SST-2, sử dụng quá trình xử lý dữ liệu bạn đã thực hiện trong phần 2.
+
+</Tip>

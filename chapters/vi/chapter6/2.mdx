@@ -1,0 +1,257 @@
+# Huấn luyện một tokenizer mới từ cái cũ
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter6/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter6/section2.ipynb"},
+]} />
+
+Nếu mô hình ngôn ngữ không có sẵn ngôn ngữ bạn quan tâm hoặc nếu kho tài liệu của bạn rất khác với kho mà mô hình ngôn ngữ của bạn đã huấn luyện, bạn rất có thể sẽ muốn huấn luyện lại mô hình từ đầu bằng cách sử dụng trình tokenize phù hợp với dữ liệu của bạn. Điều đó sẽ yêu cầu huấn luyện một trình tokenize mới trên tập dữ liệu của bạn. Nhưng chính xác thì điều đó có nghĩa là gì? Khi chúng ta lần đầu xem xét các tokenizer trong [Chương 2](/course/chapter2), chúng ta thấy rằng hầu hết các mô hình Transformer sử dụng thuật toán tokenize _từ phụ_. Để xác định những từ phụ nào được quan tâm và xuất hiện thường xuyên nhất trong kho ngữ liệu hiện có, trình tokenize cần phải xem xét kỹ tất cả các văn bản trong kho ngữ liệu - một quá trình mà chúng ta gọi là *huấn luyện*. Các quy tắc chi phối việc huấn luyện này phụ thuộc vào loại tokenizer được sử dụng và chúng ta sẽ xem xét ba thuật toán chính ở phần sau của chương này.
+
+<Youtube id="DJimQynXZsQ"/>
+
+<Tip warning={true}>
+
+⚠️ Huấn luyện một tokenizer không giống như huấn luyện một mô hình! Huấn luyện mô hình sử dụng giảm độ dốc ngẫu nhiên để làm cho tổn thất nhỏ hơn một chút cho mỗi đợt. Nó được ngẫu nhiên hóa bởi tự nhiên (có nghĩa là bạn phải đặt một giá trị seed để có được kết quả tương tự khi thực hiện cùng thực hiện huấn luyện hai lần). Huấn luyện một trình tokenize là một quy trình thống kê cố gắng xác định những từ phụ nào tốt nhất để chọn cho một kho dữ liệu nhất định, và các quy tắc được sử dụng để chọn chúng dựa trên thuật toán tokenize. Nó mang tính cố định, nghĩa là bạn luôn nhận được cùng một kết quả khi huấn luyện với cùng một thuật toán trên cùng một kho tài liệu.
+
+</Tip>
+
+## Tập hợp một kho ngữ liệu
+
+Có một API rất đơn giản trong 🤗 Transformers mà bạn có thể sử dụng để huấn luyện một tokenizer mới có cùng đặc điểm với cái hiện có: `AutoTokenizer.train_new_from_iterator()`. Để thấy điều này trong thực tế, giả sử chúng ta muốn huấn luyện GPT-2 từ đầu, nhưng bằng một ngôn ngữ khác ngoài tiếng Anh. Nhiệm vụ đầu tiên của chúng ta sẽ là thu thập nhiều dữ liệu bằng ngôn ngữ đó trong một kho dữ liệu huấn luyện. Để cung cấp các mẫu mà mọi người có hiểu được, chúng ta sẽ không sử dụng ngôn ngữ như tiếng Nga hoặc tiếng Trung ở đây, mà là ngôn ngữ tiếng Anh chuyên dụng: đoạn mã Python.
+
+Thư viện [🤗 Datasets](https://github.com/huggingface/datasets) có thể giúp chúng ta tập hợp một kho dữ liệu mã nguồn Python. Chúng ta sẽ sử dụng hàm `load_dataset()` thông thường để tải xuống và lưu vào bộ nhớ cache của tập dữ liệu [CodeSearchNet](https://huggingface.co/datasets/code_search_net). Tập dữ liệu này được tạo cho [thử thách CodeSearchNet](https://wandb.ai/github/CodeSearchNet/benchmark) và chứa hàng triệu hàm từ các thư viện mã nguồn mở trên GitHub bằng một số ngôn ngữ lập trình. Ở đây, chúng ta sẽ tải phần Python của tập dữ liệu này:
+
+```py
+from datasets import load_dataset
+
+# Quá trình này có thể mất một vài phút để tải, vì vậy hãy lấy cà phê hoặc trà trong khi chờ đợi!
+raw_datasets = load_dataset("code_search_net", "python")
+```
+
+Chúng ta có thể xem xét phần tách huấn luyện để xem ta có quyền truy cập vào những cột nào:
+
+```py
+raw_datasets["train"]
+```
+
+```python out
+Dataset({
+    features: ['repository_name', 'func_path_in_repository', 'func_name', 'whole_func_string', 'language', 
+      'func_code_string', 'func_code_tokens', 'func_documentation_string', 'func_documentation_tokens', 'split_name', 
+      'func_code_url'
+    ],
+    num_rows: 412178
+})
+```
+
+Chúng ta có thể thấy tập dữ liệu tách chuỗi tài liệu mô tả khỏi đoạn mã và đề xuất tokenize cả hai. Ở đây, chúng ta sẽ chỉ sử dụng cột `whole_func_string` để huấn luyện trình tokenize. Chúng ta có thể xem xét mẫu một trong những hàm này bằng cách lập chỉ mục vào phần `train`:
+
+```py
+print(raw_datasets["train"][123456]["whole_func_string"])
+```
+
+nó nên trả về kết quả như dưới đây:
+
+```out
+def handle_simple_responses(
+      self, timeout_ms=None, info_cb=DEFAULT_MESSAGE_CALLBACK):
+    """Accepts normal responses from the device.
+
+    Args:
+      timeout_ms: Timeout in milliseconds to wait for each response.
+      info_cb: Optional callback for text sent from the bootloader.
+
+    Returns:
+      OKAY packet's message.
+    """
+    return self._accept_responses('OKAY', info_cb, timeout_ms=timeout_ms)
+```
+
+Điều đầu tiên chúng ta cần làm là chuyển đổi tập dữ liệu thành một _iterator_ danh sách các văn bản - ví dụ, một danh sách các văn bản. Việc sử dụng danh sách văn bản sẽ cho phép tokenizer hoạt động nhanh hơn (huấn luyện hàng loạt văn bản thay vì xử lý từng văn bản riêng lẻ) và nó phải là một trình lặp nếu chúng ta muốn tránh có mọi thứ trong bộ nhớ cùng một lúc. Nếu kho dữ liệu của bạn lớn, bạn sẽ muốn tận dụng lợi thế thực tiễn là 🤗 Datasets không tải mọi thứ vào RAM mà lưu trữ các phần tử của tập dữ liệu trên đĩa.
+
+Làm như sau sẽ tạo một danh sách các danh sách với mỗi danh sách gồm 1,000 văn bản, nhưng sẽ tải mọi thứ vào bộ nhớ:
+
+```py
+# Đừng bỏ ghi chú dòng bên dưới trừ khi tập dữ liệu của bạn nhỏ!
+# training_corpus = [raw_datasets["train"][i: i + 1000]["whole_func_string"] for i in range(0, len(raw_datasets["train"]), 1000)]
+```
+
+Sử dụng trình tạo Python, chúng ta có thể tránh việc Python tải bất kỳ thứ gì vào bộ nhớ cho đến khi nó thực sự cần thiết. Để tạo một trình tạo như vậy, bạn chỉ cần thay dấu ngoặc vuông bằng dấu ngoặc đơn:
+
+```py
+training_corpus = (
+    raw_datasets["train"][i : i + 1000]["whole_func_string"]
+    for i in range(0, len(raw_datasets["train"]), 1000)
+)
+```
+
+Dòng mã này không tìm nạp bất kỳ phần tử nào của tập dữ liệu; nó chỉ tạo một đối tượng mà bạn có thể sử dụng trong vòng lặp Python `for`. Các văn bản sẽ chỉ được tải khi bạn cần (nghĩa là khi bạn đang ở bước của vòng lặp `for` mà yêu cầu chúng) và chỉ 1,000 văn bản sẽ được tải mỗi lần. Bằng cách này, bạn sẽ không sử dụng hết bộ nhớ của mình ngay cả khi bạn đang xử lý một tập dữ liệu lớn.
+
+Vấn đề với một đối tượng tạo là nó chỉ có thể được sử dụng một lần. Vì vậy, thay vì điều này cho ta danh sách 10 chữ số đầu tiên hai lần:
+
+```py
+gen = (i for i in range(10))
+print(list(gen))
+print(list(gen))
+```
+
+chúng ta có thể lấy chúng trong một lần và sau đó danh sáng sẽ trống:
+
+```python out
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+[]
+```
+
+Đó là lí do chúng ta định nghĩa một hàm thay vào đó trả về một trình tạo:
+
+```py
+def get_training_corpus():
+    return (
+        raw_datasets["train"][i : i + 1000]["whole_func_string"]
+        for i in range(0, len(raw_datasets["train"]), 1000)
+    )
+
+
+training_corpus = get_training_corpus()
+```
+
+Ta có thể định nghĩa trình tạo bên trong vòng lặp `for` sử dụng `yield`:
+
+```py
+def get_training_corpus():
+    dataset = raw_datasets["train"]
+    for start_idx in range(0, len(dataset), 1000):
+        samples = dataset[start_idx : start_idx + 1000]
+        yield samples["whole_func_string"]
+```
+
+sẽ tạo ra trình tạo hoàn toàn giống như trước đây, nhưng cho phép bạn sử dụng logic phức tạp hơn bạn có thể trong một bao hàm.
+
+## Huấn luyện một tokenizer mới
+
+Bây giờ chúng ta đã có kho văn bản của mình dưới dạng một trình lặp các loạt văn bản, chúng ta đã sẵn sàng để huấn luyện một trình tokenize mới. Để thực hiện việc này, trước tiên chúng ta cần tải tokenizer mà chúng ta muốn ghép nối với mô hình của mình (ở đây, GPT-2):
+
+```py
+from transformers import AutoTokenizer
+
+old_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+Mặc dù chúng ta sẽ huấn luyện một tokenizer, nhưng bạn nên làm điều này để tránh bắt đầu hoàn toàn từ đầu. Bằng cách này, chúng ta sẽ không phải chỉ định bất kỳ điều gì về thuật toán tokenize hoặc các token đặc biệt mà ta muốn sử dụng; tokenizer mới sẽ giống hệt như GPT-2 và điều duy nhất sẽ thay đổi là từ vựng, sẽ được xác định bởi quá trình huấn luyện trên kho ngữ liệu của chúng tôi.
+
+Đầu tiên, chúng ta hãy xem cách mà tokenizer này sẽ xử lý một hàm mẫu thế nào:
+
+```py
+example = '''def add_numbers(a, b):
+    """Add the two numbers `a` and `b`."""
+    return a + b'''
+
+tokens = old_tokenizer.tokenize(example)
+tokens
+```
+
+```python out
+['def', 'Ġadd', '_', 'n', 'umbers', '(', 'a', ',', 'Ġb', '):', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġ"""', 'Add', 'Ġthe', 'Ġtwo',
+ 'Ġnumbers', 'Ġ`', 'a', '`', 'Ġand', 'Ġ`', 'b', '`', '."', '""', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġreturn', 'Ġa', 'Ġ+', 'Ġb']
+```
+
+Tokenizer này có một số ký hiệu đặc biệt, như `Ġ` và `Ċ`, tương ứng biểu thị dấu cách và dòng mới. Như chúng ta có thể thấy, điều này không quá hiệu quả: tokenizer trả về các mã thông báo riêng lẻ cho từng khoảng trắng, khi nó có thể nhóm các mức thụt lề lại với nhau (vì có bộ bốn hoặc tám dấu cách sẽ rất phổ biến trong mã). Nó cũng tách tên hàm hơi kỳ lạ, nhìn không quen các từ có ký tự `_`.
+
+Hãy huấn luyện một tokenizer mới và xem liệu nó có giải quyết được những vấn đề đó không. Đối với điều này, chúng ta sẽ sử dụng phương thức `train_new_from_iterator()`:
+
+```py
+tokenizer = old_tokenizer.train_new_from_iterator(training_corpus, 52000)
+```
+
+Lệnh này có thể mất một chút thời gian nếu kho dữ liệu của bạn rất lớn, nhưng đối với tập dữ liệu 1.6GB văn bản này, nó rất nhanh (1 phút 16 giây trên CPU AMD Ryzen 9 3900X với 12 lõi).
+
+Lưu ý rằng `AutoTokenizer.train_new_from_iterator()` chỉ hoạt động nếu tokenizer bạn đang sử dụng là tokenizer "nhanh". Như bạn sẽ thấy trong phần tiếp theo, thư viện 🤗 Transformers chứa hai loại tokenizers: một số được viết hoàn toàn bằng Python và những loại khác (loại nhanh) được hỗ trợ bởi thư viện 🤗 Tokenizers, được viết bằng ngôn ngữ lập trình [Rust](https://www.rust-lang.org). Python là ngôn ngữ thường được sử dụng nhất cho các ứng dụng khoa học dữ liệu và học sâu, nhưng khi bất kỳ thứ gì cần được song song hóa cho nhanh, nó phải được viết bằng một ngôn ngữ khác. Ví dụ, các phép nhân ma trận là cốt lõi của tính toán mô hình được viết bằng CUDA, một thư viện C được tối ưu hóa cho GPU.
+
+Việc huấn luyện một tokenizer hoàn toàn mới bằng Python thuần túy sẽ rất chậm, đó là lý do tại sao chúng tôi đã phát triển thư viện 🤗 Tokenizer. Lưu ý rằng cũng giống như bạn không phải học ngôn ngữ CUDA để có thể thực thi mô hình của mình trên một loạt đầu vào trên GPU, bạn sẽ không cần phải học Rust để sử dụng trình tokenizer nhanh. Thư viện 🤗 Tokenizers cung cấp các liên kết Python cho nhiều phương thức gọi nội bộ một số đoạn mã trong Rust; ví dụ: để song song huấn luyện trình tokenize mới của bạn hoặc, như chúng ta đã thấy trong [Chương 3](/course/chapter3), tokenize một loạt đầu vào.
+
+Hầu hết các mô hình Transformer đều có sẵn công cụ tokenize nhanh (có một số ngoại lệ mà bạn có thể kiểm tra [tại đây](https://huggingface.co/transformers/#supported-frameworks)) và API `AutoTokenizer` luôn chọn tốc tokenizer nhanh cho bạn nếu nó có sẵn. Trong phần tiếp theo, chúng ta sẽ xem xét một số tính năng đặc biệt khác mà các tokenize nhanh có mà thực sự hữu ích cho các tác vụ như phân loại token và hỏi đáp. Tuy nhiên, trước khi đi sâu vào vấn đề đó, chúng ta hãy thử tokenizer hoàn toàn mới của chúng ta trên mẫu trước:
+
+```py
+tokens = tokenizer.tokenize(example)
+tokens
+```
+
+```python out
+['def', 'Ġadd', '_', 'numbers', '(', 'a', ',', 'Ġb', '):', 'ĊĠĠĠ', 'Ġ"""', 'Add', 'Ġthe', 'Ġtwo', 'Ġnumbers', 'Ġ`',
+ 'a', '`', 'Ġand', 'Ġ`', 'b', '`."""', 'ĊĠĠĠ', 'Ġreturn', 'Ġa', 'Ġ+', 'Ġb']
+```
+
+Ở đây chúng ta lại thấy các ký hiệu đặc biệt `Ġ` và `Ċ` biểu thị dấu cách và dòng mới, nhưng chúng ta cũng có thể thấy rằng trình tokenize đã học được một số token rất cụ thể cho một kho các hàm Python: ví dụ: có một token `ĊĠĠĠ` đại diện cho một thụt lề và token `Ġ"""` đại diện cho ba dấu ngoặc kép bắt đầu một chuỗi tài liệu. Tokenizer cũng phân chia chính xác tên hàm trên `_`. Đây là một biễu diễn khá nhỏ gọn; tương đối, sử dụng tokenizer đơn giản bằng tiếng Anh trên cùng một mẫu sẽ cho ta một câu dài hơn:
+
+```py
+print(len(tokens))
+print(len(old_tokenizer.tokenize(example)))
+```
+
+```python out
+27
+36
+```
+
+Hãy cùng nhìn vào ví dụ sau:
+
+```python
+example = """class LinearLayer():
+    def __init__(self, input_size, output_size):
+        self.weight = torch.randn(input_size, output_size)
+        self.bias = torch.zeros(output_size)
+
+    def __call__(self, x):
+        return x @ self.weights + self.bias
+    """
+tokenizer.tokenize(example)
+```
+
+```python out
+['class', 'ĠLinear', 'Layer', '():', 'ĊĠĠĠ', 'Ġdef', 'Ġ__', 'init', '__(', 'self', ',', 'Ġinput', '_', 'size', ',',
+ 'Ġoutput', '_', 'size', '):', 'ĊĠĠĠĠĠĠĠ', 'Ġself', '.', 'weight', 'Ġ=', 'Ġtorch', '.', 'randn', '(', 'input', '_',
+ 'size', ',', 'Ġoutput', '_', 'size', ')', 'ĊĠĠĠĠĠĠĠ', 'Ġself', '.', 'bias', 'Ġ=', 'Ġtorch', '.', 'zeros', '(',
+ 'output', '_', 'size', ')', 'ĊĊĠĠĠ', 'Ġdef', 'Ġ__', 'call', '__(', 'self', ',', 'Ġx', '):', 'ĊĠĠĠĠĠĠĠ',
+ 'Ġreturn', 'Ġx', 'Ġ@', 'Ġself', '.', 'weights', 'Ġ+', 'Ġself', '.', 'bias', 'ĊĠĠĠĠ']
+```
+
+Ngoài token tương ứng với thụt lề, ở đây chúng ta cũng có thể thấy token cho thụt lề kép:`ĊĠĠĠĠĠĠĠ`. Các từ đặc biệt trong Python như `class`, `init`, `call`, `self`, và `return`, mỗi từ được tokenize thành một token và chúng ta có thể thấy cũng như tách `_`  và `.`,  tokenizer phân chia chính xác các tên: `LinearLayer` được tokenize là `["ĠLinear", "Layer"]`.
+
+## Lưu tokenizer
+
+Để đảm bảo rằng chúng ta có thể sử dụng nó sau này, chúng ta cần phải lưu tokenizer mới của mình. Giống như đối với các mô hình, điều này được thực hiện với phương thức `save_pretrained()`:
+
+```py
+tokenizer.save_pretrained("code-search-net-tokenizer")
+```
+
+Thao tác này sẽ tạo một thư mục mới có tên *code-search-net-tokenizer*, sẽ chứa tất cả các tệp mà tokenizer cần được tải lại. Nếu bạn muốn chia sẻ tokenizer này với đồng nghiệp và bạn bè của mình, bạn có thể tải nó lên Hub bằng cách đăng nhập vào tài khoản của mình. Nếu bạn đang làm việc trên notebook, có một hàm tiện ích giúp bạn làm điều này:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+Thao tác này sẽ hiển thị một tiện ích mà bạn có thể nhập thông tin đăng nhập Hugging Face của mình. Nếu bạn không làm việc trong notebook, chỉ cần nhập dòng sau vào thiết bị đầu cuối của bạn:
+
+```bash
+huggingface-cli login
+```
+
+Khi bạn đã đăng nhập, bạn có thể đẩy tokenizer của mình bằng cách thực hiện lệnh sau:
+
+```py
+tokenizer.push_to_hub("code-search-net-tokenizer")
+```
+
+Thao tác này sẽ tạo một kho lưu trữ mới trong không gian tên của bạn với tên `code-search-net-tokenizer`, chứa tệp tokenizer. Sau đó bạn có thể tải tokenizer từ bất kì đâu với phương thức `from_pretrained()`:
+
+```py
+# Thay "huggingface-course" dưới đấy với tên không gian thực sự sử dụng tokenizer riêng của bạn
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+```
+
+Giờ bạn đã sẵn sàng để huấn luyện một mô hình ngôn ngữ từ đầu và việc tinh chỉnh nó trong tầm tay của bạn! Chúng ta sẽ tìm hiểu điều đó trong [Chương 7](/course/chap7), nhưng trước tiên, trong phần còn lại của chương này, chúng ta sẽ xem xét kỹ hơn về các trình tokenize nhanh và khám phá chi tiết những gì thực sự xảy ra khi chúng ta gọi phương thức `train_new_from_iterator()`.
