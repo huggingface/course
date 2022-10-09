@@ -1,0 +1,172 @@
+<FrameworkSwitchCourse {fw} />
+
+# Affinare il modello con la Trainer API
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/it/chapter3/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/it/chapter3/section3.ipynb"},
+]} />
+
+<Youtube id="nvBXf7s7vTI"/>
+
+🤗 Transformers fornisce una classe `Trainer` (addestratore) per aiutare con l'affinamento di uno qualsiasi dei modelli pre-addestrati nel dataset. Dopo tutto il lavoro di preprocessing nella sezione precedente, rimangono giusto gli ultimi passi per definire il `Trainer`. Probabilmente la parte più complicata sarà preparare l'ambiente per eseguire `Trainer.train()`, poiché sarà molto lento su una CPU. Se non avete una GPU a disposizione, potete avere accesso gratuitamente a GPU o TPU su [Google Colab](https://colab.research.google.com/).
+
+Gli esempi di codice qui sotto partono dal presupposto che gli esempi nella sezione precedente siano già stati eseguiti. Ecco un breve riassunto di cosa serve:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### Addestramento
+
+Il primo passo per definire un `Trainer` è la definizione di una classe `TrainingArguments` che contenga tutti gli iperparametri che verranno usati dal `Trainer` per l'addestramento e la valutazione. L'unico parametro da fornire è la cartella dove verranno salvati il modello addestrato e i vari checkpoint. Per tutto il resto si possono lasciare i parametri di default, che dovrebbero funzionare bene per un affinamento di base.
+
+```py
+from transformers import TrainingArguments
+
+training_args = TrainingArguments("test-trainer")
+```
+
+<Tip>
+
+💡 Se si vuole caricare automaticamente il modello all'Hub durante l'addestramento, basta passare `push_to_hub=True` come parametro nei `TrainingArguments`. Maggiori dettagli verranno forniti nel [Capitolo 4](/course/chapter4/3).
+
+</Tip>
+
+Il secondo passo è definire il modello. Come nel [capitolo precedente](/course/chapter2), utilizzeremo la classe `AutoModelForSequenceClassification` con due label:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+Diversamente dal [Capitolo 2](/course/chapter2), un avviso di avvertimento verrà visualizzato dopo aver istanziato questo modello pre-addestrato. Ciò avviene perché BERT non è stato pre-addestrato per classificare coppie di frasi, quindi la testa del modello pre-addestrato viene scartata e una nuova testa adeguata per il compito di classificazione di sequenze è stata inserita. Gli avvertimenti indicano che alcuni pesi non verranno usati (quelli corrispondenti alla testa scartata del modello pre-addestrato) e che altri pesi sono stati inizializzati con valori casuali (quelli per la nuova testa). L'avvertimento viene concluso con un'esortazione ad addestrare il modello, che è esattamente ciò che stiamo per fare.  
+
+Una volta ottenuto il modello, si può definire un `Trainer` passandogli tutti gli oggetti costruiti fino ad adesso — il `model`, i `training_args`, i dataset di addestramento e validazione, il `data_collator`, e il `tokenizer`:
+
+```py
+from transformers import Trainer
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+Quando si passa l'argomento `tokenizer` come appena fatto, il `data_collator` usato di default dal `Trainer` sarà del tipo `DataCollatorWithPadding`, come definito precedentemente, quindi si potrebbe evitare di specificare l'argomento `data_collator=data_collator` in questa chiamata. Tuttavia era comunque importante mostrare questa parte del processing nella sezione 2!
+
+Per affinare il modello sul nostro dataset, bisogna solo chiamare il metodo `train()` del `Trainer`:
+
+```py
+trainer.train()
+```
+
+Questo farà partire l'affinamento (che richiederà un paio di minuti su una GPU) e produrrà un report della funzione obiettivo dell'addestramento ogni 500 passi. Tuttavia, non vi farà sapere quanto sia buona (o cattiva) la performance del modello. Ciò è dovuto al fatto che:
+
+1. Non è stato detto al `Trainer` di valutare il modello durante l'addestramento, settando `evaluation_strategy` o al valore `"steps"` (valuta il modello ogni `eval_steps`) oppure al valore `"epoch"` (valuta il modello alla fine di ogni epoca).
+2. Non è stato fornito al `Trainer` una funzione `compute_metrics()` per calcolare le metriche di valutazione (altrimenti la valutazione stamperebbe solo il valore della funzione obiettivo, che non è un valore molto intuitivo).
+
+
+### Valutazione
+
+Vediamo come si può costruire una funzione `compute_metrics()` utile e usarla per il prossimo addestramento. La funzione deve prendere come parametro un oggetto `EvalPrediction` (che è una named tuple avente un campo `predictions` – predizioni – e un campo `label_ids` – id delle etichette –) e restituirà un dizionario che associa stringhe a numeri floating point (le stringhe saranno i nomi delle metriche, i numeri i loro valori). Per ottenere delle predizioni, si può usare il comando `Trainer.predict()`:
+
+```py
+predictions = trainer.predict(tokenized_datasets["validation"])
+print(predictions.predictions.shape, predictions.label_ids.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+
+Il risultato del metodo `predict()` è un'altra named tuple con tre campi: `predictions`, `label_ids`, e `metrics`. Il campo `metrics` conterrà solo il valore della funzione obiettivo sul dataset, in aggiunta ad alcune metriche legate al tempo (il tempo necessario per calcolare le predizioni, in totale e in media). Una volta completata la funzione `compute_metrics()` e passata al `Trainer`, quel campo conterrà anche le metriche restituite da `compute_metrics()`.
+
+Come si può vedere, `predictions` è un array bi-dimensionale con dimensioni 408 x 2 (poiché 408 è il numero di elementi nel dataset). Questi sono i logit per ogni elemento del dataset passato a `predict()` (come già visto nel [capitolo precedente](/course/chapter2), tutti i modelli Transformer restituiscono logit). Per trasformarli in predizioni associabili alle etichette, bisogna prendere l'indice col valore massimo sul secondo asse:
+
+```py
+import numpy as np
+
+preds = np.argmax(predictions.predictions, axis=-1)
+```
+
+Ora si possono paragonare i `preds` con le etichette. Per costruire la funzione `compute_metric()`, verranno utilizzate le metriche dalla libreria 🤗 Dataset. Si possono caricare le metriche associate con il dataset MRPC in maniera semplice, utilizzando la funzione `load_metric()`. L'oggetto restituito ha un metodo `compute()` (calcola) che possiamo usare per calcolare le metriche:
+
+```py
+from datasets import load_metric
+
+metric = load_metric("glue", "mrpc")
+metric.compute(predictions=preds, references=predictions.label_ids)
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+L'esatto valore dei risultati potrebbe essere diverso nel vostro caso, a casa dell'inizializzazione casuale della testa del modello. In questo caso il nostro modello ha un'accuratezza del 85.78% sul set di validazione e un valore F1 di 89.97. Queste sono le due metriche utilizzate per valutare i risultati sul dataset MRPC per il benchmark GLUE. La tabella nell'[articolo su BERT](https://arxiv.org/pdf/1810.04805.pdf) riportava un F1 di 88.9 per il modello base. Quello era il modello `uncased` (senza distinzione fra minuscole e maiuscole) mentre noi stiamo usando quello `cased`, il che spiega il risultato migliore. 
+
+Mettendo tutto insieme si ottiene la funzione `compute_metrics()`:
+
+```py
+def compute_metrics(eval_preds):
+    metric = load_metric("glue", "mrpc")
+    logits, labels = eval_preds
+    predictions = np.argmax(logits, axis=-1)
+    return metric.compute(predictions=predictions, references=labels)
+```
+
+Per vederla in azione e fare il report delle metriche alla fine di ogni epoca, ecco come si definisce un nuovo `Trainer` che includa questa funzione `compute_metrics()`:
+
+```py
+training_args = TrainingArguments("test-trainer", evaluation_strategy="epoch")
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+Da notare che bisogna creare un nuovo oggetto `TrainingArguments` con il valore di `evaluation_strategy` pari a `"epoch"` e un nuovo modello — altrimenti si continuerebbe l'addestramento del modello già addestrato. Per lanciare una nuova esecuzione dell'addestramento si usa:
+
+```
+trainer.train()
+```
+
+Stavolta vi sarà il report della funzione obiettivo di validazione alla fine di ogni epoca, in aggiunta alla funzione obiettivo dell'addestramento. Di nuovo, i valori esatti di accuratezza/F1 ottenuti da voi potrebbero variare leggermente da quelli mostrati qui a causa dell'inizializzazione casuale della testa del modello, ma dovrebbero essere comparabili. 
+
+Il `Trainer` funzionerà direttamente su svariate GPU e TPU e ha molte opzioni, tra cui addestramento in precisione mista (utilizzare `fp16 = True` negli argomenti). I dettagli delle opzioni verranno esplorati nel Capitolo 10. 
+
+Qui si conclude l'introduzione all'affinamento usando l'API del `Trainer`. Esempi per i compiti più comuni in NLP verranno forniti nel Capitolo 7, ma per ora vediamo come ottenere la stessa cosa usando puramente Pytorch.
+
+<Tip>
+
+✏️ **Prova tu!** Affinare un modello sul dataset GLUE SST-2 utilizzando il processing dei dati già fatto nella sezione 2. 
+
+</Tip>
+
