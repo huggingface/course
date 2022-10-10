@@ -1,0 +1,483 @@
+<FrameworkSwitchCourse {fw} />
+
+# Gỡ lỗi quy trình huấn luyện
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter8/section4_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter8/section4_tf.ipynb"},
+]} />
+
+Bạn đã viết một kịch bản tuyệt đẹp để huấn luyện hoặc tinh chỉnh một mô hình trong một tác vụ nhất định, tuân thủ một cách nghiêm túc lời khuyên từ [Chương 7](/course/chapter7). Nhưng khi bạn khởi chạy lệnh `model.fit()`, một điều kinh khủng xảy ra: bạn gặp lỗi 😱! Hoặc tệ hơn, mọi thứ dường như ổn và quá trình huấn luyện chạy mà không có lỗi, nhưng mô hình kết quả là tồi tệ. Trong phần này, chúng tôi sẽ chỉ cho bạn những gì bạn có thể làm để gỡ lỗi các loại vấn đề này.
+
+<Youtube id="N9kO52itd0Q"/>
+
+Vấn đề khi bạn gặp lỗi trong  `model.fit()`  có thể đến từ nhiều nguồn, vì việc huấn luyện thường tập hợp rất nhiều thứ lại với nhau. Vấn đề có thể là một cái gì đó sai trong bộ dữ liệu của bạn hoặc một số vấn đề khi cố gắng kết hợp hàng loạt các phần tử của bộ dữ liệu với nhau. Sau đó, nó lấy một loạt dữ liệu và đưa nó vào mô hình, vì vậy vấn đề có thể nằm ở mã mô hình. Sau đó, nó tính toán các độ dốc và thực hiện bước tối ưu hóa, vì vậy vấn đề cũng có thể nằm trong trình tối ưu hóa của bạn. Và ngay cả khi mọi thứ diễn ra tốt đẹp cho quá trình huấn luyện, vẫn có thể xảy ra sự cố trong quá trình đánh giá nếu có vấn đề với chỉ số của bạn.
+
+Cách tốt nhất để gỡ lỗi phát sinh trong `model.fit()` là đi qua toàn pipeline này theo cách thủ công để xem mọi thứ diễn ra như thế nào. Sau đó, lỗi thường rất dễ giải quyết.
+
+Để chứng minh điều này, chúng ta sẽ sử dụng tập lệnh (cố gắng) tinh chỉnh mô hình DistilBERT trên [tập dữ liệu MNLI](https://huggingface.co/datasets/glue):
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    TFAutoModelForSequenceClassification,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+
+train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["input_ids", "labels"], batch_size=16, shuffle=True
+)
+
+validation_dataset = tokenized_datasets["validation_matched"].to_tf_dataset(
+    columns=["input_ids", "labels"], batch_size=16, shuffle=True
+)
+
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+model.compile(loss="sparse_categorical_crossentropy", optimizer="adam")
+
+model.fit(train_dataset)
+```
+
+Nếu bạn cố gắng thực thi nó, bạn có thể nhận được một số `VisibleDeprecationWarning` khi thực hiện chuyển đổi tập dữ liệu - đây là một vấn đề UX đã biết mà chúng ta gặp phải, vì vậy vui lòng bỏ qua nó. Nếu bạn đang đọc khóa học sau đó, chẳng hạn như tháng 11 năm 2021 và nó vẫn đang diễn ra, thì hãy gửi những dòng tweet giận dữ tại @carrigmat cho đến khi anh ấy sửa nó.
+
+Tuy nhiên, một vấn đề nghiêm trọng hơn là chúng ta nhận được một lỗi trọn vẹn. Và nó thực sự rất dài:
+
+```python out
+ValueError: No gradients provided for any variable: ['tf_distil_bert_for_sequence_classification/distilbert/embeddings/word_embeddings/weight:0', '...']
+```
+
+Điều đó nghĩa là gì? Chúng ta đã cố gắng huấn luyện trên dữ liệu của mình, nhưng chúng ta không có gradient? Điều này khá bối rối; làm thế nào để chúng ta thậm chí bắt đầu gỡ lỗi một cái gì đó như vậy? Khi lỗi bạn gặp phải không gợi ý ngay vấn đề nằm ở đâu, giải pháp tốt nhất thường là thực hiện mọi thứ theo trình tự, đảm bảo ở mỗi giai đoạn mọi thứ đều ổn. Và tất nhiên, nơi bắt đầu luôn là...
+
+### Kiểm tra dữ liệu của bạn
+
+Điều này không cần phải nói, nhưng nếu dữ liệu của bạn bị hỏng, Keras sẽ không thể sửa nó cho bạn. Vì vậy, điều đầu tiên, bạn cần phải xem xét những gì bên trong bộ huấn luyện của bạn.
+
+Mặc dù rất hấp dẫn khi nhìn vào bên trong `raw_datasets` và `tokenized_datasets`, chúng tôi thực sự khuyên bạn nên truy cập dữ liệu ngay tại điểm mà nó được đưa vào mô hình. Điều đó có nghĩa là đọc kết quả đầu ra từ `tf.data.Dataset` mà bạn đã tạo bằng hàm `to_tf_dataset()`! Vì vậy, làm thế nào để chúng ta làm điều đó? Các đối tượng `tf.data.Dataset` cung cấp cho chúng ta toàn bộ các lô cùng một lúc và không hỗ trợ lập chỉ mục, vì vậy chúng ta không thể chỉ yêu cầu `train_dataset[0]`. Tuy nhiên, chúng ta có thể yêu cầu nó một cách lịch sự cho một lô:
+
+```py
+for batch in train_dataset:
+    break
+```
+
+`break` kết thúc vòng lặp sau một lần lặp, vì vậy, điều này lấy lô đầu tiên ra khỏi `train_dataset` và lưu nó dưới dạng `batch`. Bây giờ, chúng ta hãy xem những gì bên trong:
+
+```python out
+{'attention_mask': <tf.Tensor: shape=(16, 76), dtype=int64, numpy=
+ array([[1, 1, 1, ..., 0, 0, 0],
+        [1, 1, 1, ..., 0, 0, 0],
+        [1, 1, 1, ..., 0, 0, 0],
+        ...,
+        [1, 1, 1, ..., 1, 1, 1],
+        [1, 1, 1, ..., 0, 0, 0],
+        [1, 1, 1, ..., 0, 0, 0]])>,
+ 'label': <tf.Tensor: shape=(16,), dtype=int64, numpy=array([0, 2, 1, 2, 1, 1, 2, 0, 0, 0, 1, 0, 1, 2, 2, 1])>,
+ 'input_ids': <tf.Tensor: shape=(16, 76), dtype=int64, numpy=
+ array([[ 101, 2174, 1010, ...,    0,    0,    0],
+        [ 101, 3174, 2420, ...,    0,    0,    0],
+        [ 101, 2044, 2048, ...,    0,    0,    0],
+        ...,
+        [ 101, 3398, 3398, ..., 2051, 2894,  102],
+        [ 101, 1996, 4124, ...,    0,    0,    0],
+        [ 101, 1999, 2070, ...,    0,    0,    0]])>}
+```
+
+Điều này có vẻ đúng, phải không? Chúng ta đang chuyển các nhãn `labels`, `attention_mask`, và `input_ids` cho mô hình, đây sẽ là mọi thứ nó cần để tính toán kết quả đầu ra và tính toán mất mát. Vậy tại sao chúng ta không có một gradient? Nhìn kỹ hơn: chúng ta đang chuyển một từ điển duy nhất làm đầu vào, nhưng một lô huấn luyện thường là một tensor đầu vào hoặc từ điển, cộng với một tensor nhãn. Nhãn của chúng ta là một chìa khóa trong từ điển đầu vào của mình.
+
+Đây có phải là vấn đê? Không phải lúc nào cũng vậy! Nhưng đó là một trong những vấn đề phổ biến nhất mà bạn sẽ gặp phải khi huấn luyện các mô hình Transformer với TensorFlow. Tất cả các mô hình của chúng ta đều có thể tính toán mất mát trong nội bộ, nhưng để làm được điều đó, các nhãn cần được chuyển vào từ điển đầu vào. Đây là mất mát được sử dụng khi chúng ta không chỉ định giá trị tổn thất cho `compile()`. Mặt khác, Keras thường mong đợi các nhãn được chuyển riêng khỏi từ điển đầu vào và các tính toán tổn thất thường sẽ thất bại nếu bạn không làm điều đó.
+
+Vấn đề giờ đã trở nên rõ ràng hơn: chúng ta đã thông qua tham số `loss`, có nghĩa là chúng ta đang yêu cầu Keras tính toán khoản mất mát của mình, nhưng chúng ta đã chuyển nhãn của mình làm đầu vào cho mô hình, không phải là nhãn ở nơi Keras mong đợi chúng! Chúng ta cần chọn cái này hay cái kia: hoặc chúng ta sử dụng tổn thất bên trong của mô hình và giữ các nhãn ở vị trí của chúng, hoặc chúng ta tiếp tục sử dụng tổn thất Keras, nhưng chúng ta chuyển các nhãn đến nơi mà Keras mong đợi chúng. Để đơn giản, chúng ta hãy thực hiện cách tiếp cận đầu tiên. Thay đổi lệnh gọi thành `compile()` để đọc:
+
+```py
+model.compile(optimizer="adam")
+```
+
+Bây giờ chúng ta sẽ sử dụng mất mát bên trong của mô hình và vấn đề này sẽ được giải quyết!
+
+<Tip>
+
+✏️ **Đến lượt bạn!** Là một thử thách không bắt buộc sau khi chúng ta đã giải quyết xong các vấn đề khác, bạn có thể thử quay lại bước này và làm cho mô hình hoạt động với mất mát do Keras tính toán ban đầu thay vì mất mát nội bộ. Bạn sẽ cần phải thêm `"labels"` vào `label_cols` của `to_tf_dataset()` để đảm bảo rằng các nhãn được xuất chính xác, điều này sẽ giúp bạn có được độ dốc - nhưng có một vấn đề nữa với sự mất mát mà chúng ta đã chỉ định. Việc huấnl uyện vẫn sẽ diễn ra với vấn đề này, nhưng việc học sẽ rất chậm và sẽ khả năng mất mát huấn luyện cao. Bạn có thể tìm ra nó là gì không?
+
+Một gợi ý mã hoá ROT13, nếu bạn bế tắc: Vs lbh ybbx ng gur bhgchgf bs FrdhraprPynffvsvpngvba zbqryf va Genafsbezref, gurve svefg bhgchg vf `ybtvgf`. Jung ner ybtvgf?
+
+Và một gợi ý thứ hai: Jura lbh fcrpvsl bcgvzvmref, npgvingvbaf be ybffrf jvgu fgevatf, Xrenf frgf nyy gur nethzrag inyhrf gb gurve qrsnhygf. Jung nethzragf qbrf FcnefrPngrtbevpnyPebffragebcl unir, naq jung ner gurve qrsnhygf?
+
+</Tip>
+
+Bây giờ, chúng ta hãy thử huấn luyện. Bây giờ chúng ta sẽ nhận được gradient, vì vậy hy vọng (nhạc đáng ngại phát ở đây) chúng ta có thể gọi `model.fit()` và mọi thứ sẽ hoạt động tốt!
+
+```python out
+  246/24543 [..............................] - ETA: 15:52 - loss: nan
+```
+
+Ôi không.
+
+`nan` không phải là một giá trị mất mát đáng khích lệ. Tuy nhiên, chúng ta đã kiểm tra dữ liệu của mình và nó trông khá ổn. Nếu đó không phải là vấn đề, chúng ta có thể đi đâu tiếp theo? Bước tiếp theo rõ ràng là ...
+
+### Kiểm tra mô hình của bạn
+
+`model.fit()` là một hàm tiện lợi thực sự tuyệt vời trong Keras, nhưng nó làm được rất nhiều thứ cho bạn và điều đó có thể khiến việc tìm chính xác vị trí đã xảy ra sự cố trở nên khó khăn hơn. Nếu bạn đang gỡ lỗi mô hình của mình, một chiến lược thực sự có thể hữu ích là chỉ chuyển một lô duy nhất cho mô hình và xem xét chi tiết kết quả đầu ra của một lô đó. Một mẹo thực sự hữu ích khác nếu mô hình đang gặp lỗi là `compile()` mô hình với `run_eagerly=True`. Điều này sẽ làm cho nó chậm hơn rất nhiều, nhưng nó sẽ làm cho các thông báo lỗi dễ hiểu hơn nhiều, bởi vì chúng sẽ chỉ ra chính xác vị trí xảy ra sự cố trong mã mô hình của bạn.
+
+Tuy nhiên, hiện tại, chúng ta chưa cần đến `run_eagerly`. Hãy chạy `batch` mà chúng ta đã có trước đó thông qua mô hình và xem kết quả đầu ra trông như thế nào:
+
+```py
+model(batch)
+```
+
+```python out
+TFSequenceClassifierOutput(loss=<tf.Tensor: shape=(16,), dtype=float32, numpy=
+array([nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan,
+       nan, nan, nan], dtype=float32)>, logits=<tf.Tensor: shape=(16, 2), dtype=float32, numpy=
+array([[nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan]], dtype=float32)>, hidden_states=None, attentions=None)
+```
+
+Chà, điều này thật khó. Mọi thứ đều là `nan`! Nhưng thật lạ phải không? Làm thế nào mà tất cả nhật ký của chúng ta sẽ trở thành `nan`? `nan` có nghĩa là "không phải là số". Giá trị `nan` thường xảy ra khi bạn thực hiện một thao tác bị cấm, chẳng hạn như chia cho số không. Nhưng một điều rất quan trọng cần biết về `nan` trong học máy là giá trị này có xu hướng *lan truyền*. Nếu bạn nhân một số với `nan`, kết quả cũng là `nan`. Và nếu bạn nhận được một `nan` ở bất kỳ đâu trong đầu ra, sự mất mát hoặc độ dốc của bạn, thì nó sẽ nhanh chóng lan rộng ra toàn bộ mô hình của bạn - bởi vì khi giá trị `nan` đó được truyền trở lại qua mạng của bạn, bạn sẽ nhận được `nan` gradient và khi cập nhật trọng số được tính toán với những gradient đó, bạn sẽ nhận được trọng số `nan` và những trọng số đó sẽ tính toán nhiều kết quả đầu ra `nan` hơn nữa! Chẳng bao lâu nữa, toàn bộ mạng lưới sẽ chỉ là một khối lớn gồm các giá trị `nan`. Một khi điều đó xảy ra, thật khó để xem vấn đề bắt đầu từ đâu. Làm thế nào chúng ta có thể cô lập nơi mà `nan` len lỏi đầu tiên?
+
+Câu trả lời là hãy thử *khởi động lại* mô hình. Khi chúng ta bắt đầu huấn luyện, chúng ta có một `nan` ở đâu đó và nó nhanh chóng được truyền bá qua toàn bộ mô hình. Vì vậy, hãy tải mô hình từ một checkpoint và không thực hiện bất kỳ cập nhật trọng số nào và xem nơi chúng ta nhận được giá trị `nan`:
+
+```py
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+model(batch)
+```
+
+When we run that, we get:
+
+```py out
+TFSequenceClassifierOutput(loss=<tf.Tensor: shape=(16,), dtype=float32, numpy=
+array([0.6844486 ,        nan,        nan, 0.67127866, 0.7068601 ,
+              nan, 0.69309855,        nan, 0.65531296,        nan,
+              nan,        nan, 0.675402  ,        nan,        nan,
+       0.69831556], dtype=float32)>, logits=<tf.Tensor: shape=(16, 2), dtype=float32, numpy=
+array([[-0.04761693, -0.06509043],
+       [-0.0481936 , -0.04556257],
+       [-0.0040929 , -0.05848458],
+       [-0.02417453, -0.0684005 ],
+       [-0.02517801, -0.05241832],
+       [-0.04514256, -0.0757378 ],
+       [-0.02656011, -0.02646275],
+       [ 0.00766164, -0.04350497],
+       [ 0.02060014, -0.05655622],
+       [-0.02615328, -0.0447021 ],
+       [-0.05119278, -0.06928903],
+       [-0.02859691, -0.04879177],
+       [-0.02210129, -0.05791225],
+       [-0.02363213, -0.05962167],
+       [-0.05352269, -0.0481673 ],
+       [-0.08141848, -0.07110836]], dtype=float32)>, hidden_states=None, attentions=None)
+```
+
+*Bây giờ* chúng ta đang đến một nơi nào đó! Không có giá trị `nan` nào trong nhật ký của mình, điều này khiến bạn yên tâm. Nhưng chúng ta thấy có một vài giá trị `nan` bị mất! Có điều gì đó đặc biệt về các mẫu đó gây ra vấn đề này không? Hãy xem chúng là những cái nào (lưu ý rằng nếu bạn tự chạy mã này, bạn có thể nhận được các chỉ số khác nhau vì tập dữ liệu đã bị xáo trộn):
+
+```python
+import numpy as np
+
+loss = model(batch).loss.numpy()
+indices = np.flatnonzero(np.isnan(loss))
+indices
+```
+
+```python out
+array([ 1,  2,  5,  7,  9, 10, 11, 13, 14])
+```
+
+Hãy xem các mẫu mà tạo ra chỉ số này:
+
+```python
+input_ids = batch["input_ids"].numpy()
+input_ids[indices]
+```
+
+```python out
+array([[  101,  2007,  2032,  2001,  1037, 16480,  3917,  2594,  4135,
+        23212,  3070,  2214, 10170,  1010,  2012,  4356,  1997,  3183,
+         6838, 12953,  2039,  2000,  1996,  6147,  1997,  2010,  2606,
+         1012,   102,  6838,  2001,  3294,  6625,  3773,  1996,  2214,
+         2158,  1012,   102,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  1998,  6814,  2016,  2234,  2461,  2153,  1998, 13322,
+         2009,  1012,   102,  2045,  1005,  1055,  2053,  3382,  2008,
+         2016,  1005,  2222,  3046,  8103,  2075,  2009,  2153,  1012,
+          102,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  1998,  2007,  1996,  3712,  4634,  1010,  2057,  8108,
+         2025,  3404,  2028,  1012,  1996,  2616, 18449,  2125,  1999,
+         1037,  9666,  1997,  4100,  8663, 11020,  6313,  2791,  1998,
+         2431,  1011,  4301,  1012,   102,  2028,  1005,  1055,  5177,
+         2110,  1998,  3977,  2000,  2832,  2106,  2025,  2689,  2104,
+         2122,  6214,  1012,   102,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  1045,  2001,  1999,  1037, 13090,  5948,  2007,  2048,
+         2308,  2006,  2026,  5001,  2043,  2026,  2171,  2001,  2170,
+         1012,   102,  1045,  2001,  3564,  1999,  2277,  1012,   102,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  2195,  4279,  2191,  2039,  1996,  2181,  2124,  2004,
+         1996,  2225,  7363,  1012,   102,  2045,  2003,  2069,  2028,
+         2451,  1999,  1996,  2225,  7363,  1012,   102,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  2061,  2008,  1045,  2123,  1005,  1056,  2113,  2065,
+         2009,  2428, 10654,  7347,  2030,  2009,  7126,  2256,  2495,
+         2291,   102,  2009,  2003,  5094,  2256,  2495,  2291,  2035,
+         2105,  1012,   102,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  2051,  1010,  2029,  3216,  2019,  2503,  3444,  1010,
+         6732,  1996,  2265,  2038, 19840,  2098,  2125,  9906,  1998,
+         2003,  2770,  2041,  1997,  4784,  1012,   102,  2051,  6732,
+         1996,  2265,  2003,  9525,  1998,  4569,  1012,   102,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  1996, 10556,  2140, 11515,  2058,  1010,  2010,  2162,
+         2252,  5689,  2013,  2010,  7223,  1012,   102,  2043,  1996,
+        10556,  2140, 11515,  2058,  1010,  2010,  2252,  3062,  2000,
+         1996,  2598,  1012,   102,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101, 13543,  1999,  2049,  6143,  2933,  2443,   102,  2025,
+        13543,  1999,  6143,  2933,  2003,  2443,   102,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0]])
+```
+
+Chà, có rất nhiều thứ ở đây, nhưng không có gì nổi bật là bất thường. Hãy xem các nhãn:
+
+```python out
+labels = batch['labels'].numpy()
+labels[indices]
+```
+
+```python out
+array([2, 2, 2, 2, 2, 2, 2, 2, 2])
+```
+
+Ah! Các mẫu `nan` đều có cùng một nhãn, và đó là nhãn 2. Đây là một gợi ý rất mạnh mẽ. Thực tế là chúng ta chỉ bị mất `nan` khi nhãn của chúng ta là 2 cho thấy rằng đây là thời điểm rất tốt để kiểm tra số lượng nhãn trong mô hình của mình:
+
+```python
+model.config.num_labels
+```
+
+```python out
+2
+```
+
+Bây giờ chúng ta thấy vấn đề: mô hình cho rằng chỉ có hai lớp, nhưng các nhãn tăng lên 2, có nghĩa là thực tế có ba lớp (vì 0 cũng là một lớp). Đây là cách chúng ta có một `nan` - bằng cách cố gắng tính toán mất mát cho một lớp không tồn tại! Hãy thử thay đổi điều đó và lắp lại mô hình:
+
+```
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+model.compile(optimizer='adam')
+model.fit(train_dataset)
+```
+
+```python out
+  869/24543 [>.............................] - ETA: 15:29 - loss: 1.1032
+```
+
+Chúng ta đang huấn luyện! Không còn `nan` nữa, và mất mát của chúng ta đang giảm dần ... đại loại vậy. Nếu bạn quan sát nó một lúc, bạn có thể bắt đầu hơi mất kiên nhẫn, bởi vì giá trị tổn thất vẫn ở mức cao. Chúng ta hãy dừng huấn luyện ở đây và thử nghĩ xem điều gì có thể gây ra vấn đề này. Tại thời điểm này, chúng ta khá chắc chắn rằng cả dữ liệu và mô hình đều ổn, nhưng mô hình của chúng ta không hoạt động tốt. Còn lại gì nữa? Đến lúc để...
+
+### Kiểm tra siêu tham số của bạn
+
+Nếu bạn nhìn lại đoạn mã ở trên, bạn có thể không nhìn thấy bất kỳ siêu tham số nào, có lẽ ngoại trừ `batch_size`, và điều đó dường như không phải là thủ phạm. Tuy nhiên, đừng để bị lừa; luôn có siêu tham số và nếu bạn không thể nhìn thấy chúng, điều đó có nghĩa là bạn không biết chúng được đặt thành gì. Đặc biệt, hãy nhớ một điều quan trọng về Keras: nếu bạn đặt hàm mất mát, trình tối ưu hóa hoặc kích hoạt bằng một chuỗi, _tất cả các đối số của nó sẽ được đặt thành giá trị mặc định của chúng_. Điều này có nghĩa là mặc dù việc sử dụng chuỗi ký tự rất tiện lợi, nhưng bạn nên hết sức cẩn thận khi làm như vậy, vì nó có thể dễ dàng che giấu những thứ quan trọng với bạn. (Bất kỳ ai đang thử thách thức tùy chọn ở trên nên lưu ý cẩn thận về thực tế này.)
+
+Trong trường hợp này, chúng ta đã đặt tham số bằng chuỗi ở đâu? Ban đầu, chúng ta đã đặt giá trị mất mát bằng một chuỗi, nhưng chúng ta không làm điều đó nữa. Tuy nhiên, chúng ta đang thiết lập trình tối ưu hóa bằng một chuỗi. Điều đó có thể đang che giấu bất cứ điều gì với mình? Hãy xem [các tham số của nó](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/Adam).
+
+Có gì nổi bật ở đây không? Đúng vậy - tốc độ học! Khi chúng ta chỉ sử dụng chuỗi `'adam'`, chúng ta sẽ nhận được tốc độ học mặc định, là 0.001 hoặc 1e-3. Đây là mức quá cao đối với một mô hình Transformer! Nói chung, chúng tôi khuyên bạn nên thử tốc độ học từ 1e-5 đến 1e-4 cho các mô hình của bạn; đó là một nơi nào đó nhỏ hơn từ 10X đến 100X so với giá trị mà ta thực sự đang sử dụng ở đây. Điều đó nghe có vẻ như nó có thể là một vấn đề lớn, vì vậy hãy thử giảm bớt nó. Để làm điều đó, chúng ta cần nhập vào đối tượng `optimizer`. Trong khi chúng ta đang ở đó, hãy bắt đầu lại mô hình từ checkpoint, trong trường hợp huấn luyện với tốc độ học cao làm hỏng trọng số của nó:
+
+```python
+from tensorflow.keras.optimizers import Adam
+
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+model.compile(optimizer=Adam(5e-5))
+```
+
+<Tip>
+
+💡 Bạn cũng có thể nhập hàm `create_optimizer()` từ 🤗 Transformers, hàm này sẽ cho bạn một trình tối ưu AdamW với với độ phân rã trọng số chính xác cũng như khởi động và phân rã tốc độ học. Trình này thường sẽ tạo ra kết quả tốt hơn một chút so với kết quả bạn nhận được với trình tối ưu hóa Adam mặc định.
+
+</Tip>
+
+Bây giờ, chúng tôi có thể thử điều chỉnh mô hình với tốc độ học mới, được cải thiện:
+
+```python
+model.fit(train_dataset)
+```
+
+```python out
+319/24543 [..............................] - ETA: 16:07 - loss: 0.9718
+```
+
+Bây giờ mất mát của chúng ta thực sự đi đâu đó! Việc huấn luyện cuối cùng có vẻ như nó đã hoạt động. Có một bài học ở đây: khi mô hình của bạn đang chạy nhưng mức hao hụt không giảm và bạn chắc chắn rằng dữ liệu của mình vẫn ổn, bạn nên kiểm tra các siêu tham số như tốc độ học và giảm trọng lượng. Đặt một trong hai giá trị đó quá cao rất có thể khiến quá trình huấn luyện bị "đình trệ" với giá trị tổn thất cao.
+
+## Các vấn đề tiềm ẩn khác
+
+Chúng ta đã đề cập đến các vấn đề trong tập lệnh ở trên, nhưng có một số lỗi phổ biến khác mà bạn có thể gặp phải. Chúng ta hãy nhìn vào một danh sách (không đầy đủ cho lắm).
+
+### Xử lý lỗi hết bộ nhớ
+
+Dấu hiệu cho biết sắp hết bộ nhớ là một lỗi như "OOM when allocating tensor"  - OOM là viết tắt của "hết bộ nhớ." Đây là một nguy cơ rất phổ biến khi xử lý các mô hình ngôn ngữ lớn. Nếu bạn gặp phải điều này, một chiến lược tốt là giảm một nửa kích thước lô của bạn và thử lại. Tuy nhiên, hãy nhớ rằng một số mô hình có kích thước *rất* lớn. Ví dụ: GPT-2 kích thước đầy đủ có thông số 1.5B, có nghĩa là bạn sẽ cần 6GB bộ nhớ chỉ để lưu mô hình và 6GB khác cho độ dốc của nó! Huấn luyện mô hình GPT-2 đầy đủ thường sẽ yêu cầu hơn 20GB VRAM bất kể bạn sử dụng kích thước lô nào, điều mà chỉ một số GPU có. Các mô hình nhẹ hơn như `distilbert-base-cased`  dễ chạy hơn nhiều và huấn luyện cũng nhanh hơn nhiều.
+
+<Tip>
+
+Trong phần tiếp theo của khóa học, chúng ta sẽ xem xét các kỹ thuật nâng cao hơn có thể giúp bạn giảm dung lượng bộ nhớ và cho phép bạn tinh chỉnh các mô hình lớn nhất.
+
+</Tip>
+
+### TensorFlow đói rồi đói rồi🦛
+
+Một điểm đặc biệt của TensorFlow mà bạn nên biết là nó phân bổ *tất cả* bộ nhớ GPU của bạn cho chính nó ngay khi bạn tải một mô hình hoặc thực hiện bất kỳ huấn luyện nào và sau đó nó sẽ phân chia bộ nhớ đó theo yêu cầu. Điều này khác với hành vi của các khung khác, như PyTorch, phân bổ bộ nhớ theo yêu cầu với CUDA thay vì thực hiện nó trong nội bộ. Một ưu điểm của phương pháp TensorFlow là nó thường có thể đưa ra các lỗi hữu ích khi bạn hết bộ nhớ và nó có thể phục hồi từ trạng thái đó mà không làm hỏng toàn bộ nhân CUDA. Nhưng cũng có một nhược điểm quan trọng: nếu bạn chạy hai tiến trình TensorFlow cùng một lúc, thì **bạn sẽ có một khoảng thời gian tồi tệ**.
+
+Nếu bạn đang chạy trên Colab, bạn không cần phải lo lắng về điều này, nhưng nếu bạn đang chạy cục bộ thì đây chắc chắn là điều bạn nên cẩn thận. Đặc biệt, hãy lưu ý rằng việc đóng một tab sổ ghi chép không nhất thiết phải đóng notebook đó lại! Bạn có thể cần chọn notebok đang chạy (notebook có biểu tượng màu xanh lá cây) và tắt chúng theo cách thủ công trong danh sách thư mục. Bất kỳ notebook đang chạy nào đang sử dụng TensorFlow vẫn có thể đang giữ một loạt bộ nhớ GPU của bạn và điều đó có nghĩa là bất kỳ notebook mới nào bạn bắt đầu đều có thể gặp phải một số vấn đề rất kỳ quặc.
+
+Nếu bạn bắt đầu gặp lỗi về CUDA, BLAS hoặc cuBLAS trong mã hoạt động trước đó, đây rất thường là thủ phạm. Bạn có thể sử dụng một lệnh như `nvidia-smi` để kiểm tra - khi bạn tắt hoặc khởi động lại notebook hiện tại của mình, bộ nhớ của bạn còn trống hay vẫn còn sử dụng được? Nếu nó vẫn còn được sử dụng, một cái gì đó khác đang giữ nó!
+
+### Kiểm tra lại dữ liệu của bạn (một lần nữa!)
+
+Mô hình của bạn sẽ chỉ học được điều gì đó nếu nó thực sự có thể học được bất cứ điều gì từ dữ liệu của bạn. Nếu có lỗi làm hỏng dữ liệu hoặc các nhãn được gán ngẫu nhiên, rất có thể bạn sẽ không huấn luyện được mô hình nào về tập dữ liệu của mình. Một công cụ hữu ích ở đây là `tokenizer.decode()`. Thao tác này sẽ biến `input_ids` trở lại thành chuỗi, vì vậy bạn có thể xem dữ liệu và xem liệu dữ liệu huấn luyện của bạn có đang dạy những gì bạn muốn nó dạy hay không. Ví dụ: sau khi bạn nhận được một `batch` từ `tf.data.Dataset` như chúng ta đã làm ở trên, bạn có thể giải mã phần tử đầu tiên như sau:
+
+```py
+input_ids = batch["input_ids"].numpy()
+tokenizer.decode(input_ids[0])
+```
+
+Then you can compare it with the first label, like so:
+
+```py
+labels = batch["labels"].numpy()
+label = labels[0]
+```
+
+Khi bạn có thể xem dữ liệu của mình như thế này, bạn có thể tự hỏi bản thân những câu hỏi sau:
+
+- Dữ liệu được giải mã có dễ hiểu không?
+- Bạn có đồng ý với các nhãn?
+- Có một nhãn nào phổ biến hơn những nhãn khác không?
+- Mất mát/Chỉ số sẽ là bao nhiêu nếu mô hình dự đoán một câu trả lời ngẫu nhiên/luôn là một câu trả lời giống nhau?
+
+Sau khi xem xét dữ liệu của bạn, hãy xem qua một số dự đoán của mô hình - nếu mô hình của bạn xuất ra các token, hãy thử giải mã chúng! Nếu mô hình luôn dự đoán cùng một điều thì đó có thể là do tập dữ liệu của bạn thiên về một loại (đối với các vấn đề phân loại), vì vậy các kỹ thuật như lấy mẫu quá mức các lớp hiếm có thể hữu ích. Ngoài ra, điều này cũng có thể được gây ra bởi các vấn đề huấn luyện như cài đặt siêu tham số tệ.
+
+Nếu phần mất mát/ các chỉ số bạn nhận được trên mô hình ban đầu của mình trước khi huấn luyện rất khác với cái bạn mong đợi cho các dự đoán ngẫu nhiên, hãy kiểm tra kỹ cách tính toán mất mát hoặc chỉ số của bạn, vì có thể có một lỗi ở đó. Nếu bạn đang sử dụng một số khoảng mất mát mà bạn thêm vào cuối, hãy đảm bảo rằng chúng có cùng quy mô.
+
+Khi bạn chắc chắn dữ liệu của mình là hoàn hảo, bạn có thể xem liệu mô hình có khả năng huấn luyện về nó hay không bằng một bài kiểm tra đơn giản.
+
+### Học kĩ mô hình của bạn trong một lô
+
+Việc học quá nhiều thường là điều chúng ta cố gắng tránh khi huấn luyện, vì nó có nghĩa là mô hình không học cách nhận ra các đặc điểm chung ta muốn mà thay vào đó chỉ là ghi nhớ các mẫu huấn luyện. Tuy nhiên, cố gắng huấn luyện mô hình của bạn lặp đi lặp lại là một bài kiểm tra tốt để kiểm tra xem vấn đề như bạn đã định hình có thể được giải quyết bằng mô hình mà bạn đang cố gắng huấn luyện hay không. Nó cũng sẽ giúp bạn xem liệu tốc độ học ban đầu của bạn có quá cao hay không.
+
+Thực hiện điều này khi bạn đã xác định được `model` của mình thực sự dễ dàng; chỉ cần lấy một loạt dữ liệu huấn luyện, sau đó coi `batch` đó là toàn bộ tập dữ liệu của bạn, đưa nó vào mô hình với một lượng epoch lớn:
+
+```py
+for batch in train_dataset:
+    break
+
+# Đảm bảo rằng bạn đã chạy model.compile() và đặt trình tối ưu hóa của mình,
+# và mất mát/chỉ số của bạn nếu bạn đang sử dụng chúng
+
+model.fit(batch, epochs=20)
+```
+
+<Tip>
+
+💡 Nếu dữ liệu huấn luyện của bạn không cân bằng, hãy đảm bảo tạo một loạt dữ liệu huấn luyện có chứa tất cả các nhãn.
+
+</Tip>
+
+Mô hình phải có kết quả gần như hoàn hảo trên `batch`, với mức mất mát giảm nhanh về 0 (hoặc giá trị tối thiểu cho khoản mất mát bạn đang sử dụng).
+
+Nếu bạn không quản lý để mô hình của mình có được kết quả hoàn hảo như thế này, điều đó có nghĩa là có điều gì đó không ổn trong cách bạn định khung vấn đề hoặc dữ liệu của mình, vì vậy bạn nên khắc phục điều đó. Chỉ khi bạn vượt qua được bài kiểm tra overfit, bạn mới có thể chắc chắn rằng mô hình của mình thực sự có thể học được điều gì đó.
+
+<Tip warning={true}>
+
+⚠️ Bạn sẽ phải tạo lại mô hình của mình và biên dịch lại sau bài kiểm tra overfitt này, vì mô hình thu được có thể sẽ không thể khôi phục và học được điều gì đó hữu ích trên tập dữ liệu đầy đủ của bạn.
+
+</Tip>
+
+### Không điều chỉnh bất cứ thứ gì cho đến khi bạn có mô hình cơ sở đầu tiên
+
+Điều chỉnh siêu tham số luôn được nhấn mạnh là phần khó nhất của học máy, nhưng nó chỉ là bước cuối cùng giúp bạn hiểu được một chút về chỉ số này. *Các giá trị rất không tốt* cho các siêu tham số của bạn, chẳng hạn như sử dụng tốc độ học Adam mặc định là 1e-3 với mô hình Transformer, tất nhiên sẽ khiến việc học tiến hành rất chậm hoặc hoàn toàn bị đình trệ, nhưng hầu hết thời gian là các siêu tham số "hợp lý", như tốc độ học từ 1e-5 đến 5e-5, sẽ hoạt động tốt để mang lại cho bạn kết quả tốt. Vì vậy đừng khởi chạy tìm kiếm siêu tham số tốn thời gian và tốn kém cho đến khi bạn có thứ gì đó vượt qua mô hình cơ sở mà bạn có trên tập dữ liệu của mình.
+
+Khi bạn đã có một mô hình đủ tốt, bạn có thể bắt đầu điều chỉnh một chút. Đừng thử khởi chạy một nghìn lần chạy với các siêu tham số khác nhau, nhưng hãy so sánh một vài lần chạy với các giá trị khác nhau cho một siêu thông số để có được ý tưởng về giá trị nào có tác động lớn nhất.
+
+Nếu bạn đang điều chỉnh chính mô hình, hãy giữ nó đơn giản và đừng thử bất cứ điều gì mà bạn không thể biện minh một cách hợp lý. Luôn đảm bảo rằng bạn quay lại kiểm tra overfit để xác minh rằng thay đổi của bạn không gây ra bất kỳ hậu quả ngoài ý muốn nào.
+
+### Yêu cầu giúp đỡ
+
+Hy vọng rằng bạn sẽ tìm thấy một số lời khuyên trong phần này để giúp bạn giải quyết vấn đề của mình, nhưng nếu không phải vậy, hãy nhớ rằng bạn luôn có thể hỏi cộng đồng trên [diễn đàn](https://discuss.huggingface.co/).
+
+Dưới đây là một số tài liệu bổ sung có thể hữu ích:
+
+- ["Reproducibility as a vehicle for engineering best practices"](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p) bởi Joel Grus
+- ["Checklist for debugging neural networks"](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21) bởi Cecelia Shao
+- ["How to unit test machine learning code"](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765) bởi Chase Roberts
+- ["A Recipe for Training Neural Networks"](http://karpathy.github.io/2019/04/25/recipe/) bởi Andrej Karpathy
+
+Tất nhiên, không phải mọi vấn đề bạn gặp phải khi huấn luyện mạng thần kinh đều là lỗi của chính bạn! Nếu bạn gặp điều gì đó trong thư viện 🤗 Transformers hoặc 🤗 Datasets có vẻ không ổn, có thể bạn đã gặp lỗi. Bạn chắc chắn nên cho chúng tôi biết tất cả về điều đó và trong phần tiếp theo, chúng tôi sẽ giải thích chính xác cách thực hiện điều đó.
