@@ -1,0 +1,190 @@
+<FrameworkSwitchCourse {fw} />
+
+# Affinare un modell usando Keras
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/it/chapter3/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/it/chapter3/section3_tf.ipynb"},
+]} />
+
+Dopo tutto il lavoro di preprocessing nella sezione precedente, rimangono giusto gli ultimi passi per addestrare il modello. Attenzione tuttavia che il comando `model.fit()` sarà molto lento su una CPU. Se non avete una GPU a disposizione, potete avere accesso gratuitamente a GPU o TPU su [Google Colab](https://colab.research.google.com/).
+
+Gli esempi di codice qui sotto partono dal presupposto che gli esempi nella sezione precedente siano già stati eseguiti. Ecco un breve riassunto di cosa serve:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+import numpy as np
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="tf")
+
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+
+tf_validation_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=False,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+```
+
+### Addestramento
+
+I modelli di TensorFlow importati da 🤗 Transformers sono già dei modelli Keras. Ecco una breve introduzione a Keras.
+
+<Youtube id="rnTGBy2ax1c"/>
+
+Ciò significa che una volta che si hanno i dati, è richiesto poco lavoro aggiuntivo per cominciare l'addestramento. 
+
+<Youtube id="AUozVp78dhk"/>
+
+Come nel [capitolo precedente](/course/chapter2), verrà utilizzata la classe `TFAutoModelForSequenceClassification` con due etichette:
+
+```py
+from transformers import TFAutoModelForSequenceClassification
+
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+Diversamente dal [Capitolo 2](/course/chapter2), un avviso di avvertimento verrà visualizzato dopo aver istanziato questo modello pre-addestrato. Ciò avviene perché BERT non è stato pre-addestrato per classificare coppie di frasi, quindi la testa del modello pre-addestrato viene scartata e una nuova testa adeguata per il compito di classificazione di sequenze è stata inserita. Gli avvertimenti indicano che alcuni pesi non verranno usati (quelli corrispondenti alla testa scartata del modello pre-addestrato) e che altri pesi sono stati inizializzati con valori casuali (quelli per la nuova testa). L'avvertimento viene concluso con un'esortazione ad addestrare il modello, che è esattamente ciò che stiamo per fare. 
+
+Per affinare il modello sul dataset, bisogna solo chiamare `compile()` (compila) sul modello e passare i dati al metodo `fit()`. Ciò farà partire il processo di affinamento (che dovrebbe richiedere un paio di minuti su una GPU) e fare il report della funzione obiettivo di addestramento, in aggiunta alla funzione obiettivo di validazione alla fine di ogni epoca. 
+
+<Tip>
+
+I modelli 🤗 Transformers hanno un'abilità speciale che manca alla maggior parte dei modelli Keras – possono usare in maniera automatica una funzione obiettivo appropriata, calcolata internamente. Questa funzione obiettivo verrà usata di default a meno che non venga definito l'argomento di funzione obiettivo nel metodo `compile()`. Per usare la funzione obiettivo interna è necessario passare le etichette come parte dell'input, non separatamente, che è l'approccio normale con i modelli Keras. Verranno mostrati esempi di ciò nella Parte 2 del corso, dove definire la funzione obiettivo correttamente può essere difficile. Per la classificazione di sequenze, invece, la funzione obiettivo standard di Keras funziona bene, quindi verrà utilizzata quella. 
+
+</Tip>
+
+```py
+from tensorflow.keras.losses import SparseCategoricalCrossentropy
+
+model.compile(
+    optimizer="adam",
+    loss=SparseCategoricalCrossentropy(from_logits=True),
+    metrics=["accuracy"],
+)
+model.fit(
+    tf_train_dataset,
+    validation_data=tf_validation_dataset,
+)
+```
+
+<Tip warning={true}>
+
+Attenzione ad un errore comune — si *può* passare solo il nome della funzione obiettivo a Keras come una stringa, ma di default Keras si aspetta che softmax sia già stato applicato ai risultati. Molti modelli invece forniscono come risultato i valori prima dell'applicazione del softmax, chiamati *logits*. Bisogna informare la funzione obiettivo che il nostro modello fa esattamente questo, e il solo modo di farlo è invocandola direttamente, non tramite la stringa che rappresenta il suo nome. 
+
+</Tip>
+
+
+### Migliorare la performance di addestramento
+
+<Youtube id="cpzq6ESSM5c"/>
+
+Il codice presentato qui sopra sicuramente funziona, ma la funzione obiettivo scende in maniera molto lenta e sporadica. La causa principale di ciò è la *learning rate* (tasso di apprendimento). Come con la funzione obiettivo, quando si passa il nome di un ottimizzatore a Keras tramite una stringa, Keras inizializza quell'ottimizzatore con i valori di default per tutti i parametri, inclusa la learning rate. Grazie alla nostra esperienza, però, sappiamo che i modelli transformer beneficiano da una learning rate molto più bassa del valore di default per Adam, che è 1e-3, scritto anche come 10 alla -3, o 0.001. Il valore 5e-5 (0.00005), circa venti volte più basso, è un punto di partenza migliore.
+
+In aggiunta a diminuire la learning rate, abbiamo un secondo asso nella manica: possiamo ridurre lentamente la learning rate durante l'addestramento. Nella letteratura, questo approccio viene spesso indicato come *decaying* (decadimento) o *annealing* (ricottura) della learning rate. In Keras, il modo migliore per ottenere ciò è attraverso un *learning rate scheduler* (pianificatore del tasso di addestramento). Un buon esempio è `PolynomialDecay` (decadimento polinomiale) — nonostante il nome, con le impostazioni di default ha un semplice decadimento lineare dal valore iniziale a quello finale durante l'addestramento, che è esattamente ciò che cerchiamo. Per utilizzare lo scheduler in maniera corretta, però, bisogna dirgli quanto lungo sarà l'addestramento. Lo calcoliamo tramite la variabile `num_train_steps` nell'esempio qui sotto.
+
+```py
+from tensorflow.keras.optimizers.schedules import PolynomialDecay
+
+batch_size = 8
+num_epochs = 3
+# The number of training steps is the number of samples in the dataset, divided by the batch size then multiplied
+# by the total number of epochs. Note that the tf_train_dataset here is a batched tf.data.Dataset,
+# not the original Hugging Face Dataset, so its len() is already num_samples // batch_size.
+num_train_steps = len(tf_train_dataset) * num_epochs
+lr_scheduler = PolynomialDecay(
+    initial_learning_rate=5e-5, end_learning_rate=0.0, decay_steps=num_train_steps
+)
+from tensorflow.keras.optimizers import Adam
+
+opt = Adam(learning_rate=lr_scheduler)
+```
+
+<Tip>
+
+La libreria 🤗 Transformers fornisce anche una funzione `create_optimizer()` che crea un ottimizzatore `AdamW` con decadimento della learning rate. Questa può essere una scorciatoia utile che verrà presentata nel dettaglio nelle sezioni future del corso.
+
+</Tip>
+
+Adesso che abbiamo il nostro ottimizzatore nuovo di zecca, possiamo provare con un addestramento. Per prima cosa, ricarichiamo il modello, per resettare i cambiamenti ai pesi dall'addestramento precedente, dopodiché lo possiamo compilare con nuovo ottimizzatore.
+
+```py
+import tensorflow as tf
+
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+model.compile(optimizer=opt, loss=loss, metrics=["accuracy"])
+```
+
+Ora chiamiamo di nuovo fit
+
+```py
+model.fit(tf_train_dataset, validation_data=tf_validation_dataset, epochs=3)
+```
+
+<Tip>
+
+💡 Se vuoi caricare il modello in maniera automatica all'Hub durante l'addestramento, puoi passare `PushToHubCallback` al metodo `model.fit()`. Maggiori dettagli verranno forniti nel [Capitolo 4](/course/chapter4/3)
+
+</Tip>
+
+### Predizioni del modello
+
+<Youtube id="nx10eh4CoOs"/>
+
+
+Vedere la funzione obiettivo che diminuisce durante l'addestramento è bello, ma se volessimo ottenere dei risultati dal modello addestrato, ad esempio per calcolare delle metriche o per usare il modello in produzione? Per questo, si può usare il metodo `predict()`. Questo metodo restituisce i `*logits* dalla testa del modello, uno per classe.
+
+```py
+preds = model.predict(tf_validation_dataset)["logits"]
+```
+
+I logits possono essere convertiti nelle predizioni delle classi del modello usando `argmax` per trovare il logit più grande, che corrisponde alla classe più probabile.
+
+```py
+class_preds = np.argmax(preds, axis=1)
+print(preds.shape, class_preds.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+
+Ora usiamo le `preds` per calcolare delle metriche! Si possono caricare le metriche associate al dataset MRPC in maniera facile tanto quanto caricare il dataset in sé, usando la funzione `load_metric()`. L'oggetto restituito ha un metodo `compute()` che può essere usato per calcolare le metriche.
+
+```py
+from datasets import load_metric
+
+metric = load_metric("glue", "mrpc")
+metric.compute(predictions=class_preds, references=raw_datasets["validation"]["label"])
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+L'esatto valore dei risultati ottenuti può variare, poiché l'inizializzazione casuale della testa del modello può cambiare le metriche ottenute. Qui vediamo che il nostro modello ha una accuratezza del 87.78% sul validation set e valore F1 di 89.97. Queste sono le due metriche utilizzare per valutare risultati sul dataset MRPC per il benchmark GLUE. La tabella nell'[articolo du BERT](https://arxiv.org/pdf/1810.04805.pdf) riportava un valore F1 di 88.9 per il modello di base. Quello era il modello `uncased`, mentre qui stiamo usando il modello `cased`, il che spiega i migliori risultati.
+
+Questo conclude l'introduzione all'affinamento usando l'API Keras. Un esempio per i compiti di NLP più comuni verrà fornito nel Capitolo 7. Per migliorare le vostre abilità con l'API Keras, provate ad affinare un modello sul dataset GLUE SST-2, usando il processing dei dati spiegato nella sezione 2.
