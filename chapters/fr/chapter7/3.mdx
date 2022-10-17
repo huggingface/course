@@ -443,7 +443,7 @@ tokenizer.decode(lm_datasets["train"][1]["labels"])
 ".... at.......... high. a classic line : inspector : i'm here to sack one of your teachers. student : welcome to bromwell high. i expect that many adults of my age think that bromwell high is far fetched. what a pity that it isn't! [SEP] [CLS] homelessness ( or houselessness as george carlin stated ) has been an issue for years but never a plan to help those on the street that were once considered human who did everything from going to school, work, or vote for the matter. most people think of the homeless"
 ```
 
-Comme prévu par notre fonction `group_texts()` ci-dessus, cela semble identique aux `input_ids` décodés. Mais alors comment notre modèle peut-il apprendre quoi que ce soit ? Il nous manque une étape clé : insérer des *tokens* à des positions aléatoires dans les entrées ! Voyons comment nous pouvons le faire à la volée pendant le *finetuning* en utilisant un collateur de données spécial.
+Comme prévu par notre fonction `group_texts()` ci-dessus, cela semble identique aux `input_ids` décodés. Mais alors comment notre modèle peut-il apprendre quoi que ce soit ? Il nous manque une étape clé : insérer des *tokens* à des positions aléatoires dans les entrées ! Voyons comment nous pouvons le faire à la volée pendant le *finetuning* en utilisant un assembleur de données spécial.
 
 ## <i>Finetuning</i> de DistilBERT avec l'API `Trainer`
 
@@ -455,7 +455,7 @@ from transformers import DataCollatorForLanguageModeling
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
 ```
 
-Pour voir comment le masquage aléatoire fonctionne, nous allons donner quelques exemples au collateur de données. Puisqu'il s'attend à une liste de `dict` où chaque `dict` représente un seul morceau de texte contigu, nous itérons d'abord sur le jeu de données avant de donner le batch au collateur. Nous supprimons la clé `"word_ids"` pour ce collateur de données car il ne l'attend pas :
+Pour voir comment le masquage aléatoire fonctionne, nous allons donner quelques exemples à l'assembleur de données. Puisqu'il s'attend à une liste de `dict` où chaque `dict` représente un seul morceau de texte contigu, nous itérons d'abord sur le jeu de données avant de donner le batch à l'assembleur. Nous supprimons la clé `"word_ids"` pour cet assembleur de données car il ne l'attend pas :
 
 ```python
 samples = [lm_datasets["train"][i] for i in range(2)]
@@ -482,11 +482,11 @@ Super, ça a marché ! Nous pouvons voir que le *token* `[MASK]` a été insér�
 
 {#if fw === 'pt'}
 
-Un effet secondaire du masquage aléatoire est que nos métriques d'évaluation ne seront pas déterministes lorsque nous utilisons la fonction `Trainer` puisque nous utilisons le même collateur de données pour les échantillons d'entraînement et de test. Nous verrons plus tard, lorsque nous examinerons le *finetuning* avec 🤗 *Accelerate*, comment nous pouvons utiliser la flexibilité d'une boucle d'évaluation personnalisée pour geler le caractère aléatoire.
+Un effet secondaire du masquage aléatoire est que nos métriques d'évaluation ne seront pas déterministes lorsque nous utilisons la fonction `Trainer` puisque nous utilisons le même assembleur de données pour les échantillons d'entraînement et de test. Nous verrons plus tard, lorsque nous examinerons le *finetuning* avec 🤗 *Accelerate*, comment nous pouvons utiliser la flexibilité d'une boucle d'évaluation personnalisée pour geler le caractère aléatoire.
 
 {/if}
 
-Lors de l'entraînement des modèles pour la modélisation du langage masqué, une technique qui peut être utilisée est de masquer des mots entiers ensemble et pas seulement des *tokens* individuels. Cette approche est appelée _masquage de mots entiers_. Si nous voulons utiliser le masquage de mots entiers, nous devons construire nous-mêmes un collateur de données. Un collateur de données est simplement une fonction qui prend une liste d'échantillons et les convertit en un batch. Faisons-le ! Nous utiliserons les identifiants des mots calculés plus tôt pour faire une correspondance entre les indices des mots et les *tokens*, puis nous déciderons aléatoirement quels mots masquer et appliquerons ce masque sur les entrées. Notez que les étiquettes sont toutes `-100` sauf celles qui correspondent aux mots masqués.
+Lors de l'entraînement des modèles pour la modélisation du langage masqué, une technique qui peut être utilisée est de masquer des mots entiers ensemble et pas seulement des *tokens* individuels. Cette approche est appelée _masquage de mots entiers_. Si nous voulons utiliser le masquage de mots entiers, nous devons construire nous-mêmes un assembleur de données. Un assembleur de données est simplement une fonction qui prend une liste d'échantillons et les convertit en un batch. Faisons-le ! Nous utiliserons les identifiants des mots calculés plus tôt pour faire une correspondance entre les indices des mots et les *tokens*, puis nous déciderons aléatoirement quels mots masquer et appliquerons ce masque sur les entrées. Notez que les étiquettes sont toutes `-100` sauf celles qui correspondent aux mots masqués.
 
 {#if fw === 'pt'}
 
@@ -524,6 +524,7 @@ def whole_word_masking_data_collator(features):
             for idx in mapping[word_id]:
                 new_labels[idx] = labels[idx]
                 input_ids[idx] = tokenizer.mask_token_id
+        feature["labels"] = new_labels
 
     return default_data_collator(features)
 ```
@@ -564,6 +565,7 @@ def whole_word_masking_data_collator(features):
             for idx in mapping[word_id]:
                 new_labels[idx] = labels[idx]
                 input_ids[idx] = tokenizer.mask_token_id
+        feature["labels"] = new_labels
 
     return tf_default_data_collator(features)
 ```
@@ -592,7 +594,7 @@ for chunk in batch["input_ids"]:
 
 </Tip>
 
-Maintenant que nous avons deux collateurs de données, les étapes restantes du *finetuning* sont standards. L'entraînement peut prendre un certain temps sur Google Colab si vous n'avez pas la chance de tomber sur un mythique GPU P100 😭. Ainsi nous allons d'abord réduire la taille du jeu d'entraînement à quelques milliers d'exemples. Ne vous inquiétez pas, nous obtiendrons quand même un modèle de langage assez décent ! Un moyen rapide de réduire la taille d'un jeu de données dans 🤗 *Datasets* est la fonction `Dataset.train_test_split()` que nous avons vue au [chapitre 5](/course/fr/chapter5) :
+Maintenant que nous avons deux assembleurs de données, les étapes restantes du *finetuning* sont standards. L'entraînement peut prendre un certain temps sur Google Colab si vous n'avez pas la chance de tomber sur un mythique GPU P100 😭. Ainsi nous allons d'abord réduire la taille du jeu d'entraînement à quelques milliers d'exemples. Ne vous inquiétez pas, nous obtiendrons quand même un modèle de langage assez décent ! Un moyen rapide de réduire la taille d'un jeu de données dans 🤗 *Datasets* est la fonction `Dataset.train_test_split()` que nous avons vue au [chapitre 5](/course/fr/chapter5) :
 
 ```python
 train_size = 10_000
@@ -707,11 +709,11 @@ training_args = TrainingArguments(
 )
 ```
 
-Ici, nous avons modifié quelques options par défaut, y compris `logging_steps` pour s'assurer que nous suivons la perte d'entraînement à chaque époque. Nous avons également utilisé `fp16=True` pour activer l'entraînement en précision mixte, ce qui nous donne un autre gain de vitesse. Par défaut, `Trainer` va supprimer toutes les colonnes qui ne font pas partie de la méthode `forward()` du modèle. Cela signifie que si vous utilisez le collateur de masquage de mots entiers, vous devrez également définir `remove_unused_columns=False` pour vous assurer que nous ne perdons pas la colonne `word_ids` pendant l'entraînement.
+Ici, nous avons modifié quelques options par défaut, y compris `logging_steps` pour s'assurer que nous suivons la perte d'entraînement à chaque époque. Nous avons également utilisé `fp16=True` pour activer l'entraînement en précision mixte, ce qui nous donne un autre gain de vitesse. Par défaut, `Trainer` va supprimer toutes les colonnes qui ne font pas partie de la méthode `forward()` du modèle. Cela signifie que si vous utilisez l'assembleur de masquage de mots entiers, vous devrez également définir `remove_unused_columns=False` pour vous assurer que nous ne perdons pas la colonne `word_ids` pendant l'entraînement.
 
 Notez que vous pouvez spécifier le nom du dépôt vers lequel vous voulez pousser avec l'argument `hub_model_id` (en particulier, vous devrez utiliser cet argument pour pousser vers une organisation). Par exemple, lorsque nous avons poussé le modèle vers l'organisation [`huggingface-course`](https://huggingface.co/huggingface-course), nous avons ajouté `hub_model_id="huggingface-course/distilbert-finetuned-imdb"` `TrainingArguments`. Par défaut, le dépôt utilisé sera dans votre espace de noms et nommé après le répertoire de sortie que vous avez défini, donc dans notre cas ce sera `"lewtun/distilbert-finetuned-imdb"`.
 
-Nous avons maintenant tous les ingrédients pour instancier le `Trainer`. Ici, nous utilisons juste le collateur standard `data_collator`, mais vous pouvez essayer le collateur de masquage de mots entiers et comparer les résultats comme exercice : 
+Nous avons maintenant tous les ingrédients pour instancier le `Trainer`. Ici, nous utilisons juste l'assembleur standard `data_collator`, mais vous pouvez essayer l'assembleur de masquage de mots entiers et comparer les résultats comme exercice : 
 
 ```python
 from transformers import Trainer
@@ -825,9 +827,9 @@ Dans notre cas d'utilisation, nous n'avons pas eu besoin de faire quelque chose 
 
 ## <i>Finetuning</i> de DistilBERT avec 🤗 <i>Accelerate</i>
 
-Comme nous l'avons vu, avec `Trainer` le *finetuning* d'un modèle de langage masqué est très similaire à l'exemple de classification de texte du [chapitre 3](/course/fr/chapter3). En fait, la seule subtilité est l'utilisation d'un collateur de données spécial, et nous l'avons déjà couvert plus tôt dans cette section ! 
+Comme nous l'avons vu, avec `Trainer` le *finetuning* d'un modèle de langage masqué est très similaire à l'exemple de classification de texte du [chapitre 3](/course/fr/chapter3). En fait, la seule subtilité est l'utilisation d'un assembleur de données spécial, et nous l'avons déjà couvert plus tôt dans cette section ! 
 
-Cependant, nous avons vu que `DataCollatorForLanguageModeling` applique aussi un masquage aléatoire à chaque évaluation. Nous verrons donc quelques fluctuations dans nos scores de perplexité à chaque entrainement. Une façon d'éliminer cette source d'aléat est d'appliquer le masquage _une fois_ sur l'ensemble de test, puis d'utiliser le collateur de données par défaut dans 🤗 *Transformers* pour collecter les batchs pendant l'évaluation. Pour voir comment cela fonctionne, implémentons une fonction simple qui applique le masquage sur un batch, similaire à notre première rencontre avec `DataCollatorForLanguageModeling` :
+Cependant, nous avons vu que `DataCollatorForLanguageModeling` applique aussi un masquage aléatoire à chaque évaluation. Nous verrons donc quelques fluctuations dans nos scores de perplexité à chaque entrainement. Une façon d'éliminer cette source d'aléat est d'appliquer le masquage _une fois_ sur l'ensemble de test, puis d'utiliser l'assembleur de données par défaut dans 🤗 *Transformers* pour collecter les batchs pendant l'évaluation. Pour voir comment cela fonctionne, implémentons une fonction simple qui applique le masquage sur un batch, similaire à notre première rencontre avec `DataCollatorForLanguageModeling` :
 
 ```python
 def insert_random_mask(batch):
