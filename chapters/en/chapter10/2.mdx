@@ -1,7 +1,136 @@
-# Transformer architectures for audio
+# A tour of audio applications
 
-Random ideas:
+Similar to natural language processing, 🤗 Transformers can be applied to tackle some of the most common audio applications that you're likely to encounter in the wild.
 
-* A brief bit of history on pre-transformer approaches?
-* Mention popular architectures like wav2vec2, xsl-r etc
-* Show pipelines for most common audio tasks?
+>>> Maybe list some applications here? Possibly with a gradio demo?
+
+In this section we'll show you how to load audio datasets from the Hugging Face Hub, and how to analyze them with the `pipeline()` function from 🤗 Transformers. Along the way, we'll learn about several important properties of audio data, such as Fourier transforms and spectrograms.
+
+Let's start by loading some audio data and exploring its features.
+
+## Working with audio data
+
+Every audio or speech task starts with an audio recording.
+
+For this example, we'll use the [Speech Commands](https://huggingface.co/datasets/speech_commands) dataset, which is a widely used dataset for a task known as _keyword spotting_. Keyword spotting is an example of _audio classification_, where the task involves detecting a specific word in an audio recording. For example, if you were building a smart speaker, you might want to detect the word "stop" in a recording to pause the music. 
+
+The Speech Commands dataset contains audio files of people saying commands like "yes", "no", and "up", as well as words like "bed" and "tree" that aim to test the model's ability to ignore speech that doesn't contain triggers. The dataset is small and easy to use, so it's a great place to start. Let's start by downloading the  test split from the Hub by using the `load_dataset()` function from 🤗 Datasets:
+
+```python
+from datasets import load_dataset
+
+speech_commands = load_dataset("speech_commands", "v0.02", split="test")
+speech_commands
+```
+
+```out
+Dataset({
+    features: ['file', 'audio', 'label', 'is_unknown', 'speaker_id', 'utterance_id'],
+    num_rows: 4890
+})
+```
+
+<Tip>
+
+There are two versions of the Speech Commands dataset: `v0.02` and `v0.01`. The `v0.02` version is the most recent version, and the one we'll be using in this section. The `v0.01` version is the original version, and it contains around half as many audio files. If you want to use the `v0.01` version, you can replace `v0.02` with `v0.01` in the code above.
+
+</Tip>
+
+The dataset contains 4,890 audio files, each of which is labeled with a single word. The `label` column contains the word that was spoken in the audio file, and the `audio` column contains the raw audio data. Let's take a closer look at one of the examples:
+
+```python
+sample = speech_commands[0]
+sample
+```
+
+```out
+{
+    "file": "backward/a6f2fd71_nohash_3.wav",
+    "audio": {
+        "path": "backward/a6f2fd71_nohash_3.wav",
+        "array": array(
+            [
+                0.00048828,
+                0.00057983,
+                0.00079346,
+                ...,
+                -0.00067139,
+                -0.00064087,
+                -0.0007019,
+            ]
+        ),
+        "sampling_rate": 16000,
+    },
+    "label": 30,
+    "is_unknown": True,
+    "speaker_id": "a6f2fd71",
+    "utterance_id": 3,
+}
+```
+
+We can see that the `audio` column consists of three fields:
+
+* `path`: The path to the audio file.
+* `array`: The decoded audio data, represented as a 1-dimensional array.
+* `sampling_rate`. The sampling rate of the audio file, which is the number of audio samples per second. The sampling rate is an important property of audio data, and it's the number that we'll use in later sections to convert the raw audio data into a format that's more suitable for training models.
+
+Now that we've inspected the raw contents of the dataset, let's actually listen to a few examples! We'll use the `Blocks` and `Audio` features from Gradio to decode a few random samples from the dataset:
+
+```python
+id2label = speech_commands.features["label"].int2str
+
+
+def generate_audio():
+    example = speech_commands.shuffle()[0]
+    audio = example["audio"]
+    return (audio["sampling_rate"], (audio["array"] * 32_767).astype(np.int16)), id2label(example["label"])
+
+
+with gr.Blocks() as demo:
+    with gr.Column():
+        for _ in range(4):
+            audio, label = generate_audio()
+            output = gr.Audio(audio, label=label)
+
+demo.launch(debug=True)
+```
+
+
+
+From these samples you can hear that there are different speakers, different words, and different backgrounds. This is a good thing! It means that the dataset is realistic and that it will be challenging for a model to learn to detect keywords in the presence of all this noise.
+
+
+## Audio classification
+
+Now that we've heard and seen the audio data, let's use the `pipeline()` function to automatically classify the spoken words! In this case we just need to specify the name of the task and point to a model on the Hub that has been trained on this dataset:
+
+```python
+from transformers import pipeline
+
+classifier = pipeline("audio-classification", model="juliensimon/wav2vec2-conformer-rel-pos-large-finetuned-speech-commands")
+```
+
+This pipeline expects the audio data as a NumPy array, so let's pass the first example from 
+
+```python
+audio = speech_commands[0]["audio"]["array"]
+classifier(audio)
+```
+
+```out
+[
+    {"score": 0.5250455737113953, "label": "backward"},
+    {"score": 0.040257666260004044, "label": "bird"},
+    {"score": 0.03617362678050995, "label": "happy"},
+    {"score": 0.03454122319817543, "label": "marvin"},
+    {"score": 0.029664508998394012, "label": "learn"},
+]
+```
+
+In this case the model is very confident that the word in this recording is "backward", which is a good sign that it's working! Let's now take a look at a nother common task, _automatic speech recognition_.
+
+
+## Automatic speech recognition
+
+Automatic speech recognition (ASR) is the task of transcribing audio data into text. This is a very useful task for many applications, including voice assistants, speech-to-text transcription, and more.
+
