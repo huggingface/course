@@ -1,0 +1,339 @@
+<FrameworkSwitchCourse {fw} />
+
+# Gestione di sequenze multiple
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_tf.ipynb"},
+]} />
+
+{/if}
+
+{#if fw === 'pt'}
+<Youtube id="M6adb1j2jPI"/>
+{:else}
+<Youtube id="ROxrFOEbsQE"/>
+{/if}
+
+Nella sezione precedente abbiamo esplorato il più semplice dei casi d'uso: fare inferenza su una singola sequenza di lunghezza ridotta. Tuttavia, emergono già alcune domande:
+
+- Come si gestiscono le sequenze multiple?
+- Come gestiamo sequenze multiple *di lunghezza diversa*?
+- Gli indici del vocabolario sono gli unici input che permettono a un modello di funzionare bene?
+- Esiste una sequenza troppo lunga?
+
+Vediamo quali tipi di problemi pongono queste domande e come possiamo risolverli utilizzando l'API 🤗 Transformers.
+
+## I modelli si aspettano un gruppo di input
+
+Nell'esercizio precedente abbiamo visto come le sequenze vengono tradotte in liste di numeri. Convertiamo questo elenco di numeri in un tensore e inviamolo al modello:
+
+{#if fw === 'pt'}
+```py
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+input_ids = torch.tensor(ids)
+# This line will fail.
+model(input_ids)
+```
+
+```python out
+IndexError: Dimension out of range (expected to be in range of [-1, 0], but got 1)
+```
+{:else}
+```py
+import tensorflow as tf
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+input_ids = tf.constant(ids)
+# This line will fail.
+model(input_ids)
+```
+
+```py out
+InvalidArgumentError: Input to reshape is a tensor with 14 values, but the requested shape has 196 [Op:Reshape]
+```
+{/if}
+
+Oh no! Perché non ha funzionato?
+
+Il problema è che abbiamo inviato una singola sequenza al modello, mentre i modelli 🤗 Transformers si aspettano frasi multiple per impostazione predefinita. Qui abbiamo cercato di fare tutto ciò che il tokenizer ha fatto dietro le quinte, quando lo abbiamo applicato a una `sequenza`. Ma se si osserva attentamente, si noterà che il tokenizer non si è limitato a convertire l'elenco degli ID in ingresso in un tensore, ma ha aggiunto una dimensione:
+
+{#if fw === 'pt'}
+```py
+tokenized_inputs = tokenizer(sequence, return_tensors="pt")
+print(tokenized_inputs["input_ids"])
+```
+
+```python out
+tensor([[  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172,
+          2607,  2026,  2878,  2166,  1012,   102]])
+```
+{:else}
+```py
+tokenized_inputs = tokenizer(sequence, return_tensors="tf")
+print(tokenized_inputs["input_ids"])
+```
+
+```py out
+<tf.Tensor: shape=(1, 16), dtype=int32, numpy=
+array([[  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662,
+        12172,  2607,  2026,  2878,  2166,  1012,   102]], dtype=int32)>
+```
+{/if}
+
+Proviamo di nuovo e aggiungiamo una nuova dimensione:
+
+{#if fw === 'pt'}
+```py
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+
+input_ids = torch.tensor([ids])
+print("Input IDs:", input_ids)
+
+output = model(input_ids)
+print("Logits:", output.logits)
+```
+{:else}
+```py
+import tensorflow as tf
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+
+input_ids = tf.constant([ids])
+print("Input IDs:", input_ids)
+
+output = model(input_ids)
+print("Logits:", output.logits)
+```
+{/if}
+
+Stampiamo gli ID di input e i logit risultanti —  ecco l'output:
+
+
+{#if fw === 'pt'}
+```python out
+Input IDs: [[ 1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172,  2607, 2026,  2878,  2166,  1012]]
+Logits: [[-2.7276,  2.8789]]
+```
+{:else}
+```py out
+Input IDs: tf.Tensor(
+[[ 1045  1005  2310  2042  3403  2005  1037 17662 12172  2607  2026  2878
+   2166  1012]], shape=(1, 14), dtype=int32)
+Logits: tf.Tensor([[-2.7276208  2.8789377]], shape=(1, 2), dtype=float32)
+```
+{/if}
+
+*Il batch* è la procedura di invio di più frasi nel modello, tutte in una volta. Se si ha una sola frase, si può creare un batch con una sola sequenza:
+
+```
+batched_ids = [ids, ids]
+```
+
+Si tratta di un batch di due sequenze identiche!
+
+<Tip>
+
+✏️ **Try it out!** Convert this `batched_ids` list into a tensor and pass it through your model. Check that you obtain the same logits as before (but twice)!
+
+</Tip>
+
+Il batching consente al modello di funzionare quando si inseriscono più frasi. Utilizzare più sequenze è altrettanto semplice che creare un batch con una singola sequenza. C'è però un secondo problema. Quando si cerca di raggruppare due (o più) frasi, queste potrebbero essere di lunghezza diversa. Se si è già lavorato con i tensori, si sa che devono essere di forma rettangolare, quindi non è possibile convertire direttamente l'elenco degli ID in ingresso in un tensore. Per ovviare a questo problema, di solito, utilizziamo la tecnica del *padding* sugli input.
+
+## Aggiungere il padding all'input
+
+Il seguente elenco di liste non può essere convertito in un tensore:
+
+```py no-format
+batched_ids = [
+    [200, 200, 200],
+    [200, 200]
+]
+```
+
+Per ovviare a questo problema, useremo il *padding* per dare ai nostri tensori una forma rettangolare. Il padding assicura che tutte le frasi abbiano la stessa lunghezza, aggiungendo una parola speciale chiamata *padding token* alle frasi con meno valori. Ad esempio, se si hanno 10 frasi con 10 parole e 1 frase con 20 parole, il padding assicura che tutte le frasi abbiano 20 parole. Nel nostro esempio, il tensore risultante ha il seguente aspetto:
+
+```py no-format
+padding_id = 100
+
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, padding_id],
+]
+```
+
+L'ID del token di padding si trova in `tokenizer.pad_token_id`. Utilizziamolo e inviamo le nostre due frasi attraverso il modello singolarmente e insieme:
+
+{#if fw === 'pt'}
+```py no-format
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence1_ids = [[200, 200, 200]]
+sequence2_ids = [[200, 200]]
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+print(model(torch.tensor(sequence1_ids)).logits)
+print(model(torch.tensor(sequence2_ids)).logits)
+print(model(torch.tensor(batched_ids)).logits)
+```
+
+```python out
+tensor([[ 1.5694, -1.3895]], grad_fn=<AddmmBackward>)
+tensor([[ 0.5803, -0.4125]], grad_fn=<AddmmBackward>)
+tensor([[ 1.5694, -1.3895],
+        [ 1.3373, -1.2163]], grad_fn=<AddmmBackward>)
+```
+{:else}
+```py no-format
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence1_ids = [[200, 200, 200]]
+sequence2_ids = [[200, 200]]
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+print(model(tf.constant(sequence1_ids)).logits)
+print(model(tf.constant(sequence2_ids)).logits)
+print(model(tf.constant(batched_ids)).logits)
+```
+
+```py out
+tf.Tensor([[ 1.5693678 -1.3894581]], shape=(1, 2), dtype=float32)
+tf.Tensor([[ 0.5803005  -0.41252428]], shape=(1, 2), dtype=float32)
+tf.Tensor(
+[[ 1.5693681 -1.3894582]
+ [ 1.3373486 -1.2163193]], shape=(2, 2), dtype=float32)
+```
+{/if}
+
+C'è qualcosa che non va con i logit nelle nostre previsioni raggruppate: la seconda riga dovrebbe essere uguale ai logit della seconda frase, ma abbiamo valori completamente diversi!
+
+Questo perché la caratteristica principale dei modelli Transformer sono i livelli di attenzione che *contestualizzano* ogni token. Questi terranno conto dei token del padding, poiché si occupano di tutti i token di una sequenza. Per ottenere lo stesso risultato quando si passano nel modello singole frasi di lunghezza diversa o quando si passa un gruppo con le stesse frasi e l'applicazione di un padding, occorre dire a questi livelli di attenzione di ignorare i token del padding. Questo si ottiene utilizzando una maschera di attenzione.
+
+## Attention masks
+
+Le *maschere di attenzione* sono tensori con la stessa forma del tensore degli ID in ingresso, riempiti con 0 e 1: 1 indica che i token corrispondenti devono essere presi in considerazione, mentre 0 indica che i token corrispondenti non devono essere presi in considerazione (cioè, devono essere ignorati dagli strati di attenzione del modello).
+
+Completiamo l'esempio precedente con una maschera di attenzione:
+
+{#if fw === 'pt'}
+```py no-format
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+attention_mask = [
+    [1, 1, 1],
+    [1, 1, 0],
+]
+
+outputs = model(torch.tensor(batched_ids), attention_mask=torch.tensor(attention_mask))
+print(outputs.logits)
+```
+
+```python out
+tensor([[ 1.5694, -1.3895],
+        [ 0.5803, -0.4125]], grad_fn=<AddmmBackward>)
+```
+{:else}
+```py no-format
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+attention_mask = [
+    [1, 1, 1],
+    [1, 1, 0],
+]
+
+outputs = model(tf.constant(batched_ids), attention_mask=tf.constant(attention_mask))
+print(outputs.logits)
+```
+
+```py out
+tf.Tensor(
+[[ 1.5693681  -1.3894582 ]
+ [ 0.5803021  -0.41252586]], shape=(2, 2), dtype=float32)
+```
+{/if}
+
+Ora otteniamo gli stessi logits per la seconda frase del batch.
+
+Si noti che l'ultimo valore della seconda sequenza è un ID di riempimento, che è un valore 0 nella maschera di attenzione.
+
+<Tip>
+
+✏️ **Provaci anche tu** Applicate manualmente la tokenizzazione alle due frasi utilizzate nella sezione 2 ("I've been waiting for a HuggingFace course my whole life." e "I hate this so much!"). Passatele attraverso il modello e verificate che si ottengano gli stessi logits della sezione 2. A questo punto, batchateli insieme utilizzando il token di padding e successivamente create la maschera di attenzione appropriata. Verificate di ottenere gli stessi risultati passando attraverso il modello!
+
+</Tip>
+
+## Sequenze più lunghe
+
+Con i modelli Transformer, c'è un limite alla lunghezza delle sequenze che possiamo passare ai modelli. La maggior parte dei modelli gestisce sequenze fino a 512 o 1024 token e si blocca quando viene chiesto di elaborare sequenze più lunghe. Esistono due soluzioni a questo problema:
+
+- Utilizzare un modello con una lunghezza di sequenza supportata maggiore.
+- Troncare le sequenze.
+
+I modelli hanno diverse lunghezze di sequenza supportate e alcuni sono specializzati nella gestione di sequenze molto lunghe. [Longformer](https://huggingface.co/transformers/model_doc/longformer.html) è un esempio, un altro è [LED](https://huggingface.co/transformers/model_doc/led.html).  Se state lavorando a un'attività che richiede sequenze molto lunghe, vi consigliamo di dare un'occhiata a questi modelli.
+
+Altrimenti, si consiglia di troncare le sequenze specificando il parametro `max_sequence_length`:
+
+```py
+sequence = sequence[:max_sequence_length]
+```
