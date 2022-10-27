@@ -136,7 +136,7 @@ Now we'll use the model's internal loss, and this problem should be resolved!
 
 `model.fit()`은 Keras에서 정말 훌륭한 함수이지만 많은 일을 수행하므로 문제가 발생한 위치를 정확히 찾기가 더 어려울 수 있습니다. 모델을 디버깅하는 경우 진짜 도움이 될만한 전략으로 모델에 단일 배치를 전달하고 해당 배치에 대한 출력을 자세히 살펴보는 방법이 있습니다. 모델에서 오류가 발생하는 경우 정말 유용한 또 다른 팁은 `run_eagerly=True`로 모델을 `compile()`하는 것입니다. 이렇게 하면 속도가 훨씬 느려지지만 모델 코드에서 문제가 발생한 위치를 정확히 나타내기 때문에 에러 메시지를 훨씬 더 이해하기 쉽게 만듭니다.
 
-
+하지만 지금은 아직 `run_eagerly`가 필요하지 않습니다. 모델을 통해 이전에 얻은 `batch`를 실행하고 출력이 어떻게 보이는지 봅시다:
 For now, though, we don't need `run_eagerly` just yet. Let's run the `batch` we got before through the model and see what the outputs look like:
 
 ```py
@@ -165,16 +165,16 @@ array([[nan, nan],
        [nan, nan]], dtype=float32)>, hidden_states=None, attentions=None)
 ```
 
-Well, this is tricky. Everything is `nan`! But that's strange, isn't it? How would all our logits become `nan`? `nan` means "not a number." `nan` values often occur when you perform a forbidden operation, such as division by zero. But one thing that's very important to know about `nan` in machine learning is that this value tends to *propagate*. If you multiply a number by `nan`, the output is also `nan`. And if you get a `nan` anywhere in your output, your loss, or your gradient, then it will rapidly spread throughout your whole model -- because when that `nan` value is propagated back through your network, you'll get `nan` gradients, and when weight updates are computed with those gradients, you'll get `nan` weights, and those weights will compute even more `nan` outputs! Soon enough the whole network will just be one big block of `nan`s. Once that happens, it's pretty hard to see where the problem started. How can we isolate where `nan` first crept in?
+흠, 무언가 복잡하네요. 모든 것이 `nan` 입니다! 하지만 이상하지 않나요? 모든 로짓은 어떻게 `nan`이 될까요? `nan`은 "not a number.", 즉 숫자가 아님을 뜻합니다. `nan` 값은 0으로 나누는 것과 같은 금지된 연산을 수행할 때 종종 발생합니다. 그러나 기계 학습에서 `nan`에 대해 알아야 할 매우 중요한 한 가지는 이 값이 *전파*되는 경향이 있다는 것입니다. 숫자에 `nan`을 곱하면 출력도 `nan`이 됩니다. 출력, 손실값 또는 그래디언트의 아무 곳에서나 `nan`을 얻으면 전체 모델에 빠르게 확산됩니다. 왜냐하면 그 `nan` 값이 네트워크를 통해 다시 전파될 때 `nan` 그래디언트를 사용하여 가중치 업데이트를 계산하면 'nan' 가중치를 얻을 수 있으며 이러한 가중치는 더 많은 `nan` 출력을 계산합니다! 곧 전체 네트워크는 하나의 큰 `nan` 블록이 될 것입니다. 그런 일이 발생하면 문제가 어디에서 시작되었는지 확인하기가 매우 어렵습니다. 'nan'이 처음 들어온 곳을 어떻게 분리할 수 있을까요?
 
-The answer is to try *reinitializing* our model. Once we started training, we got a `nan` somewhere and it quickly propagated through the whole model. So, let's load the model from a checkpoint and not do any weight updates, and see where we get a `nan` value:
+정답은 모델을 *재초기화* 하는 것입니다. 한번 훈련을 시작하면서 어딘가에 `nan`이 생겼고 모델 전체로 빠르게 전파되었습니다. 따라서 체크포인트에서 모델을 로드하고 가중치 업데이트를 수행하지 않고 `nan` 값이 생기는 위치를 확인합니다.:
 
 ```py
 model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
 model(batch)
 ```
 
-When we run that, we get:
+코드를 실행하면 다음의 값이 출력됩니다.:
 
 ```py out
 TFSequenceClassifierOutput(loss=<tf.Tensor: shape=(16,), dtype=float32, numpy=
@@ -200,7 +200,7 @@ array([[-0.04761693, -0.06509043],
        [-0.08141848, -0.07110836]], dtype=float32)>, hidden_states=None, attentions=None)
 ```
 
-*Now* we're getting somewhere! There are no `nan` values in our logits, which is reassuring. But we do see a few `nan` values in our loss! Is there something about those samples in particular that's causing this problem? Let's see which ones they are (note that if you run this code yourself, you may get different indices because the dataset has been shuffled):
+*이제* `nan`값의 위치를 알았내요! 우리 로짓값에는 `nan` 값이 없습니다. 그러나 우리는 손실값에서 몇 개의 'nan' 값이 보이네요. 특히 이 문제를 일으키는 샘플에 대해 뭔가가 있는 걸까요? 어떤 것들이 있는지 봅시다(이 코드를 직접 실행하면 데이터세트가 섞였기 때문에 다른 인덱스를 얻을 수 있습니다):
 
 ```python
 import numpy as np
@@ -214,7 +214,7 @@ indices
 array([ 1,  2,  5,  7,  9, 10, 11, 13, 14])
 ```
 
-Let's look at the samples these indices came from:
+이 인덱스로 불러온 샘플을 살펴보겠습니다.:
 
 ```python
 input_ids = batch["input_ids"].numpy()
@@ -314,7 +314,7 @@ array([[  101,  2007,  2032,  2001,  1037, 16480,  3917,  2594,  4135,
             0,     0,     0,     0]])
 ```
 
-Well, there's a lot in here, but nothing stands out as unusual. Let's look at the labels:
+음, 여기에 많은 것이 있지만 특별한게 없습니다. 레이블을 살펴보겠습니다.:
 
 ```python out
 labels = batch['labels'].numpy()
@@ -325,7 +325,7 @@ labels[indices]
 array([2, 2, 2, 2, 2, 2, 2, 2, 2])
 ```
 
-Ah! The `nan` samples all have the same label, and it's label 2. This is a very strong hint. The fact that we're only getting a loss of `nan` when our label is 2 suggests that this is a very good time to check the number of labels in our model:
+아! `nan` 샘플은 모두 동일하게 레이블 2를 가지고 있습니다. 이건 강력한 힌트입니다. 레이블이 2일 때 'nan'손실값이 발생한다는 사실은 우리 모델의 레이블 수를 확인하기에 아주 좋은 시기임을 뜻합니다.:
 
 ```python
 model.config.num_labels
@@ -335,7 +335,7 @@ model.config.num_labels
 2
 ```
 
-Now we see the problem: the model thinks there are only two classes, but the labels go up to 2, which means there are in fact three classes (because 0 is also a class). This is how we got a `nan` -- by trying to compute the loss for a nonexistent class! Let's try changing that and fitting the model again:
+이제 문제가 보입니다. 모델은 클래스가 두 개뿐이라고 생각하지만 레이블이 최대 2까지 갑니다. 이는 실제로 세 개의 클래스가 있다는 것을 의미합니다(0도 클래스이기 때문에). 이게 `nan`값이 발생한 이유 -- 존재하지 않는 클래스에 대한 손실을 계산하려고 시도 했기 때문입니다! 이를 변경하고 모델을 다시 피팅해 보겠습니다.:
 
 ```
 model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
@@ -347,15 +347,15 @@ model.fit(train_dataset)
   869/24543 [>.............................] - ETA: 15:29 - loss: 1.1032
 ```
 
-We're training! No more `nan`s, and our loss is declining... sort of. If you watch it for a while, you might start to get a bit impatient, because the loss value stays stubbornly high. Let's stop training here and try to think about what could be causing this problem. At this point, we're pretty sure both the data and the model are okay, but our model isn't learning well. What else is left? It's time to...
+학습이 진행되는군요! 더이상 `nan` 없으며, 손실값이 감소하는 듯 보입니다... 한참을 보다보면 손실값이 완고하게 높은 상태를 유지하기 때문에 조금 조바심이 나기 시작할지도 모릅니다. 여기서 학습을 중단하고 이 문제의 원인이 무엇인지 생각해 보겠습니다. 이 시점에서 우리는 데이터와 모델이 모두 괜찮다고 확신하지만 우리 모델은 잘 학습하지 못하고 있습니다. 무엇이 더 남았을까요? 그건 바로...
 
-### Check your hyperparameters
+### 하이퍼파라미터 확인
 
-If you look back at the code above, you might not be able to see any hyperparameters at all, except perhaps the `batch_size`, and that doesn't seem like a likely culprit. Don't be fooled, though; there are always hyperparameters, and if you can't see them, it just means that you don't know what they're set to. In particular, remember a critical thing about Keras: if you set a loss, optimizer, or activation function with a string, _all of its arguments will be set to their default values_. This means that even though using strings for this is very convenient, you should be very careful when doing so, as it can easily hide critical things from you. (Anyone trying the optional challenge above should take careful note of this fact.)
+위의 코드를 다시 보면 `batch_size`를 제외하고는 하이퍼파라미터를 전혀 볼 수 없는데, 이것이 범인일 가능성은 없어 보입니다. 하지만 속지 마세요. 항상 하이퍼파라미터가 있어야 하며, 이를 볼 수 없다면 이는 단지 하이퍼파라미터가 무엇으로 설정되어 있는지 모른다는 것을 의미합니다. 특히 Keras에 대한 중요한 점을 기억하세요. 손실 함수, 옵티마이저 함수 또는 활성화 함수를 문자열로 설정하면 _모든 인수가 기본값으로 설정됩니다_. 즉 문자열을 사용하는 것이 매우 편리하더라도 심각한 이슈 쉽게 숨길 수 있으므로 그렇게 할 때 매우 조심해야 함을 의미합니다. (이러한 선택적인 도전을 시도하는 사람은 이 사실을 염두해야 합니다.)
 
-In this case, where have we set an argument with a string? We were setting the loss with a string initially, but we're not doing that anymore. We are, however, setting the optimizer with a string. Could that be hiding anything from us? Let's take a look at [its arguments](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/Adam).
+이 경우 문자열로 인수를 설정한 위치가 어디일까요? 처음에는 문자열로 손실 함수를 설정했지만 더 이상 그렇게 하지 않습니다. 다시보니 옵티마이저를 문자열로 설정하고 있습니다. 이게 어떤 것을 숨기고 있을까요? 옵티마이저의 [인수](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/Adam)를 살펴보겠습니다.
 
-Does anything stand out here? That's right -- the learning rate! When we just use the string `'adam'`, we're going to get the default learning rate, which is 0.001, or 1e-3. This is way too high for a Transformer model! In general, we recommend trying learning rates between 1e-5 and 1e-4 for your models; that's somewhere between 10X and 100X smaller than the value we're actually using here. That sounds like it might be a major problem, so let's try reducing it. To do that, we need to import the actual `optimizer` object. While we're at it, let's reinitialize the model from the checkpoint, in case training with the high learning rate damaged its weights:
+눈에 띄는 것이 있었나요? 맞습니다. 학습률입니다! 문자열 `'adam'`을 사용하면 기본 학습률이 0.001 또는 1e-3이 됩니다. 트랜스포머 모델에게는 상당히 높은 값입니다. 일반적으로 트랜스포머 모델 계열은 1e-5와 1e-4 사이의 학습률을 시도하는 것이 좋습니다. 이 값은 우리가 여기서 실제로 사용한 학습률보다 10배에서 100배 사이에 있습니다. 큰 문제가 될 것 같으니 줄여보겠습니다. 그렇게 하려면 실제 'optimizer' 객체를 가져와야 합니다. 학습 속도가 높은 훈련이 가중치를 손상시키는 경우를 대비하여 체크포인트에서 모델을 다시 초기화 하겠습니다.:
 
 ```python
 from tensorflow.keras.optimizers import Adam
@@ -366,11 +366,11 @@ model.compile(optimizer=Adam(5e-5))
 
 <Tip>
 
-💡 You can also import the `create_optimizer()` function from 🤗 Transformers, which will give you an AdamW optimizer with correct weight decay as well as learning rate warmup and decay. This optimizer will often produce slightly better results than the ones you get with the default Adam optimizer.
+🤗 Transformers에서 `create_optimizer()` 함수를 가져올 수도 있습니다. 이렇게 하면 적합한 가중치 감쇠(weight decay)와 학습률 워밍업과 감쇠가 포함된 AdamW 옵티마이저가 제공됩니다. 이 옵티마이저는 기본 Adam 옵티마이저로 얻은 결과보다 약간 더 나은 결과를 만들어내는 경우가 많습니다.
 
 </Tip>
 
-Now, we can try fitting the model with the new, improved learning rate:
+이제 새롭고, 개선된 학습률로 모델 학습에 도전해보겠습니다.:
 
 ```python
 model.fit(train_dataset)
@@ -380,65 +380,65 @@ model.fit(train_dataset)
 319/24543 [..............................] - ETA: 16:07 - loss: 0.9718
 ```
 
-Now our loss is really going somewhere! Training finally looks like it's working. There's a lesson here: when your model is running but loss isn't declining, and you're sure your data is okay, it's a good idea to check hyperparameters like the learning rate and weight decay. Setting either of those too high is very likely to cause training to "stall" at a high loss value.
+이제 손실값은 정말로 움직이고 있습니다! 학습이 마침내 효과가 있는 것 같습니다. 여기에는 교훈이 있습니다. 모델이 실행 중이지만 손실값이 감소하지 않고 데이터가 괜찮다고 확신하는 경우 학습률 및 가중치 감쇠와 같은 하이퍼파라미터를 확인하는 것이 좋습니다. 둘 중 하나를 너무 높게 설정하면 학습이 높은 손실 값에서 "정지"될 가능성이 매우 높습니다.
 
-## Other potential issues 
 
-We've covered the issues in the script above, but there are several other common errors you might face. Let's take a look at a (very incomplete) list.
+## 다른 잠재적 이슈들
 
-### Dealing with out-of-memory errors
+위의 스크립트에서 문제를 다루었지만 직면할 수 있는 여러가지 다른 일반적인 오류가 있습니다. (매우 불완전한) 목록을 살펴보겠습니다.
 
-The telltale sign of running out of memory is an error like "OOM when allocating tensor" -- OOM is short for "out of memory." This is a very common hazard when dealing with large language models. If you encounter this, a good strategy is to halve your batch size and try again. Bear in mind, though, that some models are *very* large. For example, the full-size GPT-2 has 1.5B parameters, which means you'll need 6 GB of memory just to store the model, and another 6 GB for its gradients! Training the full GPT-2 model will usually require over 20 GB of VRAM no matter what batch size you use, which only a few GPUs have. More lightweight models like `distilbert-base-cased` are much easier to run, and train much more quickly too.
+### 메모리 부족 에러 처리
+
+메모리 부족을 알리는 신호는 "OOM when allocating tensor"와 같은 에러입니다. OOM은 "out of memory"의 줄임말입니다. 이것은 큰 언어 모델을 다룰 때 매우 흔한 위험입니다. 이 문제가 발생하면 배치 크기를 절반으로 줄이고 다시 시도하는 것이 좋습니다. 그러나 일부 모델은 *매우* 큽니다. 예를 들어, 최대크기 GPT-2는 1.5B개의 매개변수가 있습니다. 즉, 모델을 저장하는 데만 6GB의 메모리가 필요하고 그라디언트에는 6GB가 추가로 필요합니다! 최대 크기 GPT-2 모델을 학습하려면 사용하는 배치 크기에 관계없이 일반적으로 20GB 이상의 VRAM이 필요하며, 소수의 GPU만 해당합니다. 'distilbert-base-cased'와 같은 더 가벼운 모델은 실행하기가 훨씬 쉽고 훨씬 빠르게 학습할 수 있습니다.
 
 <Tip>
 
-In the next part of the course, we'll look at more advanced techniques that can help you reduce your memory footprint and let you fine-tune the biggest models.
+다음 장에서는 메모리 사용량을 줄이고 가장 큰 모델을 파인튜닝 할 수 있는 고급 기술을 살펴보겠습니다.
 
 </Tip>
 
-### Hungry Hungry TensorFlow 🦛
+### 몹시 배고픈 TensorFlow 🦛
 
-One particular quirk of TensorFlow that you should be aware of is that it allocates *all* of your GPU memory to itself as soon as you load a model or do any training, and then it divides up that memory as required. This is different from the behavior of other frameworks, like PyTorch, which allocate memory as required with CUDA rather than doing it internally. One advantage of the TensorFlow approach is that it can often give useful errors when you run out of memory, and it can recover from that state without crashing the whole CUDA kernel. But there's also an important downside: if you run two TensorFlow processes at once, then **you're going to have a bad time**.
+TensorFlow의 특별한 특징 중 하나는 모델을 로드하거나 학습을 수행하는 즉시 GPU 메모리의 *모든*을 자체적으로 할당한 다음 필요에 따라 해당 메모리를 분할한다는 것입니다. 이것은 PyTorch와 같은 다른 프레임워크의 동작과 다른데, 이는 내부적으로 수행하지 않고 CUDA에서 필요에 따라 메모리를 할당합니다. TensorFlow 접근 방식의 한 가지 장점은 메모리가 부족할 때 종종 유용한 오류를 제공할 수 있고 전체 CUDA 커널을 충돌시키지 않고 해당 상태에서 복구할 수 있다는 것입니다. 그러나 중요한 단점도 있습니다. 한 번에 두 개의 TensorFlow 프로세스를 실행하면 **나쁜 시간을 보내게 됩니다**.
 
-If you're running on Colab you don't need to worry about this, but if you're running locally this is definitely something you should be careful about. In particular, be aware that closing a notebook tab does not necessarily shut that notebook down! You may need to select running notebooks (the ones with a green icon) and manually shut them down in the directory listing. Any running notebook that was using TensorFlow could still be holding on to a bunch of your GPU memory, and that means any new notebook you start may encounter some very odd issues.
+Colab에서 실행하는 경우에는 이에 대해 걱정할 필요가 없지만 로컬에서 실행하는 경우에는 확실히 주의해야 합니다. 특히 노트북(주피터 노트북 등) 탭을 닫아도 해당 노트북이 반드시 종료되는 것은 아닙니다. 실행 중인 노트북(녹색 아이콘이 있는 노트북)을 선택하고 디렉토리 목록에서 수동으로 종료해야 할 수도 있습니다. TensorFlow를 사용하는 실행 중인 노트북은 여전히 ​​많은 GPU 메모리를 보유하고 있을 수 있으며, 이는 새로 시작하는 노트북에서 매우 이상한 문제가 발생할 수 있음을 의미합니다.
 
-If you start getting errors about CUDA, BLAS, or cuBLAS in code that worked before, this is very often the culprit. You can use a command like `nvidia-smi` to check -- when you shut down or restart your current notebook, is most of your memory free, or is it still in use? If it's still in use, something else is holding on to it!
+이전에 작동했던 코드에서 CUDA, BLAS 또는 cuBLAS에 대한 오류가 발생하기 시작하면 이 현상이 범인인 경우가 많습니다. `nvidia-smi`와 같은 명령을 사용하여 현재 노트북을 종료하거나 다시 시작할 때 대부분의 메모리가 사용 가능한지, 아니면 여전히 사용 중인지 확인할 수 있습니다. 아직 사용 중이라면 다른 무언가가 GPU를 붙잡고 있는 것입니다!
 
+### 데이터 확인 (다시!)
 
-### Check your data (again!)
-
-Your model will only learn something if it's actually possible to learn anything from your data. If there is a bug that corrupts the data or the labels are attributed randomly, it's very likely you won't get any model training on your dataset. One helpful tool here is `tokenizer.decode()`. This will turn `input_ids` back into strings, so you can view the data and see if your training data is teaching what you want it to teach. For example, after you get a `batch` from your `tf.data.Dataset` like we did above, you can decode the first element like so:
+모델은 데이터에서 실제로 무엇이든 학습할 수 있는 경우에만 무언가를 학습합니다. 데이터를 손상시키는 버그가 있거나 레이블이 무작위로 지정된 경우 데이터 세트에 대해 모델이 학습을 하지 못할 가능성이 매우 높습니다. 여기에서 유용한 도구 중 하나는 `tokenizer.decode()`입니다. 이렇게 하면 `input_ids`가 다시 문자열로 바뀌므로 데이터를 보고 학습 데이터가 원하는 내용을 가르치는지 확인할 수 있습니다. 예를 들어, 위에서 했던 것처럼 `tf.data.Dataset`에서 `batch`를 얻은 후 다음과 같이 첫 번째 요소를 디코딩할 수 있습니다.:
 
 ```py
 input_ids = batch["input_ids"].numpy()
 tokenizer.decode(input_ids[0])
 ```
 
-Then you can compare it with the first label, like so:
+그리고 첫번째 레이블과 함께 다음처럼 비교해볼 수 있습니다.:
 
 ```py
 labels = batch["labels"].numpy()
 label = labels[0]
 ```
 
-Once you can view your data like this, you can ask yourself the following questions:
+이처럼 데이터를 볼 수 있게 되면 스스로에게 다음과 같은 질문을 할 수 있습니다.:
 
-- Is the decoded data understandable?
-- Do you agree with the labels?
-- Is there one label that's more common than the others?
-- What should the loss/metric be if the model predicted a random answer/always the same answer?
+- 디코드된 데이터가 이해할만한가?
+- 디코드된 데이터에 대한 레이블이 적합한가?
+- 다른 레이블보다 더 일반적인 레이블이 있는가?
+- 모델이 임의의 답변을 내거나, 같은 답변만 한다면 어떤 손실/평가 함수를 사용해야 할까? 
 
-After looking at your data, go through a few of the model's predictions -- if your model outputs tokens, try decoding them too! If the model is always predicting the same thing it might be because your dataset is biased toward one category (for classification problems), so techniques like oversampling rare classes might help. Alternatively, this can also be caused by training issues like bad hyperparameter settings.
+데이터를 살펴본 후 모델의 예측을 몇 가지 살펴보세요. 모델이 토큰을 출력하는 경우 디코딩도 시도해 보세요. 모델이 항상 동일한 것을 예측하는 경우 데이터 세트가 하나의 범주(분류 문제의 경우)로 편향되어 있으므로 희귀 클래스를 오버샘플링하는 것과 같은 기술이 도움이 될 수 있습니다. 또는 잘못된 하이퍼파라미터 설정과 같은 학습 문제로 인해 발생할 수도 있습니다.
 
-If the loss/metric you get on your initial model before any training is very different from the loss/metric you would expect for random predictions, double-check the way your loss or metric is computed, as there is probably a bug there. If you are using several losses that you add at the end, make sure they are of the same scale.
+학습 전에 초기 모델에서 얻은 손실값/평가값이 무작위 예측에 대해 예상하는 손실값/평가값과 매우 다른 경우 버그가 있을 수 있으므로 손실값 또는 평가값이 계산되는 방식을 다시 확인하세요. 마지막에 여러 손실함수를 추가해 사용하는 경우 동일한 스케일의 값인지 확인하세요.
 
-When you are sure your data is perfect, you can see if the model is capable of training on it with one simple test.
+데이터가 완벽하다고 확신한다면 한 번의 간단한 테스트로 모델이 데이터를 학습할 수 있는지 확인할 수 있습니다.
 
-### Overfit your model on one batch
+### 한 배치에서 모델 과대적합
 
-Overfitting is usually something we try to avoid when training, as it means the model is not learning to recognize the general features we want it to but is instead just memorizing the training samples. However, trying to train your model on one batch over and over again is a good test to check if the problem as you framed it can be solved by the model you are attempting to train. It will also help you see if your initial learning rate is too high.
+과적합은 일반적으로 학습할 때 피하려고 합니다. 이는 모델이 우리가 원하는 일반적인 기능을 인식하는 것을 학습하지 않고 대신 학습 샘플을 기억한다는 것을 의미하기 때문입니다. 그러나 한 배치에서 모델을 계속해서 훈련시키려고 시도하는 것은 학습하려는 모델로 우리가 구성한 문제를 해결할 수 있는지 확인하는 좋은 테스트입니다. 또한 초기 학습률이 너무 높은지 확인하는 데 도움이 됩니다.
 
-Doing this once you have defined your `model` is really easy; just grab a batch of training data, then treat that `batch` as your entire dataset, fitting on it for a large number of epochs:
+'모델'을 정의한 후에 이 작업을 수행하는 것은 정말 쉽습니다. 학습 데이터 배치를 가져온 다음 해당 `배치`를 전체 데이터 세트로 처리하고 여러 에포크에 걸쳐 학습합니다.:
 
 ```py
 for batch in train_dataset:
@@ -452,37 +452,37 @@ model.fit(batch, epochs=20)
 
 <Tip>
 
-💡 If your training data is unbalanced, make sure to build a batch of training data containing all the labels.
+💡 학습 데이터가 불균형한 경우 모든 레이블을 포함하는 학습 데이터 배치를 구성해야 합니다.
 
 </Tip>
 
-The resulting model should have close-to-perfect results on the `batch`, with a loss declining quickly toward 0 (or the minimum value for the loss you're using).
+결과 모델은 `배치`에서 완벽에 가까운 결과를 가져야 하며 손실은 0(또는 사용 중인 손실의 최소값)으로 빠르게 감소합니다.
 
-If you don't manage to have your model obtain perfect results like this, it means there is something wrong with the way you framed the problem or your data, so you should fix that. Only when you manage to pass the overfitting test can you be sure that your model can actually learn something.
+모델이 이와 같은 완벽한 결과를 얻도록 관리하지 못한다면 문제 또는 데이터를 구성하는 방식에 문제가 있음을 의미하므로 수정해야 합니다. 과적합 테스트를 통과해야만 모델이 실제로 무언가를 학습할 수 있다고 확신할 수 있습니다.
 
 <Tip warning={true}>
 
-⚠️ You will have to recreate your model and recompile after this overfitting test, as the model obtained probably won't be able to recover and learn something useful on your full dataset.
+⚠️ 과적합 테스트 후에 모델을 다시 만들고 다시 컴파일해야 합니다. 학습 모델이 전체 데이터 세트에서 유용한 것을 복구하고 학습할 수 없기 때문입니다.
 
 </Tip>
 
-### Don't tune anything until you have a first baseline
+### 첫 번째 기준이 생길 때까지 아무 것도 조정하지 마세요.
 
-Intense hyperparameter tuning is always emphasized as being the hardest part of machine learning, but it's just the last step to help you gain a little bit on the metric. *Very* bad values for your hyperparameters, like using the default Adam learning rate of 1e-3 with a Transformer model, will make learning proceed very slowly or completely stall, of course, but most of the time "reasonable" hyperparameters, like a learning rate from 1e-5 to 5e-5, will work just fine to give you good results. So, don't launch into a time-consuming and costly hyperparameter search until you have something that beats the baseline you have on your dataset.
+강렬한 하이퍼파라미터 조정은 항상 기계 학습의 가장 어려운 부분으로 강조되지만 지표에서 약간의 이득을 얻는 데 도움이 되는 마지막 단계일 뿐입니다. Transformer 모델과 함께 기본 Adam 학습률 1e-3을 사용하는 것과 같이 하이퍼파라미터에 대한 *매우* 나쁜 값은 학습 진행을 매우 느리게 또는 완전히 중단하게 만들지만 대부분의 경우 다음과 같은 "합리적인" 하이퍼파라미터 1e-5에서 5e-5까지의 학습률을 사용하면 좋은 결과를 얻을 수 있습니다. 따라서 데이터 세트의 기준을 능가하는 결과를 얻을 때까지 시간과 비용이 많이 드는 하이퍼파라미터 검색을 시작하지 마세요.
 
-Once you have a good enough model, you can start tweaking a bit. Don't try launching a thousand runs with different hyperparameters, but compare a couple of runs with different values for one hyperparameter to get an idea of which has the greatest impact.
+적당한 모델을 갖고나면 약간 조정을 시작할 수 있습니다. 다른 하이퍼파라미터로 천 개의 실행을 시작하려고 하지 말고 하나의 하이퍼파라미터에 대해 다른 값을 가진 몇 개의 실행을 비교하여 가장 큰 영향력을 미치는 아이디어를 얻어보세요.
 
-If you are tweaking the model itself, keep it simple and don't try anything you can't reasonably justify. Always make sure you go back to the overfitting test to verify that your change hasn't had any unintended consequences.
+모델 자체를 조정하는 경우 단순하게 유지하고 합리적으로 정당화할 수 없는 것은 시도하지 마세요. 항상 과적합 테스트로 돌아가서 변경 사항이 의도하지 않은 결과를 초래하지 않았는지 확인하세요.
 
-### Ask for help
+### 도움 요청하기
 
-Hopefully you will have found some advice in this section that helped you solve your issue, but if that's not the case, remember you can always ask the community on the [forums](https://discuss.huggingface.co/). 
+이 단원에서 문제를 해결하는 데 도움이 되는 몇 가지 조언을 찾았으면 좋겠지만, 그렇지 않은 경우 [포럼](https://discuss.huggingface.co/)에서 커뮤니티에 언제든지 질문할 수 있음을 기억하세요.
 
-Here are some additional resources that may prove helpful:
+다음은 도움이 될 수 있는 몇 가지 추가 리소스입니다.:
 
 - ["Reproducibility as a vehicle for engineering best practices"](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p) by Joel Grus
 - ["Checklist for debugging neural networks"](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21) by Cecelia Shao
 - ["How to unit test machine learning code"](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765) by Chase Roberts
 - ["A Recipe for Training Neural Networks"](http://karpathy.github.io/2019/04/25/recipe/) by Andrej Karpathy
 
-Of course, not every problem you encounter when training neural nets is your own fault! If you encounter something in the 🤗 Transformers or 🤗 Datasets library that does not seem right, you may have encountered a bug. You should definitely tell us all about it, and in the next section we'll explain exactly how to do that.
+물론 신경망을 훈련할 때 발생하는 모든 문제가 자신의 잘못은 아닙니다! 🤗 Transformers 또는 🤗 Datasets 라이브러리에서 이상한 것을 본다면 버그가 발생했을 수 있습니다. 버그를 봤을 경우 우리에게 상세하게 말해야 하며, 다음 섹션에서 그 방법을 정확히 설명할 것입니다.
