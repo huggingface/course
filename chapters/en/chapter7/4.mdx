@@ -378,14 +378,14 @@ We will pass this `data_collator` along to the `Seq2SeqTrainer`. Next, let's hav
 We can now use this `data_collator` to convert each of our datasets to a `tf.data.Dataset`, ready for training:
 
 ```python
-tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
-    columns=["input_ids", "attention_mask", "labels"],
+tf_train_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["train"],
     collate_fn=data_collator,
     shuffle=True,
     batch_size=32,
 )
-tf_eval_dataset = tokenized_datasets["validation"].to_tf_dataset(
-    columns=["input_ids", "attention_mask", "labels"],
+tf_eval_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
     collate_fn=data_collator,
     shuffle=False,
     batch_size=16,
@@ -495,28 +495,42 @@ The score can go from 0 to 100, and higher is better.
 
 {#if fw === 'tf'}
 
-To get from the model outputs to texts the metric can use, we will use the `tokenizer.batch_decode()` method. We just have to clean up all the `-100`s in the labels; the tokenizer will automatically do the same for the padding token. Let's define a function that takes our model and a dataset and computes metrics on it. Because generation of long sequences can be slow, we subsample the validation set to make sure this doesn't take forever:
+To get from the model outputs to texts the metric can use, we will use the `tokenizer.batch_decode()` method. We just have to clean up all the `-100`s in the labels; the tokenizer will automatically do the same for the padding token. Let's define a function that takes our model and a dataset and computes metrics on it. We're also going to use a trick that dramatically increases performance - compiling our generation code with [XLA](https://www.tensorflow.org/xla), TensorFlow's accelerated linear algebra compiler. XLA applies various optimizations to the model's computation graph, and results in significant improvements to speed and memory usage. As described in the Hugging Face [blog](https://huggingface.co/blog/tf-xla-generate), XLA works best when our input shapes don't vary too much. To handle this, we'll pad our inputs to multiples of 128, and make a new dataset with the padding collator, and then we'll apply the `@tf.function(jit_compile=True)` decorator to our generation function, which marks the whole function for compilation with XLA. 
 
 ```py
 import numpy as np
+import tensorflow as tf
+from tqdm import tqdm
+
+generation_data_collator = DataCollatorForSeq2Seq(
+    tokenizer, model=model, return_tensors="tf", pad_to_multiple_of=128
+)
+
+tf_generate_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
+    collate_fn=generation_data_collator,
+    shuffle=False,
+    batch_size=8,
+)
+
+
+@tf.function(jit_compile=True)
+def generate_with_xla(batch):
+    return model.generate(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        max_new_tokens=128,
+    )
 
 
 def compute_metrics():
     all_preds = []
     all_labels = []
-    sampled_dataset = tokenized_datasets["validation"].shuffle().select(range(200))
-    tf_generate_dataset = sampled_dataset.to_tf_dataset(
-        columns=["input_ids", "attention_mask", "labels"],
-        collate_fn=data_collator,
-        shuffle=False,
-        batch_size=4,
-    )
-    for batch in tf_generate_dataset:
-        predictions = model.generate(
-            input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
-        )
+
+    for batch, labels in tqdm(tf_generate_dataset):
+        predictions = generate_with_xla(batch)
         decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-        labels = batch["labels"].numpy()
+        labels = labels.numpy()
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
         decoded_preds = [pred.strip() for pred in decoded_preds]
