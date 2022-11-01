@@ -14,7 +14,7 @@ def load_sections(language: str):
     for chapter in toc:
         for section in chapter["sections"]:
             sections.append(section["local"])
-    return set(sorted(sections))
+    return set(sections)
 
 
 if __name__ == "__main__":
@@ -24,10 +24,14 @@ if __name__ == "__main__":
 
     english_sections = load_sections("en")
     translation_sections = load_sections(args.language)
-    missing_sections = english_sections.difference(translation_sections)
+    missing_sections = sorted(english_sections.difference(translation_sections))
 
     if len(missing_sections) > 0:
-        print("Missing sections:")
+        print("Completed sesions:\n")
+        for section in sorted(translation_sections):
+            print(section)
+
+        print("\nMissing sections:\n")
         for section in missing_sections:
             print(section)
     else:

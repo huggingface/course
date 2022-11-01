@@ -21,6 +21,9 @@ re_end_code = re.compile(r"^```\s*$")
 frameworks = {"pt": "PyTorch", "tf": "TensorFlow"}
 
 PATH_TO_COURSE = Path("chapters/")
+# Languages to exlude from the notebook generation because the notebooks were
+# created manually
+LANGS_TO_EXCLUDE = ["fr"]
 
 
 def read_and_split_frameworks(fname):
@@ -277,6 +280,8 @@ if __name__ == "__main__":
     languages = [f.stem for f in PATH_TO_COURSE.iterdir() if f.is_dir()]
 
     for language in languages:
+        if language in LANGS_TO_EXCLUDE:
+            continue
         language_output_dir = f"{args.output_dir}/{language}"
         create_notebooks(language, language_output_dir)
         # Remove empty notebook folders
