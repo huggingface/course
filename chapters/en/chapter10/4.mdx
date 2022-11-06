@@ -3,8 +3,206 @@
 <CourseFloatingBanner chapter={1}
   classNames="absolute z-10 right-0 top-0"
   notebooks={[
-    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter1/section3.ipynb"},
-    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter1/section3.ipynb"},
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter10/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter10/section4.ipynb"},
 ]} />
 
-Place holder for audio classification
+Ideas:
+
+- Add fault-filtered splits => get someone to train on that.
+- Add MCFCC features?
+- Use Jukebox?
+
+## Picking a pretrained model for audio classification
+
+Say something about DistilHubert being OK for classification tasks on SUPERB. Note about domain shift. Try JukeBox if possible.
+
+## The dataset
+
+To train our model, we'll use the [GTZAN dataset](https://huggingface.co/datasets/marsyas/gtzan), which is a popular dataset of 1,000 songs for music genre classification. Each song is a 30-second clip from one of 10 genres of music, spanning disco to metal. As usual, we can get the audio files from the Hugging Face Hub with the `load_dataset()` function from 🤗 Datasets:
+
+```python
+from datasets import load_dataset
+
+gtzan = load_dataset("marsyas/gtzan")
+gtzan
+```
+
+```out
+Dataset({
+    features: ['file', 'audio', 'genre'],
+    num_rows: 999
+})
+```
+
+<Tip warning={true}>
+
+One of the recordings in GTZAN is corrupted, so it's been removed from the dataset. That's why we have 999 examples instead of 1,000.
+
+</Tip>
+
+GTZAN doesn't provide a predefined validation set, so we'll have to create one ourselves. The dataset is balanced across genres, so we can use the `train_test_split()` method to create a 90/10 split as follows::
+
+```python
+gtzan = gtzan["train"].train_test_split(seed=42, test_size=0.1)
+gtzan
+```
+
+```out
+DatasetDict({
+    train: Dataset({
+        features: ['file', 'audio', 'genre'],
+        num_rows: 899
+    })
+    test: Dataset({
+        features: ['file', 'audio', 'genre'],
+        num_rows: 100
+    })
+})
+```
+
+Great, now that we've got our training and validation sets, let's take a look at one of the audio files:
+
+```python
+gtzan["train"][0]
+```
+
+```out
+{
+    "file": "~/.cache/huggingface/datasets/downloads/extracted/fa06ce46130d3467683100aca945d6deafb642315765a784456e1d81c94715a8/genres/pop/pop.00098.wav",
+    "audio": {
+        "path": "~/.cache/huggingface/datasets/downloads/extracted/fa06ce46130d3467683100aca945d6deafb642315765a784456e1d81c94715a8/genres/pop/pop.00098.wav",
+        "array": array(
+            [
+                0.10720825,
+                0.16122437,
+                0.28585815,
+                ...,
+                -0.22924805,
+                -0.20629883,
+                -0.11334229,
+            ],
+            dtype=float32,
+        ),
+        "sampling_rate": 22050,
+    },
+    "genre": 7,
+}
+```
+
+As we saw in [section 2](/course/chapter10/2), the audio files are represented as NumPy arrays in the `audio.array` feature. For these songs, the sampling rate is 22,050 Hz, so we'll have to keep that in mind using a pretrained model with a different sampling rate. We also see the genre is represented as an integer, so let's use Gradio and the `int2str()` method of the `genre` column to listen to a few examples:
+
+```python
+id2label_fn = gtzan["train"].features["genre"].int2str
+id2label_fn(gtzan["train"][0]["genre"])
+```
+
+```out
+'pop'
+```
+
+This label looks correct, since it matches the filename of the audio file. Let's listen to a few more examples by using Gradio to create a simple interface with the `Blocks` API:
+
+```python
+def generate_audio():
+    example = gtzan["train"].shuffle()[0]
+    audio = example["audio"]
+    return (
+        audio["sampling_rate"],
+        audio["array"],
+    ), id2label_fn(example["genre"])
+
+
+with gr.Blocks() as demo:
+    with gr.Column():
+        for _ in range(4):
+            audio, label = generate_audio()
+            output = gr.Audio(audio, label=label)
+
+demo.launch(debug=True)
+```
+
+<iframe src="https://course-demos-gtzan-samples.hf.space" frameBorder="0" height="450" title="Gradio app" class="container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+From these samples we can certainly hear the difference between genres, but it's not always easy to tell which genre is which. Let's see if a Transformer can do better! Before training a model, we'll first need to encode our audio files in a suitable format. Let's see how we can do that.
+
+## Preprocessing the data
+
+Similar to tokenization in NLP, audio and speech Transformers require the input to be encoded in a format that the model can understand. For models like Wa2Vec2 and HuBERT, the input is simply the raw waveform, but for others like Whisper and MCTC, the input is a spectrogram. In 🤗 Transformers, the conversion from audio to the input format is handled by the _feature extractor_ of the model. Similar to tokenizers in NLP, 🤗 Transformers provides a convenient `AutoFeatureExtractor` class that can automatically select the correct feature extractor for a given model. To see how we can process our audio files, let's begin by instantiating the feature extractor for DistilHuBERT:
+
+
+```python
+from transformers import AutoFeatureExtractor
+
+model_id = "ntu-spml/distilhubert"
+feature_extractor = AutoFeatureExtractor.from_pretrained(model_id)
+```
+
+If we apply this feature extractor to one of our audio files, we'll get a dictionary with an `input_values` field that is the audio analog of a tokenized input:
+
+```python
+feature_extractor(gtzan["train"][0]["audio"]["array"])
+```
+
+```out
+{
+    "input_values": array(
+        [
+            [
+                0.10720825,
+                0.16122437,
+                0.28585815,
+                ...,
+                -0.22924805,
+                -0.20629883,
+                -0.11334229,
+            ]
+        ],
+        dtype=float32,
+    )
+}
+```
+
+As noted earlier, HuBERT models operate directly on the raw waveform, so no further processing is required. However, the sampling rate of the model and the dataset are different, so we'll have to resample the audio file to 16,000 Hz before passing it to the feature extractor. We can do this by first obtaining the model's sample rate from the feature extractor:
+
+```python
+sampling_rate = feature_extractor.sampling_rate
+sampling_rate
+```
+
+```out
+16000
+```
+
+and then cast the dataset using the `Audio` feature from 🤗 Datasets:
+
+```python
+from datasets import Audio
+
+gtzan = gtzan.cast_column("audio", Audio(sampling_rate=sampling_rate))
+```
+
+One last thing to take care of: length of songs.
+
+```python
+max_duration = 30.0
+
+
+def preprocess_function(examples):
+    audio_arrays = [x["array"] for x in examples["audio"]]
+    inputs = feature_extractor(
+        audio_arrays,
+        sampling_rate=feature_extractor.sampling_rate,
+        max_length=int(feature_extractor.sampling_rate * max_duration),
+        truncation=True,
+    )
+    return inputs
+```
+
+
+
+## Fine-tuning the model
+
+## Using our fine-tuned model
+
+- Build Gradio app which can download songs from YT?
