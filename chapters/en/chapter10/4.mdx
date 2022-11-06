@@ -128,7 +128,7 @@ From these samples we can certainly hear the difference between genres, but it's
 
 ## Preprocessing the data
 
-Similar to tokenization in NLP, audio and speech Transformers require the input to be encoded in a format that the model can understand. For models like Wa2Vec2 and HuBERT, the input is simply the raw waveform, but for others like Whisper and MCTC, the input is a spectrogram. In 🤗 Transformers, the conversion from audio to the input format is handled by the _feature extractor_ of the model. Similar to tokenizers in NLP, 🤗 Transformers provides a convenient `AutoFeatureExtractor` class that can automatically select the correct feature extractor for a given model. To see how we can process our audio files, let's begin by instantiating the feature extractor for DistilHuBERT:
+Similar to tokenization in NLP, audio and speech Transformers require the input to be encoded in a format that the model can process. In 🤗 Transformers, the conversion from audio to the input format is handled by the _feature extractor_ of the model. Similar to tokenizers, 🤗 Transformers provides a convenient `AutoFeatureExtractor` class that can automatically select the correct feature extractor for a given model. To see how we can process our audio files, let's begin by instantiating the feature extractor for DistilHuBERT:
 
 
 ```python
@@ -163,7 +163,8 @@ feature_extractor(gtzan["train"][0]["audio"]["array"])
 }
 ```
 
-As noted earlier, HuBERT models operate directly on the raw waveform, so no further processing is required. However, the sampling rate of the model and the dataset are different, so we'll have to resample the audio file to 16,000 Hz before passing it to the feature extractor. We can do this by first obtaining the model's sample rate from the feature extractor:
+
+HuBERT models operate directly on the raw waveform, so no further processing is required. However, the sampling rate of the model and the dataset are different, so we'll have to resample the audio file to 16,000 Hz before passing it to the feature extractor. We can do this by first obtaining the model's sample rate from the feature extractor:
 
 ```python
 sampling_rate = feature_extractor.sampling_rate
@@ -174,7 +175,7 @@ sampling_rate
 16000
 ```
 
-and then cast the dataset using the `Audio` feature from 🤗 Datasets:
+Next, we resample the dataset using the `cast_column()` method and `Audio` feature from 🤗 Datasets:
 
 ```python
 from datasets import Audio
@@ -182,7 +183,30 @@ from datasets import Audio
 gtzan = gtzan.cast_column("audio", Audio(sampling_rate=sampling_rate))
 ```
 
-One last thing to take care of: length of songs.
+If we now apply the feature extractor to the first training example, we'll see the array values have changed:
+
+```python
+feature_extractor(gtzan["train"][0]["audio"]["array"], sampling_rate=sampling_rate)
+```
+
+```out
+{
+    "input_values": array(
+        [[0.09204921, 0.20080882, 0.4805243, ..., -0.18821615, -0.23222451, 0.0]],
+        dtype=float32,
+    )
+}
+```
+
+<Tip warning={true}>
+
+**Note**: It's always a good idea to pass an explicit value for the `sampling_rate` argument when processing audio with the feature extractor. If you don't pass this argument, the feature extractor will assume the input audio has the same sampling rate as the model and this can lead to subtle errors.
+
+<Tip>
+
+
+Great, so now we know how to process our resampled audio files, the last thing to do is define a function that we can apply to all the examples in the dataset. Since we expect the audio clips to be 30 seconds in length, we'll also truncate any longer clips by using the `max_length` and `truncation` arguments of the feature extractor as follows:
+
 
 ```python
 max_duration = 30.0
@@ -197,6 +221,17 @@ def preprocess_function(examples):
         truncation=True,
     )
     return inputs
+```
+
+With this function defined, we can now apply it to the dataset using the `map()` method:
+
+```python
+import multiprocessing
+
+num_proc = multiprocessing.cpu_count() // 2
+gtzan_encoded = gtzan.map(
+    preprocess_function, remove_columns=["audio", "file"], batched=True, num_proc=num_proc
+)
 ```
 
 
