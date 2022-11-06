@@ -223,21 +223,177 @@ def preprocess_function(examples):
     return inputs
 ```
 
-With this function defined, we can now apply it to the dataset using the `map()` method:
+With this function defined, we can now apply it to the dataset using the `map()` method. Since audio datasets can be quite slow to process, it is usually a good idea to use multiprocessing. We can do this by passing the `num_proc` argument to `map()` and we'll use Python's `psutil` module to determine the number of CPU cores on the system:
 
 ```python
-import multiprocessing
+import psutil
 
-num_proc = multiprocessing.cpu_count() // 2
+num_proc = psutil.cpu_count()
 gtzan_encoded = gtzan.map(
     preprocess_function, remove_columns=["audio", "file"], batched=True, num_proc=num_proc
 )
+gtzan_encoded
 ```
 
+```out
+DatasetDict({
+    train: Dataset({
+        features: ['genre', 'input_values'],
+        num_rows: 899
+    })
+    test: Dataset({
+        features: ['genre', 'input_values'],
+        num_rows: 100
+    })
+})
+```
+
+To simplify the training, we've removed the `audio` and `file` columns from the dataset. The `input_values` column contains the encoded audio files, and the `genre` column contains the corresponding labels. To enable the `Trainer` to process the labels, the last step is to rename
+
+```
+gtzan_encoded = gtzan_encoded.rename_column("genre", "label")
+```
+
+OK, we've now got a dataset that's ready for training! Let's take a look at how we can train a model on this dataset.
 
 
 ## Fine-tuning the model
 
-## Using our fine-tuned model
+To fine-tune the model, we'll use the `Trainer` class from 🤗 Transformers. As we've seen in other chapters, the `Trainer` is a high-level API that is designed to handle the most common training scenarios. In this case, we'll use the `Trainer` to fine-tune the model on GTZAN. To do this, we'll first need to load a model for this task. We can do this by using the `AutoModelForAudioClassification` class, which will automatically add the appropriate classification head to our pretrained DistilHuBERT model. Before doing so, however, we'll need to obtain the label mappings from the dataset. We can do this by using the `int2str()` method as follows:
 
-- Build Gradio app which can download songs from YT?
+```python
+id2label = {
+    str(i): id2label_fn(i) for i in range(len(gtzan["train"].features["genre"].names))
+}
+label2id = {v: k for k, v in id2label.items()}
+id2label["7"]
+```
+
+```out
+'pop'
+```
+
+This matches what we had earlier, so let's now instantiate the model:
+
+```python
+from transformers import AutoModelForAudioClassification
+
+num_labels = len(id2label)
+
+model = AutoModelForAudioClassification.from_pretrained(
+    model_id,
+    num_labels=num_labels,
+    label2id=label2id,
+    id2label=id2label,
+)
+```
+
+The next step is to define the training arguments. We'll push our model to the Hub, so first we'll need to login to our Hugging Face account:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+Once we've provided an access token to log in, we can define the training arguments as usual:
+
+```python
+from transformers import TrainingArguments
+
+model_name = model_id.split("/")[-1]
+batch_size = 4
+num_train_epochs = 10
+
+args = TrainingArguments(
+    f"{model_name}-finetuned-gtzan",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=5e-5,
+    per_device_train_batch_size=batch_size,
+    gradient_accumulation_steps=2,
+    per_device_eval_batch_size=batch_size,
+    num_train_epochs=num_train_epochs,
+    warmup_ratio=0.1,
+    load_best_model_at_end=True,
+    metric_for_best_model="accuracy",
+    fp16=True,
+    push_to_hub=True,
+)
+```
+
+The last thing we need to do is define the metrics. Since the dataset is balanced, we'll use accuracy as our metric and load it using the 🤗 Evaluate library:
+
+```python
+import evaluate
+
+metric = evaluate.load("accuracy")
+
+
+def compute_metrics(eval_pred):
+    """Computes accuracy on a batch of predictions"""
+    predictions = np.argmax(eval_pred.predictions, axis=1)
+    return metric.compute(predictions=predictions, references=eval_pred.label_ids)
+```
+
+We've now got all the pieces! Let's instantiate the `Trainer` and train the model:
+
+```python
+from transformers import Trainer
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=gtzan_encoded["train"],
+    eval_dataset=gtzan_encoded["test"],
+    tokenizer=feature_extractor,
+    compute_metrics=compute_metrics,
+)
+
+trainer.train()
+```
+
+```python
+trainer.evaluate()
+```
+
+```out
+{'eval_loss': 0.6693804860115051,
+ 'eval_accuracy': 0.82,
+ 'eval_runtime': 18.0643,
+ 'eval_samples_per_second': 5.536,
+ 'eval_steps_per_second': 0.72,
+ 'epoch': 9.99}
+```
+
+```python
+kwargs = {"tags": "hf-course"}
+trainer.push_to_hub(**kwargs)
+```
+
+## Building a demo with our model
+
+```python
+import librosa
+import gradio as gr
+from transformers import pipeline
+
+pipe = pipeline("audio-classification", model="lewtun/distilhubert-finetuned-gtzan")
+
+
+def classify_audio(filepath):
+    audio, sampling_rate = librosa.load(filepath, sr=16_000)
+    preds = pipe(audio)
+    outputs = {}
+    for p in preds:
+        outputs[p["label"]] = p["score"]
+    return outputs
+
+
+label = gr.outputs.Label()
+
+demo = gr.Interface(fn=classify_audio, inputs=gr.Audio(type="filepath"), outputs=label)
+demo.launch(debug=True)
+```
+
+<iframe src="https://course-demos-song-classifier.hf.space" frameBorder="0" height="450" title="Gradio app" class="container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
