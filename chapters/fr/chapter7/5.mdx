@@ -309,10 +309,11 @@ def preprocess_function(examples):
     )
     # Configurer le tokenizer pour les cibles
     with tokenizer.as_target_tokenizer():
-        labels = tokenizer(
-            examples["review_title"], max_length=max_target_length, truncation=True
-        )
+    labels = tokenizer(
+        examples["review_title"], max_length=max_target_length, truncation=True
+    )
 
+    model_inputs["labels_mask"] = labels["attention_mask"]
     model_inputs["labels"] = labels["input_ids"]
     return model_inputs
 ```
@@ -701,14 +702,14 @@ Pour conclure cette section, voyons comment nous pouvons également *finetuner* 
 Nous sommes presque prêts à nous entraîner ! Nous devons juste convertir nos jeux de données en `tf.data.Dataset` en utilisant le assembleur de données que nous avons défini ci-dessus, puis utiliser `compile()` et `fit()`. D'abord, les jeux de données :
 
 ```python
-tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
-    columns=["input_ids", "attention_mask", "labels"],
+tf_train_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["train"],
     collate_fn=data_collator,
     shuffle=True,
     batch_size=8,
 )
-tf_eval_dataset = tokenized_datasets["validation"].to_tf_dataset(
-    columns=["input_ids", "attention_mask", "labels"],
+tf_eval_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
     collate_fn=data_collator,
     shuffle=False,
     batch_size=8,
@@ -755,18 +756,36 @@ model.fit(
 )
 ```
 
-Nous avons obtenu quelques valeurs de perte pendant l'entraînement, mais nous aimerions vraiment voir les métriques ROUGE que nous avons calculées plus tôt. Pour obtenir ces métriques, nous devons générer les sorties du modèle et les convertir en chaînes de caractères. Construisons quelques listes d'étiquettes et de prédictions pour comparer la métrique ROUGE (notez que si vous obtenez des erreurs d'importation pour cette section, vous pouvez avoir besoin de "pip install tqdm") :
+Nous avons obtenu quelques valeurs de perte pendant l'entraînement mais nous aimerions voir les métriques ROUGE que nous avons calculées plus tôt. Pour obtenir ces métriques, nous devons générer les sorties du modèle et les convertir en chaînes de caractères. Construisons une liste d'étiquettes et une liste de prédictions pour la métrique ROUGE pour comparer (notez que si vous obtenez des erreurs d'importation pour cette section, vous pouvez avoir besoin de faire `pip install tqdm`). Nous allons également utiliser une astuce qui augmente considérablement les performances : compiler notre code de génération avec [XLA](https://www.tensorflow.org/xla), le compilateur d'algèbre linéaire accéléré de TensorFlow. XLA applique diverses optimisations au graphe de calcul du modèle, ce qui permet d'améliorer considérablement la vitesse et l'utilisation de la mémoire. Comme décrit dans un article du [blog d’Hugging Face](https://huggingface.co/blog/tf-xla-generate), XLA fonctionne mieux lorsque nos formes d'entrée ne varient pas trop. Pour gérer cela, nous allons rembourrer nos entrées à des multiples de 128, et créer un nouveau jeu de données avec l’assembleur de rembourrage. Puis nous appliquerons le décorateur `@tf.function(jit_compile=True)` à notre fonction de génération, qui marque la fonction entière pour la compilation avec XLA. 
 
 ```python
 from tqdm import tqdm
 import numpy as np
 
+generation_data_collator = DataCollatorForSeq2Seq(
+    tokenizer, model=model, return_tensors="tf", pad_to_multiple_of=320
+)
+tf_generate_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
+    collate_fn=generation_data_collator,
+    shuffle=False,
+    batch_size=8,
+    drop_remainder=True,
+)
+@tf.function(jit_compile=True)
+def generate_with_xla(batch):
+    return model.generate(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        max_new_tokens=32,
+    )
+    
 all_preds = []
 all_labels = []
-for batch in tqdm(tf_eval_dataset):
-    predictions = model.generate(**batch)
+for batch, labels in tqdm(tf_generate_dataset):
+    predictions = generate_with_xla(batch)
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-    labels = batch["labels"].numpy()
+    labels = labels.numpy()
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
     decoded_preds = ["\n".join(sent_tokenize(pred.strip())) for pred in decoded_preds]
