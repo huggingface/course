@@ -1,0 +1,473 @@
+<FrameworkSwitchCourse {fw} />
+
+# Sức mạnh đặc biệt của tokenizer nhanh
+
+{#if fw === 'pt'}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter6/section3_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter6/section3_pt.ipynb"},
+]} />
+
+{:else}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter6/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter6/section3_tf.ipynb"},
+]} />
+
+{/if}
+
+Trong phần này, chúng ta sẽ xem xét kỹ hơn các khả năng của tokenizer trong 🤗 Transformers. Cho đến nay, chúng ta chỉ sử dụng chúng để tokenize đầu vào hoặc giải mã ID trở lại thành văn bản, nhưng các trình tokenize - đặc biệt là những trình tokenize được hỗ trợ bởi thư viện 🤗 Tokenizers - có thể làm được nhiều hơn thế. Để minh họa các tính năng bổ sung này, chúng ta sẽ khám phá cách tái tạo kết quả của `token-classification` (mà chúng ta gọi là `ner`) và `question-answering` chúng ta gặp phải lần đầu tiên trong [Chương 1](/course/chapter1).
+
+<Youtube id="g8quOxoqhHQ"/>
+
+Trong phần thảo luận kế tiếp, chúng ta sẽ phân biệt giữa các loại tokenizer "chậm" và "nhanh". Phiên bản chậm là những phiên bản được viết bằng Python bên trong thư viện 🤗 Transformers, trong khi phiên bản nhanh là những phiên bản được cung cấp bởi 🤗 Tokenizers, được viết bằng Rust. Nếu bạn nhớ bảng từ [Chương 5](/course/chapter5/3) báo cáo khoảng thời gian tokenize nhanh và chậm cần để tokenize Drug Review Dataset, bạn nên biết lý do tại sao chúng tôi gọi chúng là nhanh và chậm :
+
+                |  Tokenizer nhanh | Tokenizer chậm
+:--------------:|:--------------:|:-------------:
+`batched=True`  | 10.8s          | 4min41s
+`batched=False` | 59.2s          | 5min3s
+
+<Tip warning={true}>
+
+⚠️ Khi tokenize một câu, bạn không phải lúc nào cũng thấy sự khác biệt về tốc độ giữa các phiên bản chậm và nhanh của cùng một trình tokenize. Trên thực tế, phiên bản nhanh có thể chậm hơn! Chỉ khi tokenize nhiều văn bản song song cùng một lúc, bạn mới có thể thấy rõ sự khác biệt.
+
+</Tip>
+
+## Mã hoá theo lô
+
+<Youtube id="3umI3tm27Vw"/>
+
+Đầu ra của tokenizer không phải là một từ điển Python đơn giản; những gì chúng ta nhận được thực sự là một đối tượng `BatchEncoding` đặc biệt. Đó là một lớp con của từ điển (đó là lý do tại sao trước đây chúng ta có thể lập chỉ mục vào kết quả đó mà không gặp bất kỳ vấn đề gì), nhưng với các phương thức bổ sung hầu hết được sử dụng bởi các trình tokenize nhanh.
+
+Bên cạnh khả năng song song hóa của chúng, chức năng chính của các trình tokenize nhanh là chúng luôn theo dõi khoảng văn bản ban đầu mà ta tokenize - một tính năng được gọi là *offset mapping* hay *ánh xạ bù trừ*. Điều này lần lượt mở khóa các tính năng như ánh xạ từng từ với token mà nó tạo ra hoặc ánh xạ từng ký tự của văn bản gốc với token bên trong và ngược lại.
+
+Cùng xem một mẫu:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+encoding = tokenizer(example)
+print(type(encoding))
+```
+
+Như đã đề cập trước đây, chúng ta nhận được một đối tượng `BatchEncoding` trong đầu ra của trình tokenize:
+
+```python out
+<class 'transformers.tokenization_utils_base.BatchEncoding'>
+```
+
+Vì lớp `AutoTokenizer` chọn một trình tokenizer nhanh theo mặc định, chúng ta có thể sử dụng các phương thức bổ sung mà đối tượng `BatchEncoding` này cung cấp. Chúng ta có hai cách để kiểm tra xem trình tokenize là nhanh hay chậm. Chúng ta có thể kiểm tra bằng thuộc tính `is_fast` của `tokenizer`:
+
+```python
+tokenizer.is_fast
+```
+
+```python out
+True
+```
+
+hoặc kiểm tra cùng thuộc tính đó của `encoding`:
+
+```python
+encoding.is_fast
+```
+
+```python out
+True
+```
+
+Hãy xem những gì một tokenizer nhanh cho phép chúng ta làm. Đầu tiên, chúng tôi có thể truy cập token mà không cần phải chuyển đổi ID trở lại token:
+
+```py
+encoding.tokens()
+```
+
+```python out
+['[CLS]', 'My', 'name', 'is', 'S', '##yl', '##va', '##in', 'and', 'I', 'work', 'at', 'Hu', '##gging', 'Face', 'in',
+ 'Brooklyn', '.', '[SEP]']
+```
+
+Trong trường hợp này, token ở chỉ mục 5 là `##yl`, là một phần của từ "Sylvain" trong câu gốc. Chúng ta cũng có thể sử dụng phương thức `word_ids()` để lấy chỉ mục của từ mà mỗi token đến từ:
+
+```py
+encoding.word_ids()
+```
+
+```python out
+[None, 0, 1, 2, 3, 3, 3, 3, 4, 5, 6, 7, 8, 8, 9, 10, 11, 12, None]
+```
+
+Chúng ta có thể thấy rằng các token đặc biệt của trình tokenize như `[CLS]` và `[SEP]` được ánh xạ thành `None`, và sau đó mỗi token được ánh xạ tới từ mà nó bắt nguồn. Điều này đặc biệt hữu ích để xác định xem một token nằm ở đầu một từ hay nếu hai token có trong cùng thuộc một từ. Chúng ta có thể dựa vào tiền tố `##` cho điều đó, nhưng nó chỉ hoạt động đối với các tokenize kiểu BERT; phương pháp này hoạt động với bất kỳ loại tokenizer nào miễn nó là phiên bản nhanh. Trong chương tiếp theo, chúng ta sẽ xem cách chúng ta có thể sử dụng khả năng này để áp dụng nhãn chúng ta có cho mỗi từ đúng cách với các token trong các tác vụ như nhận dạng thực thể được đặt tên (NER) và  gán nhãn từ loại (POS). Chúng ta cũng có thể sử dụng nó để che giấu tất cả các token đến từ cùng một từ trong mô hình ngôn ngữ được che (một kỹ thuật được gọi là _whole word masking_).
+
+<Tip>
+
+Khái niệm về một từ rất là phức tạp. Ví dụ: "I'll" (từ rút gọn của "I will") có được tính là một hay hai từ? Nó thực sự phụ thuộc vào trình tokenize và hoạt động tiền tokenize mà nó áp dụng. Một số tokenizer chỉ tách ra trên khoảng trắng, vì vậy họ sẽ coi đây là một từ. Những người khác sử dụng dấu câu ở đầu khoảng trắng, vì vậy sẽ coi nó là hai từ.
+
+✏️ **Thử nghiệm thôi!** Tạo tokenizer từ các checkpoints `bert-base-cased` và` roberta-base` và tokenize "81s" với chúng. Bạn quan sát thấy gì? ID từ là gì?
+
+</Tip>
+
+Tương tự, có một phương thức `question_ids()` mà chúng ta có thể sử dụng để ánh xạ token đến câu mà nó bắt nguồn (mặc dù trong trường hợp này, `token_type_ids` được trả về bởi tokenizer có thể cung cấp cho chúng ta cùng một thông tin).
+
+Cuối cùng, chúng ta có thể ánh xạ bất kỳ từ hoặc token nào với các ký tự trong văn bản gốc và ngược lại, thông qua các phương thức `word_to_chars()` hoặc `token_to_chars()` và `char_to_word()` hoặc `char_to_token()`. Ví dụ: phương thức `word_ids()` cho chúng ta biết rằng `##yl` là một phần của từ ở chỉ mục 3, nhưng từ đó nằm trong câu nào? Chúng ta có thể tìm hiểu như thế này:
+
+```py
+start, end = encoding.word_to_chars(3)
+example[start:end]
+```
+
+```python out
+Sylvain
+```
+
+Như đã đề cập trước đó, tất cả điều này thực tế được hỗ trợ bởi là trình tokenizer nhanh kết hợp khoảng văn bản mà mỗi token đến từ danh sách *offset* hay *offset*. Để minh họa việc sử dụng chúng, tiếp theo, chúng tôi sẽ hướng dẫn bạn cách sao chép các kết quả của `token-classification` theo cách thủ công.
+
+<Tip>
+
+✏️ **Thử nghiệm thôi** Tạo văn bản mẫu của riêng bạn và xem liệu bạn có thể hiểu những token nào được liên kết với ID từ, cũng như cách trích xuất ký tự kéo dài cho một từ. Để có điểm thưởng, hãy thử sử dụng hai câu làm đầu vào và xem liệu ID câu có phù hợp với bạn không.
+
+</Tip>
+
+## Bên trong pipeline `token-classification`
+
+Trong [Chương 1](/course/chapter1), chúng ta lần đầu được thử áp dụng NER - tác vụ xác định những phần nào của văn bản tương ứng với các thực thể như người, địa điểm hoặc tổ chức - với `pipeline()` của 🤗 Transformers. Sau đó, trong [Chương 2](/course/chapter2), chúng ta đã thấy cách một pipeline nhóm ba giai đoạn cần thiết lại với nhau để nhận các dự đoán từ một văn bản thô: tokenize, chuyển các đầu vào qua mô hình và hậu xử lý. Hai bước đầu tiên trong quy trình `token-classification` cũng giống như trong bất kỳ quy trình nào khác, nhưng quá trình hậu xử lý phức tạp hơn một chút - hãy cùng xem cách thực hiện!
+
+{#if fw === 'pt'}
+
+<Youtube id="0E7ltQB7fM8"/>
+
+{:else}
+
+<Youtube id="PrX4CjrVnNc"/>
+
+{/if}
+
+### Nhận kết quả cơ sở với baseline
+
+Trước tiên, hãy lấy một pipeline phân loại token chúng ta có thể nhận được một số kết quả để so sánh theo cách thủ công. Mô hình được sử dụng theo mặc định là [`dbmdz/bert-large-cased-finetuned-conll03-english`](https://huggingface.co/dbmdz/bert-large-cased-finetuned-conll03-english); nó thực hiện NER trên các câu:
+
+```py
+from transformers import pipeline
+
+token_classifier = pipeline("token-classification")
+token_classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S', 'start': 11, 'end': 12},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl', 'start': 12, 'end': 14},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va', 'start': 14, 'end': 16},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in', 'start': 16, 'end': 18},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu', 'start': 33, 'end': 35},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging', 'start': 35, 'end': 40},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face', 'start': 41, 'end': 45},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Mô hình đã xác định đúng mỗi token do "Sylvain" tạo ra là một người, mỗi token được tạo bởi "Hugging Face" là một tổ chức và token "Brooklyn" là một địa điểm. Chúng ta cũng có thể yêu cầu pipeline nhóm các token tương ứng với cùng một thực thể lại với nhau:
+
+```py
+from transformers import pipeline
+
+token_classifier = pipeline("token-classification", aggregation_strategy="simple")
+token_classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+```
+
+```python out
+[{'entity_group': 'PER', 'score': 0.9981694, 'word': 'Sylvain', 'start': 11, 'end': 18},
+ {'entity_group': 'ORG', 'score': 0.97960204, 'word': 'Hugging Face', 'start': 33, 'end': 45},
+ {'entity_group': 'LOC', 'score': 0.99321055, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+`aggregation_strategy` được chọn sẽ thay đổi điểm được tính cho mỗi thực thể được nhóm lại, Với `"simple"`, điểm chỉ là giá trị trung bình của điểm của mỗi token trong thực thể đã cho: ví dụ: điểm của "Sylvain" là trung bình điểm mà chúng ta đã thấy trong ví dụ trước cho các token `S` , `##yl`,`## va` và `##in`. Các chiến lược có sẵn khác là:
+
+- `"first"`, trong đó điểm của mỗi thực thể là điểm của token đầu tiên của thực thể đó (vì vậy đối với "Sylvain", nó sẽ là 0.993828, điểm của token `S`)
+- `"max"`, trong đó điểm của mỗi thực thể là điểm tối đa của các token trong thực thế đó (vì vậy với "Hugging Face" sẽ là 0.98879766, điểm của "Face")
+- `"average"`, trong đó điểm của mỗi thực thể là điểm trung bình của các từ tạo nên thực thể đó (ví dụ với "Sylvain" thì phương pháp này sẽ không có sự khác biệt so với phương pháp `"simple"`, nhưng với "Hugging Face", điểm trả về sẽ là 0.9819, điểm trung bình của "Hugging", 0.975, và "Face", 0.98879)
+
+Giờ chúng ta hãy xem làm thế nào để có được những kết quả này mà không cần sử dụng hàm`pipeline()`!
+
+### Từ đầu vào tới dự đoán
+
+{#if fw === 'pt'}
+
+Đầu tiên chúng ta cần tokenize đầu vào của chúng ta và truyền chúng vào mô hình. Đây chính xác là những gì ta đã làm ở [Chương 2](/course/chapter2); ta khởi tạo tokenizer và mô hình sử dụng lớp `AutoXxx` và sau đó dùng chúng vào các mẫu của mình:
+
+```py
+from transformers import AutoTokenizer, AutoModelForTokenClassification
+
+model_checkpoint = "dbmdz/bert-large-cased-finetuned-conll03-english"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForTokenClassification.from_pretrained(model_checkpoint)
+
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+inputs = tokenizer(example, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+Vì chúng ta sử dụng `AutoModelForTokenClassification` ở đây,ta sẽ nhận được tập hợp các logits cho từng token của chuỗi đầu vào:
+
+```py
+print(inputs["input_ids"].shape)
+print(outputs.logits.shape)
+```
+
+```python out
+torch.Size([1, 19])
+torch.Size([1, 19, 9])
+```
+
+{:else}
+
+Đầu tiên chúng ta cần tokenize đầu vào của chúng ta và truyền chúng vào mô hình. Đây chính xác là những gì ta đã làm ở [Chương 2](/course/chapter2); ta khởi tạo tokenizer và mô hình sử dụng lớp `TFAutoXxx` và sau đó dùng chúng vào các mẫu của mình:
+
+```py
+from transformers import AutoTokenizer, TFAutoModelForTokenClassification
+
+model_checkpoint = "dbmdz/bert-large-cased-finetuned-conll03-english"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = TFAutoModelForTokenClassification.from_pretrained(model_checkpoint)
+
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+inputs = tokenizer(example, return_tensors="tf")
+outputs = model(**inputs)
+```
+
+Vì ta dùng `TFAutoModelForTokenClassification` ở đây, ta sẽ nhận được tập hợp các logits cho từng token của chuỗi đầu vào:
+
+```py
+print(inputs["input_ids"].shape)
+print(outputs.logits.shape)
+```
+
+```python out
+(1, 19)
+(1, 19, 9)
+```
+
+{/if}
+
+Chúng ta có một lô với 1 chuỗi gồm 19 token và mô hình có 9 nhãn khác nhau, vì vậy đầu ra của mô hình có hình dạng 1 x 19 x 9. Giống như đối với pipeline phân loại văn bản, chúng ta sử dụng hàm softmax để chuyển đổi các logits đó theo xác suất, và chúng ta lấy argmax để nhận dự đoán (lưu ý rằng ta có thể lấy argmax trên logits vì softmax không thay đổi thứ tự):
+
+{#if fw === 'pt'}
+
+```py
+import torch
+
+probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)[0].tolist()
+predictions = outputs.logits.argmax(dim=-1)[0].tolist()
+print(predictions)
+```
+
+{:else}
+
+```py
+import tensorflow as tf
+
+probabilities = tf.math.softmax(outputs.logits, axis=-1)[0]
+probabilities = probabilities.numpy().tolist()
+predictions = tf.math.argmax(outputs.logits, axis=-1)[0]
+predictions = predictions.numpy().tolist()
+print(predictions)
+```
+
+{/if}
+
+```python out
+[0, 0, 0, 0, 4, 4, 4, 4, 0, 0, 0, 0, 6, 6, 6, 0, 8, 0, 0]
+```
+
+Thuộc tính `model.config.id2label` chứa ánh xạ các chỉ mục tới các nhãn mà chúng ta có thể sử dụng để hiểu các dự đoán: 
+
+```py
+model.config.id2label
+```
+
+```python out
+{0: 'O',
+ 1: 'B-MISC',
+ 2: 'I-MISC',
+ 3: 'B-PER',
+ 4: 'I-PER',
+ 5: 'B-ORG',
+ 6: 'I-ORG',
+ 7: 'B-LOC',
+ 8: 'I-LOC'}
+```
+
+Như chúng ta đã thấy trước đó, có 9 nhãn: `O` là nhãn cho các token không nằm trong bất kỳ thực thể được đặt tên nào (nó là viết tắt của "outside" hay "bên ngoài") và sau đó chúng ta có hai nhãn cho mỗi loại thực thể (linh tinh, người , tổ chức và vị trí). Nhãn `B-XXX` cho biết token nằm ở đầu thực thể `XXX` và nhãn `I-XXX` cho biết token nằm bên trong thực thể `XXX`. Ví dụ: trong mẫu hiện tại, chúng ta kì vọng mô hình phân loại token `S` là `B-PER` (bắt đầu của một thực thể người) và các token `##yl`,`##va` và `##in` là `I-PER` (bên trong một thực thể người).
+
+Bạn có thể nghĩ rằng mô hình đã sai trong trường hợp này vì nó đã gắn nhãn `I-PER` cho cả bốn token này, nhưng điều đó không hoàn toàn đúng. Thực tế có hai định dạng cho các nhãn `B-` và `I-` đó là: *IOB1* và *IOB2*. Định dạng IOB2 (màu hồng bên dưới), là định dạng chúng ta đã giới thiệu trong khi ở định dạng IOB1 (màu xanh lam), các nhãn bắt đầu bằng `B-` chỉ được sử dụng để phân tách hai thực thể liền kề cùng loại. Mô hình chúng tôi đang sử dụng đã được tinh chỉnh trên tập dữ liệu bằng cách sử dụng định dạng đó, đó là lý do tại sao nó gán nhãn `I-PER` cho mã thông báo `S`.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/IOB_versions.svg" alt="IOB1 vs IOB2 format"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/IOB_versions-dark.svg" alt="IOB1 vs IOB2 format"/>
+</div>
+
+Với phép ánh xạ này, chúng ta đã sẵn sàng đề tái tạo lại (gần như hoàn toàn) kết quả của pipeline đầu -- ta chỉ cần lấy điểm và nhãn của mỗi token mà không được phân vào `O`:
+
+```py
+results = []
+tokens = inputs.tokens()
+
+for idx, pred in enumerate(predictions):
+    label = model.config.id2label[pred]
+    if label != "O":
+        results.append(
+            {"entity": label, "score": probabilities[idx][pred], "word": tokens[idx]}
+        )
+
+print(results)
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S'},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl'},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va'},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in'},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu'},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging'},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face'},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn'}]
+```
+
+Điều này rất giống với những gì ta đã có trước đây, ngoại trừ một ngoại lệ: pipeline cũng cung cấp thông tin về điểm `start` hay `bắt đầu` và `end`  hay `kết thúc` của mỗi thực thể trong câu gốc. Đây là lúc ánh xạ bù trừ của chúng ta sẽ phát huy tác dụng. Để có được offset, chúng ta chỉ cần đặt `return_offsets_mapping=True` khi chúng ta áp dụng tokenizer cho các đầu vào của mình:
+
+```py
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+inputs_with_offsets["offset_mapping"]
+```
+
+```python out
+[(0, 0), (0, 2), (3, 7), (8, 10), (11, 12), (12, 14), (14, 16), (16, 18), (19, 22), (23, 24), (25, 29), (30, 32),
+ (33, 35), (35, 40), (41, 45), (46, 48), (49, 57), (57, 58), (0, 0)]
+```
+
+Mỗi tuple là khoảng văn bản tương ứng với mỗi token, trong đó `(0, 0)` được dành riêng cho các token đặc biệt. Trước đây, chúng ta đã thấy rằng token ở chỉ mục 5 là `##yl`, có `(12, 14)` là các phần bù ở đây. Nếu chúng ta lấy phần tương ứng trong mẫu của mình:
+
+
+```py
+example[12:14]
+```
+
+ta nhận được khoảng văn bản thích hợp mà không có `##`:
+
+```python out
+yl
+```
+
+Sử dụng điều này, bây giờ chúng ta có thể hoàn thành các kết quả trước đó:
+
+```py
+results = []
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+tokens = inputs_with_offsets.tokens()
+offsets = inputs_with_offsets["offset_mapping"]
+
+for idx, pred in enumerate(predictions):
+    label = model.config.id2label[pred]
+    if label != "O":
+        start, end = offsets[idx]
+        results.append(
+            {
+                "entity": label,
+                "score": probabilities[idx][pred],
+                "word": tokens[idx],
+                "start": start,
+                "end": end,
+            }
+        )
+
+print(results)
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S', 'start': 11, 'end': 12},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl', 'start': 12, 'end': 14},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va', 'start': 14, 'end': 16},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in', 'start': 16, 'end': 18},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu', 'start': 33, 'end': 35},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging', 'start': 35, 'end': 40},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face', 'start': 41, 'end': 45},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Đây giống như những gì chúng ta có được từ pipeline đầu tiên!
+
+### Nhóm các thực thể
+
+Sử dụng các offset để xác định điểm bắt đầu và kết thúc cho mỗi thực thể là rất tiện dụng, nhưng thông tin đó không hoàn toàn cần thiết. Tuy nhiên, khi chúng ta muốn nhóm các thực thể lại với nhau, việc offset sẽ giúp chúng ta tiết kiệm rất nhiều đoạn mã lộn xộn. Ví dụ: nếu chúng ta muốn nhóm các token `Hu`, `##gging` và `Face` lại với nhau, chúng ta có thể đưa ra các quy tắc đặc biệt nói rằng hai token đầu tiên phải được đính kèm trong khi xóa dấu `##` và `Face` nên được thêm một khoảng trắng vì nó không bắt đầu bằng `##` - nhưng điều đó sẽ chỉ hoạt động đối với loại tokenizer cụ thể này. Chúng ta sẽ phải viết một bộ quy tắc khác cho SentencePiece hoặc Byte-Pair-Encoding (sẽ được thảo luận ở phần sau của chương này).
+
+Với offset, tất cả mã tùy chỉnh đó sẽ biến mất: chúng ta chỉ có thể lấy khoảng trong văn bản gốc bắt đầu bằng token đầu tiên và kết thúc bằng token cuối cùng. Vì vậy, trong trường hợp các mã thông báo `Hu`, `##gging` và `Face`, chúng ta nên bắt đầu ở ký tự 33 (đầu của `Hu`) và kết thúc trước ký tự 45 (cuối của `Face`) :
+
+```py
+example[33:45]
+```
+
+```python out
+Hugging Face
+```
+
+Để viết đoạn mã hậu xử lý các dự đoán trong khi nhóm các thực thể, ta sẽ nhóm các thực thể liên tiếp và có nhãn `I-XXX` với nhau trừ khi nó là từ đầu tiên, được gán nhãn `B-XXX` hoặc `I-XXX` (để ta có thể dừng nhóm một thực thể khi nhận được `O`, một kiểu thực thể mới, hoặc một `B-XXX` cho ta biết thực thể có kiểu giống với điểm bắt đầu):
+
+```py
+import numpy as np
+
+results = []
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+tokens = inputs_with_offsets.tokens()
+offsets = inputs_with_offsets["offset_mapping"]
+
+idx = 0
+while idx < len(predictions):
+    pred = predictions[idx]
+    label = model.config.id2label[pred]
+    if label != "O":
+        # Xoá B- hoặc I-
+        label = label[2:]
+        start, _ = offsets[idx]
+
+        # Lấy tất cả các tokens có nhãn I-
+        all_scores = []
+        while (
+            idx < len(predictions)
+            and model.config.id2label[predictions[idx]] == f"I-{label}"
+        ):
+            all_scores.append(probabilities[idx][pred])
+            _, end = offsets[idx]
+            idx += 1
+
+        # Điểm là giá trị trung bình của tất cả điểm của các token trong thực thể được nhóm đó
+        score = np.mean(all_scores).item()
+        word = example[start:end]
+        results.append(
+            {
+                "entity_group": label,
+                "score": score,
+                "word": word,
+                "start": start,
+                "end": end,
+            }
+        )
+    idx += 1
+
+print(results)
+```
+
+Và chúng ta nhận được kết quả tương tự như với pipeline thứ hai của mình!
+
+```python out
+[{'entity_group': 'PER', 'score': 0.9981694, 'word': 'Sylvain', 'start': 11, 'end': 18},
+ {'entity_group': 'ORG', 'score': 0.97960204, 'word': 'Hugging Face', 'start': 33, 'end': 45},
+ {'entity_group': 'LOC', 'score': 0.99321055, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Một ví dụ khác về tác vụ mà những offset này cực kỳ hữu ích là hỏi đáp. Đào sâu vào pipeline này, chúng ta sẽ thực hiện trong phần tiếp theo, cũng sẽ cho phép chúng ta xem xét một tính năng cuối cùng của các tokenizers trong thư viện 🤗 Transformers: xử lý các token tràn khi chúng ta cắt bớt một đầu vào đến một độ dài nhất định.

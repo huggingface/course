@@ -4,17 +4,29 @@ This repo contains the content that's used to create the **[Hugging Face course]
 
 ## 🌎 Languages and translations
 
-| Language                                               | Source                                                                       | Authors                                                                                                                                                                                                                                                                                                                                                  |
-|:-------------------------------------------------------|:-----------------------------------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [English](https://huggingface.co/course/en/chapter1/1) | [`chapters/en`](https://github.com/huggingface/course/tree/main/chapters/en) | [@sgugger](https://github.com/sgugger), [@lewtun](https://github.com/lewtun), [@LysandreJik](https://github.com/LysandreJik), [@Rocketknight1](https://github.com/Rocketknight1), [@sashavor](https://github.com/sashavor), [@osanseviero](https://github.com/osanseviero), [@SaulLu](https://github.com/SaulLu), [@lvwerra](https://github.com/lvwerra) |
-| [Chinese (simplified)](https://huggingface.co/course/zh/chapter1/1) (WIP) | [`chapters/zh`](https://github.com/huggingface/course/tree/main/chapters/zh) |  [@zhlhyx](https://github.com/zhlhyx), [petrichor1122](https://github.com/petrichor1122), [@1375626371](https://github.com/1375626371) |
-| [French](https://huggingface.co/course/fr/chapter1/1) (WIP) | [`chapters/fr`](https://github.com/huggingface/course/tree/main/chapters/fr) | [@lbourdois](https://github.com/lbourdois), [@ChainYo](https://github.com/ChainYo), [@melaniedrevet](https://github.com/melaniedrevet), [@abdouaziz](https://github.com/abdouaziz) |
-| [Hindi](https://huggingface.co/course/hi/chapter1/1) (WIP) | [`chapters/hi`](https://github.com/huggingface/course/tree/main/chapters/hi) | [@pandyaved98](https://github.com/pandyaved98) |
-| [Korean](https://huggingface.co/course/ko/chapter1/1) (WIP) | [`chapters/ko`](https://github.com/huggingface/course/tree/main/chapters/ko) | [@Doohae](https://github.com/Doohae) |
-| [Persian](https://huggingface.co/course/fa/chapter1/1) (WIP) | [`chapters/fa`](https://github.com/huggingface/course/tree/main/chapters/fa) | [@jowharshamshiri](https://github.com/jowharshamshiri), [@schoobani](https://github.com/schoobani) |
-| [Russian](https://huggingface.co/course/ru/chapter1/1) (WIP) | [`chapters/ru`](https://github.com/huggingface/course/tree/main/chapters/ru) | [@pdumin](https://github.com/pdumin), [@svv73](https://github.com/svv73) |
-| [Spanish](https://huggingface.co/course/es/chapter1/1) (WIP) | [`chapters/es`](https://github.com/huggingface/course/tree/main/chapters/es) | [@camartinezbu](https://github.com/camartinezbu), [@munozariasjm](https://github.com/munozariasjm) |
-| [Thai](https://huggingface.co/course/th/chapter1/1) (WIP) | [`chapters/th`](https://github.com/huggingface/course/tree/main/chapters/th) | [@peeraponw](https://github.com/peeraponw), [@a-krirk](https://github.com/a-krirk), [@jomariya23156](https://github.com/jomariya23156), [@ckingkan](https://github.com/ckingkan) |
+| Language                                                                      | Source                                                                             | Authors                                                                                                                                                                                                                                                                                                                                                  |
+|:------------------------------------------------------------------------------|:-----------------------------------------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| [English](https://huggingface.co/course/en/chapter1/1)                        | [`chapters/en`](https://github.com/huggingface/course/tree/main/chapters/en)       | [@sgugger](https://github.com/sgugger), [@lewtun](https://github.com/lewtun), [@LysandreJik](https://github.com/LysandreJik), [@Rocketknight1](https://github.com/Rocketknight1), [@sashavor](https://github.com/sashavor), [@osanseviero](https://github.com/osanseviero), [@SaulLu](https://github.com/SaulLu), [@lvwerra](https://github.com/lvwerra) |
+| [Bengali](https://huggingface.co/course/bn/chapter1/1) (WIP)                  | [`chapters/bn`](https://github.com/huggingface/course/tree/main/chapters/bn)       | [@avishek-018](https://github.com/avishek-018), [@eNipu](https://github.com/eNipu)                                                                                                                                                                                                                                                                       |
+| [German](https://huggingface.co/course/de/chapter1/1) (WIP)                   | [`chapters/de`](https://github.com/huggingface/course/tree/main/chapters/de)       | [@JesperDramsch](https://github.com/JesperDramsch), [@MarcusFra](https://github.com/MarcusFra), [@fabridamicelli](https://github.com/fabridamicelli)                                                                                                                                                                                                                                                          |
+| [Spanish](https://huggingface.co/course/es/chapter1/1) (WIP)                  | [`chapters/es`](https://github.com/huggingface/course/tree/main/chapters/es)       | [@camartinezbu](https://github.com/camartinezbu), [@munozariasjm](https://github.com/munozariasjm), [@fordaz](https://github.com/fordaz)                                                                                                                                                                                                                 |
+| [Persian](https://huggingface.co/course/fa/chapter1/1) (WIP)                  | [`chapters/fa`](https://github.com/huggingface/course/tree/main/chapters/fa)       | [@jowharshamshiri](https://github.com/jowharshamshiri), [@schoobani](https://github.com/schoobani)                                                                                                                                                                                                                                                       |
+| [French](https://huggingface.co/course/fr/chapter1/1)                         | [`chapters/fr`](https://github.com/huggingface/course/tree/main/chapters/fr)       | [@lbourdois](https://github.com/lbourdois), [@ChainYo](https://github.com/ChainYo), [@melaniedrevet](https://github.com/melaniedrevet), [@abdouaziz](https://github.com/abdouaziz)                                                                                                                                                                       |
+| [Gujarati](https://huggingface.co/course/gu/chapter1/1) (WIP)                 | [`chapters/gu`](https://github.com/huggingface/course/tree/main/chapters/gu)       | [@pandyaved98](https://github.com/pandyaved98)                                                                                                                                                                                                                                                                                                           |
+| [Hebrew](https://huggingface.co/course/he/chapter1/1) (WIP)                   | [`chapters/he`](https://github.com/huggingface/course/tree/main/chapters/he)       | [@omer-dor](https://github.com/omer-dor)                                                                                                                                                                                                                                                                                                                 |
+| [Hindi](https://huggingface.co/course/hi/chapter1/1) (WIP)                    | [`chapters/hi`](https://github.com/huggingface/course/tree/main/chapters/hi)       | [@pandyaved98](https://github.com/pandyaved98)                                                                                                                                                                                                                                                                                                           |
+| [Bahasa Indonesia](https://huggingface.co/course/id/chapter1/1) (WIP)                   | [`chapters/id`](https://github.com/huggingface/course/tree/main/chapters/id)       | [@gstdl](https://github.com/gstdl)                                                                                                                                                                                                                                                                                                           |
+| [Italian](https://huggingface.co/course/it/chapter1/1) (WIP)                  | [`chapters/it`](https://github.com/huggingface/course/tree/main/chapters/it)       | [@CaterinaBi](https://github.com/CaterinaBi), [@ClonedOne](https://github.com/ClonedOne),    [@Nolanogenn](https://github.com/Nolanogenn), [@EdAbati](https://github.com/EdAbati), [@gdacciaro](https://github.com/gdacciaro)                                                                                                                                                                  |
+| [Japanese](https://huggingface.co/course/ja/chapter1/1) (WIP)                 | [`chapters/ja`](https://github.com/huggingface/course/tree/main/chapters/ja)       | [@hiromu166](https://github.com/@hiromu166), [@younesbelkada](https://github.com/@younesbelkada), [@HiromuHota](https://github.com/@HiromuHota)                                                                                                                                                                                                       |
+| [Korean](https://huggingface.co/course/ko/chapter1/1) (WIP)                   | [`chapters/ko`](https://github.com/huggingface/course/tree/main/chapters/ko)       | [@Doohae](https://github.com/Doohae)                                                                                                                                                                                                                                                                                                                     |
+| [Portuguese](https://huggingface.co/course/pt/chapter1/1) (WIP)               | [`chapters/pt`](https://github.com/huggingface/course/tree/main/chapters/pt)       | [@johnnv1](https://github.com/johnnv1), [@victorescosta](https://github.com/victorescosta), [@LincolnVS](https://github.com/LincolnVS)                                                                                                                                                                                                                   |
+| [Russian](https://huggingface.co/course/ru/chapter1/1) (WIP)                  | [`chapters/ru`](https://github.com/huggingface/course/tree/main/chapters/ru)       | [@pdumin](https://github.com/pdumin), [@svv73](https://github.com/svv73)                                                                                                                                                                                                                                                                                 |
+| [Thai](https://huggingface.co/course/th/chapter1/1) (WIP)                     | [`chapters/th`](https://github.com/huggingface/course/tree/main/chapters/th)       | [@peeraponw](https://github.com/peeraponw), [@a-krirk](https://github.com/a-krirk), [@jomariya23156](https://github.com/jomariya23156), [@ckingkan](https://github.com/ckingkan)                                                                                                                                                                         |
+| [Turkish](https://huggingface.co/course/tr/chapter1/1) (WIP)                  | [`chapters/tr`](https://github.com/huggingface/course/tree/main/chapters/tr)       | [@tanersekmen](https://github.com/tanersekmen), [@mertbozkir](https://github.com/mertbozkir), [@ftarlaci](https://github.com/ftarlaci), [@akkasayaz](https://github.com/akkasayaz)                                                                                                                                                                       |
+| [Vietnamese](https://huggingface.co/course/vi/chapter1/1)               | [`chapters/vi`](https://github.com/huggingface/course/tree/main/chapters/vi)       | [@honghanhh](https://github.com/honghanhh)                                                                                                                                                                                                                                                                                                               |
+| [Chinese (simplified)](https://huggingface.co/course/zh-CN/chapter1/1)  | [`chapters/zh-CN`](https://github.com/huggingface/course/tree/main/chapters/zh-CN) | [@zhlhyx](https://github.com/zhlhyx), [petrichor1122](https://github.com/petrichor1122), [@1375626371](https://github.com/1375626371)                                                                                                                                                                                                                    |
+| [Chinese (traditional)](https://huggingface.co/course/zh-TW/chapter1/1) (WIP) | [`chapters/zh-TW`](https://github.com/huggingface/course/tree/main/chapters/zh-TW) | [@davidpeng86](https://github.com/davidpeng86)                                                                                                                                                                                                                                                                                                           |
+
 
 ### Translating the course into your language
 
@@ -25,6 +37,10 @@ As part of our mission to democratise machine learning, we'd love to have the co
 To get started, navigate to the [_Issues_](https://github.com/huggingface/course/issues) page of this repo and check if anyone else has opened an issue for your language. If not, open a new issue by selecting the _Translation template_ from the _New issue_ button.
 
 Once an issue is created, post a comment to indicate which chapters you'd like to work on and we'll add your name to the list.
+
+**🗣 Join our Discord**
+
+Since it can be difficult to discuss translation details quickly over GitHub issues, we have created dedicated channels for each language on our Discord server. If you'd like to jon, just following the instructions at this channel 👉: [https://discord.gg/JfAtkvEtRb](https://discord.gg/JfAtkvEtRb)
 
 **🍴 Fork the repository**
 
@@ -62,9 +78,39 @@ Now comes the fun part - translating the text! The first thing we recommend is t
     title: Introduction # Translate this!
 ```
 
+> 🚨 Make sure the `_toctree.yml` file only contains the sections that have been translated! Otherwise you won't be able to build the content on the website or locally (see below how).
+
+
 Once you have translated the `_toctree.yml` file, you can start translating the [MDX](https://mdxjs.com/) files associated with your chapter.
 
 > 🙋 If the `_toctree.yml` file doesn't yet exist for your language, you can simply create one by copy-pasting from the English version and deleting the sections that aren't related to your chapter. Just make sure it exists in the `chapters/LANG-ID/` directory!
+
+**👷‍♂️ Build the course locally**
+
+Once you're happy with your changes, you can preview how they'll look by first installing the [`doc-builder`](https://github.com/huggingface/doc-builder) tool that we use for building all documentation at Hugging Face:
+
+```
+pip install hf-doc-builder
+```
+
+```
+doc-builder preview course ../course/chapters/LANG-ID --not_python_module
+```
+
+This will build and render the course on [http://localhost:3000/](http://localhost:3000/). Although the content looks much nicer on the Hugging Face website, this step will still allow you to check that everything is formatted correctly.
+
+**🚀 Submit a pull request**
+
+If the translations look good locally, the final step is to prepare the content for a pull request. Here, the first think to check is that the files are formatted correctly. For that you can run:
+
+```
+pip install -r requirements.txt
+make style
+```
+
+Once that's run, commit any changes, open a pull request, and tag [@lewtun](https://github.com/lewtun) for a review. Congratulations, you've now completed your first translation 🥳!
+
+> 🚨 To build the course on the website, double-check your language code exists in `languages` field of the `build_documentation.yml` and `build_pr_documentation.yml` files in the `.github` folder. If not, just add them in their alphabetical order.
 
 ## 📔 Jupyter notebooks
 
@@ -80,7 +126,7 @@ Then run the following script:
 python utils/generate_notebooks.py --output_dir nbs
 ```
 
-This script extracts all the code snippets from the English chapters and stores them as notebooks in the `nbs` folder (which is ignored by Git by default).
+This script extracts all the code snippets from the chapters and stores them as notebooks in the `nbs` folder (which is ignored by Git by default).
 
 ## ✍️ Contributing a new chapter
 
