@@ -1,0 +1,380 @@
+# Unigram tokenization
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter6/section7.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter6/section7.ipynb"},
+]} />
+
+Thuật toán Unigram thường được sử dung trong SentencePiece,  đây là một thuật toán tokenize cho các mô hình như AlBERT, T5, mBART, Big Bird, và XLNet.
+
+<Youtube id="TGZfZVuF9Yc"/>
+
+<Tip>
+
+💡 Phần này sẽ đi sâu vào Unigram cũng như toàn bộ cách triển khai. Bạn có thể bỏ qua phần cuối nếu bạn chỉ quan tâm tổng quan thuật toán tokenize.
+
+</Tip>
+
+## Thuật toán huấn luyện
+
+So với BPE và WordPiece, Unigram hoạt động theo hướng khác: nó bắt đầu từ một từ vựng lớn và loại bỏ các token cho đến khi nó đạt đến kích thước từ vựng mong muốn. Có một số tùy chọn để sử dụng để xây dựng vốn từ vựng cơ bản: ví dụ: chúng ta có thể lấy các chuỗi con phổ biến nhất trong các từ được tiền tokenize hoặc áp dụng BPE trên kho ngữ liệu ban đầu có kích thước từ vựng lớn.
+
+Tại mỗi bước của quá trình huấn luyện, thuật toán Unigram tính toán sự mất mát trên kho ngữ liệu được cung cấp từ vựng hiện tại. Sau đó, đối với mỗi ký hiệu trong từ vựng, thuật toán sẽ tính toán mức độ tổn thất tổng thể sẽ tăng lên bao nhiêu nếu ký hiệu bị xóa và tìm kiếm các ký hiệu làm tăng nó ít nhất. Những biểu tượng đó có ảnh hưởng thấp hơn đến sự mất mát tổng thể đối với kho dữ liệu, vì vậy theo một nghĩa nào đó, chúng "ít cần thiết hơn" và là những ứng cử viên tốt nhất để loại bỏ.
+
+Đây là một hoạt động rất tốn kém, vì vậy chúng tôi không chỉ loại bỏ một biểu tượng liên quan đến mức tăng tổn thất thấp nhất, mà \\(p\\) (\\(p\\) là một siêu tham số bạn có thể kiểm soát, thường là 10 hoặc 20) phần trăm các ký hiệu liên quan đến mức tăng tổn thất thấp nhất. Quá trình này sau đó được lặp lại cho đến khi từ vựng đạt được kích thước mong muốn.
+
+Lưu ý rằng chúng ta không bao giờ xóa các ký tự cơ sở, để đảm bảo rằng bất kỳ từ nào cũng có thể được tokenize.
+
+Bây giờ, điều này vẫn còn hơi mơ hồ: phần chính của thuật toán là tính toán sự mất mát trong kho ngữ liệu và xem nó thay đổi như thế nào khi chúng tôi xóa một số token khỏi từ vựng, nhưng chúng ta chưa giải thích cách thực hiện điều này. Bước này dựa trên thuật toán tokenize của mô hình Unigram, vì vậy chúng ta sẽ đi sâu vào phần tiếp theo.
+
+Chúng ta sẽ tái sử dụng kho ngữ liệu từ các ví dụ trước:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+and for this example, we will take all strict substrings for the initial vocabulary :
+
+```
+["h", "u", "g", "hu", "ug", "p", "pu", "n", "un", "b", "bu", "s", "hug", "gs", "ugs"]
+```
+
+## Thuật toán tokenize
+
+Mô hình Unigram là một loại mô hình ngôn ngữ coi mỗi token là độc lập với các token trước nó. Đó là mô hình ngôn ngữ đơn giản nhất, theo nghĩa xác suất của token X trong bối cảnh trước đó chỉ là xác suất của token X. Vì vậy, nếu chúng ta sử dụng mô hình ngôn ngữ Unigram để tạo văn bản, chúng ta sẽ luôn dự đoán token phổ biến nhất.
+
+Xác suất của một token nhất định là tần suất của nó (số lần chúng ta tìm thấy nó) trong kho tài liệu gốc, chia cho tổng tất cả các tần số của tất cả các token trong từ vựng (để đảm bảo xác suất tổng bằng 1). Ví dụ: `"ug"` có trong `"hug"`, `"pug"` và `"hugs"`, vì vậy nó có tần suất là 20 trong kho ngữ liệu của chúng tôi.
+
+Dưới đây là tần suất của tất cả các từ phụ có thể có trong từ vựng:
+
+```
+("h", 15) ("u", 36) ("g", 20) ("hu", 15) ("ug", 20) ("p", 17) ("pu", 17) ("n", 16)
+("un", 16) ("b", 4) ("bu", 4) ("s", 5) ("hug", 15) ("gs", 5) ("ugs", 5)
+```
+
+Vậy nên, tổng của tất cả các tần suất là 210, và xác suất của từ phụ `"ug"` là 20/210.
+
+<Tip>
+
+✏️ **Giờ đến lượt bạn!** Viết đoạn mã để tính tần suất trên và kiểm tra lại kết quả hiển thị cũng như tổng đã đúng chưa.
+
+</Tip>
+
+Giờ, để tokenize một từ cho trước, chúng ta sẽ nhìn vào tất cả các phần đoạn thành token và tính xác suất của từng cái theo mô hình Unigram. Vì tất cả token được cho là độc lập, xác suất này chỉ là tích của xác suất mỗi token. Ví dụ, `["p", "u", "g"]` của `"pug"` có xác suất:
+
+$$P([``p", ``u", ``g"]) = P(``p") \times P(``u") \times P(``g") = \frac{5}{210} \times \frac{36}{210} \times \frac{20}{210} = 0.000389$$
+
+Tương tự, `["pu", "g"]` có xác suất:
+
+$$P([``pu", ``g"]) = P(``pu") \times P(``g") = \frac{5}{210} \times \frac{20}{210} = 0.0022676$$
+
+Nói chung, việc tokenize có ít token nhất có thể sẽ có xác suất cao nhất (vì phép chia cho 210 lặp lại cho mỗi token), tương ứng với những gì chúng ta muốn trực quan: chia một từ thành số lượng token nhất có thể.
+
+Tokenize của một từ với mô hình Unigram sau đó là token có xác suất cao nhất. Trong ví dụ về `"pug"`, đây là các xác suất mà chúng ta sẽ nhận được cho mỗi phân đoạn có thể có:
+
+```
+["p", "u", "g"] : 0.000389
+["p", "ug"] : 0.0022676
+["pu", "g"] : 0.0022676
+```
+
+Vì vậy, `"pug"` sẽ được tokenize là `["p", "ug"]`  hoặc `["pu", "g"]`, tùy thuộc vào phân đoạn nào trong số đó được gặp đầu tiên (lưu ý rằng trong một phân đoạn lớn hơn ngữ liệu, những trường hợp bình đẳng như thế này sẽ rất hiếm).
+
+Trong trường hợp này, thật dễ dàng để tìm tất cả các phân đoạn có thể có và tính toán xác suất của chúng, nhưng nói chung sẽ khó hơn một chút. Có một thuật toán cổ điển được sử dụng cho việc này, được gọi là thuật toán *Viterbi*. Về cơ bản, chúng ta có thể xây dựng một biểu đồ để phát hiện các phân đoạn có thể có của một từ nhất định bằng cách nói rằng có một nhánh từ ký tự _a_ đến ký tự _b_ nếu từ phụ từ _a_ đến _b_ nằm trong từ vựng và quy cho nhánh đó xác suất của từ phụ .
+
+Để tìm đường dẫn trong biểu đồ đó sẽ có điểm tốt nhất, thuật toán Viterbi xác định, đối với mỗi vị trí trong từ, phân đoạn có điểm tốt nhất kết thúc tại vị trí đó. Vì chúng ta đi từ đầu đến cuối, điểm tốt nhất có thể được tìm thấy bằng cách lặp qua tất cả các từ phụ kết thúc ở vị trí hiện tại và sau đó sử dụng điểm token tốt nhất từ ​​vị trí mà từ phụ này bắt đầu. Sau đó, chúng ta chỉ cần bỏ qua con đường đã thực hiện để đến cuối.
+
+Hãy xem một ví dụ sử dụng từ vựng của chúng ta và từ `"unhug"`. Đối với mỗi vị trí, các từ phụ có điểm số tốt nhất kết thúc ở đó như sau:
+
+```
+Character 0 (u): "u" (score 0.171429)
+Character 1 (n): "un" (score 0.076191)
+Character 2 (h): "un" "h" (score 0.005442)
+Character 3 (u): "un" "hu" (score 0.005442)
+Character 4 (g): "un" "hug" (score 0.005442)
+```
+
+Vậy `"unhug"` có thể tokenize thành `["un", "hug"]`.
+
+<Tip>
+
+✏️ **Giờ đến lượt bạn!** Xác định token của từ `"huggun"`, và điểm cảu chúng.
+
+</Tip>
+
+## Quay lại huấn luyện
+
+Bây giờ chúng ta đã thấy cách thức hoạt động của tokenize, chúng ta có thể tìm hiểu sâu hơn một chút về sự mất mát được sử dụng trong quá trình huấn luyện. Ở bất kỳ giai đoạn nhất định nào, sự mất mát này được tính toán bằng cách tokenize mọi từ trong kho ngữ liệu, sử dụng từ vựng hiện tại và mô hình Unigram được xác định bởi tần số của mỗi token trong kho ngữ liệu (như đã thấy trước đây).
+
+Mỗi từ trong kho ngữ liệu đều có một điểm và sự mất mát là khả năng bị âm của những điểm số đó - nghĩa là tổng cho tất cả các từ trong kho ngữ liệu của tất cả các `-log(P(word))`.
+
+Cùng xem ví dụ của chúng ta với kho ngữ liệu dưới đây:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+Kết quả tokenize mỗi từ và điểm tương ứng của chúng như sau:
+
+```
+"hug": ["hug"] (score 0.071428)
+"pug": ["pu", "g"] (score 0.007710)
+"pun": ["pu", "n"] (score 0.006168)
+"bun": ["bu", "n"] (score 0.001451)
+"hugs": ["hug", "s"] (score 0.001701)
+```
+
+Và sự mất mát bằng:
+
+```
+10 * (-log(0.071428)) + 5 * (-log(0.007710)) + 12 * (-log(0.006168)) + 4 * (-log(0.001451)) + 5 * (-log(0.001701)) = 169.8
+```
+
+Giờ thì ta cần tính xem việc loại bỏ mỗi token sẽ ảnh hưởng thế nào tới sự mất mát. Điều này khá tẻ nhạt, vì vậy chúng ta sẽ chỉ làm điều đó cho hai token ở đây và lưu toàn bộ quá trình khi chúng ta có đoạn mã trợ giúp. Trong trường hợp (rất) cụ thể này, chúng tôi có hai token tương đương của tất cả các từ: như chúng ta đã thấy trước đó, ví dụ: `"pug"` có thể được tokenize `["p","ug"]` với cùng số điểm. Do đó, loại bỏ mã thông báo `"pu"` khỏi từ vựng sẽ gây ra sự mất mát tương tự.
+
+Mặt khác, việc loại bỏ `"hug"` sẽ làm cho sự mất mát trở nên tồi tệ hơn, bởi vì token của `"hug"` và `"hugs"` sẽ trở thành:
+
+```
+"hug": ["hu", "g"] (score 0.006802)
+"hugs": ["hu", "gs"] (score 0.001701)
+```
+
+Những thay đổi này sẽ ảnh hưởng đến và làm sự mất mát tăng lên
+
+```
+- 10 * (-log(0.071428)) + 10 * (-log(0.006802)) = 23.5
+```
+
+Vì vậy, token `"pu"` chắc chắn sẽ bị loại khỏi bộ từ vựng, nhưng `"hug"` thì không.
+
+## Triển khai Unigram
+
+Giờ hãy cùng triển khai mọi thứ ta đã cùng xem thông qua đaonj mã. Giống như BPE và WordPiece, đây không phải là một cách triển khai hiểu quả của thuật toán (khá ngược lại), nhưng nó sẽ giúp bạn hiểu hơn về Unigram.
+
+Ta sẽ sử dùng cùng bộ ngữ liệu đã sử dụng như một ví dụ:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+Lần này, ta sẽ sử dụng `xlnet-base-cased` như mô hình:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("xlnet-base-cased")
+```
+
+Tương tự BPE và WordPiece, ta sẽ bắt đầu đếm tần suất xuất hiện của mỗi từ trong kho ngữ liệu:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+Sau đó, ta cần khởi tạo bộ từ vựng với số lượng lớn hơn kích thước ta muốn cuối cùng. Ta phải tổng kết tất cả các kí tự cơ bản (nếu không ta sẽ không thể tokenize tất cả các từ), nhưng với các chuỗi con lớn hơn ta sẽ giữ phần thông dụng nhất và sắp xếp chúng theo tần suất:
+
+```python
+char_freqs = defaultdict(int)
+subwords_freqs = defaultdict(int)
+for word, freq in word_freqs.items():
+    for i in range(len(word)):
+        char_freqs[word[i]] += freq
+        # Lặp qua các từ con có độ dài >= 2
+        for j in range(i + 2, len(word) + 1):
+            subwords_freqs[word[i:j]] += freq
+
+# Sắp xếp các từ con theo tần suất
+sorted_subwords = sorted(subwords_freqs.items(), key=lambda x: x[1], reverse=True)
+sorted_subwords[:10]
+```
+
+```python out
+[('▁t', 7), ('is', 5), ('er', 5), ('▁a', 5), ('▁to', 4), ('to', 4), ('en', 4), ('▁T', 3), ('▁Th', 3), ('▁Thi', 3)]
+```
+
+Ta nhóm các kí tự có các từ con tốt nhất vào bộ từ vựng ban đầu có kích thước là 300:
+
+```python
+token_freqs = list(char_freqs.items()) + sorted_subwords[: 300 - len(char_freqs)]
+token_freqs = {token: freq for token, freq in token_freqs}
+```
+
+<Tip>
+
+💡 SentencePiece sử dụng một thuật toán hiệu quả hơn gọi là Enhanced Suffix Array (ESA) để tạo ra bộ từ vựng ban đầu.
+
+</Tip>
+
+Tiếp theo, chúng ta tính tổng tần suất để biến đổi các tần suất này thành xác suất. Với mô hình, chúng ta sẽ lưu các log của xác xuất, vì nó ổn định hơn về mặt số học khi cộng logarit hơn là nhân các số nhỏ và điều này sẽ đơn giản hóa việc tính toán mất mát của mô hình: 
+
+```python
+from math import log
+
+total_sum = sum([freq for token, freq in token_freqs.items()])
+model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+Giờ thì các hàm chính là hàm tokenize từ sử dụng thuật toán Viterbi. Như đã thấy trước đó, thuật toán tính phân đoạn tốt nhất của mỗi chuỗi con của từ, được lưu dưới biến  `best_segmentations`. Chúng ta sẽ lưu mỗi vị trí một từ điển trong từ (từ 0 cho tới độ dài của nó), với hai khoá: chỉ mục điểm bắt đầu của token cuối trong phần đoạn tốt nhất, và điểm của phân đoạn tốt nhất. Với chỉ mục của điểm bắt đầu của token cuối trong phần đoạn tốt nhất, ta sẽ có thể truy vấn toàn bộ phân đoạn một khi danh sách được điền đủ.
+
+Việc điền danh sách được thực hiện chỉ với hai vòng lặp: vòng lặp chính đi qua từng vị trí bắt đầu và vòng lặp thứ hai thử tất cả các chuỗi con bắt đầu từ vị trí bắt đầu đó. Nếu chuỗi con có trong từ vựng, chúng ta có một phân đoạn mới của từ cho đến vị trí kết thúc đó, và so sánh với những gì có trong `best_segmentations`.
+
+Khi vòng lặp chính kết thúc, chúng ta chỉ bắt đầu từ cuối và nhảy từ vị trí bắt đầu này sang vị trí tiếp theo, ghi lại các token khi chúng ta đi, cho đến khi chúng ta đến vị trí đầu của từ:
+
+```python
+def encode_word(word, model):
+    best_segmentations = [{"start": 0, "score": 1}] + [
+        {"start": None, "score": None} for _ in range(len(word))
+    ]
+    for start_idx in range(len(word)):
+        # Nó nên được lấp đầy bởi các bước phía trước của vòng lặp
+        best_score_at_start = best_segmentations[start_idx]["score"]
+        for end_idx in range(start_idx + 1, len(word) + 1):
+            token = word[start_idx:end_idx]
+            if token in model and best_score_at_start is not None:
+                score = model[token] + best_score_at_start
+                # Nếu chúng ta tìm thấy một phân đoạn kết thúc tốt hơn tại end_idx, chúng ta cập nhật
+                if (
+                    best_segmentations[end_idx]["score"] is None
+                    or best_segmentations[end_idx]["score"] > score
+                ):
+                    best_segmentations[end_idx] = {"start": start_idx, "score": score}
+
+    segmentation = best_segmentations[-1]
+    if segmentation["score"] is None:
+        # Ta đã không tìm thấy tokenize của từ -> không xác định
+        return ["<unk>"], None
+
+    score = segmentation["score"]
+    start = segmentation["start"]
+    end = len(word)
+    tokens = []
+    while start != 0:
+        tokens.insert(0, word[start:end])
+        next_start = best_segmentations[start]["start"]
+        end = start
+        start = next_start
+    tokens.insert(0, word[start:end])
+    return tokens, score
+```
+
+Ta có thể sẵn sàng thử mô hình ban đầu lên một số từ:
+
+```python
+print(encode_word("Hopefully", model))
+print(encode_word("This", model))
+```
+
+```python out
+(['H', 'o', 'p', 'e', 'f', 'u', 'll', 'y'], 41.5157494601402)
+(['This'], 6.288267030694535)
+```
+
+Giờ thì thật dễ dàng để tính sự mất mát của mô hình trên kho ngữ liệu!
+
+```python
+def compute_loss(model):
+    loss = 0
+    for word, freq in word_freqs.items():
+        _, word_loss = encode_word(word, model)
+        loss += freq * word_loss
+    return loss
+```
+
+Ta có thể kiểm tra cách nó hoạt động trên mô hình ta có:
+
+```python
+compute_loss(model)
+```
+
+```python out
+413.10377642940875
+```
+
+Việc tính điểm cho mỗi token không quả khó; ta chỉ phải tính sự mất mát của mô hình khi xoá mỗi token:
+
+```python
+import copy
+
+
+def compute_scores(model):
+    scores = {}
+    model_loss = compute_loss(model)
+    for token, score in model.items():
+        # Ta luôn giữ độ dài các token bằng 1
+        if len(token) == 1:
+            continue
+        model_without_token = copy.deepcopy(model)
+        _ = model_without_token.pop(token)
+        scores[token] = compute_loss(model_without_token) - model_loss
+    return scores
+```
+
+Ta có thể thử với token cho trước:
+
+```python
+scores = compute_scores(model)
+print(scores["ll"])
+print(scores["his"])
+```
+
+Vì `"ll"` được sử dụng trong quá trình tokenize  `"Hopefully"`, và loại bỏ nó chắc chắn sẽ làm ta thay vào đó sử dụng `"l"` hai lần, ta kì vọng nó sẽ đem lại sự mất mát dương. `"his"` chỉ được sử dụng trong từ `"This"`, nó được tokenize thành chính nó, nên ta kì vọng nó sẽ không có mất mát. Và đây là kết quả:
+
+```python out
+6.376412403623874
+0.0
+```
+
+<Tip>
+
+💡 Phương pháp này rất không hiệu quả, nên SentencePiece  sử dụng một xấp xỉ của hàm mất mát của mô hình mà không dùng token X: thay vì bắt đầu từ đầu, nó chỉ thay thế token X bởi phân đoạn bên trái của nó trong bộ từ vựng. Bằng cách này, tất cả điểm có thể được tính trong cùng một lần đồng thời với sự mất mát của mô hình.
+
+</Tip>
+
+Với tất cả những điều trên, điều cuối cùng ta cần phải làm là thêm các token đặc biệt của mô hình vào bộ từ vựng, sau đó lặp cho đến khi chúng ta cắt đủ số token ta mong muốn cho kích cỡ bộ từ vựng:
+
+```python
+percent_to_remove = 0.1
+while len(model) > 100:
+    scores = compute_scores(model)
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+    # Loại token percent_to_remove với điểm thấp nhất.
+    for i in range(int(len(model) * percent_to_remove)):
+        _ = token_freqs.pop(sorted_scores[i][0])
+    total_sum = sum([freq for token, freq in token_freqs.items()])
+    model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+Sau đó, để tokenize các đoạn văn bản, ta chỉ cần áp dụng pre-tokenization và sau đỏ sử dụng hàm `encode_word()`:
+
+```python
+def tokenize(text, model):
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in words_with_offsets]
+    encoded_words = [encode_word(word, model)[0] for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+
+
+tokenize("This is the Hugging Face course.", model)
+```
+
+```python out
+['▁This', '▁is', '▁the', '▁Hugging', '▁Face', '▁', 'c', 'ou', 'r', 's', 'e', '.']
+```
+
+Và đó là Unigram! Hy vọng rằng bây giờ bạn cảm thấy như một chuyên gia trong tất cả mọi tokenizer. Trong phần tiếp theo, chúng ta sẽ đi sâu vào các khối của thư viện 🤗 Tokenizers và chỉ cho bạn cách bạn có thể sử dụng chúng để tạo tokenizer của riêng mình.
