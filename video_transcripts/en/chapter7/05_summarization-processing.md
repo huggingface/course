@@ -8,7 +8,7 @@ As long as you manage to have your data look like this, you should be able to fo
 
 For once, our labels are not integers corresponding to some classes, but plain text. We will thus need to tokenize them, like our inputs. There is a small trap there though, as we need to tokenize our targets inside the as_target_tokenzier context manager. This is because the special tokens we add might be slightly different for the inputs and the targets, so the tokenizer has to know which one it is processing.
 
-Processing the whole dataset is then super easy with the `map` function. Since the summaries are usually much shorter than the documents, you should definitely pick different maximum lengths for the inputs and targets. You can choose to pad at this stage to that maximum length by setting paddin=max_length. Here we will show you how to pad dynamically as it requires one more step.
+Processing the whole dataset is then super easy with the map function. Since the summaries are usually much shorter than the documents, you should definitely pick different maximum lengths for the inputs and targets. You can choose to pad at this stage to that maximum length by setting paddin=max_length. Here we will show you how to pad dynamically as it requires one more step.
 
 Your inputs and targets are all sentence of various lengths.
 

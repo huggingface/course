@@ -4,13 +4,13 @@ Let's have a look at the push_to_hub API. You will need to be logged in with you
 
 Now, let's launch the fine-tuning of a BERT model on the GLUE COLA dataset. We won't go over the fine-tuning code because you can find it in any Transformers tutorial, or by looking at the videos linked below. What interests us here, is how we can leverage the Model Hub during training.
 
-This is done with the `push_to_hub=True` passed in your `TrainingArguments` . This will automatically upload your model to the Hub each time it is saved (so every epoch in our case), which allows you to resume training from a different machine if the current one gets interrupted.
+This is done with the push_to_hub=True passed in your TrainingArguments . This will automatically upload your model to the Hub each time it is saved (so every epoch in our case), which allows you to resume training from a different machine if the current one gets interrupted.
 
-The model will be uploaded in your namespace, with the name of the output directory as a repository name. You can pick another name by passing it to the `hub_model_id` argument, and you can also push inside an organization you are a member of by passing a full repository name.
+The model will be uploaded in your namespace, with the name of the output directory as a repository name. You can pick another name by passing it to the hub_model_id argument, and you can also push inside an organization you are a member of by passing a full repository name.
 
 With that done, we can just launch training and wait a little bit. Note that the model is pushed asynchronously, meaning that the training continues while your model is uploaded to the Hub. When your first commit is finished, you can go inspect your model on the Hub and even start playing with its inference widget while it's training! There is something wrong with the labels, but we will fix this later on in this video.
 
-When the training is finished, we should do one last push with `trainer.push_to_hub` for two reasons:
+When the training is finished, we should do one last push with trainer.push_to_hub for two reasons:
 
 - one this will make sure we are uploading the final version of our models if we didn't already (for instance if we saved every n steps instead of every epoch)
 - two, this will draft a model card that will be the landing page of your model repo.
@@ -19,8 +19,8 @@ Going back to the model page, you can see the Trainer included some metadata tha
 
 The Tensorboard runs have also been pushed to this repo, and we can look at them directly from the Model Hub.
 
-If you were not using the Trainer API to fine-tune your model, you can use the `push_to_hub` method on the model and tokenizer directly. Let's test this to fix our labels in the inference widget!
+If you were not using the Trainer API to fine-tune your model, you can use the push_to_hub method on the model and tokenizer directly. Let's test this to fix our labels in the inference widget!
 
-The inference widget was using default names for labels because we did not indicate the correspondence between integers and label names. We can fix in the configuration by setting the `label2id` and `id2label` fields to their proper value then we can push the fixed config to our repo using the push_to_hub method. Once this is done and we can check on the website the model is now showing the proper labels!
+The inference widget was using default names for labels because we did not indicate the correspondence between integers and label names. We can fix in the configuration by setting the label2id and id2label fields to their proper value then we can push the fixed config to our repo using the push_to_hub method. Once this is done and we can check on the website the model is now showing the proper labels!
 
 Now that the model is on the hub, we can use it from anywhere with the from_pretrained method. We just have to use the identifier from the hub and we can see that the model configuration and weights are automatically downloaded. We can use this model as we would any other Transformers model, for instance by loading it in a pipeline. Try the push_to_hub API on your next training to easily share your model with the rest of the world!

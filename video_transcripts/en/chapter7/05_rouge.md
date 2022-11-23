@@ -12,8 +12,8 @@ We can change the granularity of the comparison by comparing bigrams instead of 
 
 The last ROUGE variant we'll discuss is ROUGE-L. ROUGE-L doesn't compare n-grams, but instead treats each summary as a sequence of words and then looks for the longest common subsequence or LCS. A subsequence is a sequence that appears in the same relative order, but not necessarily contiguous. So in this example, "I loved reading the Hunger Games" is the longest common subsequence. The main advantage of ROUGE-L over ROUGE-1 or ROUGE-2 is that is doesn't depend on consecutive n-gram matches, so it tends to capture sentence structure more accurately.
 
-To compute ROUGE scores in 🤗 Datasets is very simple: just use the `load_metric()` function, provide your model's summaries along with the references and you're good to go!
+To compute ROUGE scores in 🤗 Datasets is very simple: just use the load_metric() function, provide your model's summaries along with the references and you're good to go!
 
-The output from the calculation contains a lot of information! The first thing we can see here is that the confidence intervals of each ROUGE score are provided in the `low`, `mid`, and `high` fields. This is really useful if you want to know the spread of your ROUGE scores when comparing two or more models.
+The output from the calculation contains a lot of information! The first thing we can see here is that the confidence intervals of each ROUGE score are provided in the low, mid, and high fields. This is really useful if you want to know the spread of your ROUGE scores when comparing two or more models.
 
 The second thing to notice is that we have four types of ROUGE score. We've already seen ROUGE-1, ROUGE-2 and ROUGE-L, so what is ROUGE-LSUM? Well, the “sum” in ROUGE-LSUM refers to the fact that this metric is computed over a whole summary, while ROUGE-L is computed as the average over individual sentences.

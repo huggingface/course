@@ -28,7 +28,7 @@ Files can be added through the web interface thanks to the "Add File" button. Th
     - First, I make sure that both git and git-lfs are correctly installed on my system. Links to install git & git-lfs are provided in the video description.
     - Then, we can get to work by cloning the repository locally. We have a repository with a single file! The file that we have just added to the repository using the web interface. We can edit it to see the contents of this file and update these.
     - It just turns out I have a model handy, that can be used for sentiment analysis. I'll simply copy over the contents to this folder. This includes the model weights, configuration file and tokenizer to the repository.
-    - I can then track these two files with the `git add` command.
+    - I can then track these two files with the git add command.
     - Then, I commit the changes. I'm giving this commit the title of "Add model weights and configuration"
     - Finally, I can push the new commit to the [huggingface.co](http://huggingface.co/) remote.
     - When going back to the files & versions tab, we can now see the newly added commit with the updated files

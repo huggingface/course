@@ -14,9 +14,9 @@ Another problem with unigram precision is that it doesn't take into account the 
 
 So to deal with word ordering problems, BLEU actually computes the precision for several different n-grams and then averages the result. For example, if we compare 4-grams, then we can see there are no matching chunks of 4 words in translations and so the 4-gram precision is 0.
 
-To compute BLEU scores in 🤗 Datasets is very simple: just use the `load_metric()` function, provide your model's predictions along with the references and you're good to go!
+To compute BLEU scores in 🤗 Datasets is very simple: just use the load_metric() function, provide your model's predictions along with the references and you're good to go!
 
-The output contains several fields of interest. The `precisions` field contains all the individual precision scores for each n-gram
+The output contains several fields of interest. The precisions field contains all the individual precision scores for each n-gram
 
 The BLEU score itself is then calculated by taking the geometric mean of the precision scores. By default, the mean of all four n-gram precisions is reported, a metric that is sometimes also called BLEU-4. In this example we can see the BLEU score is zero because the 4-gram precision was zero.
 

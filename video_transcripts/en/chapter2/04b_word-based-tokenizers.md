@@ -5,7 +5,7 @@ Word-based tokenization is the idea of splitting the raw text into words, by spl
 In this algorithm, each word has a specific number, an "ID", attributed to it. In this example, "Let's" has the ID 250, do has ID 861, and tokenization followed by an exclamation point has the ID 345.
 This approach is interesting, as the model has representations that are based on entire words. The information held in a single number is high as a word contains a lot of contextual and semantic information in a sentence.
 
-However, this approach does have its limits. For example, the word `dog` and the word `dogs` are very similar, and their meaning is close. However, the word-based tokenization will attribute entirely different IDs to these two words, and the model will therefore learn different meanings for these two words. This is unfortunate, as we would like the model to understand that these words are indeed related and that `dogs` is the plural form of the word `dog`.
+However, this approach does have its limits. For example, the word dog and the word dogs are very similar, and their meaning is close. However, the word-based tokenization will attribute entirely different IDs to these two words, and the model will therefore learn different meanings for these two words. This is unfortunate, as we would like the model to understand that these words are indeed related and that dogs is the plural form of the word dog.
 
 Another issue with this approach is that there are a lot of different words in a language. If we want our model to understand all possible sentences in that language, then we will need to have an ID for each different word, and the total number of words, which is also known as the vocabulary size, can quickly become very large.
 

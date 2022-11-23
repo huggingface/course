@@ -10,7 +10,7 @@ For once, our labels are not integers corresponding to some classes, but plain t
 
 That's because our inputs have been tokenized as English. Since our model knows two languages, you have to warn it when tokenizing the targets, so it swtiches in French mode. This is done with the as_target_tokenizer context manager. You can see how it results in a more compact tokenization.
 
-Processing the whole dataset is then super easy with the `map` function. You can pick different maximum lengths for the input and targets, and choose to pad at this stage to that maximum length by setting paddin=max_length. Here we will show you how to pad dynamically as it requires one more step.
+Processing the whole dataset is then super easy with the map function. You can pick different maximum lengths for the input and targets, and choose to pad at this stage to that maximum length by setting paddin=max_length. Here we will show you how to pad dynamically as it requires one more step.
 
 Your inputs and targets are all sentence of various lengths.
 
