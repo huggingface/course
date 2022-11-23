@@ -1,16 +1,16 @@
 In this video we will see together what is the purpose of training a tokenizer, what are the key steps to follow and what is the easiest way to do it.
 
-You will ask yourself the question "Should I train a new tokenizer?" when you plan to train a new model from scratch. 
+You will ask yourself the question "Should I train a new tokenizer?" when you plan to train a new model from scratch.
 
 A trained tokenizer would not be suitable for your corpus if your corpus is in a different language, uses new characters - such as accents or upper cased letters - , has a specific vocabulary - for example medical or legal - or uses a different style - a language from another century for instance.
 
-For example, if I take the tokenizer trained for the bert-base-uncased model and ignore its normalization step then we can see that the tokenization operation on the English sentence "here is a sentence adapted to our tokenizer" produces a rather satisfactory list of tokens in the sense that this sentence of 8 words is tokenized into 9 tokens. 
+For example, if I take the tokenizer trained for the bert-base-uncased model and ignore its normalization step then we can see that the tokenization operation on the English sentence "here is a sentence adapted to our tokenizer" produces a rather satisfactory list of tokens in the sense that this sentence of 8 words is tokenized into 9 tokens.
 
-On the other hand if we use this same tokenizer on a sentence in Bengali, we see that either a word is divided into many sub tokens or that the tokenizer does not know one of the unicode characters and returns only an unknown token. The fact that a "common" word is split into many tokens can be problematic because language models can only handle a sequence of tokens of limited length. A tokenizer that excessively splits your initial text may even impact the performance of your model. Unknown tokens are also problematic because the model will not be able to extract any information from the "unknown" part of the text. 
+On the other hand if we use this same tokenizer on a sentence in Bengali, we see that either a word is divided into many sub tokens or that the tokenizer does not know one of the unicode characters and returns only an unknown token. The fact that a "common" word is split into many tokens can be problematic because language models can only handle a sequence of tokens of limited length. A tokenizer that excessively splits your initial text may even impact the performance of your model. Unknown tokens are also problematic because the model will not be able to extract any information from the "unknown" part of the text.
 
 In this other example, we can see that the tokenizer replaces words containing characters with accents and capital letters with unknown tokens. Finally, if we use again this tokenizer to tokenize medical vocabulary we see again that a single word is divided into many sub tokens: 4 for "paracetamol" and "pharyngitis".
 
- 
+
 
 Most of the tokenizers used by the current state of the art language models need to be trained on a  corpus that is similar to the one used to pre-train the language model. This training consists in learning rules to divide the text into tokens and the way to learn these rules and use them depends on the chosen tokenizer model
 

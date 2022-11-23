@@ -1,4 +1,4 @@
-In this video, we'll learn how to use the Python debugger in a terminal. For this example, we are running code from the token classification section, downloading the Conll dataset before loading a tokenizer to preprocess it. Checkout the section of the course linked below for more information.
+Using the Python debugger in a terminal. In this video, we'll learn how to use the Python debugger in a terminal. For this example, we are running code from the token classification section, downloading the Conll dataset before loading a tokenizer to preprocess it. Checkout the section of the course linked below for more information.
 
 Once this is done, we try to batch together some features of the training dataset by padding them and returning a tensor, then we get the following error. We use PyTorch here but you will get the same error with TensorFlow. As we have seen in the "How to debug an error?" video, the error message is at the end and it indicates we should use padding... which we are actually trying to do.
 
