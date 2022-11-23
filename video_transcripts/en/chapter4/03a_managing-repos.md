@@ -1,6 +1,6 @@
-In this video, we're going to understand how to manage a model repository on the HuggingFace model hub. In order to handle a repository, you should first have a HF account.
+In this video, we're going to understand how to manage a model repository on the HuggingFace model hub. In order to handle a repository, you should first have a Hugging Face account.
 
-A link to create a new account is available in the description: [https://huggingface.co/join](https://huggingface.co/join)
+A link to create a new account is available in the description.
 
 Once you are logged in, you can create a new repository by clicking on the "New model" option.
 
@@ -38,4 +38,4 @@ Files can be added through the web interface thanks to the "Add File" button. Th
     - This README is known as the modelcard, and it's arguably as important as the model and tokenizer files in a model repository. It is the central definition of the model, ensuring reusability by fellow community members and reproducibility of results, and providing a platform on which other members may build their artifacts.
     - We'll only add a title and a small description here for simplicity's sake, but we encourage you to add information relevant to how was the model trained, its intended uses and limitations, as well as its identified and potential biases,  evaluation results and code samples on how your model should be used.
 
-Great work contributing a model to the modelhub! This model can now be used in downstream libraries simply by specifying your model identifier.
+Great work contributing a model to the model hub! This model can now be used in downstream libraries simply by specifying your model identifier.

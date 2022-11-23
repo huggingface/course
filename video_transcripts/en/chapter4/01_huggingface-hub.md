@@ -1,10 +1,10 @@
-Hello! In this video, we're going to go over the HuggingFace Model Hub navigation. 
+In this video, we're going to go over the HuggingFace Model Hub navigation.
 
-This is the [HuggingFace.co](http://huggingface.co) landing page. To access the model hub, click on the "Models" tab in the upper right corner.
+This is the huggingface.co landing page. To access the model hub, click on the "Models" tab in the upper right corner.
 
 You should be facing this web interface, which can be split into several parts.
 
-On the left, you'll find categories, which you can use to tailor your model search. 
+On the left, you'll find categories, which you can use to tailor your model search.
 
 The first category is the "Tasks". Models on the hub may be used for a wide variety of tasks. These include natural language processing tasks, such as question answering or text classification, but it isn't only limited to NLP. Other tasks from other fields are also available, such as image classification for computer vision, or automatic speech recognition for speech.
 

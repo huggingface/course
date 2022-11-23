@@ -4,7 +4,7 @@ Let's first start by understanding how it works.
 
 We'll use a small example, using three words. We use these as inputs, and pass them through the encoder.
 
-We retrieve a numerical representation of each word. 
+We retrieve a numerical representation of each word.
 
 Here, for example, the encoder converts the three words “Welcome to NYC” in these three sequences of numbers. The encoder outputs exactly one sequence of numbers per input word.
 
@@ -28,7 +28,7 @@ First of all, Masked Language Modeling, or MLM. It's the task of predicting a h
 
 It does not necessarily make sense in the context of the sequence.
 
- As mentioned earlier, encoders are good at doing sequence classification. Sentiment analysis is an example of a sequence classification task. 
+ As mentioned earlier, encoders are good at doing sequence classification. Sentiment analysis is an example of a sequence classification task.
 
 The model's aim is to identify the sentiment of a sequence – it can range from giving a sequence a rating from one to five stars if doing review analysis, to giving a positive or negative rating to a sequence, which is what is shown here.
 

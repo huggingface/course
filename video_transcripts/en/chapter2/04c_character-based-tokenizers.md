@@ -1,4 +1,4 @@
-Let's take a look at character-based tokenization. Understanding why character-based tokenization is interesting requires understanding the flaws of word-based tokenization. If you haven't seen the first vide on word-based tokenization we recommend you check it out before looking at this video.
+Before diving in character-based tokenization, understanding why this kind of tokenization is interesting requires understanding the flaws of word-based tokenization. If you haven't seen the first video on word-based tokenization we recommend you check it out before looking at this video. Let's take a look at character-based tokenization.
 
 We now split our text into individual characters, rather than words
 

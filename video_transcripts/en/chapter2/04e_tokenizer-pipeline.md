@@ -14,6 +14,6 @@ You may have noticed that we don't have the exact same result as in our first sl
 
 The special tokens are added by the prepare_for_model method, which knows the indices of those tokens in the vocabulary and just adds the proper numbers.
 
-You can look at the special tokens (and more generally at how the tokenizer has changed your text) by using the decode method on the outputs of the tokenizer object. As for the prefix for beginning of words/part of words, those special tokens vary depending on which tokenizer you are using.\ The BERT tokenizer uses [CLS] and [SEP] but the roberta tokenizer uses html-like anchors <s> and </s>.
+You can look at the special tokens (and more generally at how the tokenizer has changed your text) by using the decode method on the outputs of the tokenizer object. As for the prefix for beginning of words/part of words, those special tokens vary depending on which tokenizer you are using. The BERT tokenizer uses [CLS] and [SEP] but the roberta tokenizer uses html-like anchors <s> and </s>.
 
 Now that you know how the tokenizer works, you can forget all those intermediaries methods and only remember that you just have to call it on your input texts. The inputs don't contain the inputs IDs however, to learn what the attention mask is, check out the "Batch inputs together" video. To learn about token type IDs, look at the "Process pairs of sentences" video.

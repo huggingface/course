@@ -3,7 +3,7 @@ In this video, we'll study the decoder architecture. An example of a popular dec
 In order to understand how decoders work, we recommend taking a look at the video regarding encoders: they're extremely similar to decoders. One can use a decoder for most of the same tasks as an encoder, albeit with, generally, a little loss of performance. 
 Let's take the same approach we have taken with the encoder to try and understand the architectural differences between an encoder and a decoder.
 
-We'll use a small example, using three words. We pass them through the decoder. 
+We'll use a small example, using three words. We pass them through the decoder.
 
 We retrieve a numerical representation of each word. Here, for example, the decoder converts the three words “Welcome to NYC” in these three sequences of numbers. The decoder outputs exactly one sequence of numbers per input word.
 This numerical representation can also be called a "Feature vector", or "Feature tensor".

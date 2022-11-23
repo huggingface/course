@@ -1,4 +1,4 @@
-In this video, we'll study the encoder-decoder architecture. An example of a popular encoder-only architecture is T5.
+In this video, we'll study the encoder-decoder architecture. An example of a popular encoder-decoder model is T5.
 
 In order to understand how the encoder-decoder works, we recommend you check out the videos on encoders and decoders as standalone models. Understanding how they behave individually will help understanding how an encoder-decoder behaves.
 

@@ -1,4 +1,6 @@
-Let's have a look at the push_to_hub API. You will need to be logged in with your Hugging Face account, which you can do by executing this first cell or typing `huggingface-cli login` in a terminal. Just enter your username and password and click login, which will store an authentication token in the cache of the machine you're suing.
+The Push to Hub API
+
+Let's have a look at the push_to_hub API. You will need to be logged in with your Hugging Face account, which you can do by executing this first cell or typing huggingface-cli login in a terminal. Just enter your username and password and click login, which will store an authentication token in the cache of the machine you're suing.
 
 Now, let's launch the fine-tuning of a BERT model on the GLUE COLA dataset. We won't go over the fine-tuning code because you can find it in any Transformers tutorial, or by looking at the videos linked below. What interests us here, is how we can leverage the Model Hub during training.
 

@@ -1,4 +1,4 @@
-Supercharge your training loop with 🤗 Accelerate
+Supercharge your Pytorch training loop with Hugging Face Accelerate
 
 There are multiple setups on which you can run your training: it could be on CPU, GPUs, TPUs. Distributed on one machine with several devices, or several machines (often called nodes) each with multiple devices. On top of that there are new tweaks to make your training faster or more memory efficient, like mixed precision and DeepSpeed. Each of those setups or training tweaks, requires you to change the code of your training loop in one way or another and to learn a new API.
 

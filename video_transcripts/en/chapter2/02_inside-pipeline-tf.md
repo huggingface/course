@@ -1,3 +1,5 @@
+What happens inside the pipeline function?
+
 In this video, we will look at what actually happens when we use the pipeline function of the Transformers library. More specifically, we will look at the sentiment analysis pipeline, and how it went from the two following sentences to the positive labels with their respective scores.
 
 As we have seen in the pipeline presentation, there are three stages in the pipeline. First, we convert the raw texts to numbers the model can make sense of, using a tokenizer. Then, those numbers go through the model, which outputs logits. Finally, the post-processing steps transforms those logits into labels and scores.

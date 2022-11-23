@@ -1,4 +1,4 @@
-Hello! In these few videos, we'll take a look at the tokenizers.
+In these few videos, we'll take a look at the tokenizers.
 
 In Natural Language Processing, most of the data that we handle consists of raw text. However, machine learning models cannot read and understand text in its raw form they can only work with numbers.
 

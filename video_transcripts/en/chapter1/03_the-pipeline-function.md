@@ -1,4 +1,6 @@
-The pipeline API is the most high-level API of the Transformers library. It regroups together all the steps to go from raw texts to usable predictions. The model used is at the core of a pipeline, but the pipeline also include all the necessary pre-processing (since the model does not expect texts, but numbers) as well as some post-processing to make the output of the model human-readable.
+The pipeline function
+
+The pipeline function is the most high-level API of the Transformers library. It regroups together all the steps to go from raw texts to usable predictions. The model used is at the core of a pipeline, but the pipeline also include all the necessary pre-processing (since the model does not expect texts, but numbers) as well as some post-processing to make the output of the model human-readable.
 
 Let's look at a first example with the sentiment analysis pipeline. This pipeline performs text classification on a given input, and determines if it's positive or negative. Here, it attributed the positive label on the given text, with a confidence of 95%.
 
@@ -8,7 +10,7 @@ The zero-shot classification pipeline is a more general text-classification pipe
 
 Moving on to other tasks, the text generation pipeline will auto-complete a given prompt. The output is generated with a bit of randomness, so it changes each time you call the generator object on a given prompt.
 
-Up until now, we have used the pipeline API with the default model associated to each task, but you can use it with any model that has been pretrained or fine-tuned on this task. Going on the model hub ([huggiface.co/models](http://huggiface.co/models)), you can filter the available models by task. The default model used in our previous example was gpt2, but there are many more models available, and not just in English!
+Up until now, we have used the pipeline API with the default model associated to each task, but you can use it with any model that has been pretrained or fine-tuned on this task. Going on the model hub (huggigface.co/models), you can filter the available models by task. The default model used in our previous example was gpt2, but there are many more models available, and not just in English!
 
 Let's go back to the text generation pipeline and load it with another model, distilgpt2. This is a lighter version of gpt2 created by the Hugging Face team. When applying the pipeline to a given prompt, we can specify several arguments, such as the maximum length of the generated texts, or the number of sentences we want to return (since there is some randomness in the generation).
 
