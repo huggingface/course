@@ -8,7 +8,7 @@ To debug an error in a training, you need to make sure each step of the training
 
 So let's start by looking at the training dataset this Trainer is using. There is definitely a problem there as we see texts and not numbers. The error message was telling us the model did not get input IDs and we do not have those in the dataset indeed.
 
-Looking back at our code, () we can see we made a mistake and passed the wrong datasets to the Trainer.
+Looking back at our code, we can see we made a mistake and passed the wrong datasets to the Trainer.
 
 So let's fix that and run again.
 
@@ -16,20 +16,20 @@ Now we have a new error. Inspecting the traceback tells us it happens when we tr
 
 We can confirm this by asking the Trainer to get us a batch of the training data loader, which reproduces the same error. Either by inspecting the inputs or debugging, we can then see they are not all of the same size.
 
-This is because we have not passed () a data collator to do the padding in the Trainer and () didn't pad when preprocessing the data either. Padding inside the Trainer is normally the default, but only if you provide your tokenizer to the Trainer, and we forgot to do that.
+This is because we have not passed a data collator to do the padding in the Trainer and didn't pad when preprocessing the data either. Padding inside the Trainer is normally the default, but only if you provide your tokenizer to the Trainer, and we forgot to do that.
 
 So let's fix the issue and run again.
 
 This time we get a nasty CUDA error. They are very difficult to debug because for one, they put your kernel in a state that is not recoverable (so you have to restart your notebook from the beginning) and two, the traceback is completely useless for those. Here the traceback tells us the error happens when we do the gradient computation with loss.backward, but as we will see later on that is not the case. 
 
-This is because everything that happens on the GPU is done asynchronously: when you execute the model call, () what the program does is just stacking that in the queue of GPU, () then (if the GPU didn't have any current job to do), the work will start on the GPU at the same time as the CPU will move to the next instruction. Continuing with the extraction of the loss, () this is stacked into the GPU queue while the CPU moves () to the instruction loss.backward. () But the GPU still hasn't finished the forward pass of the model since all that took no time at all. The CPU stops moving forward, because loss.backward as an instruction telling it to wait for the GPUs to be finished, and () when the GPU encounters an error, it gives with a cryptic message back to the CPU, who raises the error at the wrong place.
+This is because everything that happens on the GPU is done asynchronously: when you execute the model call, what the program does is just stacking that in the queue of GPU, then (if the GPU didn't have any current job to do), the work will start on the GPU at the same time as the CPU will move to the next instruction. Continuing with the extraction of the loss, this is stacked into the GPU queue while the CPU moves to the instruction loss.backward. But the GPU still hasn't finished the forward pass of the model since all that took no time at all. The CPU stops moving forward, because loss.backward as an instruction telling it to wait for the GPUs to be finished, and when the GPU encounters an error, it gives with a cryptic message back to the CPU, who raises the error at the wrong place.
 
 So to debug this, we will need to execute the next steps of the training pipeline on the CPU. It is very easy to do, and we get a traceback we can trust this time. As we said before, the error happens during the forward pass of the model, and it's an index error.
 
-With a bit of debugging, we see we have labels ranging from 0 to 2, so three different values, but our outputs have a shape of batch size per 2. It looks like our model has the wrong number of labels! () We can indeed confirm that, and now that we know
+With a bit of debugging, we see we have labels ranging from 0 to 2, so three different values, but our outputs have a shape of batch size per 2. It looks like our model has the wrong number of labels! We can indeed confirm that, and now that we know
 
 it's easy to fix it in the code
 
-by adding num_labels=3 when we create the model. () Now the training script will run to completion!
+by adding num_labels=3 when we create the model. Now the training script will run to completion!
 
-We did not need it yet, but here is how we would debug the next step of the pipeline, gradient computation, () as well as the optimizer step. With all of this, good luck debugging your own trainings!
+We did not need it yet, but here is how we would debug the next step of the pipeline, gradient computation, as well as the optimizer step. With all of this, good luck debugging your own trainings!
