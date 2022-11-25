@@ -1,0 +1,309 @@
+1
+00:00:04,720 --> 00:00:09,280
+Some bugs in your code are very 
+straightforward. You try running it,  
+
+2
+00:00:09,280 --> 00:00:14,720
+you get a syntax error somewhere, Python tells 
+you exactly where, and you fix it. This is  
+
+3
+00:00:14,720 --> 00:00:22,240
+great - it's simple and satisfying. Sometimes, 
+though, things crash and the error is impossible  
+
+4
+00:00:22,240 --> 00:00:27,360
+to understand. This happens a lot in machine 
+learning for a few reasons - you're working with  
+
+5
+00:00:27,360 --> 00:00:33,920
+big data structures, using big, complex libraries 
+with a lot of moving parts, and also you're doing  
+
+6
+00:00:33,920 --> 00:00:41,600
+a lot of GPU computing. In Keras there's the added 
+bonus problem that your models are often compiled  
+
+7
+00:00:41,600 --> 00:00:46,080
+before execution, which is great for performance 
+but makes debugging them very difficult.  
+
+8
+00:00:47,920 --> 00:00:52,160
+This is going to be a video about what to do 
+when you run into one of those nightmare bugs.  
+
+9
+00:00:56,400 --> 00:01:07,600
+To give you some intuitions for what can go wrong, 
+and where to look for the source of bugs that you  
+
+10
+00:01:07,600 --> 00:01:13,360
+encounter, let's use this example script, and 
+I'll show it to you here in two parts. First,  
+
+11
+00:01:13,360 --> 00:01:19,280
+we do all our imports, we load a dataset, we 
+create our tokenizer and we tokenize the dataset.  
+
+12
+00:01:20,160 --> 00:01:28,320
+Next, we convert our datasets to TensorFlow 
+datasets, so that we can run fit() on them,  
+
+13
+00:01:28,320 --> 00:01:34,640
+and then we load our model from a pretrained 
+checkpoint, compile it and fit it. It seems  
+
+14
+00:01:34,640 --> 00:01:42,880
+straightforward enough, but beware! This spooky 
+code hides many dark and mysterious secrets.  
+
+15
+00:01:43,760 --> 00:01:52,880
+What happens when we run it? Well, this isn't 
+great. What does that mean? We tried to train  
+
+16
+00:01:52,880 --> 00:01:59,600
+on our data, but we got no gradient? This is 
+pretty perplexing - how do we even begin to debug  
+
+17
+00:02:00,400 --> 00:02:04,880
+something like that? When the error you get 
+doesn't immediately suggest where the problem is,  
+
+18
+00:02:05,440 --> 00:02:11,040
+the best solution is often to walk through 
+things in sequence, making sure at each stage  
+
+19
+00:02:11,040 --> 00:02:19,120
+that things look right. And of course, the 
+place to start is always to check your data.  
+
+20
+00:02:20,720 --> 00:02:28,960
+The best way to do that to grab a batch from the 
+tf.data.Dataset that your model is training on,  
+
+21
+00:02:30,560 --> 00:02:41,840
+right at the end of the training pipeline. And 
+we can do that like so, by looping over the  
+
+22
+00:02:41,840 --> 00:02:50,320
+dataset for one iteration and then breaking. 
+So what do we get when we inspect that batch?  
+
+23
+00:02:50,320 --> 00:02:54,800
+We see that we're not getting any gradient 
+because we're not passing labels to Keras!  
+
+24
+00:02:55,520 --> 00:03:00,800
+Our labels are in the batch, but they're a key 
+in the input dictionary, not a separate label.  
+
+25
+00:03:02,400 --> 00:03:06,160
+This is one of the most common issues you'll 
+encounter when training Transformers models  
+
+26
+00:03:06,160 --> 00:03:12,960
+with TensorFlow. Our models can all compute loss 
+internally, but to use that loss for training  
+
+27
+00:03:12,960 --> 00:03:16,880
+the labels need to be passed in the input 
+dictionary, where the model can see them.  
+
+28
+00:03:17,760 --> 00:03:23,200
+This internal loss is the loss that we use when 
+we don't specify a loss value to compile().  
+
+29
+00:03:26,640 --> 00:03:30,960
+Keras, on the other hand, usually expects 
+labels to be passed separately from the input  
+
+30
+00:03:30,960 --> 00:03:36,720
+dictionary and not to be visible to the model, 
+and loss computations will usually fail if you  
+
+31
+00:03:36,720 --> 00:03:43,040
+don't do that. We need to choose one or the other: 
+Either we use the model's internal loss and keep  
+
+32
+00:03:43,040 --> 00:03:49,120
+the labels where they are, or we keep using Keras 
+losses, but we move the labels to the place Keras  
+
+33
+00:03:49,120 --> 00:03:57,680
+expects them. For simplicity, let's use the model 
+internal losses, by removing the loss argument  
+
+34
+00:03:57,680 --> 00:04:06,000
+from the call to compile(). So what happens if 
+we try training with model.fit() after fixing  
+
+35
+00:04:06,560 --> 00:04:13,840
+the loss function! Well, it runs this time... 
+but now we get a loss of nan. This isn't good.  
+
+36
+00:04:16,240 --> 00:04:22,160
+NaN is not a good loss. In fact, if we inspect 
+our model now, we'll see that not only are all  
+
+37
+00:04:22,160 --> 00:04:30,640
+the outputs nan , all the weights are nan too. 
+Once a single nan creeps into your computations,  
+
+38
+00:04:30,640 --> 00:04:37,280
+it tends to spread, because it propagates 
+from the loss back through your gradient  
+
+39
+00:04:37,280 --> 00:04:48,320
+and then into the weight updates. So nan destroyed 
+our model. But where did it creep in first?  
+
+40
+00:04:49,600 --> 00:04:57,760
+To find out, we need to re-initialize the model 
+and look at the outputs for just the first batch.  
+
+41
+00:04:58,400 --> 00:05:04,160
+And when we do that, we see that nan first 
+appears in the loss, but only in some samples!  
+
+42
+00:05:04,960 --> 00:05:08,480
+You can see this in more detail in the 
+accompanying section of the course notes,  
+
+43
+00:05:11,040 --> 00:05:17,120
+but we find that if we look at the labels, the 
+samples with a loss of nan all have a label of 2!  
+
+44
+00:05:17,760 --> 00:05:24,400
+This gives us a very strong clue - if we check 
+the model, with model.config.num_labels, we see  
+
+45
+00:05:24,400 --> 00:05:30,080
+the model thinks there's only 2 labels, but if 
+we see a value of 2, that means there's at least  
+
+46
+00:05:30,080 --> 00:05:36,400
+3 labels, because 0 is a label too! So we got 
+a loss of nan because we got an "impossible"  
+
+47
+00:05:36,400 --> 00:05:43,040
+label. To fix that, we need to go back and set 
+the model to have the right number of labels.  
+
+48
+00:05:43,680 --> 00:05:52,240
+We can set num_labels=3 when we initialize the 
+model with from_pretrained. So now we think our  
+
+49
+00:05:52,240 --> 00:05:58,000
+data is good and our model is good, so training 
+should work. And if we try running model.fit(),  
+
+50
+00:05:58,000 --> 00:06:07,600
+we get... hmm. The loss goes down, but it's 
+not very quick. And if we keep running it out,  
+
+51
+00:06:07,600 --> 00:06:13,600
+we'll find that it stalls at a fairly high value. 
+What's going on? Well, when things are mostly  
+
+52
+00:06:13,600 --> 00:06:19,280
+working, but training is just slow, that can 
+often be a good time to look at your optimizer  
+
+53
+00:06:19,280 --> 00:06:24,560
+and training hyperparameters. And this is where 
+I want to mention one of the most common sources  
+
+54
+00:06:24,560 --> 00:06:30,480
+of issues when you're working with Keras - you 
+can name things like optimizers with strings,  
+
+55
+00:06:32,960 --> 00:06:37,680
+but if you do that, all of the options 
+get silently set to their default values.  
+
+56
+00:06:38,240 --> 00:06:43,920
+So we specified our optimizer as Adam, but in 
+the process we invisibly got the default learning  
+
+57
+00:06:43,920 --> 00:06:51,440
+rate, which is 1e-3, or ten to the power of minus 
+3. This is way too high for training transformer  
+
+58
+00:06:51,440 --> 00:06:59,120
+models! We should go back and specify the learning 
+rate directly - good values are between 1e-5  
+
+59
+00:06:59,760 --> 00:07:06,800
+and 1e-4. Let's split the difference and 
+pick 5e-5. And if you recompile with that,  
+
+60
+00:07:06,800 --> 00:07:16,880
+you'll find that training actually works, at last. 
+Again, I went through this quite quickly, and I  
+
+61
+00:07:16,880 --> 00:07:20,720
+recommend checking out the course notes for this 
+to see this in more detail and to experiment with  
+
+62
+00:07:20,720 --> 00:07:43,840
+the code yourself. Good luck, and remember to take 
+breaks if your code is giving you a hard time!
