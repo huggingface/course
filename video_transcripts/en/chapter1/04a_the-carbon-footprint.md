@@ -1,1 +1,0 @@
-Was recorded adlib - need to generate transcript with Whisper :)
