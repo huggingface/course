@@ -18,9 +18,9 @@ Next, run the following script:
 python utils/generate_subtitles.py --language LANG_CODE
 ```
 
-where `LANG_CODE` is the same language ID used to denote the chosen language the `chapters` folder. If everything goes well, you should end up with a set of translated `.srt` files with timestamps in `subtitles/LANG_CODE` along with some metadata in `metadata.csv`.
+where `LANG_CODE` is the same language ID used to denote the chosen language the `chapters` folder. If everything goes well, you should end up with a set of translated `.srt` files with timestamps in the `subtitles/LANG_CODE` folder along with some metadata in `metadata.csv`.
 
-Some languages like Simplified Chinese have a different language code to the one used in the course. For these languages, you also need to specify the YouTube language code, e.g.:
+Some languages like Simplified Chinese have a different YouTube language code (`zh-Hans`) to the one used in the course (`zh-CN`). For these languages, you also need to specify the YouTube language code, e.g.:
 
 ```bash
 python utils/generate_subtitles.py --language zh-CN --youtube_language_code zh-Hans
