@@ -4,7 +4,7 @@ To give you some intuitions for what can go wrong, and where to look for the sou
 
 Next, we convert our datasets to TensorFlow datasets, so that we can run fit() on them, and then we load our model from a pretrained checkpoint, compile it and fit it.  It seems straightforward enough, but beware! This spooky code hides many dark and mysterious secrets. What happens when we run it?
 
-Well, this isn't great. What does that mean? We tried to train on our data, but we got no gradient? This is pretty perplexing - how do we even begin to debug something like that? When the error you get doesn't immediately suggest where the problem is, the best solution is often to walk through things in sequence, making sure at each stage that things look right. And of course, the place to start is always to **check your data.**
+Well, this isn't great. What does that mean? We tried to train on our data, but we got no gradient? This is pretty perplexing - how do we even begin to debug something like that? When the error you get doesn't immediately suggest where the problem is, the best solution is often to walk through things in sequence, making sure at each stage that things look right. And of course, the place to start is always to check your data.
 
 The best way to do that to grab a batch from the tf.data.Dataset that your model is training on, right at the end of the training pipeline. And we can do that like so, by looping over the dataset for one iteration and then breaking. So what do we get when we inspect that batch?
 

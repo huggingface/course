@@ -16,7 +16,7 @@ If you're sure all your sequences are the same length then you can use the even 
 
 Moving on, though, many of the other data collators are often designed to handle one specific task, and that's the case with DataCollatorForTokenClassification and DataCollatorForSeqToSeq. These tasks need special collators because the labels are variable in length. In token classification there's one label for each token, and that means the length of the labels can be variable, while in SeqToSeq the labels are also a sequence of tokens that can have variable length.
 
-In both of these cases, we handle that by **padding the labels too,** as you can see here. Inputs and the labels will need to be padded if we want to join samples of variable length into the same minibatch, and that's exactly what the data collators will do.
+In both of these cases, we handle that by padding the labels too, as you can see here. Inputs and the labels will need to be padded if we want to join samples of variable length into the same minibatch, and that's exactly what the data collators will do.
 
 The final data collator I want to show you is the DataCollatorForLanguageModeling. It's very important, firstly because language models are so foundational to everything we do in NLP, and secondly because it has two modes that do two very different things. You choose which mode you want with the mlm argument - set it to True for masked language modeling, and False for causal language modeling. Collating data for causal language modeling is actually quite straightforward - the model is just making predictions for what token comes next, so your labels are more or less just a copy of your inputs, and the collator handles that and ensures your inputs and labels are padded correctly.
 
