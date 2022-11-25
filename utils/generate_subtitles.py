@@ -5,8 +5,9 @@ from youtube_transcript_api.formatters import SRTFormatter
 from youtubesearchpython import Playlist
 from pathlib import Path
 import argparse
+import sys
 
-def generate_subtitles(language, youtube_language_code=None):
+def generate_subtitles(language: str, youtube_language_code: str=None):
     metadata = []
     formatter = SRTFormatter()
     path = Path(f"subtitles/{language}")
@@ -27,28 +28,29 @@ def generate_subtitles(language, youtube_language_code=None):
             continue
 
         # Get transcript
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        english_transcript = transcript_list.find_transcript(language_codes=["en", "en-US"])
+        languages = pd.DataFrame(english_transcript.translation_languages)["language_code"].tolist()
+        # Map mismatched language codes
+        if language not in languages:
+            if youtube_language_code is None:
+                raise ValueError(f"Language code {language} not found in YouTube's list of supported language: {languages}. Please provide a value for `youtube_language_code` and try again.")
+            language_code = youtube_language_code
+        else:
+            language_code = language
         try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            english_transcript = transcript_list.find_transcript(language_codes=["en", "en-US"])
-            languages = pd.DataFrame(english_transcript.translation_languages)["language_code"].tolist()
-            # Map mismatched language codes
-            if language not in languages:
-                if youtube_language_code is None:
-                    raise ValueError(f"youtube_language_code must be set for {language}")
-                language_code = youtube_language_code
-            else:
-                language_code = language
             translated_transcript = english_transcript.translate(language_code)
             translated_transcript = translated_transcript.fetch()
             srt_formatted = formatter.format_transcript(translated_transcript)
             with open(srt_filename, "w", encoding="utf-8") as f:
                 f.write(srt_formatted)
         except:
-            print(f"Could not find transcript for {title} with ID {video_id} at {video['link']}.")
+            print(f"Problem generating transcript for {title} with ID {video_id} at {video['link']}.")
             with open(srt_filename, "w", encoding="utf-8") as f:
                 f.write("No transcript found for this video!")
 
         metadata.append({"id": video_id, "title": title, "link": video["link"], "srt_filename": srt_filename})
+        break
 
     df = pd.DataFrame(metadata)
     df.to_csv(f"subtitles/{language}/metadata.csv", index=False)

@@ -25,3 +25,5 @@ Some languages like Simplified Chinese have a different language code to the one
 ```bash
 python utils/generate_subtitles.py --language zh-CN --youtube_language_code zh-Hans
 ```
+
+Once you have the `.srt` files you can manually fix any translation errors and then open a pull request with the new files.
