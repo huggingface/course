@@ -97,6 +97,8 @@ pip install hf-doc-builder
 doc-builder preview course ../course/chapters/LANG-ID --not_python_module
 ```
 
+**`preview` command does not work with Windows.
+
 This will build and render the course on [http://localhost:3000/](http://localhost:3000/). Although the content looks much nicer on the Hugging Face website, this step will still allow you to check that everything is formatted correctly.
 
 **🚀 Submit a pull request**
