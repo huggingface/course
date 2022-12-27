@@ -7,14 +7,13 @@ from pathlib import Path
 import argparse
 import sys
 
-def generate_subtitles(language: str, youtube_language_code: str=None):
+
+def generate_subtitles(language: str, youtube_language_code: str = None):
     metadata = []
     formatter = SRTFormatter()
     path = Path(f"subtitles/{language}")
     path.mkdir(parents=True, exist_ok=True)
-    playlist_videos = Playlist.getVideos(
-        "https://youtube.com/playlist?list=PLo2EIpI_JMQvWfQndUesu0nPBAtZ9gP1o"
-    )
+    playlist_videos = Playlist.getVideos("https://youtube.com/playlist?list=PLo2EIpI_JMQvWfQndUesu0nPBAtZ9gP1o")
 
     for idx, video in enumerate(playlist_videos["videos"]):
         video_id = video["id"]
@@ -34,7 +33,9 @@ def generate_subtitles(language: str, youtube_language_code: str=None):
         # Map mismatched language codes
         if language not in languages:
             if youtube_language_code is None:
-                raise ValueError(f"Language code {language} not found in YouTube's list of supported language: {languages}. Please provide a value for `youtube_language_code` and try again.")
+                raise ValueError(
+                    f"Language code {language} not found in YouTube's list of supported language: {languages}. Please provide a value for `youtube_language_code` and try again."
+                )
             language_code = youtube_language_code
         else:
             language_code = language
@@ -54,6 +55,7 @@ def generate_subtitles(language: str, youtube_language_code: str=None):
 
     df = pd.DataFrame(metadata)
     df.to_csv(f"subtitles/{language}/metadata.csv", index=False)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
