@@ -201,7 +201,7 @@ def build_notebook(fname, title, output_dir="."):
         installs = ["!pip install datasets evaluate transformers[sentencepiece]"]
         if section_name in sections_with_accelerate:
             installs.append("!pip install accelerate")
-            installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
+            installs.append("# To run the training on TPU, you will need to uncomment the following line:")
             installs.append(
                 "# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
             )
