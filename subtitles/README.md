@@ -28,15 +28,29 @@ python utils/generate_subtitles.py --language zh-CN --youtube_language_code zh-H
 
 Once you have the `.srt` files you can manually fix any translation errors and then open a pull request with the new files.
 
-# How to convert bilingual subtitle to monolingual subtitle
+# Convert bilingual subtitles to monolingual subtitles
 
-# Logic
+In some SRT files, the English caption line is conventionally placed at the last line of each subtitle block to enable easier comparison when correcting the machine translation.
 
-The english caption line is conventionally placed at the last line of each subtitle block in srt files. So removing the last line of each subtitle block would make the bilingual subtitle a monolingual subtitle. 
+For example, in the `zh-CN` subtitles, each block has the following format:
 
-# Usage
-> python3 convert_bilingual_monolingual.py -i \<input_file\> -o \<output_file\>
+```
+1
+00:00:05,850 --> 00:00:07,713
+- 欢迎来到 Hugging Face 课程。
+- Welcome to the Hugging Face Course.
+```
 
-**Example**
-* For instance, the input file name is "test.cn.en.srt", and you name your output file as "output_test.cn.srt" *
-> python3 convert_bilingual_monolingual.py -i test.cn.en.srt -o output_test.cn.srt
+To upload the SRT file to YouTube, we need the subtitle in monolingual format, i.e. the above block should read:
+
+```
+1
+00:00:05,850 --> 00:00:07,713
+- 欢迎来到 Hugging Face 课程。
+```
+
+To handle this, we provide a script that converts the bilingual SRT files to monolingual ones. To perform the conversion, run:
+
+```bash
+python utils/convert_bilingual_monolingual.py --input_language_folder subtitles/LANG_ID --output_language_folder tmp-subtitles
+```
