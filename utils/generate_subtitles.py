@@ -80,6 +80,6 @@ if __name__ == "__main__":
     parser.add_argument("--language", type=str, help="Language to generate subtitles for")
     parser.add_argument("--youtube_language_code", type=str, help="YouTube language code")
     args = parser.parse_args()
-    # generate_subtitles(args.language, args.youtube_language_code, is_task_playlist=False)
+    generate_subtitles(args.language, args.youtube_language_code, is_task_playlist=False)
     generate_subtitles(args.language, args.youtube_language_code, is_task_playlist=True)
     print(f"All done! Subtitles stored at subtitles/{args.language}")
