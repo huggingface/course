@@ -37,8 +37,8 @@ For example, in the `zh-CN` subtitles, each block has the following format:
 ```
 1
 00:00:05,850 --> 00:00:07,713
-- 欢迎来到 Hugging Face 课程。
-- Welcome to the Hugging Face Course.
+欢迎来到 Hugging Face 课程。
+Welcome to the Hugging Face Course.
 ```
 
 To upload the SRT file to YouTube, we need the subtitle in monolingual format, i.e. the above block should read:
@@ -46,7 +46,7 @@ To upload the SRT file to YouTube, we need the subtitle in monolingual format, i
 ```
 1
 00:00:05,850 --> 00:00:07,713
-- 欢迎来到 Hugging Face 课程。
+欢迎来到 Hugging Face 课程。
 ```
 
 To handle this, we provide a script that converts the bilingual SRT files to monolingual ones. To perform the conversion, run:
