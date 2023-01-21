@@ -1,0 +1,743 @@
+# 是時候來學一下切片了
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter5/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter5/section3.ipynb"},
+]} />
+
+大多數情況下，您使用的數據都需根據模型所要求的輸入進行清洗。在本節中，我們將探索 🤗 Datasets 提供的用於數據集清洗的各種功能。
+
+<Youtube id="tqfSFcPMgOI"/>
+
+## 切片與切分我們的數據
+
+與 Pandas 類似，🤗 Datasets 提供了幾個函數來操作 **Dataset** 和 **DatasetDict** 對象。我們在[第三章](/course/chapter3)已經遇到了 **Dataset.map()** 方法，在本節中，我們將探索我們可以使用的其他功能。
+
+對於這個例子，我們將使用託管在[加州大學歐文分校機器學習存儲庫](https://archive.ics.uci.edu/ml/index.php)的[藥物審查數據集](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29)，其中包含患者對各種藥物的評論，以及正在治療的病情和患者滿意度的 10 星評級。
+
+首先我們需要下載並提取數據，這可以通過 **wget** 和 **unzip** 命令：
+
+```py
+!wget "https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip"
+!unzip drugsCom_raw.zip
+```
+
+由於 TSV 只是使用製表符而不是逗號作為分隔符的 CSV 變體，我們可以使用加載**csv**文件的**load_dataset()**函數並指定分隔符 示例如下：
+
+```py
+from datasets import load_dataset
+
+data_files = {"train": "drugsComTrain_raw.tsv", "test": "drugsComTest_raw.tsv"}
+# \t is the tab character in Python
+drug_dataset = load_dataset("csv", data_files=data_files, delimiter="\t")
+```
+
+在進行任何類型的數據分析時，一個好的做法是抽取一個小的隨機樣本，以快速瞭解您正在處理的數據類型。在🤗數據集中，我們可以通過鏈接 **Dataset.shuffle()** 和 **Dataset.select()** 共同來完成抽取：
+
+```py
+drug_sample = drug_dataset["train"].shuffle(seed=42).select(range(1000))
+# Peek at the first few examples
+drug_sample[:3]
+```
+
+```python out
+{'Unnamed: 0': [87571, 178045, 80482],
+ 'drugName': ['Naproxen', 'Duloxetine', 'Mobic'],
+ 'condition': ['Gout, Acute', 'ibromyalgia', 'Inflammatory Conditions'],
+ 'review': ['"like the previous person mention, I&#039;m a strong believer of aleve, it works faster for my gout than the prescription meds I take. No more going to the doctor for refills.....Aleve works!"',
+  '"I have taken Cymbalta for about a year and a half for fibromyalgia pain. It is great\r\nas a pain reducer and an anti-depressant, however, the side effects outweighed \r\nany benefit I got from it. I had trouble with restlessness, being tired constantly,\r\ndizziness, dry mouth, numbness and tingling in my feet, and horrible sweating. I am\r\nbeing weaned off of it now. Went from 60 mg to 30mg and now to 15 mg. I will be\r\noff completely in about a week. The fibro pain is coming back, but I would rather deal with it than the side effects."',
+  '"I have been taking Mobic for over a year with no side effects other than an elevated blood pressure.  I had severe knee and ankle pain which completely went away after taking Mobic.  I attempted to stop the medication however pain returned after a few days."'],
+ 'rating': [9.0, 3.0, 10.0],
+ 'date': ['September 2, 2015', 'November 7, 2011', 'June 5, 2013'],
+ 'usefulCount': [36, 13, 128]}
+```
+
+請注意，出於可以復現的目的，我們已將在**Dataset.shuffle()**選取了固定的隨機數種子。 **Dataset.select()** 需要一個可迭代的索引，所以我們已經通過了 **range(1000)** 從隨機打亂的數據集中選取前 1,000 個示例。從抽取的數據中，我們已經可以看到我們數據集的一些特點：
+
+* **Unnamed: 0**這列看起來很像每個患者的匿名 ID。
+* **condition** 這列包含有描述健康狀況的標籤。
+* 評論長短不一，混合有 Python 行分隔符 (**\r\n**) 以及 HTML 字符代碼，如** &\#039;**。
+  
+讓我們看看我們如何使用 🤗 Datasets 來處理這些問題。為了驗證**Unnamed: 0** 列存儲的是患者 ID的猜想，我們可以使用 **Dataset.unique()** 函數來驗證匿名ID 的數量是否與拆分後每部分中的行數匹配：
+
+```py
+for split in drug_dataset.keys():
+    assert len(drug_dataset[split]) == len(drug_dataset[split].unique("Unnamed: 0"))
+```
+
+這似乎證實了我們的假設，所以讓我們把 **Unnamed: 0** 列重命名為患者的id。我們可以使用 **DatasetDict.rename_column()**函數一次性重命名DatasetDict中共有的列：
+
+```py
+drug_dataset = drug_dataset.rename_column(
+    original_column_name="Unnamed: 0", new_column_name="patient_id"
+)
+drug_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 161297
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 53766
+    })
+})
+```
+
+<Tip>
+
+✏️ **試試看！** 使用 `Dataset.unique()` 函數查找訓練和測試集中滿足某個條件的藥物經過去重之後的數量。
+
+</Tip>
+
+接下來，讓我們使用 **Dataset.map()**標準化所有 **condition** 標籤 .正如我們在[第三章](/course/chapter3)中所做的那樣，我們可以定義一個簡單的函數，可以將該函數應用於**drug_dataset** 拆分後每部分的所有行：
+
+```py
+def lowercase_condition(example):
+    return {"condition": example["condition"].lower()}
+
+
+drug_dataset.map(lowercase_condition)
+```
+
+```python out
+AttributeError: 'NoneType' object has no attribute 'lower'
+```
+
+哦不，我們的map功能遇到了問題！從錯誤中我們可以推斷出 **condition** 列存在 **None** , 不能轉換為小寫，因為它們不是字符串。讓我們使用 **Dataset.filter()** 刪除這些行 ，其工作方式類似於 **Dataset.map()** 。例如：
+
+```py
+def filter_nones(x):
+    return x["condition"] is not None
+```
+
+然後運行 **drug_dataset.filter(filter_nones)** ，我們可以在一行中使用lambda 函數.在 Python 中，lambda 函數是您無需明確命名即可使用的微函數（匿名函數）。它們一般採用如下形式：
+
+```
+lambda <arguments> : <expression>
+```
+
+其中**lambda** 是 Python 的特殊[關鍵字](https://docs.python.org/3/reference/lexical_analysis.html#keywords), **arguments** 是以逗號進行分隔的函數輸入的列表/集合， **expression** 代表您希望執行的操作。例如，我們可以定義一個簡單的 lambda 函數來對一個數字進行平方，如下所示：
+
+```
+lambda x : x * x
+```
+
+我們需要將要輸入給這個函數值括在括號中：
+
+```py
+(lambda x: x * x)(3)
+```
+
+```python out
+9
+```
+
+類似地，我們可以通過用逗號分隔多個參數來定義 lambda 函數。例如，我們可以按如下方式計算三角形的面積：
+
+```py
+(lambda base, height: 0.5 * base * height)(4, 8)
+```
+
+```python out
+16.0
+```
+
+當您想定義小型、一次性使用的函數時，Lambda 函數非常方便（有關它們的更多信息，我們建議閱讀安德烈·布爾高寫的[真正的Python教程](https://realpython.com/python-lambda/)）。在🤗 Datasets 中，我們可以使用 lambda 函數來定義簡單的映射和過濾操作，所以讓我們使用這個技巧來消除我們數據集中的 **None** 條目：
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["condition"] is not None)
+```
+
+當 **None** 條目已刪除，我們可以標準化我們的 **condition** 列：
+
+```py
+drug_dataset = drug_dataset.map(lowercase_condition)
+# Check that lowercasing worked
+drug_dataset["train"]["condition"][:3]
+```
+
+```python out
+['left ventricular dysfunction', 'adhd', 'birth control']
+```
+
+有用！現在我們已經清理了標籤，讓我們來看看清洗後的評論文本。
+
+## Creating new columns
+
+每當您處理客戶評論時，一個好的做法是檢查每個評論中的字數。評論可能只是一個詞，比如“太棒了！”或包含數千字的完整文章，根據實際的情況，您需要以不同的方式處理這些極端情況。為了計算每條評論中的單詞數，我們將使用基於空格分割每個文本的粗略方法。
+
+讓我們定義一個簡單的函數來計算每條評論中的單詞數：
+
+```py
+def compute_review_length(example):
+    return {"review_length": len(example["review"].split())}
+```
+
+與我們的 `lowercase_condition()` 函數不同，`compute_review_length()` 返回一個字典，其鍵與數據集中的列名之一不對應。 在這種情況下，當 `compute_review_length()` 傳遞給 `Dataset.map()` 時，它將應用於數據集中的所有行以創建新的 `review_length` 列：
+
+```py
+drug_dataset = drug_dataset.map(compute_review_length)
+# Inspect the first training example
+drug_dataset["train"][0]
+```
+
+```python out
+{'patient_id': 206461,
+ 'drugName': 'Valsartan',
+ 'condition': 'left ventricular dysfunction',
+ 'review': '"It has no side effect, I take it in combination of Bystolic 5 Mg and Fish Oil"',
+ 'rating': 9.0,
+ 'date': 'May 20, 2012',
+ 'usefulCount': 27,
+ 'review_length': 17}
+```
+
+正如預期的那樣，我們可以看到一個 **review_length** 列已添加到我們的訓練集中。我們可以使用 **Dataset.sort()**對這個新列進行排序，然後查看極端長度的評論的樣子：
+
+```py
+drug_dataset["train"].sort("review_length")[:3]
+```
+
+```python out
+{'patient_id': [103488, 23627, 20558],
+ 'drugName': ['Loestrin 21 1 / 20', 'Chlorzoxazone', 'Nucynta'],
+ 'condition': ['birth control', 'muscle spasm', 'pain'],
+ 'review': ['"Excellent."', '"useless"', '"ok"'],
+ 'rating': [10.0, 1.0, 6.0],
+ 'date': ['November 4, 2008', 'March 24, 2017', 'August 20, 2016'],
+ 'usefulCount': [5, 2, 10],
+ 'review_length': [1, 1, 1]}
+```
+
+正如我們所猜想的那樣，一些評論只包含一個詞，雖然這對於情感分析來說可能沒問題，但如果我們想要預測病情，這些評論可能並不適合。
+
+<Tip>
+
+🙋向數據集添加新列的另一種方法是使用函數Dataset.add_column() 。這允許您輸入Python 列表或 NumPy，在不適合使用Dataset.map()情況下可以很方便。
+
+</Tip>
+
+讓我們使用 **Dataset.filter()** 功能來刪除包含少於 30 個單詞的評論。與我們對 **condition** 列的處理相似，我們可以通過選取評論的長度高於此閾值來過濾掉非常短的評論：
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["review_length"] > 30)
+print(drug_dataset.num_rows)
+```
+
+```python out
+{'train': 138514, 'test': 46108}
+```
+
+如您所見，這已經從我們的原始訓練和測試集中刪除了大約 15% 的評論。
+
+<Tip>
+
+✏️ 試試看！使用 Dataset.sort() 函數查看單詞數最多的評論。請參閱文檔以瞭解您需要使用哪個參數按長度降序對評論進行排序。
+
+</Tip>
+
+我們需要處理的最後一件事是評論中是否存在 HTML 字符代碼。我們可以使用 Python 的**html**模塊取消這些字符的轉義，如下所示：
+
+```py
+import html
+
+text = "I&#039;m a transformer called BERT"
+html.unescape(text)
+```
+
+```python out
+"I'm a transformer called BERT"
+```
+
+我們將使用 **Dataset.map()** 對我們語料庫中的所有 HTML 字符進行轉義：
+
+```python
+drug_dataset = drug_dataset.map(lambda x: {"review": html.unescape(x["review"])})
+```
+
+如您所見， **Dataset.map()** 方法對於處理數據非常有用——在示例中僅僅是淺嘗輒止就有很大的收穫！
+
+## map() 方法的超級加速
+
+**Dataset.map()** 方法有一個 **batched** 參數，如果設置為 **True** , map 函數將會分批執行所需要進行的操作（批量大小是可配置的，但默認為 1,000）。例如，之前對所有 HTML 進行轉義的 map 函數運行需要一些時間（您可以從進度條中讀取所用時間）。我們可以通過使用列表推導同時處理多個元素來加快速度。
+
+當您在使用 **Dataset.map()**函數時指定 **batched=True**。該函數會接收一個包含數據集字段的字典，每個值都是一個列表，而不僅僅是單個值。**Dataset.map()** 的返回值應該是相同的：一個包含我們想要更新或添加到數據集中的字段的字典，字典的鍵是要添加的字段，字典的值是結果的列表。例如，這是使用 **batched=True**對所有 HTML 字符進行轉義的方法 ：
+
+```python
+new_drug_dataset = drug_dataset.map(
+    lambda x: {"review": [html.unescape(o) for o in x["review"]]}, batched=True
+)
+```
+
+如果您在筆記本中運行此代碼，您會看到此命令的執行速度比前一個命令快得多。這不是因為我們的評論已經是處理過的——如果你重新執行上一節的指令（沒有 **batched=True** )，它將花費與以前相同的時間。這是因為列表推導式通常比在同一代碼中用 **for** 循環執行相同的代碼更快，並且我們還通過同時訪問多個元素而不是一個一個來處理來提高處理的速度。
+
+在[第六章](/course/chapter6)我們將遇到的“快速”標記器，它可以快速標記大文本列表。使用 **Dataset.map()** 和 **batched=True** 是加速的關鍵。例如，要使用快速標記器標記所有藥物評論，我們可以使用這樣的函數：
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+
+
+def tokenize_function(examples):
+    return tokenizer(examples["review"], truncation=True)
+```
+
+正如你在[第三章](/course/chapter3)所看到的，我們原本就可以將一個或多個示例傳遞給分詞器，因此在**batched=True**是一個非必須的選項.讓我們藉此機會比較不同選項的性能。在筆記本中，您可以在您要測量的代碼行之前添加 **%time**來測試改行運行所消耗的時間：
+
+```python no-format
+%time tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
+```
+
+您還可以通過將整個單元格計時 **%%time** 在單元格的開頭。在我們執行此操作的硬件上，該指令顯示 10.8 秒（這是寫在“Wall time”之後的數字）。
+
+<Tip>
+
+✏️ **試試看！** 使用和不使用 `batched=True` 執行相同的指令，然後使用慢速標記器嘗試（在 `AutoTokenizer.from_pretrained()` 方法中添加 `use_fast=False`），這樣你就可以看看在你的電腦上它需要多長的時間。
+
+</Tip>
+
+以下是我們在使用和不使用批處理時使用快速和慢速分詞器獲得的結果：
+
+Options         | Fast tokenizer | Slow tokenizer
+:--------------:|:--------------:|:-------------:
+`batched=True`  | 10.8s          | 4min41s
+`batched=False` | 59.2s          | 5min3s
+
+這意味著使用帶有 **batched=True** 選項比沒有批處理的慢選項快 30 倍——這真是太棒了！這就是為什麼**AutoTokenizer** 的默認設置是**use_fast=True**的主要原因 （以及為什麼它們被稱為“快速”）。他們能夠實現這樣的加速，因為在底層的標記化代碼是在 Rust 中執行的，Rust 是一種可以輕鬆並行化執行的語言。
+
+並行化也是快速標記器通過批處理實現近 6 倍加速的原因：單個標記化操作是不能並行的，但是當您想同時標記大量文本時，您可以將執行拆分為多個進程，每個進程都對自己的文本負責。
+
+**Dataset.map()** 也有一些自己的並行化能力。由於它們不受 Rust 的支持，因此慢速分詞器的速度趕不上快速分詞器，但它們仍然會更快一些（尤其是當您使用沒有快速版本的分詞器時）。要啟用多處理，請在**Dataset.map()**時使用 **num_proc** 參數並指定要在調用中使用的進程數 ：
+
+```py
+slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False)
+
+
+def slow_tokenize_function(examples):
+    return slow_tokenizer(examples["review"], truncation=True)
+
+
+tokenized_dataset = drug_dataset.map(slow_tokenize_function, batched=True, num_proc=8)
+```
+
+您可以對處理的時間進行一些試驗，以確定要使用的最佳進程數；在我們的例子中，8 似乎產生了最好的速度增益。以下是我們在使用和不使用多處理時所需要的時間：
+
+Options         | Fast tokenizer | Slow tokenizer
+:--------------:|:--------------:|:-------------:
+`batched=True`  | 10.8s          | 4min41s
+`batched=False` | 59.2s          | 5min3s
+`batched=True`, `num_proc=8`  | 6.52s          | 41.3s
+`batched=False`, `num_proc=8` | 9.49s          | 45.2s
+
+對於慢速分詞器來說，這些結果要合理得多，但快速分詞器的性能也得到了顯著提高。但是請注意，情況並非總是如此——除了 **num_proc=8**，我們的測試表明，使用**batched=True**而不帶有**num_proc**參數的選項處理起來更快。通常，我們不建議將 Python 多線程處理用於具有**batched=True**功能的快速標記器  .
+
+<Tip>
+
+使用num_proc以加快處理速度通常是一個好主意，只要您使用的函數還沒有自己帶有的進行某種多進程處理的方法。
+
+</Tip>
+
+將所有這些功能濃縮到一個方法中已經非常了不起，但還有更多！使用 **Dataset.map()** 和 **batched=True** 您可以更改數據集中的元素數量。當你想從一個例子中創建幾個訓練特徵時，這是非常有用的。我們將在[第七章](/course/chapter7).中進行的幾個NLP任務的預處理中使用到這個功能，它非常便利。
+
+<Tip>
+
+💡在機器學習中，一個例子通常可以為我們的模型提供一組特徵。在某些情況下，這些特徵會儲存在數據集的幾個列，但在其他情況下（例如此處的例子和用於問答的數據），可以從單個示例的一列中提取多個特徵
+
+</Tip>
+
+讓我們來看看它是如何工作的！在這裡，我們將標記化我們的示例並將最大截斷長度設置128，但我們將要求標記器返回全部文本塊，而不僅僅是第一個。這可以用 **return_overflowing_tokens=True** ：
+
+```py
+def tokenize_and_split(examples):
+    return tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+```
+
+在使用**Dataset.map()** 正式在整個數據集上開始處理之前讓我們先在一個例子上測試一下：
+
+```py
+result = tokenize_and_split(drug_dataset["train"][0])
+[len(inp) for inp in result["input_ids"]]
+```
+
+```python out
+[128, 49]
+```
+
+瞧！我們在訓練集中的第一個示例變成了兩個特徵，因為它被標記為超過我們指定的最大截斷長度，因此結果被截成了兩段：第一段長度為 128 ，第二段長度為 49 。現在讓我們對所有元素執行此操作數據集！
+
+```py
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+```
+
+```python out
+ArrowInvalid: Column 1 named condition expected length 1463 but got length 1000
+```
+
+不好了！它沒有起作用！為什麼呢？查看錯誤消息會給我們一個線索：列的長度不匹配，一列長度為 1,463，另一列長度為 1,000。1,000行的"review"給出了 1,463 行的新特徵，導致和原本的1000行數據不匹配。
+
+問題出在我們試圖混合兩個不同大小的不同數據集： **drug_dataset** 列將有一定數量的元素（我們錯誤中的 1,000），但是我們正在構建**tokenized_dataset** 將有更多的元素（錯誤消息中的 1,463）。這不適用於 **Dataset** ，因此我們需要從舊數據集中刪除列或使它們的大小與新數據集中的大小相同。我們可以用 **remove_columns** 參數：
+
+```py
+tokenized_dataset = drug_dataset.map(
+    tokenize_and_split, batched=True, remove_columns=drug_dataset["train"].column_names
+)
+```
+
+現在這個過程沒有錯誤。我們可以通過比較長度來檢查新數據集的元素是否比原始數據集多得多：
+
+```py
+len(tokenized_dataset["train"]), len(drug_dataset["train"])
+```
+
+```python out
+(206772, 138514)
+```
+
+我們提到我們還可以通過使舊列與新列的大小相同來處理長度不匹配的問題。為此，我們可以使用 **overflow_to_sample_mapping** 字段，當我們設置**return_overflowing_tokens=True** .它為我們提供了特徵到它所產生的樣本的映射。使用這個，我們可以將原始數據集中的每個鍵關聯到一個合適大小的值列表中，通過遍歷所有的數據來生成新特性:
+
+```py
+def tokenize_and_split(examples):
+    result = tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+    # Extract mapping between new and old indices
+    sample_map = result.pop("overflow_to_sample_mapping")
+    for key, values in examples.items():
+        result[key] = [values[i] for i in sample_map]
+    return result
+```
+
+我們可以使用**Dataset.map()**來進行批處理，這樣無需我們刪除舊列：
+
+```py
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+tokenized_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
+        num_rows: 206772
+    })
+    test: Dataset({
+        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
+        num_rows: 68876
+    })
+})
+```
+
+我們獲得了與以前相同數量的訓練特徵，但在這裡我們保留了所有舊字段。如果您在使用模型計算之後需要它們進行一些後處理，您可能需要使用這種方法。
+
+您現在已經瞭解了 🤗 Datasets如何以各種方式用於預處理數據集。雖然🤗 Datasets 的處理功能會覆蓋你大部分的模型訓練需求，有時您可能需要切換到 Pandas 以使用更強大的功能，例如 **DataFrame.groupby()** 或用於可視化的高級 API。幸運的是，🤗 Datasets旨在與 Pandas、NumPy、PyTorch、TensorFlow 和 JAX 等庫可以相互轉換。讓我們來看看這是如何工作的。
+
+## `🤗 Datasets 和 DataFrames 的相互轉換
+
+<Youtube id="tfcY1067A5Q"/>
+
+為了實現各種第三方庫之間的轉換，🤗 Datasets 提供了一個 **Dataset.set_format()** 功能。此功能可以通過僅更改輸出格式的，輕鬆切換到另一種格式，而不會影響底層數據格式，即 Apache Arrow。格式化會在數據本身上進行。為了演示，讓我們將數據集轉換為 Pandas：
+
+```py
+drug_dataset.set_format("pandas")
+```
+
+現在，當我們訪問數據集的元素時，我們會得到一個 **pandas.DataFrame** 而不是字典：
+
+```py
+drug_dataset["train"][:3]
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>patient_id</th>
+      <th>drugName</th>
+      <th>condition</th>
+      <th>review</th>
+      <th>rating</th>
+      <th>date</th>
+      <th>usefulCount</th>
+      <th>review_length</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>95260</td>
+      <td>Guanfacine</td>
+      <td>adhd</td>
+      <td>"My son is halfway through his fourth week of Intuniv..."</td>
+      <td>8.0</td>
+      <td>April 27, 2010</td>
+      <td>192</td>
+      <td>141</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>92703</td>
+      <td>Lybrel</td>
+      <td>birth control</td>
+      <td>"I used to take another oral contraceptive, which had 21 pill cycle, and was very happy- very light periods, max 5 days, no other side effects..."</td>
+      <td>5.0</td>
+      <td>December 14, 2009</td>
+      <td>17</td>
+      <td>134</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>138000</td>
+      <td>Ortho Evra</td>
+      <td>birth control</td>
+      <td>"This is my first time using any form of birth control..."</td>
+      <td>8.0</td>
+      <td>November 3, 2015</td>
+      <td>10</td>
+      <td>89</td>
+    </tr>
+  </tbody>
+</table>
+
+讓我們創建一個 **pandas.DataFrame** 來選擇 **drug_dataset[train]** 的所有元素：
+
+```py
+train_df = drug_dataset["train"][:]
+```
+
+<Tip>
+
+🚨 在底層，`Dataset.set_format()` 改變了數據集的 `__getitem__()` dunder 方法的返回格式。 這意味著當我們想從 `"pandas"` 格式的 `Dataset` 中創建像 `train_df` 這樣的新對象時，我們需要對整個數據集進行切片以獲得 `pandas.DataFrame`。 無論輸出格式如何，您都可以自己驗證 `drug_dataset["train"]` 的類型依然還是 `Dataset`。
+
+</Tip>
+
+
+從這裡我們可以使用我們想要的所有 Pandas 功能。例如，我們可以通過花式鏈接來計算 **condition**類之間的分佈 ：
+
+```py
+frequencies = (
+    train_df["condition"]
+    .value_counts()
+    .to_frame()
+    .reset_index()
+    .rename(columns={"index": "condition", "condition": "frequency"})
+)
+frequencies.head()
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>condition</th>
+      <th>frequency</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>birth control</td>
+      <td>27655</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>depression</td>
+      <td>8023</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>acne</td>
+      <td>5209</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>anxiety</td>
+      <td>4991</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>pain</td>
+      <td>4744</td>
+    </tr>
+  </tbody>
+</table>
+
+
+一旦我們完成了 Pandas 分析，我們總是通過使用對象 **Dataset.from_pandas()**方法可以創建一個新的 **Dataset** 如下：
+
+
+```py
+from datasets import Dataset
+
+freq_dataset = Dataset.from_pandas(frequencies)
+freq_dataset
+```
+
+```python out
+Dataset({
+    features: ['condition', 'frequency'],
+    num_rows: 819
+})
+```
+
+<Tip>
+
+✏️ **試試看！** 計算每種藥物的平均評級並將結果存儲在一個新的Dataset.
+
+</Tip>
+
+我們對 🤗 Datasets中可用的各種預處理技術的介紹到此結束。在最後一部分，讓我們創建一個驗證集來準備用於訓練分類器的數據集。在此之前，我們將輸出格式 **drug_dataset** 從 **pandas**重置到 **arrow** ：
+
+```python
+drug_dataset.reset_format()
+```
+
+## 創建驗證集
+
+儘管我們有一個可以用於評估的測試集，但在開發過程中保持測試集不變並創建一個單獨的驗證集是一個很好的做法。一旦您對模型在測試集上的表現感到滿意，您就可以對驗證集進行最終的檢查。此過程有助於降低您過擬合測試集並部署在現實世界數據上失敗的模型的風險。
+
+🤗 Datasets提供了一個基於**scikit-learn**的經典方法**Dataset.train_test_split()** .讓我們用它把我們的訓練集分成 **train** 和 **validation** （為了可以復現，我們將設置**seed**的值為一個常量）：
+
+```py
+drug_dataset_clean = drug_dataset["train"].train_test_split(train_size=0.8, seed=42)
+# Rename the default "test" split to "validation"
+drug_dataset_clean["validation"] = drug_dataset_clean.pop("test")
+# Add the "test" set to our `DatasetDict`
+drug_dataset_clean["test"] = drug_dataset["test"]
+drug_dataset_clean
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 110811
+    })
+    validation: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 27703
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 46108
+    })
+})
+```
+
+太好了，我們現在已經準備好了一個數據集，可以用來訓練一些模型了！在[第五節]](/course/chapter5/5)我們將向您展示如何將數據集上傳到 Hugging Face Hub，但現在讓我們查看在本地計算機上保存數據集的幾種方法。
+
+## 保存數據集
+
+<Youtube id="blF9uxYcKHo"/>
+
+雖然 🤗 Datasets 會緩存每個下載的數據集和對它執行的操作，但有時你會想要將數據集保存到磁盤（例如，以防緩存被刪除）。如下表所示，🤗 Datasets 提供了三個主要功能來以不同的格式保存您的數據集：
+
+| 數據格式    |        對應的方法        |
+| :---------: | :--------------------: |
+|    Arrow    | `Dataset.save_to_disk()` |
+|     CSV     |    `Dataset.to_csv()`    |
+|    JSON     |   `Dataset.to_json()`    |
+
+例如，讓我們以 Arrow 格式保存我們清洗過的數據集：
+
+```py
+drug_dataset_clean.save_to_disk("drug-reviews")
+```
+
+這將創建一個具有以下結構的目錄：
+
+```
+drug-reviews/
+├── dataset_dict.json
+├── test
+│   ├── dataset.arrow
+│   ├── dataset_info.json
+│   └── state.json
+├── train
+│   ├── dataset.arrow
+│   ├── dataset_info.json
+│   ├── indices.arrow
+│   └── state.json
+└── validation
+    ├── dataset.arrow
+    ├── dataset_info.json
+    ├── indices.arrow
+    └── state.json
+```
+
+在那裡我們可以看到每個部分.arrow表，以及一些元數據數據集信息.json和狀態文件保存在一起.您可以將 Arrow 格式視為一個精美的列和行的表格，它針對構建處理和傳輸大型數據集的高性能應用程序進行了優化。
+
+保存數據集後，我們可以使用 **load_from_disk()** 功能從磁盤讀取數據如下：
+
+```py
+from datasets import load_from_disk
+
+drug_dataset_reloaded = load_from_disk("drug-reviews")
+drug_dataset_reloaded
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 110811
+    })
+    validation: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 27703
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 46108
+    })
+})
+```
+
+對於 CSV 和 JSON 格式，我們必須將每個部分存儲為單獨的文件。一種方法是迭代**DatasetDict**中的鍵和值 ：
+
+```py
+for split, dataset in drug_dataset_clean.items():
+    dataset.to_json(f"drug-reviews-{split}.jsonl")
+```
+
+這將保存每個拆分都是[JSON的標準格式](https://jsonlines.org)，其中數據集中的每一行都存儲為一行 JSON。這是第一個示例：
+
+```py
+!head -n 1 drug-reviews-train.jsonl
+```
+
+```python out
+{"patient_id":141780,"drugName":"Escitalopram","condition":"depression","review":"\"I seemed to experience the regular side effects of LEXAPRO, insomnia, low sex drive, sleepiness during the day. I am taking it at night because my doctor said if it made me tired to take it at night. I assumed it would and started out taking it at night. Strange dreams, some pleasant. I was diagnosed with fibromyalgia. Seems to be helping with the pain. Have had anxiety and depression in my family, and have tried quite a few other medications that haven't worked. Only have been on it for two weeks but feel more positive in my mind, want to accomplish more in my life. Hopefully the side effects will dwindle away, worth it to stick with it from hearing others responses. Great medication.\"","rating":9.0,"date":"May 29, 2011","usefulCount":10,"review_length":125}
+```
+
+然後我們可以使用[第二節](/course/chapter5/2)學過的技術加載 JSON 文件如下：
+
+```py
+data_files = {
+    "train": "drug-reviews-train.jsonl",
+    "validation": "drug-reviews-validation.jsonl",
+    "test": "drug-reviews-test.jsonl",
+}
+drug_dataset_reloaded = load_dataset("json", data_files=data_files)
+```
+
+這就是我們探索 🤗 Datasets 的旅程！現在我們有了一個清洗過的數據集，以下是您可以嘗試的一些想法：
+
+1. 使用[第3章](/course/chapter3)的技術來訓練一個分類器，它可以根據藥物評論預測病人的情況。
+2. 使用 [Chapter 1](/course/chapter1) 中的“summarization”管道生成評論摘要。
+
+接下來，我們將看看 🤗 Datasets如何使您能夠在不撐爆筆記本電腦內存的情況下處理龐大的數據集！
