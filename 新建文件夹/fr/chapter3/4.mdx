@@ -1,0 +1,361 @@
+# Un entraînement complet
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "English", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+    {label: "Français", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/fr/chapter3/section4.ipynb"},
+    {label: "English", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+    {label: "Français", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/fr/chapter3/section4.ipynb"},
+]} />
+
+<Youtube id="Dh9CL8fyG80"/>
+
+Maintenant nous allons voir comment obtenir les mêmes résultats que dans la dernière section sans utiliser la classe `Trainer`. Encore une fois, nous supposons que vous avez fait le traitement des données dans la section 2. Voici un court résumé couvrant tout ce dont vous aurez besoin :
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### Préparer l'entraînement
+
+Avant d'écrire réellement notre boucle d'entraînement, nous devons définir quelques objets. Les premiers sont les *dataloaders* que nous utiliserons pour itérer sur les batchs. Mais avant de pouvoir définir ces chargeurs de données, nous devons appliquer un peu de post-traitement à nos `tokenized_datasets`, pour prendre soin de certaines choses que le `Trainer` fait pour nous automatiquement. Spécifiquement, nous devons :
+
+- supprimer les colonnes correspondant aux valeurs que le modèle n'attend pas (comme les colonnes `sentence1` et `sentence2`),
+- renommer la colonne `label` en `labels` (parce que le modèle s'attend à ce que l'argument soit nommé `labels`),
+- définir le format des jeux de données pour qu'ils retournent des tenseurs PyTorch au lieu de listes.
+
+Notre `tokenized_datasets` a une méthode pour chacune de ces étapes :
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+tokenized_datasets["train"].column_names
+```
+
+Nous pouvons alors vérifier que le résultat ne comporte que des colonnes que notre modèle acceptera :
+
+```python
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+Maintenant que cela est fait, nous pouvons facilement définir nos *dataloaders* :
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+Pour vérifier rapidement qu'il n'y a pas d'erreur dans le traitement des données, nous pouvons inspecter un batch comme celui-ci :
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+Notez que les formes réelles seront probablement légèrement différentes pour vous puisque nous avons défini `shuffle=True` pour le chargeur de données d'entraînement et que nous *paddons* à la longueur maximale dans le batch.
+
+Maintenant que nous en avons terminé avec le prétraitement des données (un objectif satisfaisant mais difficile à atteindre pour tout praticien d'apprentissage automatique), passons au modèle. Nous l'instancions exactement comme nous l'avons fait dans la section précédente :
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+Pour s'assurer que tout se passera bien pendant l'entraînement, nous transmettons notre batch à ce modèle :
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+Tous les modèles 🤗 *Transformers* renvoient la perte lorsque les `labels` sont fournis. Nous obtenons également les logits (deux pour chaque entrée de notre batch, donc un tenseur de taille 8 x 2).
+
+Nous sommes presque prêts à écrire notre boucle d'entraînement ! Il nous manque juste deux choses : un optimiseur et un planificateur de taux d'apprentissage. Puisque nous essayons de reproduire à la main ce que fait la fonction `Trainer`, utilisons les mêmes paramètres par défaut. L'optimiseur utilisé par `Trainer` est `AdamW`, qui est le même qu'Adam, mais avec une torsion pour la régularisation par décroissance de poids (voir [*Decoupled Weight Decay Regularization*](https://arxiv.org/abs/1711.05101) par Ilya Loshchilov et Frank Hutter) :
+
+```py
+from transformers import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+Enfin, le planificateur du taux d'apprentissage utilisé par défaut est juste une décroissance linéaire de la valeur maximale (5e-5) à 0. Pour le définir correctement, nous devons connaître le nombre d'étapes d'entraînement que nous prendrons, qui est le nombre d'époques que nous voulons exécuter multiplié par le nombre de batch d'entraînement (qui est la longueur de notre *dataloader* d'entraînement). Le `Trainer` utilise trois époques par défaut, nous allons donc suivre ça :
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+### La boucle d'entraînement
+
+Une dernière chose : nous voulons utiliser le GPU si nous en avons un (sur un CPU, l'entraînement peut prendre plusieurs heures au lieu de quelques minutes). Pour ce faire, nous définissons un `device` sur lequel nous allons placer notre modèle et nos batchs :
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+device
+```
+
+```python out
+device(type='cuda')
+```
+
+Nous sommes maintenant prêts à entraîner ! Pour avoir une idée du moment où l'entraînement sera terminé, nous ajoutons une barre de progression sur le nombre d'étapes d'entraînement, en utilisant la bibliothèque `tqdm` :
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+Vous pouvez voir que le cœur de la boucle d'entraînement ressemble beaucoup à celui de l'introduction. Nous n'avons pas demandé de rapport, donc cette boucle d'entraînement ne nous dira rien sur les résultats du modèle. Pour cela, nous devons ajouter une boucle d'évaluation.
+
+
+### La boucle d'évaluation
+
+Comme nous l'avons fait précédemment, nous allons utiliser une métrique fournie par la bibliothèque 🤗 *Evaluate*. Nous avons déjà vu la méthode `metric.compute()`, mais les métriques peuvent en fait accumuler des batchs pour nous au fur et à mesure que nous parcourons la boucle de prédiction avec la méthode `add_batch()`. Une fois que nous avons accumulé tous les batchs, nous pouvons obtenir le résultat final avec `metric.compute()`. Voici comment implémenter tout cela dans une boucle d'évaluation :
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+Une fois encore, vos résultats seront légèrement différents en raison du caractère aléatoire de l'initialisation de la tête du modèle et du mélange des données, mais ils devraient se situer dans la même fourchette.
+
+<Tip>
+
+✏️ **Essayez** Modifiez la boucle d'entraînement précédente pour *finetuner* votre modèle sur le jeu de données SST-2.
+
+</Tip>
+
+### Optimisez votre boucle d'entraînement avec 🤗 <i>Accelerate</i>
+
+<Youtube id="s7dy8QRgjJ0" />
+
+La boucle d'entraînement que nous avons définie précédemment fonctionne bien sur un seul CPU ou GPU. Mais en utilisant la bibliothèque [🤗 *Accelerate*](https://github.com/huggingface/accelerate), il suffit de quelques ajustements pour permettre un entraînement distribué sur plusieurs GPUs ou TPUs. En partant de la création des *dataloaders* d'entraînement et de validation, voici à quoi ressemble notre boucle d'entraînement manuel :
+
+```py
+from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+Et voici les changements :
+
+```diff
++ from accelerate import Accelerator
+  from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
++ accelerator = Accelerator()
+
+  model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+  optimizer = AdamW(model.parameters(), lr=3e-5)
+
+- device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+- model.to(device)
+
++ train_dataloader, eval_dataloader, model, optimizer = accelerator.prepare(
++     train_dataloader, eval_dataloader, model, optimizer
++ )
+
+  num_epochs = 3
+  num_training_steps = num_epochs * len(train_dataloader)
+  lr_scheduler = get_scheduler(
+      "linear",
+      optimizer=optimizer,
+      num_warmup_steps=0,
+      num_training_steps=num_training_steps
+  )
+
+  progress_bar = tqdm(range(num_training_steps))
+
+  model.train()
+  for epoch in range(num_epochs):
+      for batch in train_dataloader:
+-         batch = {k: v.to(device) for k, v in batch.items()}
+          outputs = model(**batch)
+          loss = outputs.loss
+-         loss.backward()
++         accelerator.backward(loss)
+
+          optimizer.step()
+          lr_scheduler.step()
+          optimizer.zero_grad()
+          progress_bar.update(1)
+```
+
+La première ligne à ajouter est la ligne d'importation. La deuxième ligne instancie un objet `Accelerator` qui va regarder l'environnement et initialiser la bonne configuration distribuée. 🤗 *Accelerate* gère le placement des périphériques pour vous, donc vous pouvez enlever les lignes qui placent le modèle sur le périphérique (ou, si vous préférez, les changer pour utiliser `accelerator.device` au lieu de `device`).
+
+Ensuite, le gros du travail est fait dans la ligne qui envoie les *dataloaders*, le modèle, et l'optimiseur à `accelerator.prepare()`. Cela va envelopper ces objets dans le conteneur approprié pour s'assurer que votre entraînement distribué fonctionne comme prévu. Les changements restants à faire sont la suppression de la ligne qui met le batch sur le `device` (encore une fois, si vous voulez le garder, vous pouvez juste le changer pour utiliser `accelerator.device`) et le remplacement de `loss.backward()` par `accelerator.backward(loss)`.
+
+<Tip>
+⚠️ Afin de bénéficier de la rapidité offerte par les TPUs du Cloud, nous vous recommandons de rembourrer vos échantillons à une longueur fixe avec les arguments `padding="max_length"` et `max_length` du <i>tokenizer</i>.
+</Tip>
+
+Si vous souhaitez faire un copier-coller pour jouer, voici à quoi ressemble la boucle d'entraînement complète avec 🤗 <i>Accelerate</i> :
+
+```py
+from accelerate import Accelerator
+from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+En plaçant ceci dans un script `train.py`, cela sera exécutable sur n'importe quel type d'installation distribuée. Pour l'essayer dans votre installation distribuée, exécutez la commande :
+
+```bash
+accelerate config
+```
+
+qui vous demandera de répondre à quelques questions et enregistrera vos réponses dans un fichier de configuration utilisé par cette commande :
+
+```
+accelerate launch train.py
+```
+
+qui lancera l'entraînement distribué.
+
+Si vous voulez essayer ceci dans un *notebook* (par exemple, pour le tester avec des TPUs sur Colab), collez simplement le code dans une `training_function()` et lancez une dernière cellule avec :
+
+```python
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+Vous trouverez d'autres exemples dans le dépôt d'[🤗 *Accelerate*](https://github.com/huggingface/accelerate/tree/main/examples).

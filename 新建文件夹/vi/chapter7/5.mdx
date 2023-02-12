@@ -1,0 +1,1049 @@
+<FrameworkSwitchCourse {fw} />
+
+# Tóm tắt
+
+{#if fw === 'pt'}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter7/section5_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter7/section5_pt.ipynb"},
+]} />
+
+{:else}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter7/section5_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter7/section5_tf.ipynb"},
+]} />
+
+{/if}
+
+Trong phần này, chúng ta sẽ xem xét cách các mô hình Transformer có thể được sử dụng để cô đọng các tài liệu dài thành các bản tóm tắt, một tác vụ được gọi là _text summarization_ hay _tóm tắt văn bản_. Đây là một trong những tác vụ NLP thách thức nhất vì nó đòi hỏi nhiều khả năng, chẳng hạn như hiểu các đoạn văn dài và tạo ra văn bản mạch lạc nắm bắt các chủ đề chính trong tài liệu. Tuy nhiên, khi được thực hiện tốt, tóm tắt văn bản là một công cụ mạnh mẽ có thể tăng tốc các quy trình kinh doanh khác nhau bằng cách giảm bớt gánh nặng cho các chuyên gia miền phải đọc chi tiết các tài liệu dài.
+
+<Youtube id="yHnr5Dk2zCI"/>
+
+Mặc dù đã tồn tại nhiều mô hình được tinh chỉnh khác nhau để tóm tắt trên [Hugging Face Hub](https://huggingface.co/models?pipeline_tag=summarization&sort=downloads), hầu hết tất cả các mô hình này chỉ phù hợp với các tài liệu tiếng Anh. Vì vậy, để tạo thêm một điểm nhấn trong phần này, chúng tôi sẽ huấn luyện một mô hình song ngữ cho tiếng Anh và tiếng Tây Ban Nha. Đến cuối phần này, bạn sẽ có một [mô hình](https://huggingface.co/huggingface-course/mt5-small-finetuned-amazon-en-es) có thể tóm tắt các đánh giá của khách hàng như được hiển thị ở đây:
+
+<iframe src="https://course-demos-mt5-small-finetuned-amazon-en-es.hf.space" frameBorder="0" height="400" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+Như chúng ta sẽ thấy, những bản tóm tắt này ngắn gọn vì chúng được học từ các tiêu đề mà khách hàng cung cấp trong các bài đánh giá sản phẩm của họ. Hãy bắt đầu bằng cách tập hợp một kho ngữ liệu song ngữ phù hợp cho tác vụ này.
+
+## Chuẩn bị kho ngữ liệu đa ngôn ngữ
+
+Chúng ta sẽ sử dụng [Multilingual Amazon Reviews Corpus](https://huggingface.co/datasets/amazon_reviews_multi) để tạo trình tóm tắt song ngữ. Tập tài liệu này bao gồm các bài đánh giá sản phẩm của Amazon bằng sáu ngôn ngữ và thường được sử dụng để đánh giá các bộ phân loại đa ngôn ngữ. Tuy nhiên, vì mỗi bài đánh giá đi kèm với một tiêu đề ngắn, chúng ta có thể sử dụng các tiêu đề này làm nhãn tóm tắt cho mô hình của chúng ta để học! Để bắt đầu, hãy tải xuống các tập hợp con tiếng Anh và tiếng Tây Ban Nha từ Hugging Face Hub:
+
+```python
+from datasets import load_dataset
+
+spanish_dataset = load_dataset("amazon_reviews_multi", "es")
+english_dataset = load_dataset("amazon_reviews_multi", "en")
+english_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 200000
+    })
+    validation: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 5000
+    })
+    test: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 5000
+    })
+})
+```
+
+Như bạn có thể thấy, đối với mỗi ngôn ngữ, có 200,000 đánh giá cho phần `huấn luyện` và 5,000 nhận xét cho mỗi phần `kiểm định` và `kiểm thử`. Thông tin đánh giá mà chúng ta quan tâm được chứa trong cột `review_body` và `review_title`. Hãy xem một vài ví dụ bằng cách tạo một hàm đơn giản lấy một mẫu ngẫu nhiên từ tập huấn luyện với các kỹ thuật chúng ta đã học trong [Chương 5](/course/chapter5):
+
+```python
+def show_samples(dataset, num_samples=3, seed=42):
+    sample = dataset["train"].shuffle(seed=seed).select(range(num_samples))
+    for example in sample:
+        print(f"\n'>> Title: {example['review_title']}'")
+        print(f"'>> Review: {example['review_body']}'")
+
+
+show_samples(english_dataset)
+```
+
+```python out
+'>> Title: Worked in front position, not rear'
+'>> Review: 3 stars because these are not rear brakes as stated in the item description. At least the mount adapter only worked on the front fork of the bike that I got it for.'
+
+'>> Title: meh'
+'>> Review: Does it’s job and it’s gorgeous but mine is falling apart, I had to basically put it together again with hot glue'
+
+'>> Title: Can\'t beat these for the money'
+'>> Review: Bought this for handling miscellaneous aircraft parts and hanger "stuff" that I needed to organize; it really fit the bill. The unit arrived quickly, was well packaged and arrived intact (always a good sign). There are five wall mounts-- three on the top and two on the bottom. I wanted to mount it on the wall, so all I had to do was to remove the top two layers of plastic drawers, as well as the bottom corner drawers, place it when I wanted and mark it; I then used some of the new plastic screw in wall anchors (the 50 pound variety) and it easily mounted to the wall. Some have remarked that they wanted dividers for the drawers, and that they made those. Good idea. My application was that I needed something that I can see the contents at about eye level, so I wanted the fuller-sized drawers. I also like that these are the new plastic that doesn\'t get brittle and split like my older plastic drawers did. I like the all-plastic construction. It\'s heavy duty enough to hold metal parts, but being made of plastic it\'s not as heavy as a metal frame, so you can easily mount it to the wall and still load it up with heavy stuff, or light stuff. No problem there. For the money, you can\'t beat it. Best one of these I\'ve bought to date-- and I\'ve been using some version of these for over forty years.'
+```
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Thay đổi seed ngẫu nhiên trong lệnh `Dataset.shuffle()` để khám phá các bài đánh giá khác trong kho tài liệu. Nếu bạn là người nói tiếng Tây Ban Nha, hãy xem một số bài đánh giá trong `spanish_dataset` để xem liệu các tiêu đề có giống như những bản tóm tắt hợp lý hay không.
+
+</Tip>
+
+Mẫu này cho thấy sự đa dạng của các bài đánh giá mà người ta thường tìm thấy trên mạng, từ tích cực đến tiêu cực (và mọi thứ ở giữa!). Mặc dù ví dụ với tiêu đề "meh" không nhiều thông tin, nhưng các tiêu đề khác trông giống như những bản tóm tắt phù hợp về bản thân các đánh giá. Việc huấn luyện một mô hình tóm tắt cho tất cả 400,000 bài đánh giá sẽ mất quá nhiều thời gian trên một GPU, vì vậy thay vào đó, chúng ta sẽ tập trung vào việc tạo tóm tắt cho một miền sản phẩm. Để biết tên miền mà chúng ta có thể chọn, hãy chuyển đổi `english_dataset` thành `pandas.DataFrame` và tính toán số lượng đánh giá cho mỗi danh mục sản phẩm:
+
+```python
+english_dataset.set_format("pandas")
+english_df = english_dataset["train"][:]
+# Hiển thị số lượng cho 20 sản phẩm hàng đầu
+english_df["product_category"].value_counts()[:20]
+```
+
+```python out
+home                      17679
+apparel                   15951
+wireless                  15717
+other                     13418
+beauty                    12091
+drugstore                 11730
+kitchen                   10382
+toy                        8745
+sports                     8277
+automotive                 7506
+lawn_and_garden            7327
+home_improvement           7136
+pet_products               7082
+digital_ebook_purchase     6749
+pc                         6401
+electronics                6186
+office_product             5521
+shoes                      5197
+grocery                    4730
+book                       3756
+Name: product_category, dtype: int64
+```
+
+Các sản phẩm phổ biến nhất trong tập dữ liệu tiếng Anh là về đồ gia dụng, quần áo và thiết bị điện tử không dây. Tuy nhiên, để gắn bó với chủ đề Amazon, chúng ta hãy tập trung vào việc tóm tắt các bài đánh giá sách - xét cho cùng, đây là những gì công ty được thành lập! Chúng tôi có thể thấy hai danh mục sản phẩm phù hợp với hóa đơn (`book` và `digital_ebook_purchase`), vì vậy, hãy lọc tập dữ liệu bằng cả hai ngôn ngữ chỉ cho các sản phẩm này. Như chúng ta đã thấy trong [Chương 5](/course/chapter5), hàm `Dataset.filter()` cho phép chúng ta cắt một tập dữ liệu rất hiệu quả, vì vậy chúng ta có thể xác định một hàm đơn giản để thực hiện điều này:
+
+```python
+def filter_books(example):
+    return (
+        example["product_category"] == "book"
+        or example["product_category"] == "digital_ebook_purchase"
+    )
+```
+
+Bây giờ khi chúng ta áp dụng hàm này cho `english_dataset` và `spanish_dataset`, kết quả sẽ chỉ chứa những hàng liên quan đến danh mục sách. Trước khi áp dụng bộ lọc, hãy chuyển định dạng của `english_dataset` từ `"pandas"` trở lại `"arrow"`:
+
+```python
+english_dataset.reset_format()
+```
+
+Sau đó, chúng tôi có thể áp dụng chức năng bộ lọc và để kiểm tra một mẫu đánh giá để xem chúng có thực sự là về sách hay không:
+
+```python
+spanish_books = spanish_dataset.filter(filter_books)
+english_books = english_dataset.filter(filter_books)
+show_samples(english_books)
+```
+
+```python out
+'>> Title: I\'m dissapointed.'
+'>> Review: I guess I had higher expectations for this book from the reviews. I really thought I\'d at least like it. The plot idea was great. I loved Ash but, it just didnt go anywhere. Most of the book was about their radio show and talking to callers. I wanted the author to dig deeper so we could really get to know the characters. All we know about Grace is that she is attractive looking, Latino and is kind of a brat. I\'m dissapointed.'
+
+'>> Title: Good art, good price, poor design'
+'>> Review: I had gotten the DC Vintage calendar the past two years, but it was on backorder forever this year and I saw they had shrunk the dimensions for no good reason. This one has good art choices but the design has the fold going through the picture, so it\'s less aesthetically pleasing, especially if you want to keep a picture to hang. For the price, a good calendar'
+
+'>> Title: Helpful'
+'>> Review: Nearly all the tips useful and. I consider myself an intermediate to advanced user of OneNote. I would highly recommend.'
+```
+
+Được rồi, chúng ta có thể thấy rằng các bài đánh giá không hoàn toàn về sách và có thể đề cập đến những thứ như lịch và các ứng dụng điện tử như OneNote. Tuy nhiên, mảng này có vẻ thích hợp để huấn luyện một mô hình tóm tắt. Trước khi xem xét các mô hình khác nhau phù hợp cho tác vụ này, chúng ta còn một bước chuẩn bị dữ liệu cuối cùng cần làm: kết hợp các bài đánh giá bằng tiếng Anh và tiếng Tây Ban Nha dưới dạng một đối tượng `DatasetDict` duy nhất. 🤗 Datasets cung cấp một hàm `concatenate_datasets()` tiện dụng (như tên cho thấy) sẽ xếp chồng hai đối tượng `Dataset` lên trên nhau. Vì vậy, để tạo tập dữ liệu song ngữ của mình, chúng ta sẽ lặp lại từng phần dữ liệu, nối các tập dữ liệu cho phần đó và xáo trộn kết quả để đảm bảo mô hình không quá phù hợp với một ngôn ngữ duy nhất:
+
+```python
+from datasets import concatenate_datasets, DatasetDict
+
+books_dataset = DatasetDict()
+
+for split in english_books.keys():
+    books_dataset[split] = concatenate_datasets(
+        [english_books[split], spanish_books[split]]
+    )
+    books_dataset[split] = books_dataset[split].shuffle(seed=42)
+
+# Chọn ra một vài mẫu
+show_samples(books_dataset)
+```
+
+```python out
+'>> Title: Easy to follow!!!!'
+'>> Review: I loved The dash diet weight loss Solution. Never hungry. I would recommend this diet. Also the menus are well rounded. Try it. Has lots of the information need thanks.'
+
+'>> Title: PARCIALMENTE DAÑADO'
+'>> Review: Me llegó el día que tocaba, junto a otros libros que pedí, pero la caja llegó en mal estado lo cual dañó las esquinas de los libros porque venían sin protección (forro).'
+
+'>> Title: no lo he podido descargar'
+'>> Review: igual que el anterior'
+```
+
+Đây chắc chắn là sự kết hợp giữa các bài đánh giá bằng tiếng Anh và tiếng Tây Ban Nha! Bây giờ chúng ta đã có một kho tài liệu huấn luyện, một điều cuối cùng cần kiểm tra là sự phân bố các từ trong các bài đánh giá và tiêu đề của chúng. Điều này đặc biệt quan trọng đối với các tác vụ tóm tắt, trong đó các tóm tắt tham chiếu ngắn trong dữ liệu có thể làm sai lệch mô hình chỉ xuất ra một hoặc hai từ trong các tóm tắt đã tạo. Các biểu đồ bên dưới hiển thị các phân bố từ và chúng ta có thể thấy rằng các tiêu đề bị lệch nhiều về chỉ 1-2 từ:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/review-lengths.svg" alt="Word count distributions for the review titles and texts."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/review-lengths-dark.svg" alt="Word count distributions for the review titles and texts."/>
+</div>
+
+Để giải quyết vấn đề này, chúng ta sẽ lọc ra các ví dụ có tiêu đề rất ngắn để mô hình có thể tạo ra các bản tóm tắt thú vị hơn. Vì chúng ta đang xử lý các văn bản tiếng Anh và tiếng Tây Ban Nha, chúng ta có thể sử dụng phương pháp thô để phân chia các tiêu đề theo dấu cách và sau đó sử dụng phương pháp `Dataset.filter()` đáng tin cậy của mình như sau:
+
+```python
+books_dataset = books_dataset.filter(lambda x: len(x["review_title"].split()) > 2)
+```
+
+Bây giờ chúng ta đã chuẩn bị kho tài liệu của mình, hãy cùng xem một vài mẫu Transformer khả thi mà người ta có thể tinh chỉnh nó!
+
+## Các mô hình cho tóm tắt văn bản
+
+Nếu bạn nghĩ về nó, tóm tắt văn bản là một loại tác vụ tương tự như dịch máy: chúng ta có một phần nội dung văn bản giống như một bài đánh giá mà ta muốn "dịch" thành một phiên bản ngắn hơn để nắm bắt các tính năng nổi bật của đầu vào. Theo đó, hầu hết các mô hình Transformer để tóm tắt đều áp dụng kiến trúc bộ mã hóa-giải mã mà chúng ta đã gặp lần đầu tiên trong [Chương 1](/course/chapter1), mặc dù có một số ngoại lệ như họ mô hình GPT cũng có thể được sử dụng để tóm tắt trong cài đặt few-shot. Bảng sau đây liệt kê một số mô hình được huấn luyện trước phổ biến có thể được tinh chỉnh để tóm tắt.
+
+| Mô hình Transformer | Mô tả                                                                                                                                                                                                    | Đa ngôn ngữ? |
+| :---------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-----------: |
+|    [GPT-2](https://huggingface.co/gpt2-xl)    | Mặc dù được huấn luyện như một mô hình ngôn ngữ tự hồi quy, bạn có thể dùng GPT-2 để tạo ra các bản tóm tắt bằng cách nối "TL;DR" cuối mỗi đoạn đầu vào. |      ❌       |
+|   [PEGASUS](https://huggingface.co/google/pegasus-large)   | Sử dụng hàm mục tiêu huấn luyện trước để dự đoán các câu bị ẩn đi trong văn bản đa câu. Cơ chế này gần với tóm tắt hơn mô hình ngôn ngữ vanilla và đạt điểm cao hơn trên các chuẩn phổ biến. |      ❌       |
+|     [T5](https://huggingface.co/t5-base)      | Một kiến trúc Transformer phổ quát tạo ra tất cả các tác vụ trong khung văn bản sang văn bản; ví dụ,định dạng đầu vào cho mô hình để tóm tắt tài liệu là `summarize: ARTICLE`. |      ❌       |
+|     [mT5](https://huggingface.co/google/mt5-base)     | Một phiên bản đa ngôn ngữ của T5, được huấn luyện trước trên kho ngữ liệu Common Crawl corpus (mC4), bao gồm 101 ngôn ngữ. |      ✅       |
+|    [BART](https://huggingface.co/facebook/bart-base)     | Một kiến trúc Transformer mới với cả bộ mã hóa và giải mã được huấn luyện để tái tạo lại đầu vào bị phá, kết hợp các cơ chế huấn luyện trước của BERT và GPT-2.                 |      ❌       |
+|  [mBART-50](https://huggingface.co/facebook/mbart-large-50) | Phiên bản đa ngôn ngữ của BART, huấn luyện trước trên 50 ngôn ngữ.|      ✅       |
+
+Như bạn có thể thấy từ bảng này, phần lớn các mô hình Transformer để tóm tắt (và thực sự là hầu hết các tác vụ NLP) là đơn ngữ. Điều này thật tuyệt nếu tác vụ của bạn sử dụng ngôn ngữ "nhiều tài nguyên" như tiếng Anh hoặc tiếng Đức, nhưng bớt dần đối với hàng nghìn ngôn ngữ khác đang được sử dụng trên khắp thế giới. May mắn thay, có một loại mô hình Transformer đa ngôn ngữ, như mT5 và mBART, ra đời để giải cứu ta. Những mô hình này được huấn luyện trước bằng cách sử dụng mô hình ngôn ngữ, nhưng có một điểm khác biệt: thay vì huấn luyện ngữ liệu của một ngôn ngữ, chúng được huấn luyện cùng lúc về các văn bản bằng hơn 50 ngôn ngữ cùng một lúc!
+
+Chúng ta sẽ tập trung vào mT5, một kiến trúc thú vị dựa trên T5 đã được huấn luyện trước trong khung văn bản sang văn bản. Trong T5, mọi tác vụ NLP được xây dựng dưới dạng tiền tố nhắc như `summarize:` điều kiện nào để mô hình điều chỉnh văn bản được tạo thành lời nhắc. Như thể hiện trong hình bên dưới, điều này làm cho T5 trở nên cực kỳ linh hoạt, vì bạn có thể giải quyết nhiều tác vụ chỉ với một mô hình duy nhất!
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/t5.svg" alt="Different tasks performed by the T5 architecture."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/t5-dark.svg" alt="Different tasks performed by the T5 architecture."/>
+</div>
+
+mT5 không sử dụng tiền tố, nhưng chia sẻ phần lớn tính linh hoạt của T5 và có lợi thế là đa ngôn ngữ. Giờ ta đã chọn một mô hình, hãy xem xét việc chuẩn bị dữ liệu để huấn luyện.
+
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Khi bạn đã làm qua phần này, hãy xem mT5 so với mBART tốt như thế nào bằng cách tinh chỉnh phần sau với các kỹ thuật tương tự. Để có điểm thưởng, bạn cũng có thể thử tinh chỉnh T5 chỉ trên các bài đánh giá tiếng Anh. Vì T5 có tiền tố nhắc đặc biệt, bạn sẽ cần thêm  `summarize:` vào trước các mẫu đầu vào trong các bước tiền xử lý bên dưới.
+
+</Tip>
+
+## Tiền xử lý dữ liệu
+
+<Youtube id="1m7BerpSq8A"/>
+
+Tác vụ tiếp theo của chúng ta là tokenize và mã hóa các bài đánh giá và tiêu đề của chúng. Như thường lệ, ta bắt đầu bằng cách tải tokenizer được liên kết với checkpoint mô hình được huấn luyện trước. Chúng ta sẽ sử dụng `mt5-small` làm checkpoint để có thể tinh chỉnh mô hình trong một khoảng thời gian hợp lý:
+
+```python
+from transformers import AutoTokenizer
+
+model_checkpoint = "google/mt5-small"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+<Tip>
+
+💡 Trong giai đoạn đầu của các dự án NLP của bạn, một phương pháp hay là huấn luyện một lớp các mô hình "nhỏ" trên một mẫu dữ liệu nhỏ. Điều này cho phép bạn gỡ lỗi và lặp lại nhanh hơn đối với quy trình làm việc đầu cuối. Một khi bạn tự tin vào kết quả, bạn luôn có thể mở rộng mô hình bằng cách thay đổi checkpoint của mô hình!
+</Tip>
+
+Hãy thử nghiệm mT5 tokenizer trên một ví dụ nhỏ:
+
+```python
+inputs = tokenizer("I loved reading the Hunger Games!")
+inputs
+```
+
+```python out
+{'input_ids': [336, 259, 28387, 11807, 287, 62893, 295, 12507, 1], 'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1]}
+```
+
+Ở đây, chúng ta có thể thấy `input_ids` và `attention_mask` mà chúng ta đã gặp trong các thử nghiệm tinh chỉnh đầu tiên của chúng ta trong [Chương 3](/course/chapter3). Hãy giải mã các ID đầu vào này bằng hàm `convert_ids_to_tokens()` của tokenizer để xem chúng ta đang xử lý loại tokenizer nào:
+
+```python
+tokenizer.convert_ids_to_tokens(inputs.input_ids)
+```
+
+```python out
+['▁I', '▁', 'loved', '▁reading', '▁the', '▁Hung', 'er', '▁Games', '</s>']
+```
+
+Ký tự Unicode đặc biệt `▁` và token cuối chuỗi `</s>` cho biết ta đang xử lý SentencePiece tokenizer, dựa trên thuật toán phân đoạn Unigram được thảo luận trong [Chương 6](/course/chapter6). Unigram đặc biệt hữu ích đối với kho ngữ liệu đa ngôn ngữ vì nó cho phép SentencePiece bất khả tri về dấu, dấu câu và thực tế là nhiều ngôn ngữ, như tiếng Nhật, không có ký tự khoảng trắng.
+
+Để mã hóa kho tài liệu của mình, chúng ta phải xử lý một cách tính tế với tóm tắt: bởi vì các nhãn cũng là văn bản, có thể chúng vượt quá kích thước ngữ cảnh tối đa của mô hình. Điều này có nghĩa là chúng ta cần áp dụng việc cắt bớt cho cả các bài đánh giá và tiêu đề của chúng để đảm bảo không truyền các đầu vào quá dài cho mô hình của mình. Các tokenizer trong 🤗 Transformers cung cấp một hàm `as_target_tokenizer()` tiện lợi cho phép bạn mã hóa các nhãn song song với các đầu vào. Điều này thường được thực hiện bằng cách sử dụng trình quản lý ngữ cảnh bên trong một chức năng tiền xử lý, trước tiên mã hóa các đầu vào, sau đó mã hóa các nhãn dưới dạng một cột riêng biệt. Đây là một ví dụ về một hàm như vậy cho mT5:
+
+```python
+max_input_length = 512
+max_target_length = 30
+
+
+def preprocess_function(examples):
+    model_inputs = tokenizer(
+        examples["review_body"], max_length=max_input_length, truncation=True
+    )
+    # Thiết lập tokenizer cho nhãn
+    with tokenizer.as_target_tokenizer():
+        labels = tokenizer(
+            examples["review_title"], max_length=max_target_length, truncation=True
+        )
+
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
+```
+
+Hãy xem qua đoạn mã này để hiểu điều gì đang xảy ra. Điều đầu tiên chúng ta đã làm là xác định các giá trị cho `max_input_length` và `max_target_length`, đặt giới hạn trên cho thời lượng các bài đánh giá và tiêu đề của chúng. Vì nội dung đánh giá thường lớn hơn nhiều so với tiêu đề, chúng ta đã điều chỉnh các giá trị này cho phù hợp. Sau đó, trong chính `preprocess_function()`, chúng ta có thể thấy các bài đánh giá được tokenize đầu tiên, tiếp theo là các tiêu đề với `as_target_tokenizer()`.
+
+Với `preprocess_function()`, việc tokenize toàn bộ kho dữ liệu bằng hàm `Dataset.map()` tiện dụng mà chúng ta đã sử dụng rộng rãi trong suốt khóa học này là một vấn đề đơn giản:
+
+```python
+tokenized_datasets = books_dataset.map(preprocess_function, batched=True)
+```
+
+Bây giờ kho dữ liệu đã được xử lý trước, chúng ta hãy xem xét một số chỉ số thường được sử dụng để tóm tắt. Như chúng ta sẽ thấy, không có giải pháp dễ dàng và nhanh chóng khi nói đến việc đo lường chất lượng của văn bản do máy tạo ra.
+
+<Tip>
+
+💡 Bạn có thể nhận thấy rằng chúng ta đã sử dụng `batched=True` trong hàm`Dataset.map()` ở trên. Điều này mã hóa các mẫu theo lô 1,000 (mặc định) và cho phép bạn sử dụng khả năng đa luồng của các bộ tokenizer nhanh trong 🤗 Transformers. Nếu có thể, hãy thử sử dụng `batched=True` để tận dụng tối đa quá trình tiền xử lý của bạn!
+
+</Tip>
+
+## Thước đo cho tóm tắt văn bản
+
+<Youtube id="TMshhnrEXlg"/>
+
+So với hầu hết các tác vụ khác mà chúng ta đã đề cập trong khóa học này, việc đo lường hiệu suất của các tác vụ tạo văn bản như tóm tắt hoặc dịch không đơn giản bằng. Ví dụ: được đưa ra một bài đánh giá như "I loved reading the Hunger Games", có nhiều bản tóm tắt hợp lệ, chẳng hạn như "I loved the Hunger Games" hoặc "Hunger Games is a great read". Rõ ràng, việc áp dụng một số loại đối sánh chính xác nào đó giữa bản tóm tắt được tạo và nhãn không phải là một giải pháp tốt - ngay cả con người cũng sẽ đánh giá thấp hơn theo một chỉ số như vậy, bởi vì tất cả chúng ta đều có phong cách viết riêng của mình.
+
+Để tóm tắt, một trong những chỉ số được sử dụng phổ biến nhất là [điểm ROUGE](https://en.wikipedia.org/wiki/ROUGE_(metric)) (viết tắt của Recall-Oriented Understudy for Gisting Assessment). Ý tưởng cơ bản đằng sau thước đo này là so sánh một bản tóm tắt đã tạo với một tập hợp các bản tóm tắt tham chiếu thường do con người tạo ra. Để làm cho điều này chính xác hơn, giả sử chúng ta muốn so sánh hai bản tóm tắt sau:
+
+```python
+generated_summary = "I absolutely loved reading the Hunger Games"
+reference_summary = "I loved reading the Hunger Games"
+```
+
+Một cách để có thể so sánh chúng là đếm số từ trùng lặp, trong trường hợp này sẽ là 6. Tuy nhiên, điều này hơi thô, vì vậy thay vào đó ROUGE dựa trên việc tính toán điểm số _precision_  và _recall_ cho sự trùng lặp.
+
+<Tip>
+
+🙋 Đừng lo lắng nếu đây là lần đầu tiên bạn nghe nói về precision và recall - chúng ta sẽ cùng nhau điểm qua một số ví dụ rõ ràng để làm rõ tất cả. Các chỉ số này thường gặp trong các tác vụ phân loại, vì vậy nếu bạn muốn hiểu cách xác định precision và recall trong ngữ cảnh đó, chúng tôi khuyên bạn nên xem [hướng dẫn `scikit-learn`](https://scikit-learn.org/stable/auto_examples/model_selection/plot_precision_recall.html).
+
+</Tip>
+
+Đối với ROUGE, recall đo lường mức độ tóm tắt tham chiếu thu được từ cái đã tạo. Nếu chúng ta chỉ so sánh các từ, recall có thể được tính theo công thức sau:
+
+$$ \mathrm{Recall} = \frac{\mathrm{Number\,of\,overlapping\, words}}{\mathrm{Total\, number\, of\, words\, in\, reference\, summary}} $$
+
+Đối với ví dụ đơn giản ở trên, công thức này cho phép nhớ hoàn hảo là 6/6 = 1; tức là tất cả các từ trong bản tóm tắt tham chiếu đã được tạo ra bởi mô hình. Điều này nghe có vẻ tuyệt vời, nhưng hãy tưởng tượng nếu bản tóm tắt được tạo của chúng ta là "I really really loved reading the Hunger Games all night". Điều này cũng sẽ có một recall hoàn hảo, nhưng được cho là một bản tóm tắt tồi tệ hơn vì nó dài dòng. Để đối phó với những tình huống này, chúng ta cũng tính toán độ precision, trong ngữ cảnh ROUGE đo lường mức độ liên quan của bản tóm tắt đã tạo:
+
+$$ \mathrm{Precision} = \frac{\mathrm{Number\,of\,overlapping\, words}}{\mathrm{Total\, number\, of\, words\, in\, generated\, summary}} $$
+
+Áp dụng điều này cho bản tóm tắt dài dòng của chúng ta sẽ cho precision là 6/10 = 0.6, thấp hơn đáng kể so với precision 6/7 = 0.86 thu được bằng phương pháp ngắn hơn của mình. Trong thực tế, cả precision và recall thường được tính toán, và sau đó điểm F1 (giá trị trung bình hài hòa của precision và recall) được báo cáo. Chúng ta có thể thực hiện việc này dễ dàng trong 🤗 Datasets bằng cách cài đặt gói `rouge_score` trước:
+
+```py
+!pip install rouge_score
+```
+
+và sau đó tải chỉ số ROUGE như sau:
+
+```python
+import evaluate
+
+rouge_score = evaluate.load("rouge")
+```
+
+Sau đó ta có thể sử dụng hàm `rouge_score.compute()` để tính tất cả các chỉ số trong một lần:
+
+```python
+scores = rouge_score.compute(
+    predictions=[generated_summary], references=[reference_summary]
+)
+scores
+```
+
+```python out
+{'rouge1': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92)),
+ 'rouge2': AggregateScore(low=Score(precision=0.67, recall=0.8, fmeasure=0.73), mid=Score(precision=0.67, recall=0.8, fmeasure=0.73), high=Score(precision=0.67, recall=0.8, fmeasure=0.73)),
+ 'rougeL': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92)),
+ 'rougeLsum': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92))}
+```
+
+Chà, có rất nhiều thông tin trong đầu ra đó - tất cả có nghĩa là gì? Đầu tiên, 🤗 Datasets thực sự tính toán khoảng tin cậy cho precision, recall và F1 score; đây là các thuộc tính `low`, `mid` và `high` mà bạn có thể xem ở đây. Hơn nữa, 🤗 Datasets tính toán nhiều điểm ROUGE khác nhau dựa trên các loại văn bản chi tiết khác nhau khi so sánh các tóm tắt đã tạo và tham chiếu. Biến thể `rouge1` là sự chồng chéo của các khối đơn - đây chỉ là một cách nói hoa mỹ để nói về sự chồng chéo của các từ và chính xác là số liệu mà chúng ta đã thảo luận ở trên. Để xác minh điều này, chúng ta hãy lấy ra giá trị `mid` điểm số của mình:
+
+```python
+scores["rouge1"].mid
+```
+
+```python out
+Score(precision=0.86, recall=1.0, fmeasure=0.92)
+```
+
+Tuyệt vời, precision và recall lại khớp với nhau! Còn những điểm ROUGE khác thì sao? `rouge2` đo lường sự trùng lặp giữa các bigram (hãy nghĩ rằng đó là sự chồng chéo của các cặp từ), trong khi `rougeL` và `rougeLsum` đo lường các chuỗi từ phù hợp dài nhất bằng cách tìm kiếm các chuỗi con chung dài nhất trong các bản tóm tắt được tạo và tham chiếu. "sum" trong `rougeLsum` đề cập đến thực tế là chỉ số này được tính trên toàn bộ bản tóm tắt, trong khi `rougeL` được tính là giá trị trung bình trên các câu riêng lẻ.
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Tạo ví dụ của riêng bạn về bản tóm tắt được tạo và tham khảo, và xem liệu điểm kết quả ROUGE có giống với tính toán thủ công dựa trên các công thức về precision và recall hay không. Để có điểm thưởng, hãy chia văn bản thành bigrams và so sánh độ chính xác và thu hồi cho chỉ số `rouge2`.
+
+</Tip>
+
+Chúng tôi sẽ sử dụng các điểm ROUGE này để theo dõi hiệu suất của mô hình, nhưng trước khi làm điều đó, hãy làm điều mà mọi người thực hành NLP giỏi nên làm: tạo một đường cơ sở mạnh mẽ nhưng đơn giản!
+
+### Tạo một đường cơ sở mạnh mẽ
+
+Môt mô hình cơ sở cho tóm tắt văn bản, đó là chỉ cần lấy ba câu đầu tiên của một bài báo, thường được gọi là _lead-3_ hay _3 bài đầu_. Chúng ta có thể sử dụng các dấu chấm để theo dõi ranh giới câu, nhưng điều này sẽ không thành công đối với các từ viết tắt như "U.S." hoặc "U.N." - vì vậy thay vào đó, chúng ta sẽ sử dụng thư viện `nltk`, bao gồm một thuật toán tốt hơn để xử lý những trường hợp này. Bạn có thể cài đặt gói bằng cách sử dụng `pip` như sau:
+
+```python
+!pip install nltk
+```
+
+và sau đó tải các quy tắc dấu câu:
+
+```python
+import nltk
+
+nltk.download("punkt")
+```
+
+Tiếp theo, chúng ta nhập tokenizer câu từ `nltk` và tạo một hàm đơn giản để trích xuất ba câu đầu tiên trong một bài đánh giá. Quy ước trong phần tóm tắt văn bản là tách từng phần tóm tắt bằng một dòng mới, vì vậy hãy bao gồm phần này và kiểm tra nó trên một ví dụ huấn luyện:
+
+```python
+from nltk.tokenize import sent_tokenize
+
+
+def three_sentence_summary(text):
+    return "\n".join(sent_tokenize(text)[:3])
+
+
+print(three_sentence_summary(books_dataset["train"][1]["review_body"]))
+```
+
+```python out
+'I grew up reading Koontz, and years ago, I stopped,convinced i had "outgrown" him.'
+'Still,when a friend was looking for something suspenseful too read, I suggested Koontz.'
+'She found Strangers.'
+```
+
+Điều này có vẻ hiệu quả, vì vậy bây giờ chúng ta hãy triển khai một hàm trích xuất các "tóm tắt" này từ tập dữ liệu và tính toán điểm ROUGE cho mô hình cơ sở:
+
+```python
+def evaluate_baseline(dataset, metric):
+    summaries = [three_sentence_summary(text) for text in dataset["review_body"]]
+    return metric.compute(predictions=summaries, references=dataset["review_title"])
+```
+
+Sau đó, chúng ta có thể sử dụng hàm này để tính toán điểm ROUGE trên tập kiểm định và kiểm tra chúng một chút bằng cách sử dụng Pandas:
+
+```python
+import pandas as pd
+
+score = evaluate_baseline(books_dataset["validation"], rouge_score)
+rouge_names = ["rouge1", "rouge2", "rougeL", "rougeLsum"]
+rouge_dict = dict((rn, round(score[rn].mid.fmeasure * 100, 2)) for rn in rouge_names)
+rouge_dict
+```
+
+```python out
+{'rouge1': 16.74, 'rouge2': 8.83, 'rougeL': 15.6, 'rougeLsum': 15.96}
+```
+
+Chúng ta có thể thấy rằng điểm `rouge2` thấp hơn đáng kể so với phần còn lại; điều này có thể phản ánh thực tế là tiêu đề bài đánh giá thường ngắn gọn và do đó, mô hình cơ sở của 3 bài đầu quá dài dòng. Bây giờ chúng ta đã có một cơ sở tốt để làm việc, hãy chuyển sự chú ý của chúng ta sang việc tinh chỉnh mT5!
+
+{#if fw === 'pt'}
+
+## Tinh chỉnh mT5 với API `Trainer`
+
+Việc tinh chỉnh một mô hình để tóm tắt rất giống với các tác vụ khác mà chúng ta đã đề cập trong chương này. Điều đầu tiên chúng ta cần làm là tải mô hình được huấn luyện trước từ checkpoint `mt5-small`. Vì tóm tắt là một tác vụ chuỗi sang chuỗi, chúng ta có thể tải mô hình bằng lớp `AutoModelForSeq2SeqLM`, lớp này sẽ tự động tải xuống và lưu vào bộ nhớ cache các trọng số:
+
+```python
+from transformers import AutoModelForSeq2SeqLM
+
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+## Tinh chỉnh mT5 với Keras
+
+Việc tinh chỉnh một mô hình để tóm tắt rất giống với các tác vụ khác mà chúng ta đã đề cập trong chương này. Điều đầu tiên chúng ta cần làm là tải mô hình được huấn luyện trước từ checkpoint `mt5-small`. Vì tóm tắt là một tác vụ chuỗi sang chuỗi, chúng ta có thể tải mô hình bằng lớp `TFAutoModelForSeq2SeqLM`, lớp này sẽ tự động tải xuống và lưu vào bộ nhớ cache các trọng số:
+
+```python
+from transformers import TFAutoModelForSeq2SeqLM
+
+model = TFAutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+{/if}
+
+<Tip>
+
+💡 Nếu bạn đang tự hỏi tại sao bạn không thấy bất kỳ cảnh báo nào về việc tinh chỉnh mô hình trên một tác vụ phía sau, đó là bởi vì đối với các tác vụ chuỗi sang chuỗi, chúng ta giữ tất cả các trọng số của mạng. So sánh mô hình này với mô hình phân loại văn bản trong [Chương 3](/course/chapter3), trong đó phần đầu của mô hình định sẵn được thay thế bằng một mạng được khởi tạo ngẫu nhiên.
+
+</Tip>
+
+Điều tiếp theo chúng ta cần làm là đăng nhập vào Hugging Face Hub. Nếu bạn đang chạy đoạn mã này trong notebook, bạn có thể làm như vậy với hàm tiện ích sau:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+sẽ hiển thị một tiện ích mà bạn có thể nhập thông tin đăng nhập của mình. Ngoài ra, bạn có thể chạy lệnh này trong thiết bị đầu cuối của mình và đăng nhập vào đó:
+
+```
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+Chúng ta sẽ cần tạo tóm tắt để tính điểm ROUGE trong quá trình huấn luyện. May mắn thay, 🤗 Transformers cung cấp các lớp `Seq2SeqTrainingArguments` và `Seq2SeqTrainer` chuyên dụng có thể tự động làm việc này cho chúng ta! Để xem cách này hoạt động như thế nào, trước tiên chúng ta hãy xác định các siêu tham số và các tham số khác cho các thử nghiệm của mình:
+
+```python
+from transformers import Seq2SeqTrainingArguments
+
+batch_size = 8
+num_train_epochs = 8
+# Hiện thị mất mát huấn luyện mỗi epoch
+logging_steps = len(tokenized_datasets["train"]) // batch_size
+model_name = model_checkpoint.split("/")[-1]
+
+args = Seq2SeqTrainingArguments(
+    output_dir=f"{model_name}-finetuned-amazon-en-es",
+    evaluation_strategy="epoch",
+    learning_rate=5.6e-5,
+    per_device_train_batch_size=batch_size,
+    per_device_eval_batch_size=batch_size,
+    weight_decay=0.01,
+    save_total_limit=3,
+    num_train_epochs=num_train_epochs,
+    predict_with_generate=True,
+    logging_steps=logging_steps,
+    push_to_hub=True,
+)
+```
+
+Ở đây, tham số `predict_with_generate` đã được đặt để chỉ ra rằng chúng ta nên tạo các bản tóm tắt trong quá trình đánh giá để có thể tính toán điểm ROUGE cho mỗi epoch. Như đã thảo luận trong [Chương 1](/course/chapter1), bộ giải mã thực hiện luận suy bằng cách dự đoán từng token và điều này được thực hiện bởi phương thức `generate()` của mô hình. Đặt `predict_with_generate=True` sẽ cho `Seq2SeqTrainer` sử dụng phương pháp đó để đánh giá. Chúng ta cũng đã điều chỉnh một số siêu tham số mặc định, như tốc độ học, số epoch và giảm trọng số và chúng ta đã đặt tùy chọn `save_total_limit` để chỉ lưu tối đa 3 checkpoint trong quá trình huấn luyện - điều này là do ngay cả phiên bản "nhỏ" của mT5 sử dụng khoảng một GB dung lượng ổ cứng và chúng ta có thể tiết kiệm một chút dung lượng bằng cách giới hạn số lượng bản sao ta lưu.
+
+Tham số `push_to_hub=True` sẽ cho phép chúng ta đẩy mô hình vào Hub sau khi huấn luyện; bạn sẽ tìm thấy kho lưu trữ bên dưới hồ sơ người dùng của mình ở vị trí được xác định bởi `output_dir`. Lưu ý rằng bạn có thể chỉ định tên của kho lưu trữ mà bạn muốn đẩy đến bằng tham số `hub_model_id` (cụ thể là bạn sẽ phải sử dụng tham số này để đẩy đến một tổ chức). Ví dụ: khi chúng ta đẩy mô hình vào tổ chức [`huggingface-course`](https://huggingface.co/huggingface-course), chúng ta đã thêm `hub_model_id="huggingface-course/mt5-finetuned-amazon-en-es"` thành `Seq2SeqTrainingArguments`.
+
+Điều tiếp theo chúng ta cần làm là cung cấp cho người huấn luyện một hàm `compute_metrics()` để chúng ta có thể đánh giá mô hình của mình trong quá trình huấn luyện. Để tóm tắt, điều này cần nhiều hơn là đơn giản gọi `rouge_score.compute()` trên các dự đoán của mô hình, vì chúng ta cần _giải mã_ các kết quả đầu ra và nhãn thành văn bản trước khi chúng ta có thể tính điểm ROUGE. Hàm sau thực hiện chính xác điều đó và cũng sử dụng hàm `sent_tokenize()` từ `nltk` để tách các câu tóm tắt bằng các dòng mới:
+
+```python
+import numpy as np
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    # Giải mã các tóm tắt được tạo ra thành văn bản
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    # Thay -100 vào nhãn vì ta không thể giải mã chúng
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    # Giải mã các tóm tắt mẫu thành văn bản
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    # ROUGE kì vọng dòng mới sau mỗi câu
+    decoded_preds = ["\n".join(sent_tokenize(pred.strip())) for pred in decoded_preds]
+    decoded_labels = ["\n".join(sent_tokenize(label.strip())) for label in decoded_labels]
+    # Tính điểm ROUGE
+    result = rouge_score.compute(
+        predictions=decoded_preds, references=decoded_labels, use_stemmer=True
+    )
+    # Trích xuất điểm trung vị
+    result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+    return {k: round(v, 4) for k, v in result.items()}
+```
+
+{/if}
+
+Tiếp theo, chúng ta cần phải xác định một bộ đối chiếu dữ liệu cho tác vụ chuỗi sang chuỗi của chúng ta. Vì mT5 là mô hình Transformer bộ mã hóa-giải mã, một điều tinh tế khi chuẩn bị các lô là trong quá trình giải mã, chúng ta cần chuyển các nhãn sang phải từng nhãn. Điều này là bắt buộc để đảm bảo rằng bộ giải mã chỉ nhìn thấy các nhãn trước đó chứ không phải nhãn hiện tại hoặc tương lai, điều này sẽ giúp mô hình dễ dàng ghi nhớ. Điều này tương tự như cách áp dụng masked self-attention cho các đầu vào trong một tác vụ như [mô hình ngôn ngữ nhân quả](/course/chapter7/6).
+
+May mắn thay, 🤗 Transformers cung cấp một bộ đối chiếu `DataCollatorForSeq2Seq` sẽ tự động đệm các đầu vào và nhãn cho chúng ta. Để khởi tạo bộ đối chiếu này, chúng ta chỉ cần cung cấp `tokenizer` và `model`:
+
+{#if fw === 'pt'}
+
+```python
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+```
+
+{:else}
+
+```python
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model, return_tensors="tf")
+```
+
+{/if}
+
+Hãy xem những gì mà máy đối chiếu này tạo ra khi được cung cấp một loạt các ví dụ nhỏ. Đầu tiên, chúng ta cần xóa các cột có chuỗi vì trình đối chiếu sẽ không biết cách chèn các phần tử này:
+
+```python
+tokenized_datasets = tokenized_datasets.remove_columns(
+    books_dataset["train"].column_names
+)
+```
+
+Vì bộ đối chiếu mong đợi một danh sách các `dict`, trong đó mỗi `dict` đại diện cho một ví dụ duy nhất trong tập dữ liệu, chúng ta cũng cần cuộn dữ liệu thành định dạng mong đợi trước khi chuyển nó đến bộ đối chiếu dữ liệu:
+
+```python
+features = [tokenized_datasets["train"][i] for i in range(2)]
+data_collator(features)
+```
+
+```python out
+{'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]), 'input_ids': tensor([[  1494,    259,   8622,    390,    259,    262,   2316,   3435,    955,
+            772,    281,    772,   1617,    263,    305,  14701,    260,   1385,
+           3031,    259,  24146,    332,   1037,    259,  43906,    305,    336,
+            260,      1,      0,      0,      0,      0,      0,      0],
+        [   259,  27531,  13483,    259,   7505,    260, 112240,  15192,    305,
+          53198,    276,    259,  74060,    263,    260,    459,  25640,    776,
+           2119,    336,    259,   2220,    259,  18896,    288,   4906,    288,
+           1037,   3931,    260,   7083, 101476,   1143,    260,      1]]), 'labels': tensor([[ 7483,   259,  2364, 15695,     1,  -100],
+        [  259, 27531, 13483,   259,  7505,     1]]), 'decoder_input_ids': tensor([[    0,  7483,   259,  2364, 15695,     1],
+        [    0,   259, 27531, 13483,   259,  7505]])}
+```
+
+Điều chính cần chú ý ở đây là mẫu đầu tiên dài hơn thứ hai, do đó, `input_ids` và `attention_mask` của mẫu thứ hai đã được đệm ở bên phải bằng `[PAD]` (có ID là `0`). Tương tự, chúng ta có thể thấy rằng `labels` đã được đệm bằng `-100`, để đảm bảo rằng các token đệm được bỏ qua bởi hàm mất mát. Và cuối cùng, chúng ta có thể thấy một `decoder_input_ids` mới đã chuyển các nhãn sang bên phải bằng cách chèn `[PAD]` vào mục nhập đầu tiên.
+
+{#if fw === 'pt'}
+
+Cuối cùng thì chúng ta cũng có tất cả những nguyên liệu cần thiết để luyện tập! Bây giờ chúng ta chỉ cần khởi tạo trình huấn luyện với các tham số tiêu chuẩn:
+
+```python
+from transformers import Seq2SeqTrainer
+
+trainer = Seq2SeqTrainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+và khởi chạy chương trình huấn luyện của mình:
+
+```python
+trainer.train()
+```
+
+Trong quá trình huấn luyện, bạn sẽ thấy mất mát huấn luyện giảm và điểm ROUGE tăng lên theo từng epoch. Sau khi quá trình huấn luyện hoàn tất, bạn có thể xem điểm ROUGE cuối cùng bằng cách chạy `Trainer.evaluate()`:
+
+```python
+trainer.evaluate()
+```
+
+```python out
+{'eval_loss': 3.028524398803711,
+ 'eval_rouge1': 16.9728,
+ 'eval_rouge2': 8.2969,
+ 'eval_rougeL': 16.8366,
+ 'eval_rougeLsum': 16.851,
+ 'eval_gen_len': 10.1597,
+ 'eval_runtime': 6.1054,
+ 'eval_samples_per_second': 38.982,
+ 'eval_steps_per_second': 4.914}
+```
+
+Từ điểm số, chúng ta có thể thấy rằng mô hình của mình đã vượt trội so với mô hình cơ sở với 3 bài đầu tiên - thật tuyệt! Điều cuối cùng cần làm là đẩy các trọng số mô hình vào Hub, như sau:
+
+```
+trainer.push_to_hub(commit_message="Training complete", tags="summarization")
+```
+
+```python out
+'https://huggingface.co/huggingface-course/mt5-finetuned-amazon-en-es/commit/aa0536b829b28e73e1e4b94b8a5aacec420d40e0'
+```
+
+Thao tác này sẽ lưu các checkpoint và các tệp cấu hình vào `output_dir`, trước khi tải tất cả các tệp lên Hub. Bằng cách chỉ định tham số `tags`, chúng ta cũng đảm bảo rằng tiện ích con trên Hub sẽ là một tiện ích con dành cho quy trình tóm tắt thay vì tiện ích tạo văn bản mặc định được liên kết với kiến trúc mT5 (để biết thêm thông tin về thẻ mô hình, hãy xem tài liệu [🤗 Hub ](https://huggingface.co/docs/hub/main#how-is-a-models-type-of-inference-api-and-widget-detined)). Đầu ra từ `trainr.push_to_hub())` là một URL tới hàm băm cam kết Git, vì vậy bạn có thể dễ dàng xem các thay đổi đã được thực hiện đối với kho lưu trữ mô hình!
+
+Để kết thúc phần này, hãy xem cách chúng ta cũng có thể tinh chỉnh mT5 bằng cách sử dụng các tính năng cấp thấp do 🤗 Accelerate cung cấp.
+
+{:else}
+
+Chúng tôi gần như đã sẵn sàng để huấn luyện! Chúng ta chỉ cần chuyển đổi tập dữ liệu của mình thành `tf.data.Dataset` bằng cách sử dụng trình đối chiếu dữ liệu đã xác định ở trên, sau đó mô hình `compile()` và `fit()`. Đầu tiên, bộ dữ liệu:
+
+```python
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["input_ids", "attention_mask", "labels"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=8,
+)
+tf_eval_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["input_ids", "attention_mask", "labels"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=8,
+)
+```
+
+Bây giờ, chúng ta xác định các siêu tham số huấn luyện của mình và biên dịch:
+
+```python
+from transformers import create_optimizer
+import tensorflow as tf
+
+# Số bước huấn luyện là số lượng mẫu trong tập dữ liệu, chia cho kích thước lô sau đó nhân
+# với tổng số epoch. Lưu ý rằng tf_train_dataset ở đây là tf.data.Dataset theo lô,
+# không phải là Hugging Face Dataset ban đầu, vì vậy len() của nó vốn là num_samples // batch_size.
+
+num_train_epochs = 8
+num_train_steps = len(tf_train_dataset) * num_train_epochs
+model_name = model_checkpoint.split("/")[-1]
+
+optimizer, schedule = create_optimizer(
+    init_lr=5.6e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+
+model.compile(optimizer=optimizer)
+
+# Huấn luyện trong mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+And finally, we fit the model. We use a `PushToHubCallback` to save the model to the Hub after each epoch, which will allow us to use it for inference later:
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(
+    output_dir=f"{model_name}-finetuned-amazon-en-es", tokenizer=tokenizer
+)
+
+model.fit(
+    tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback], epochs=8
+)
+```
+
+Chúng ta nhận được một số giá trị mất mát trong quá trình huấn luyện, nhưng thực sự chúng ta muốn xem các chỉ số ROUGE mà ta đã tính toán trước đó. Để có được các số liệu đó, chúng tôi sẽ cần tạo kết quả đầu ra từ mô hình và chuyển đổi chúng thành chuỗi. Hãy xây dựng một số danh sách nhãn và dự đoán cho chỉ số ROUGE để so sánh (lưu ý rằng nếu bạn gặp lỗi nhập cho phần này, bạn có thể cần phải `!pip install tqdm`):
+
+```python
+from tqdm import tqdm
+import numpy as np
+
+all_preds = []
+all_labels = []
+for batch in tqdm(tf_eval_dataset):
+    predictions = model.generate(**batch)
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    labels = batch["labels"].numpy()
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    decoded_preds = ["\n".join(sent_tokenize(pred.strip())) for pred in decoded_preds]
+    decoded_labels = ["\n".join(sent_tokenize(label.strip())) for label in decoded_labels]
+    all_preds.extend(decoded_preds)
+    all_labels.extend(decoded_labels)
+```
+
+Khi chúng ta có danh sách các chuỗi nhãn và chuỗi dự đoán, việc tính toán điểm ROUGE thật dễ dàng:
+
+```python
+result = rouge_score.compute(
+    predictions=decoded_preds, references=decoded_labels, use_stemmer=True
+)
+result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+{k: round(v, 4) for k, v in result.items()}
+```
+
+```
+{'rouge1': 31.4815, 'rouge2': 25.4386, 'rougeL': 31.4815, 'rougeLsum': 31.4815}
+```
+
+
+{/if}
+
+{#if fw === 'pt'}
+
+## Tinh chỉnh mT5 với 🤗 Accelerate
+
+Tinh chỉnh mô hình của chúng ta với 🤗 Accelerate rất giống với ví dụ phân loại văn bản mà chúng ta đã gặp trong [Chương 3](/course/chapter3). Sự khác biệt chính sẽ là nhu cầu tạo tóm tắt của chúng ta một cách rõ ràng trong quá trình huấn luyện và xác định cách chúng ta tính điểm ROUGE (nhớ lại rằng `Seq2SeqTrainer` đã làm cho chúng ta). Hãy xem cách chúng ta có thể thực hiện hai yêu cầu này trong 🤗 Accelerate!
+
+### Chuẩn bị mọi thứ cho huấn luyện
+
+Điều đầu tiên chúng ta cần làm là tạo một `DataLoader` cho mỗi phần tách của chúng ta. Vì các bộ lưu trữ dữ liệu PyTorch mong đợi hàng loạt các tensor, chúng ta cần đặt định dạng thành `"torch"` trong bộ dữ liệu của mình:
+
+```python
+tokenized_datasets.set_format("torch")
+```
+
+Bây giờ chúng ta đã có tập dữ liệu chỉ bao gồm các tensor, việc tiếp theo cần làm là khởi tạo lại `DataCollatorForSeq2Seq`. Đối với điều này, chúng ta cần cung cấp một phiên bản mới của mô hình, vì vậy hãy tải lại từ bộ nhớ cache của mình:
+
+```python
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+Sau đó, chúng ta có thể khởi tạo trình đối chiếu dữ liệu và sử dụng công cụ này để xác định bộ lưu dữ liệu của mình:
+
+```python
+from torch.utils.data import DataLoader
+
+batch_size = 8
+train_dataloader = DataLoader(
+    tokenized_datasets["train"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=batch_size,
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], collate_fn=data_collator, batch_size=batch_size
+)
+```
+
+Điều tiếp theo cần làm là xác định trình tối ưu hóa mà chúng ta muốn sử dụng. Như trong các ví dụ khác, chúng ta sẽ sử dụng `AdamW`, trình hoạt động tốt cho hầu hết các vấn đề:
+
+```python
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+Cuối cùng, chúng ta cung cấp mô hình, trình tối ưu hóa và bộ ghi dữ liệu của mình vào phương thức `accelerator.prepare()`:
+
+```python
+from accelerate import Accelerator
+
+accelerator = Accelerator()
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+<Tip>
+
+🚨 Nếu bạn đang huấn luyện trên TPU, bạn sẽ cần chuyển tất cả đoạn mã ở trên vào một hàm huấn luyện chuyên dụng. Xem [Chương 3(/course/chapter3) để biết thêm chi tiết.
+
+</Tip>
+
+Bây giờ chúng ta đã chuẩn bị các đối tượng của mình, còn ba việc cần làm:
+
+* Xác định lịch trình tốc độ học.
+* Thực hiện chức năng hậu xử lý các bản tóm tắt để đánh giá.
+* Tạo một kho lưu trữ trên Hub mà ta có thể đẩy mô hình của mình lên đó.
+
+Đối với lịch trình tốc độ học, chúng ta sẽ sử dụng lịch trình tuyến tính tiêu chuẩn từ các phần trước:
+
+```python
+from transformers import get_scheduler
+
+num_train_epochs = 10
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+Để hậu xử lý, chúng ta cần một hàm chia các tóm tắt đã tạo thành các câu được phân tách bằng các dòng mới. Đây là định dạng mà chỉ số ROUGE mong đợi và chúng ta có thể đạt được điều này bằng đoạn mã sau:
+
+```python
+def postprocess_text(preds, labels):
+    preds = [pred.strip() for pred in preds]
+    labels = [label.strip() for label in labels]
+
+    # ROUGE kì vọng dòng mới sau mỗi câu
+    preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
+    labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
+
+    return preds, labels
+```
+
+Điều này sẽ trông quen thuộc với bạn nếu bạn nhớ lại cách chúng ta đã định nghĩa hàm `compute_metrics()` của `Seq2SeqTrainer`.
+
+Cuối cùng, chúng ta cần tạo một kho lưu trữ mô hình trên Hugging Face Hub. Đối với điều này, chúng ta có thể sử dụng thư viện 🤗 Hub có tiêu đề thích hợp. Chúng ta chỉ cần xác định tên cho kho lưu trữ của mình và thư viện có chức năng tiện ích để kết hợp ID kho lưu trữ với hồ sơ người dùng:
+
+```python
+from huggingface_hub import get_full_repo_name
+
+model_name = "test-bert-finetuned-squad-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'lewtun/mt5-finetuned-amazon-en-es-accelerate'
+```
+
+Bây giờ chúng ta có thể sử dụng tên kho lưu trữ này để sao chép phiên bản cục bộ vào thư mục kết quả của chúng ta, nơi sẽ lưu trữ các tạo tác huấn luyện:
+
+```python
+from huggingface_hub import Repository
+
+output_dir = "results-mt5-finetuned-squad-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+Điều này sẽ cho phép chúng ta đẩy các tạo tác trở lại Hub bằng cách gọi phương thức `repo.push_to_hub()` trong quá trình huấn luyện! Bây giờ chúng ta hãy kết thúc phân tích bằng cách viết ra vòng lặp huấn luyện.
+
+### Vòng lặp huấn luyện
+
+Vòng lặp huấn luyện để tóm tắt khá giống với các ví dụ 🤗 Accelerate khác mà chúng ta đã gặp và gần như được chia thành bốn bước chính:
+
+1. Huấn luyện mô hình bằng cách lặp lại tất cả các ví dụ trong `train_dataloader` cho mỗi epoch.
+2. Tạo tóm tắt mô hình vào cuối mỗi epoch, bằng cách tạo token đầu tiên và sau đó giải mã chúng (và tóm tắt tham chiếu) thành văn bản.
+3. Tính toán điểm ROUGE bằng các kỹ thuật tương tự mà chúng ta đã thấy trước đó.
+4. Lưu các checkpoint và đẩy mọi thứ vào Hub. Ở đây, chúng ta dựa vào tham số `blocking=False` tiện lợi của đối tượng `Repository` để có thể đẩy các checkpoint ở mỗi epoch _bất đồng bộ_. Điều này cho phép ta tiếp tục huấn luyện mà không phải đợi tải lên hơi chậm với mô hình có kích thước GB!
+
+Các bước này có thể được nhìn thấy trong khối mã sau:
+
+```python
+from tqdm.auto import tqdm
+import torch
+import numpy as np
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Huấn luyện
+    model.train()
+    for step, batch in enumerate(train_dataloader):
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Đánh giá
+    model.eval()
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            generated_tokens = accelerator.unwrap_model(model).generate(
+                batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+            )
+
+            generated_tokens = accelerator.pad_across_processes(
+                generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
+            )
+            labels = batch["labels"]
+
+            # Nếu ta không đệm đến độ giải tối đa, ta cần đệm cả nhãn nữa
+            labels = accelerator.pad_across_processes(
+                batch["labels"], dim=1, pad_index=tokenizer.pad_token_id
+            )
+
+            generated_tokens = accelerator.gather(generated_tokens).cpu().numpy()
+            labels = accelerator.gather(labels).cpu().numpy()
+
+            # Thay -100 ở nhãn vì ta không thể  giải mã chúng
+            labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+            if isinstance(generated_tokens, tuple):
+                generated_tokens = generated_tokens[0]
+            decoded_preds = tokenizer.batch_decode(
+                generated_tokens, skip_special_tokens=True
+            )
+            decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+            decoded_preds, decoded_labels = postprocess_text(
+                decoded_preds, decoded_labels
+            )
+
+            rouge_score.add_batch(predictions=decoded_preds, references=decoded_labels)
+
+    # Tính toán các chỉ số
+    result = rouge_score.compute()
+    # Trích xuất điểm trung vị ROUGE
+    result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+    result = {k: round(v, 4) for k, v in result.items()}
+    print(f"Epoch {epoch}:", result)
+
+    # Lưu và tải
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+```python out
+Epoch 0: {'rouge1': 5.6351, 'rouge2': 1.1625, 'rougeL': 5.4866, 'rougeLsum': 5.5005}
+Epoch 1: {'rouge1': 9.8646, 'rouge2': 3.4106, 'rougeL': 9.9439, 'rougeLsum': 9.9306}
+Epoch 2: {'rouge1': 11.0872, 'rouge2': 3.3273, 'rougeL': 11.0508, 'rougeLsum': 10.9468}
+Epoch 3: {'rouge1': 11.8587, 'rouge2': 4.8167, 'rougeL': 11.7986, 'rougeLsum': 11.7518}
+Epoch 4: {'rouge1': 12.9842, 'rouge2': 5.5887, 'rougeL': 12.7546, 'rougeLsum': 12.7029}
+Epoch 5: {'rouge1': 13.4628, 'rouge2': 6.4598, 'rougeL': 13.312, 'rougeLsum': 13.2913}
+Epoch 6: {'rouge1': 12.9131, 'rouge2': 5.8914, 'rougeL': 12.6896, 'rougeLsum': 12.5701}
+Epoch 7: {'rouge1': 13.3079, 'rouge2': 6.2994, 'rougeL': 13.1536, 'rougeLsum': 13.1194}
+Epoch 8: {'rouge1': 13.96, 'rouge2': 6.5998, 'rougeL': 13.9123, 'rougeLsum': 13.7744}
+Epoch 9: {'rouge1': 14.1192, 'rouge2': 7.0059, 'rougeL': 14.1172, 'rougeLsum': 13.9509}
+```
+
+Và thế đó! Khi bạn chạy nó, bạn sẽ có một mô hình và kết quả khá giống với những mô hình mà chúng ta thu được với `Trainer`.
+
+{/if}
+
+## Sử dụng mô hình tinh chỉnh của bạn
+
+Khi bạn đã đẩy mô hình vào Hub, bạn có thể chơi với nó thông qua tiện ích luận suy hoặc với đối tượng `pipeline`, như sau:
+
+```python
+from transformers import pipeline
+
+hub_model_id = "huggingface-course/mt5-small-finetuned-amazon-en-es"
+summarizer = pipeline("summarization", model=hub_model_id)
+```
+
+Chúng ta có thể cung cấp một số mẫu từ bộ kiểm thử (mà mô hình chưa thấy) vào pipeline để có cảm nhận về chất lượng của các bản tóm tắt. Trước tiên, hãy triển khai một chức năng đơn giản để hiển thị bài đánh giá, tiêu đề và bản tóm tắt đã tạo cùng nhau:
+
+```python
+def print_summary(idx):
+    review = books_dataset["test"][idx]["review_body"]
+    title = books_dataset["test"][idx]["review_title"]
+    summary = summarizer(books_dataset["test"][idx]["review_body"])[0]["summary_text"]
+    print(f"'>>> Review: {review}'")
+    print(f"\n'>>> Title: {title}'")
+    print(f"\n'>>> Summary: {summary}'")
+```
+
+Hãy xem một trong những mẫu tiếng Anh mà chúng ta nhận được:
+
+```python
+print_summary(100)
+```
+
+```python out
+'>>> Review: Nothing special at all about this product... the book is too small and stiff and hard to write in. The huge sticker on the back doesn’t come off and looks super tacky. I would not purchase this again. I could have just bought a journal from the dollar store and it would be basically the same thing. It’s also really expensive for what it is.'
+
+'>>> Title: Not impressed at all... buy something else'
+
+'>>> Summary: Nothing special at all about this product'
+```
+
+Điều này không quá tệ! Chúng ta có thể thấy rằng mô hình của mình đã thực sự có thể thực hiện tóm tắt _trừu tượng_ bằng cách tăng cường các phần của bài đánh giá bằng các từ mới. Và có lẽ khía cạnh thú vị nhất của mô hình của chúng ta là nó được sử dụng song ngữ, vì vậy ta cũng có thể tạo tóm tắt các bài đánh giá bằng tiếng Tây Ban Nha:
+
+```python
+print_summary(0)
+```
+
+```python out
+'>>> Review: Es una trilogia que se hace muy facil de leer. Me ha gustado, no me esperaba el final para nada'
+
+'>>> Title: Buena literatura para adolescentes'
+
+'>>> Summary: Muy facil de leer'
+```
+
+Bản tóm tắt được dịch thành "Very easy to read" trong tiếng Anh, mà chúng ta có thể thấy trong trường hợp này được trích trực tiếp từ đánh giá. Tuy nhiên, điều này cho thấy tính linh hoạt của mô hình mT5 và cho bạn biết cảm giác triển khai với kho ngữ liệu đa ngôn ngữ là như thế nào!
+
+Tiếp theo, chúng ta sẽ chuyển sự chú ý sang một tác vụ phức tạp hơn một chút: huấn luyện một mô hình ngôn ngữ từ đầu.

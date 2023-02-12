@@ -1,0 +1,947 @@
+<FrameworkSwitchCourse {fw} />
+
+# THuấn luyện một mô hình ngôn ngữ nhân quả từ đầu
+
+{#if fw === 'pt'}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {
+      label: "Google Colab",
+      value:
+        "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter7/section6_pt.ipynb",
+    },
+    {
+      label: "Aws Studio",
+      value:
+        "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter7/section6_pt.ipynb",
+    },
+  ]}
+/>
+
+{:else}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {
+      label: "Google Colab",
+      value:
+        "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter7/section6_tf.ipynb",
+    },
+    {
+      label: "Aws Studio",
+      value:
+        "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter7/section6_tf.ipynb",
+    },
+  ]}
+/>
+
+{/if}
+
+Cho đến thời điểm hiện tại, chúng ta chủ yếu sử dụng các mô hình được huấn luyện trước và tinh chỉnh chúng cho các trường hợp sử dụng mới bằng cách sử dụng lại các trọng số từ huấn luyện trước. Như chúng ta đã thấy trong [Chương 1](/course/chapter1), điều này thường được gọi là _transfer learning_ hay _học chuyển giao_, và đó là một chiến lược rất thành công để áp dụng các mô hình Transformer cho hầu hết các trường hợp sử dụng trong thế giới thực nơi dữ liệu được gắn nhãn là thưa thớt. Trong chương này, chúng ta sẽ thực hiện một cách tiếp cận khác và huấn luyện một mô hình hoàn toàn mới từ đầu. Đây là một cách tiếp cận tốt để thực hiện nếu bạn có nhiều dữ liệu và nó rất khác với dữ liệu huấn luyện trước được sử dụng cho các mô hình có sẵn. Tuy nhiên, nó cũng đòi hỏi nhiều tài nguyên máy tính hơn đáng kể để huấn luyện trước một mô hình ngôn ngữ hơn là chỉ để tinh chỉnh mô hình hiện có. Các ví dụ có thể có ý nghĩa khi huấn luyện một mô hình mới bao gồm các tập dữ liệu bao gồm các nốt nhạc, trình tự phân tử như DNA hoặc ngôn ngữ lập trình. Công cụ thứ hai gần đây đã đạt được sức hút nhờ các công cụ như TabNine và GitHub's Copilot, được hỗ trợ bởi mô hình Codex của OpenAI, có thể tạo ra các chuỗi mã dài. Tác vụ tạo văn bản này được giải quyết tốt nhất với các mô hình ngôn ngữ tự động hồi quy hoặc nhân quả như GPT-2.
+
+Trong phần này, chúng ta sẽ xây dựng một phiên bản thu nhỏ của mô hình tạo mã: chúng ta sẽ tập trung vào các hoàn thành một dòng thay vì các hàm hoặc lớp đầy đủ, sử dụng một tập hợp con mã Python. Khi làm việc với dữ liệu bằng Python, bạn thường xuyên tiếp xúc với bộ khoa học dữ liệu Python, bao gồm các thư viện `matplotlib`, `seaborn`, `pandas` và `scikit-learn`. Khi sử dụng chúng, thông thường cần phải tra cứu các lệnh cụ thể, vì vậy sẽ rất tuyệt nếu chúng ta có thể sử dụng một mô hình để hoàn thành các lệnh gọi này cho chúng ta.
+
+<Youtube id="Vpjb1lu0MDk" />
+
+Trong [Chương 6](/course/chapter6), chúng ta đã tạo một trình tokenize hiệu quả để xử lý mã nguồn Python, nhưng những gì chúng ta vẫn cần là một tập dữ liệu quy mô lớn để huấn luyện trước một mô hình. Ở đây, chúng ta sẽ áp dụng tokenizer cho một kho lưu trữ mã Python có nguồn gốc từ kho lưu trữ GitHub. Sau đó, chúng ta sẽ sử dụng API `Trainer` và 🤗 Accelerate để huấn luyện mô hình. Chúng ta hãy đi đến đó!
+
+<iframe
+  src="https://course-demos-codeparrot-ds.hf.space"
+  frameBorder="0"
+  height="300"
+  title="Gradio app"
+  class="block dark:hidden container p-0 flex-grow space-iframe"
+  allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking"
+  sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"
+></iframe>
+
+Đây thực sự cách mô hình đã được huấn luyện và tải lên Hub bằng cách sử dụng mã được hiển thị trong phần này. Bạn có thể tìm thấy nó [tại đây](https://huggingface.co/huggingface-course/codeparrot-ds?text=plt.imshow%28). Lưu ý rằng vì có một số ngẫu nhiên xảy ra trong quá trình tạo văn bản, bạn có thể sẽ nhận được một kết quả hơi khác.
+
+## Thu thập dữ liệu
+
+Mã Python có sẵn rất nhiều từ các kho mã như GitHub, mà chúng ta có thể sử dụng để tạo tập dữ liệu bằng cách đào mọi kho lưu trữ Python. Đây là phương pháp được thực hiện trong [sách giáo khoa về Transformers](https://learning.oreilly.com/library/view/natural-language-processing/9781098103231/) để huấn luyện trước một mô hình GPT-2 lớn. Sử dụng kết xuất GitHub khoảng 180 GB chứa khoảng 20 triệu tệp Python có tên là `codeparrot`, các tác giả đã xây dựng một tập dữ liệu mà sau đó họ chia sẻ trên [Hugging Face Hub](https://huggingface.co/datasets/transformersbook/codeparrot) .
+
+Tuy nhiên, việc huấn luyện trên toàn bộ ngữ liệu này tốn nhiều thời gian và tính toán, và chúng ta chỉ cần tập con của tập dữ liệu liên quan đến ngăn xếp khoa học dữ liệu Python. Vì vậy, hãy bắt đầu bằng cách lọc tập dữ liệu `codeparrot` cho tất cả các tệp bao gồm bất kỳ thư viện nào trong ngăn xếp này. Do kích thước của tập dữ liệu, chúng ta muốn tránh tải nó xuống; thay vào đó, ta sẽ sử dụng tính năng phát trực tuyến để lọc nó một cách nhanh chóng. Để giúp chúng ta lọc các mẫu mã bằng cách sử dụng các thư viện đã đề cập trước đó, ta sẽ sử dụng hàm sau:
+
+```py
+def any_keyword_in_string(string, keywords):
+    for keyword in keywords:
+        if keyword in string:
+            return True
+    return False
+```
+
+Hãy kiểm tra nó trên hai ví dụ:
+
+```py
+filters = ["pandas", "sklearn", "matplotlib", "seaborn"]
+example_1 = "import numpy as np"
+example_2 = "import pandas as pd"
+
+print(
+    any_keyword_in_string(example_1, filters), any_keyword_in_string(example_2, filters)
+)
+```
+
+```python out
+False True
+```
+
+Chúng ta có thể sử dụng điều này để tạo một hàm sẽ truyền trực tuyến tập dữ liệu và lọc các phần tử ta muốn:
+
+```py
+from collections import defaultdict
+from tqdm import tqdm
+from datasets import Dataset
+
+
+def filter_streaming_dataset(dataset, filters):
+    filtered_dict = defaultdict(list)
+    total = 0
+    for sample in tqdm(iter(dataset)):
+        total += 1
+        if any_keyword_in_string(sample["content"], filters):
+            for k, v in sample.items():
+                filtered_dict[k].append(v)
+    print(f"{len(filtered_dict['content'])/total:.2%} of data after filtering.")
+    return Dataset.from_dict(filtered_dict)
+```
+
+Sau đó, chúng ta có thể chỉ cần áp dụng chức năng này cho tập dữ liệu phát trực tuyến:
+
+```py
+# Ô này sẽ mất rất nhiều thời gian để thực thi, vì vậy bạn nên bỏ qua và chuyển đến
+# cái tiếp theo!
+from datasets import load_dataset
+
+split = "train"  # "valid"
+filters = ["pandas", "sklearn", "matplotlib", "seaborn"]
+
+data = load_dataset(f"transformersbook/codeparrot-{split}", split=split, streaming=True)
+filtered_data = filter_streaming_dataset(data, filters)
+```
+
+```python out
+3.26% of data after filtering.
+```
+
+Điều này để lại cho chúng ta khoảng 3% tập dữ liệu ban đầu, vẫn còn khá lớn - tập dữ liệu kết quả là 6GB và bao gồm 600,000 tập lệnh Python!
+
+Việc lọc toàn bộ tập dữ liệu có thể mất 2-3 giờ tùy thuộc vào máy và băng thông của bạn. Nếu bạn không muốn tự mình trải qua quá trình kéo dài này, chúng ta cung cấp tập dữ liệu đã lọc trên Hub để bạn tải xuống:
+
+```py
+from datasets import load_dataset, DatasetDict
+
+ds_train = load_dataset("huggingface-course/codeparrot-ds-train", split="train")
+ds_valid = load_dataset("huggingface-course/codeparrot-ds-valid", split="validation")
+
+raw_datasets = DatasetDict(
+    {
+        "train": ds_train,  # .shuffle().select(range(50000)),
+        "valid": ds_valid,  # .shuffle().select(range(500))
+    }
+)
+
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['repo_name', 'path', 'copies', 'size', 'content', 'license'],
+        num_rows: 606720
+    })
+    valid: Dataset({
+        features: ['repo_name', 'path', 'copies', 'size', 'content', 'license'],
+        num_rows: 3322
+    })
+})
+```
+
+<Tip>
+
+Việc huấn luyện trước mô hình ngôn ngữ sẽ mất một lúc. Chúng tôi khuyên bạn trước tiên nên chạy vòng lặp huấn luyện trên một mẫu dữ liệu bằng cách bỏ chú thích hai dòng một phần ở trên và đảm bảo rằng quá trình huấn luyện hoàn tất thành công và các mô hình được lưu trữ. Không có gì khó chịu hơn là một lần chạy huấn luyện không thành công ở bước cuối cùng vì bạn quên tạo một thư mục hoặc vì có lỗi đánh máy ở cuối vòng lặp huấn luyện!
+
+</Tip>
+
+Hãy xem một ví dụ từ tập dữ liệu. Chúng ta sẽ chỉ hiển thị 200 ký tự đầu tiên của mỗi trường:
+
+```py
+for key in raw_datasets["train"][0]:
+    print(f"{key.upper()}: {raw_datasets['train'][0][key][:200]}")
+```
+
+```python out
+'REPO_NAME: kmike/scikit-learn'
+'PATH: sklearn/utils/__init__.py'
+'COPIES: 3'
+'SIZE: 10094'
+'''CONTENT: """
+The :mod:`sklearn.utils` module includes various utilites.
+"""
+
+from collections import Sequence
+
+import numpy as np
+from scipy.sparse import issparse
+import warnings
+
+from .murmurhash import murm
+LICENSE: bsd-3-clause'''
+```
+
+Chúng ta có thể thấy rằng trường `content` chứa mã mà chúng ta muốn mô hình của mình huấn luyện. Bây giờ chúng ta đã có một tập dữ liệu, chúng ta cần chuẩn bị các văn bản để chúng có định dạng phù hợp để huấn luyện trước.
+
+## Chuẩn bị tập dữ liệu
+
+<Youtube id="ma1TrR7gE7I" />
+
+Bước đầu tiên sẽ là tokenize dữ liệu để chúng ta có thể sử dụng nó để huấn luyện. Vì mục tiêu của chúng ta chủ yếu là tự động hoàn thành các lệnh gọi hàm ngắn, chúng ta có thể giữ kích thước ngữ cảnh tương đối nhỏ. Điều này có lợi ích là chúng ta có thể huấn luyện mô hình nhanh hơn nhiều và nó cần ít bộ nhớ hơn đáng kể. Nếu điều quan trọng là ứng dụng của bạn phải có nhiều ngữ cảnh hơn (ví dụ: nếu bạn muốn mô hình viết các bài kiểm tra đơn vị dựa trên tệp có định nghĩa hàm), hãy đảm bảo bạn tăng con số đó, nhưng cũng lưu ý rằng điều này đi kèm với bộ nhớ GPU lớn hơn. Hiện tại, hãy sửa kích thước ngữ cảnh ở 128 token, trái ngược với 1,024 hoặc 2,048 được sử dụng trong GPT-2 hoặc GPT-3, tương ứng.
+
+Hầu hết các tài liệu chứa nhiều hơn 128 token, vì vậy chỉ cần cắt bớt đầu vào đến độ dài tối đa sẽ loại bỏ một phần lớn tập dữ liệu của mình. Thay vào đó, chúng ta sẽ sử dụng tùy chọn `return_overflowing_tokens` để token toàn bộ đầu vào và chia nó thành nhiều phần, như chúng ta đã làm trong [Chương 6](/course/chapter6/4). Chúng ta cũng sẽ sử dụng tùy chọn `return_length` để tự động trả về độ dài của mỗi đoạn được tạo. Thường thì phần cuối cùng sẽ nhỏ hơn kích thước ngữ cảnh và chúng ta sẽ loại bỏ những phần này để tránh các vấn đề về phần đệm; chúng ta không thực sự cần chúng vì dù sao chúng ta cũng có nhiều dữ liệu.
+
+<div class="flex justify-center">
+  <img
+    class="block dark:hidden"
+    src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts.svg"
+    alt="Chunking a large texts in several pieces."
+  />
+  <img
+    class="hidden dark:block"
+    src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts-dark.svg"
+    alt="Chunking a large texts in several pieces."
+  />
+</div>
+
+Hãy xem chính xác cách thức hoạt động của điều này bằng cách xem hai ví dụ đầu tiên:
+
+```py
+from transformers import AutoTokenizer
+
+context_length = 128
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+
+outputs = tokenizer(
+    raw_datasets["train"][:2]["content"],
+    truncation=True,
+    max_length=context_length,
+    return_overflowing_tokens=True,
+    return_length=True,
+)
+
+print(f"Input IDs length: {len(outputs['input_ids'])}")
+print(f"Input chunk lengths: {(outputs['length'])}")
+print(f"Chunk mapping: {outputs['overflow_to_sample_mapping']}")
+```
+
+```python out
+Input IDs length: 34
+Input chunk lengths: [128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 117, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 41]
+Chunk mapping: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+Chúng ta có thể thấy rằng chúng ta nhận được tổng cộng 34 phân đoạn từ hai ví dụ đó. Nhìn vào độ dài phân đoạn, chúng ta có thể thấy rằng các đoạn ở cuối cả hai tài liệu có ít hơn 128 token (tương ứng là 117 và 41). Chúng chỉ đại diện cho một phần nhỏ trong tổng số các khối mà chúng ta có, vì vậy chúng ta có thể vứt chúng đi một cách an toàn. Với trường `overflow_to_sample_mapping`, chúng ta cũng có thể tạo lại các phần thuộc về mẫu đầu vào nào.
+
+Với thao tác này, chúng ta đang sử dụng một tính năng tiện dụng của hàm `Dataset.map()` trong 🤗 Datasets, đó là nó không yêu cầu ánh xạ 1-1; như chúng ta đã thấy trong [phần 3](/course/chapter7/3), chúng ta có thể tạo các lô có nhiều phần tử hơn hoặc ít hơn lô đầu vào. Điều này rất hữu ích khi thực hiện các hoạt động như tăng dữ liệu hoặc lọc dữ liệu làm thay đổi số lượng phần tử. Trong trường hợp của chúng ta, khi tokenize mỗi phần tử thành các phần có kích thước ngữ cảnh được chỉ định, chúng ta tạo nhiều mẫu từ mỗi tài liệu. Chúng ta chỉ cần đảm bảo xóa các cột hiện có, vì chúng có kích thước xung đột. Nếu chúng ta muốn giữ chúng, chúng ta có thể lặp lại chúng một cách thích hợp và trả lại chúng trong lệnh gọi `Dataset.map()`:
+
+```py
+def tokenize(element):
+    outputs = tokenizer(
+        element["content"],
+        truncation=True,
+        max_length=context_length,
+        return_overflowing_tokens=True,
+        return_length=True,
+    )
+    input_batch = []
+    for length, input_ids in zip(outputs["length"], outputs["input_ids"]):
+        if length == context_length:
+            input_batch.append(input_ids)
+    return {"input_ids": input_batch}
+
+
+tokenized_datasets = raw_datasets.map(
+    tokenize, batched=True, remove_columns=raw_datasets["train"].column_names
+)
+tokenized_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['input_ids'],
+        num_rows: 16702061
+    })
+    valid: Dataset({
+        features: ['input_ids'],
+        num_rows: 93164
+    })
+})
+```
+
+Hiện chúng ta có 16,7 triệu ví dụ với 128 token mỗi ví dụ, tương ứng với tổng cộng khoảng 2,1 tỷ token. Để tham khảo, các mô hình GPT-3 và Codex của OpenAI được huấn luyện trên 300 và 100 tỷ token tương ứng, trong đó các mô hình Codex được khởi tạo từ các checkpoint GPT-3. Mục tiêu của chúng ta trong phần này không phải là cạnh tranh với các mô hình này, có thể tạo ra các văn bản dài, mạch lạc, mà là tạo ra một phiên bản thu nhỏ cung cấp chức năng tự động hoàn thành nhanh chóng cho các nhà khoa học dữ liệu.
+
+Bây giờ chúng ta đã có tập dữ liệu sẵn sàng, hãy thiết lập mô hình!
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Loại bỏ tất cả các phần nhỏ hơn kích thước ngữ cảnh không phải là vấn đề lớn ở đây vì chúng ta đang sử dụng các cửa sổ ngữ cảnh nhỏ. Khi bạn tăng kích thước ngữ cảnh (hoặc nếu bạn có một kho tài liệu ngắn), phần nhỏ các phần bị vứt bỏ cũng sẽ tăng lên. Một cách hiệu quả hơn để chuẩn bị dữ liệu là kết hợp tất cả các mẫu được tokenize trong một lô với token `eos_token_id` ở giữa, và sau đó thực hiện phân đoạn trên các chuỗi được nối. Như một bài tập, hãy sửa đổi hàm `tokenize()` để sử dụng cách tiếp cận đó. Lưu ý rằng bạn sẽ muốn đặt `truncation=False` và xóa các tham số khác khỏi tokenizer để nhận được chuỗi đầy đủ của token ID.
+
+</Tip>
+
+## Khởi tạo mô hình mới
+
+Bước đầu tiên của chúng ta là khởi chạy mới mô hình GPT-2. Chúng ta sẽ sử dụng cùng một cấu hình cho mô hình của mình như cho mô hình GPT-2 nhỏ, vì vậy chúng ta tải cấu hình định sẵn, đảm bảo rằng kích thước tokenizer khớp với kích thước từ vựng của mô hình và chuyển `bos` và `eos` (bắt đầu và cuối chuỗi) token ID:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, GPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+```
+
+Với cấu hình đó, chúng ta có thể tải một mô hình mới. Lưu ý rằng đây là lần đầu tiên chúng ta không sử dụng hàm `from_pretrained()`, vì chúng ta thực sự đang khởi tạo một mô hình của chính chúng ta:
+
+```py
+model = GPT2LMHeadModel(config)
+model_size = sum(t.numel() for t in model.parameters())
+print(f"GPT-2 size: {model_size/1000**2:.1f}M parameters")
+```
+
+```python out
+GPT-2 size: 124.2M parameters
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFGPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+```
+
+Với cấu hình đó, chúng ta có thể tải một mô hình mới. Lưu ý rằng đây là lần đầu tiên chúng ta không sử dụng hàm `from_pretrained()`, vì chúng ta thực sự đang khởi tạo một mô hình của chính chúng ta:
+
+```py
+model = TFGPT2LMHeadModel(config)
+model(model.dummy_inputs)  # Xây mô hình
+model.summary()
+```
+
+```python out
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #
+=================================================================
+transformer (TFGPT2MainLayer multiple                  124242432
+=================================================================
+Total params: 124,242,432
+Trainable params: 124,242,432
+Non-trainable params: 0
+_________________________________________________________________
+```
+
+{/if}
+
+Mô hình của chúng ta có 124 triệu thông số mà ta sẽ phải điều chỉnh. Trước khi có thể bắt đầu huấn luyện, chúng ta cần thiết lập một bộ đối chiếu dữ liệu sẽ đảm nhận việc tạo các lô. Chúng ta có thể sử dụng trình cắt ghép `DataCollatorForLanguageModeling`, được thiết kế đặc biệt cho mô hình ngôn ngữ (như tên gọi gợi ý một cách tinh tế). Bên cạnh việc xếp chồng và đệm các lô, nó cũng đảm nhận việc tạo các nhãn của mô hình ngôn ngữ - trong mô hình ngôn ngữ nhân quả, các đầu vào cũng đóng vai trò là nhãn (chỉ được dịch chuyển bởi một phần tử) và trình đối chiếu dữ liệu này tạo chúng nhanh chóng trong quá trình huấn luyện, vì vậy chúng tôi ta không cần sao chép `input_ids`.
+
+Lưu ý rằng `DataCollatorForLanguageModeling` hỗ trợ cả mô hình hóa ngôn ngữ bị ẩn đi (MLM) và mô hình ngôn ngữ nhân quả (CLM). Theo mặc định, nó chuẩn bị dữ liệu cho MLM, nhưng chúng ta có thể chuyển sang CLM bằng cách đặt đối số `mlm=False`:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False, return_tensors="tf")
+```
+
+{/if}
+
+Hãy xem một ví dụ:
+
+```py
+out = data_collator([tokenized_datasets["train"][i] for i in range(5)])
+for key in out:
+    print(f"{key} shape: {out[key].shape}")
+```
+
+{#if fw === 'pt'}
+
+```python out
+input_ids shape: torch.Size([5, 128])
+attention_mask shape: torch.Size([5, 128])
+labels shape: torch.Size([5, 128])
+```
+
+{:else}
+
+```python out
+input_ids shape: (5, 128)
+attention_mask shape: (5, 128)
+labels shape: (5, 128)
+```
+
+{/if}
+
+Chúng ta có thể thấy rằng các ví dụ đã được xếp chồng lên nhau và tất cả các tensor có cùng hình dạng.
+
+{#if fw === 'tf'}
+
+Bây giờ chúng ta có thể sử dụng phương thức `to_tf_dataset()` để chuyển đổi tập dữ liệu của mình thành tập dữ liệu TensorFlow bằng công cụ đối chiếu dữ liệu đã tạo ở trên:
+
+```python
+tf_train_dataset = tokenized_dataset["train"].to_tf_dataset(
+    columns=["input_ids", "attention_mask", "labels"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=32,
+)
+tf_eval_dataset = tokenized_dataset["valid"].to_tf_dataset(
+    columns=["input_ids", "attention_mask", "labels"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=32,
+)
+```
+
+{/if}
+
+<Tip warning={true}>
+
+⚠️ Việc dịch chuyển các đầu vào và nhãn để căn chỉnh chúng xảy ra bên trong mô hình, do đó, bộ đối chiếu dữ liệu chỉ cần sao chép các đầu vào để tạo nhãn.
+
+</Tip>
+
+Bây giờ chúng ta có mọi thứ để thực sự huấn luyện mô hình của mình - đó không phải là quá nhiều công việc! Trước khi bắt đầu luyện tập, chúng ta nên đăng nhập vào Hugging Face. Nếu bạn đang làm việc trong notebook, bạn có thể làm như vậy với hàm tiện ích sau:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+Thao tác này sẽ hiển thị một tiện ích mà bạn có thể nhập thông tin đăng nhập Hugging Face của mình.
+
+Nếu bạn không làm việc trong notebook, chỉ cần nhập dòng sau vào thiết bị đầu cuối của bạn:
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+Tất cả những gì còn lại cần làm là cấu hình các tham số huấn luyện và kích hoạt `Trainer`. Chúng ta sẽ sử dụng lịch trình tốc độ học cosine với một số lần khởi động và kích thước lô hiệu quả là 256 (`per_device_train_batch_size` \* `gradient_accumulation_steps`). Tích lũy gradient được sử dụng khi một loạt lô duy nhất không vừa với bộ nhớ và dần dần tích lũy gradient thông qua một số lần truyền xuôi/ngược. Chúng ta sẽ thấy điều này hoạt động khi chúng ta tạo vòng huấn luyện với 🤗 Accelerate.
+
+```py
+from transformers import Trainer, TrainingArguments
+
+args = TrainingArguments(
+    output_dir="codeparrot-ds",
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=32,
+    evaluation_strategy="steps",
+    eval_steps=5_000,
+    logging_steps=5_000,
+    gradient_accumulation_steps=8,
+    num_train_epochs=1,
+    weight_decay=0.1,
+    warmup_steps=1_000,
+    lr_scheduler_type="cosine",
+    learning_rate=5e-4,
+    save_steps=5_000,
+    fp16=True,
+    push_to_hub=True,
+)
+
+trainer = Trainer(
+    model=model,
+    tokenizer=tokenizer,
+    args=args,
+    data_collator=data_collator,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["valid"],
+)
+```
+
+Bây giờ chúng ta có thể khởi động `Trainer` và đợi quá trình huấn luyện kết thúc. Tùy thuộc vào việc bạn chạy nó trên toàn bộ hay một tập hợp con của bộ huấn luyện, tương ứng sẽ mất 20 hoặc 2 giờ, vì vậy hãy lấy một ít cà phê và một cuốn sách hay để đọc!
+
+```py
+trainer.train()
+```
+
+Sau khi quá trình huấn luyện hoàn tất, chúng ta có thể đẩy mô hình và trình tokenizer vào Hub:
+
+```py
+trainer.push_to_hub()
+```
+
+{:else}
+
+Tất cả những gì còn lại cần làm là định cấu hình các siêu tham số huấn luyện và gọi `compile()`và `fit()`. Chúng ta sẽ sử dụng lịch trình tốc độ học với một số khởi động để cải thiện tính ổn định của quá trình huấn luyện:
+
+```py
+from transformers import create_optimizer
+import tensorflow as tf
+
+num_train_steps = len(tf_train_dataset)
+optimizer, schedule = create_optimizer(
+    init_lr=5e-5,
+    num_warmup_steps=1_000,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Huấn luyện trong mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+Bây giờ chúng ta có thể gọi `model.fit()` và đợi quá trình huấn luyện kết thúc. Tùy thuộc vào việc bạn chạy nó trên toàn bộ hay một tập hợp con của bộ huấn luyện, tương ứng sẽ mất 20 hoặc 2 giờ, vì vậy hãy lấy một ít cà phê và một cuốn sách hay để đọc! Sau khi huấn luyện xong, chúng ta có thể đẩy mô hình và trình tokenize vào Hub:
+
+```py
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(output_dir="codeparrot-ds", tokenizer=tokenizer)
+
+model.fit(tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback])
+```
+
+{/if}
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Chỉ mất khoảng 30 dòng mã ngoài `TrainingArguments` để từ văn bản thô đến huấn luyện GPT-2. Hãy dùng thử với tập dữ liệu của riêng bạn và xem liệu bạn có thể đạt được kết quả tốt hay không!
+
+</Tip>
+
+<Tip>
+
+{#if fw === 'pt'}
+
+💡 Nếu bạn có quyền truy cập vào một máy có nhiều GPU, hãy thử chạy mã ở đó. `Trainer` tự động quản lý nhiều máy và điều này có thể tăng tốc quá trình huấn luyện lên rất nhiều.
+
+{:else}
+
+💡 Nếu bạn có quyền truy cập vào một máy có nhiều GPU, bạn có thể thử sử dụng ngữ cảnh `MirroredStrategy` để tăng tốc đáng kể cho quá trình huấn luyện. Bạn sẽ cần tạo một đối tượng `tf.distribute.MirroredStrategy` và đảm bảo rằng các lệnh `to_tf_dataset` cũng như tạo mô hình và lệnh gọi đến `fit()` đều được chạy trong ngữ cảnh `scope()` của nó. Bạn có thể xem tài liệu về điều này [tại đây](https://www.tensorflow.org/guide/distributed_training#use_tfdistributestrategy_with_keras_modelfit).
+
+{/if}
+
+</Tip>
+
+## Tạo mã với một pipeline
+
+Bây giờ là thời điểm của sự thật: chúng ta hãy xem mô hình được huấn luyện thực sự hoạt động tốt như thế nào! Chúng ta có thể thấy trong nhật ký rằng mất mát đã giảm đều đặn, nhưng để đưa mô hình vào thử nghiệm, chúng ta hãy xem nó hoạt động tốt như thế nào trên một số lời nhắc. Để làm điều đó, chúng ta sẽ bao bọc mô hình trong một `pipeline` tạo văn bản và chúng ta sẽ đưa nó vào GPU cho các thế hệ nhanh nếu có sẵn:
+
+{#if fw === 'pt'}
+
+```py
+import torch
+from transformers import pipeline
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+pipe = pipeline(
+    "text-generation", model="huggingface-course/codeparrot-ds", device=device
+)
+```
+
+{:else}
+
+```py
+from transformers import pipeline
+
+course_model = TFGPT2LMHeadModel.from_pretrained("huggingface-course/codeparrot-ds")
+course_tokenizer = AutoTokenizer.from_pretrained("huggingface-course/codeparrot-ds")
+pipe = pipeline(
+    "text-generation", model=course_model, tokenizer=course_tokenizer, device=0
+)
+```
+
+{/if}
+
+Hãy bắt đầu với tác vụ đơn giản là tạo một biểu đồ phân tán:
+
+```py
+txt = """\
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create scatter plot with x, y
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create scatter plot with x, y
+plt.scatter(x, y)
+
+# create scatter
+```
+
+Kết quả có vẻ chính xác. Nó cũng hoạt động với `pandas`? Hãy xem liệu chúng ta có thể tạo một `DataFrame` từ hai mảng không:
+
+```py
+txt = """\
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create dataframe from x and y
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create dataframe from x and y
+df = pd.DataFrame({'x': x, 'y': y})
+df.insert(0,'x', x)
+for
+```
+
+Thật tuyệt, đó là câu trả lời chính xác - mặc dù sau đó nó lại chèn thêm cột `x`. Vì số lượng token được tạo có giới hạn, vòng lặp `for` sau đây sẽ bị cắt. Hãy xem liệu chúng ta có thể làm điều gì đó phức tạp hơn một chút và để mô hình giúp chúng ta sử dụng hoạt động `groupby`:
+
+```py
+txt = """\
+# dataframe with profession, income and name
+df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
+
+# calculate the mean income per profession
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# dataframe with profession, income and name
+df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
+
+# calculate the mean income per profession
+profession = df.groupby(['profession']).mean()
+
+# compute the
+```
+
+Không tệ; đó là cách làm đúng. Cuối cùng, hãy xem liệu chúng ta có thể sử dụng nó cho `scikit-learn` và thiết lập mô hình Random Forest hay không:
+
+```py
+txt = """
+# import random forest regressor from scikit-learn
+from sklearn.ensemble import RandomForestRegressor
+
+# fit random forest model with 300 estimators on X, y:
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# import random forest regressor from scikit-learn
+from sklearn.ensemble import RandomForestRegressor
+
+# fit random forest model with 300 estimators on X, y:
+rf = RandomForestRegressor(n_estimators=300, random_state=random_state, max_depth=3)
+rf.fit(X, y)
+rf
+```
+
+{#if fw === 'tf'}
+
+Nhìn vào một vài ví dụ này, có vẻ như mô hình đã học được một số cú pháp của bộ khoa học dữ liệu Python. Tất nhiên, chúng ta sẽ cần phải đánh giá mô hình kỹ lưỡng hơn trước khi triển khai nó trong thế giới thực, nhưng đây vẫn là một nguyên mẫu ấn tượng.
+
+{:else}
+
+Nhìn vào một vài ví dụ này, có vẻ như mô hình đã học được một số cú pháp của bộ khoa học dữ liệu Python (tất nhiên, chúng tôi sẽ cần đánh giá kỹ lưỡng hơn trước khi triển khai mô hình trong thế giới thực). Tuy nhiên, đôi khi nó đòi hỏi phải tùy chỉnh nhiều hơn việc huấn luyện mô hình để đạt được hiệu suất cần thiết cho một trường hợp sử dụng nhất định. Ví dụ: điều gì sẽ xảy ra nếu chúng ta muốn cập nhật động kích thước lô hoặc có một vòng lặp huấn luyện có điều kiện để bỏ qua các ví dụ xấu một cách nhanh chóng? Một tùy chọn sẽ là phân lớp `Trainer` và thêm các thay đổi cần thiết, nhưng đôi khi việc viết vòng lặp huấn luyện từ đầu sẽ đơn giản hơn. Đó là lúc 🤗 Accelerate xuất hiện.
+
+{/if}
+
+{#if fw === 'pt'}
+
+## Huấn luyện với 🤗 Accelerate
+
+Chúng ta đã thấy cách huấn luyện một mô hình với `Trainer`, có thể cho phép một số tùy chỉnh. Tuy nhiên, đôi khi chúng ta muốn toàn quyền kiểm soát vòng lặp huấn luyện hoặc chúng ta muốn thực hiện một số thay đổi kỳ lạ. Trong trường hợp này 🤗 Accelerate là một lựa chọn tuyệt vời và trong phần này, chúng ta sẽ xem xét các bước sử dụng nó để huấn luyện mô hình của mình. Để làm cho mọi thứ thú vị hơn, chúng ta cũng sẽ thêm một số điều chỉnh vào vòng lặp huấn luyện.
+
+<Youtube id="Hm8_PgVTFuc" />
+
+Vì chúng ta chủ yếu quan tâm đến tính năng tự động hoàn thành hợp lý cho các thư viện khoa học dữ liệu, nên việc đưa ra nhiều trọng số hơn cho các mẫu huấn luyện sử dụng nhiều hơn các thư viện này. Chúng ta có thể dễ dàng xác định những ví dụ này thông qua việc sử dụng các từ khóa như `plt`, `pd`, `sk`, `fit` và `predict`, là những tên nhập thường gặp nhất cho `matplotlib.pyplot`, `pandas`, và `sklearn` cũng như các hành vi sau đó. Nếu chúng được biểu diễn dưới dạng một token duy nhất, chúng ta có thể dễ dàng kiểm tra xem chúng có xuất hiện trong chuỗi đầu vào hay không. Các token có thể có tiền tố khoảng trắng, vì vậy chúng ta cũng sẽ kiểm tra các phiên bản đó trong từ vựng bộ tokenizer. Để xác minh rằng nó hoạt động, chúng ta sẽ thêm một token kiểm thử sẽ được chia thành nhiều token:
+
+```py
+keytoken_ids = []
+for keyword in [
+    "plt",
+    "pd",
+    "sk",
+    "fit",
+    "predict",
+    " plt",
+    " pd",
+    " sk",
+    " fit",
+    " predict",
+    "testtest",
+]:
+    ids = tokenizer([keyword]).input_ids[0]
+    if len(ids) == 1:
+        keytoken_ids.append(ids[0])
+    else:
+        print(f"Keyword has not single token: {keyword}")
+```
+
+```python out
+'Keyword has not single token: testtest'
+```
+
+Tuyệt vời, điều đó có vẻ hoạt động tốt! Bây giờ chúng ta có thể viết một hàm mất mát tùy chỉnh lấy chuỗi đầu vào, logits và token khóa mà chúng ta vừa chọn làm đầu vào. Trước tiên, chúng ta cần căn chỉnh logits và đầu vào: chuỗi đầu vào được dịch chuyển một đơn vị sang bên phải tạo thành các nhãn, vì token tiếp theo là nhãn cho token hiện tại. Chúng ta có thể đạt được điều này bằng cách bắt đầu các nhãn từ token thứ hai của chuỗi đầu vào, vì dù sao thì mô hình cũng không đưa ra dự đoán cho token đầu tiên. Sau đó, chúng ta cắt logit cuối cùng, vì chúng ta không có nhãn cho token theo trình tự đầu vào đầy đủ. Nhờ đó, chúng ta có thể tính toán sự mất mát trên mỗi mẫu và đếm số lần xuất hiện của tất cả các từ khóa trong mỗi mẫu. Cuối cùng, chúng ta tính giá trị trung bình có trọng số trên tất cả các mẫu bằng cách sử dụng các lần xuất hiện dưới dạng trọng số. Vì chúng ta không muốn loại bỏ tất cả các mẫu không có từ khóa, chúng ta thêm 1 vào các trọng số:
+
+```py
+from torch.nn import CrossEntropyLoss
+import torch
+
+
+def keytoken_weighted_loss(inputs, logits, keytoken_ids, alpha=1.0):
+    # Dịch chuyển để token < n dự đoán n
+    shift_labels = inputs[..., 1:].contiguous()
+    shift_logits = logits[..., :-1, :].contiguous()
+    # Tính độ mất mát từng token
+    loss_fct = CrossEntropyLoss(reduce=False)
+    loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+    # Thay đổi kích thước và mất mát trung bình trên mỗi mẫu
+    loss_per_sample = loss.view(shift_logits.size(0), shift_logits.size(1)).mean(axis=1)
+    # Tính toán và chia tỷ trọng
+    weights = torch.stack([(inputs == kt).float() for kt in keytoken_ids]).sum(
+        axis=[0, 2]
+    )
+    weights = alpha * (1.0 + weights)
+    # Tính giá trị trung bình có trọng số
+    weighted_loss = (loss_per_sample * weights).mean()
+    return weighted_loss
+```
+
+Trước khi có thể bắt đầu huấn luyện với hàm mất mát mới tuyệt vời này, chúng ta cần chuẩn bị một số thứ:
+
+- Chúng ta cần bộ ghi dữ liệu để tải dữ liệu theo lô.
+- Chúng ta cần thiết lập các thông số phân rã trọng số.
+- Theo thời gian, chúng ta muốn đánh giá, vì vậy sẽ hợp lý khi bao mã đánh giá trong một hàm.
+
+Hãy bắt đầu với bộ dữ liệu. Chúng ta chỉ cần đặt định dạng của tập dữ liệu thành `"torch"`, và sau đó có thể chuyển nó đến PyTorch `DataLoader` với kích thước lô thích hợp:
+
+```py
+from torch.utils.data.dataloader import DataLoader
+
+tokenized_dataset.set_format("torch")
+train_dataloader = DataLoader(tokenized_dataset["train"], batch_size=32, shuffle=True)
+eval_dataloader = DataLoader(tokenized_dataset["valid"], batch_size=32)
+```
+
+Tiếp theo, chúng ta nhóm các tham số để trình tối ưu hóa biết những thông số nào sẽ bị giảm trọng số bổ sung. Thông thường, tất cả các điều khoản thiên vị và trọng số LayerNorm đều được miễn trừ; đây là cách chúng ta có thể làm điều này:
+
+```py
+weight_decay = 0.1
+
+
+def get_grouped_params(model, no_decay=["bias", "LayerNorm.weight"]):
+    params_with_wd, params_without_wd = [], []
+    for n, p in model.named_parameters():
+        if any(nd in n for nd in no_decay):
+            params_without_wd.append(p)
+        else:
+            params_with_wd.append(p)
+    return [
+        {"params": params_with_wd, "weight_decay": weight_decay},
+        {"params": params_without_wd, "weight_decay": 0.0},
+    ]
+```
+
+Vì chúng ta muốn đánh giá mô hình thường xuyên trên bộ xác nhận trong quá trình huấn luyện, chúng ta hãy viết một hàm cho điều đó. Nó chỉ chạy qua bộ dữ liệu đánh giá và tập hợp tất cả các mất mát qua các quy trình:
+
+```py
+def evaluate():
+    model.eval()
+    losses = []
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(batch["input_ids"], labels=batch["input_ids"])
+
+        losses.append(accelerator.gather(outputs.loss))
+    loss = torch.mean(torch.cat(losses))
+    try:
+        perplexity = torch.exp(loss)
+    except OverflowError:
+        perplexity = float("inf")
+    return loss.item(), perplexity.item()
+```
+
+Với hàm `evaluate()`, chúng ta có thể báo cáo mất mát và [perplexity](/course/chapter7/3) theo khoảng thời gian đều đặn. Tiếp theo, chúng ta xác định lại mô hình của mình để đảm bảo chúng ta huấn luyện lại từ đầu:
+
+```py
+model = GPT2LMHeadModel(config)
+```
+
+Sau đó, chúng ta có thể xác định trình tối ưu hóa của mình, sử dụng hàm từ trước để phân chia các tham số cho phân rã trọng số:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(get_grouped_params(model), lr=5e-4)
+```
+
+Bây giờ, hãy chuẩn bị mô hình, trình tối ưu hóa và bộ ghi dữ liệu để chúng ta có thể bắt đầu huấn luyện:
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator(fp16=True)
+
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+<Tip>
+
+🚨 Nếu bạn đang huấn luyện trên TPU, bạn sẽ cần chuyển tất cả mã bắt đầu từ ô ở trên vào một hàm huấn luyện chuyên dụng. Xem [Chapter 3](/course/chapter3) để biết thêm chi tiết.
+
+</Tip>
+
+Bây giờ, chúng ta đã gửi `train_dataloader` của mình tới `accelerator.prepare()`, chúng ta có thể sử dụng độ dài của nó để tính số bước huấn luyện. Hãy nhớ rằng chúng ta phải luôn làm điều này sau khi chuẩn bị dataloader, vì phương thức đó sẽ thay đổi độ dài của nó. Chúng ta sử dụng một lịch trình tuyến tính cổ điển từ tốc độ học đến 0:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 1
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    name="linear",
+    optimizer=optimizer,
+    num_warmup_steps=1_000,
+    num_training_steps=num_training_steps,
+)
+```
+
+Cuối cùng, để đẩy mô hình lên Hub, chúng ta sẽ cần tạo một đối tượng `Repository` trong một thư mục đang làm việc. Trước tiên, hãy đăng nhập vào Hugging Face Hub, nếu bạn chưa đăng nhập. Chúng ta sẽ xác định tên kho lưu trữ từ ID mô hình mà ta muốn cung cấp cho mô hình của mình (vui lòng thay thế `repo_name` bằng sự lựa chọn của riêng bạn; nó chỉ cần chứa tên người dùng của bạn, đó là những gì hàm `get_full_repo_name()` thực hiện ):
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "codeparrot-ds-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/codeparrot-ds-accelerate'
+```
+
+Sau đó, chúng ta có thể sao chép kho lưu trữ đó trong một thư mục cục bộ. Nếu nó đã tồn tại, thư mục cục bộ này phải là bản sao hiện có của kho lưu trữ mà chúng ta đang làm việc:
+
+```py
+output_dir = "codeparrot-ds-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+Bây giờ chúng ta có thể tải lên bất cứ thứ gì chúng ta lưu trong `output_dir` bằng cách gọi phương thức `repo.push_to_hub()`. Điều này sẽ giúp chúng ta tải lên các mô hình trung gian ở cuối mỗi epoch.
+
+Trước khi huấn luyện, hãy chạy thử nhanh để xem chức năng đánh giá có hoạt động bình thường không:
+
+```py
+evaluate()
+```
+
+```python out
+(10.934126853942871, 56057.14453125)
+```
+
+Đó là những giá trị rất cao về mức mất mát và perplexity, nhưng điều đó không đáng ngạc nhiên vì chúng ta chưa huấn luyện mô hình. Cùng với đó, chúng ta đã chuẩn bị mọi thứ để viết phần cốt lõi của kịch bản huấn luyện: vòng lặp huấn luyện. Trong vòng lặp huấn luyện, chúng ta lặp qua dataloader và truyền các lô vào mô hình. Với nhật ký, sau đó chúng ta có thể đánh giá hàm mất mát tùy chỉnh của mình. Chúng ta chia tỷ lệ mất mát theo số bước tích lũy gradient để không tạo ra mất mát lớn hơn khi tổng hợp nhiều bước hơn. Trước khi tối ưu hóa, chúng ta cũng cắt các gradient để hội tụ tốt hơn. Cuối cùng, cứ sau vài bước, chúng ta đánh giá mô hình trên tập hợp đánh giá với hàm `eval()` mới của mình:
+
+```py
+from tqdm.notebook import tqdm
+
+gradient_accumulation_steps = 8
+eval_steps = 5_000
+
+model.train()
+completed_steps = 0
+for epoch in range(num_train_epochs):
+    for step, batch in tqdm(
+        enumerate(train_dataloader, start=1), total=num_training_steps
+    ):
+        logits = model(batch["input_ids"]).logits
+        loss = keytoken_weighted_loss(batch["input_ids"], logits, keytoken_ids)
+        if step % 100 == 0:
+            accelerator.print(
+                {
+                    "lr": get_lr(),
+                    "samples": step * samples_per_step,
+                    "steps": completed_steps,
+                    "loss/train": loss.item() * gradient_accumulation_steps,
+                }
+            )
+        loss = loss / gradient_accumulation_steps
+        accelerator.backward(loss)
+        if step % gradient_accumulation_steps == 0:
+            accelerator.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+            completed_steps += 1
+        if (step % (eval_steps * gradient_accumulation_steps)) == 0:
+            eval_loss, perplexity = evaluate()
+            accelerator.print({"loss/eval": eval_loss, "perplexity": perplexity})
+            model.train()
+            accelerator.wait_for_everyone()
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+            if accelerator.is_main_process:
+                tokenizer.save_pretrained(output_dir)
+                repo.push_to_hub(
+                    commit_message=f"Training in progress step {step}", blocking=False
+                )
+```
+
+Vậy là xong - bây giờ bạn có vòng huấn luyện tùy chỉnh của riêng mình cho các mô hình ngôn ngữ nhân quả chẳng hạn như GPT-2 mà bạn có thể tùy chỉnh thêm theo nhu cầu của mình.
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Hoặc tạo hàm mất tùy chỉnh của riêng bạn phù hợp với trường hợp sử dụng của bạn hoặc thêm một bước tùy chỉnh khác vào vòng lặp huấn luyện.
+
+</Tip>
+
+<Tip>
+
+✏️ **Thử nghiệm thôi!** Khi chạy các thử nghiệm huấn luyện dài, bạn nên ghi lại các chỉ số quan trọng bằng cách sử dụng các công cụ như TensorBoard hoặc Weights & Biases. Thêm ghi nhật ký thích hợp vào vòng lặp huấn luyện để bạn luôn có thể kiểm tra quá trình huấn luyện diễn ra như thế nào.
+
+</Tip>
+
+{/if}

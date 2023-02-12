@@ -1,0 +1,359 @@
+<FrameworkSwitchCourse {fw} />
+
+# pipelineの裏側
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section2_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section2_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section2_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section2_tf.ipynb"},
+]} />
+
+{/if}
+
+<Tip>
+ここは、PyTorchとTensorFlowのどちらを使うかによって内容が少し異なる最初のセクションです。タイトルの上にあるスイッチを切り替えて、好きなプラットフォームを選んでください！
+</Tip>
+
+{#if fw === 'pt'}
+<Youtube id="1pedAIvTWXk"/>
+{:else}
+<Youtube id="wVN12smEvqg"/>
+{/if}
+
+まずは例として、[Chapter1](/course/chapter1)で次のコードを実行したときに、その裏で何が起こったかを見てみましょう。
+
+```python
+from transformers import pipeline
+
+classifier = pipeline("sentiment-analysis")
+classifier(
+    [
+        "I've been waiting for a HuggingFace course my whole life.",
+        "I hate this so much!",
+    ]
+)
+```
+
+そして、その出力は以下のようになります。
+
+```python out
+[{'label': 'POSITIVE', 'score': 0.9598047137260437},
+ {'label': 'NEGATIVE', 'score': 0.9994558095932007}]
+```
+
+[第1章](/course/chapter1)で見たように、このpipelineは、前処理、モデルへの入力、後処理の3つのステップをグループ化したものです。
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/full_nlp_pipeline.svg" alt="The full NLP pipeline: tokenization of text, conversion to IDs, and inference through the Transformer model and the model head."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/full_nlp_pipeline-dark.svg" alt="The full NLP pipeline: tokenization of text, conversion to IDs, and inference through the Transformer model and the model head."/>
+</div>
+
+早速、それぞれを確認してみましょう。
+
+
+## トークナイザを用いた前処理
+
+他のニューラルネットワークのように、Transformerのモデルは生のテキストを直接処理できないので、今回のpipelineの最初のステップは、テキストの入力をモデルが理解できる数値に変換することです。これを行うために我々は*トークナイザ* を使用します。*トークナイザ* は、以下の処理を担います。
+
+- 入力を単語、サブワード、記号（句読点など）に分割する。それらを*トークン*と呼ぶ。
+- 各トークンを整数にマッピングする。
+- モデルにとって有用な追加の入力を付け足す。
+
+この前処理はモデルが事前学習されたときと全く同じ方法で行われる必要があるので、まず[Model Hub](https://huggingface.co/models)から情報をダウンロードする必要があります。これを行うには、`AutoTokenizer` クラスとその `from_pretrained()` メソッドを使用します。モデルのチェックポイント名を使って、モデルのトークナイザに関連するデータを自動的に取得し、キャッシュします (従って、以下のコードを最初に実行したときにのみダウンロードされます)。
+
+`sentiment-analysis` のpipelineのデフォルトのチェックポイントは、`distilbert-base-uncased-finetuned-sst-2-english` なので (そのモデルカードは [ここ](https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english) で見られます)、次のように実行します。
+
+```python
+from transformers import AutoTokenizer
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+```
+
+トークナイザがあれば、文章を直接トークナイザに渡し、モデルに与える準備ができた辞書データに変換することができます! あとは入力IDのリストをテンソルに変換するだけです。
+
+🤗 Transformerは、どのMLフレームワークをバックエンドとして使うかを気にせず使うことができます。PyTorchやTensorFlow、モデルによってはFlaxかもしれません。しかし、Transformerのモデルは、入力として*テンソル*しか受け付けません。もしテンソルに聞き馴染みがない場合は、NumPy配列を代わりに考えてもらうと良いかもしれません。NumPyの配列はスカラー（0次元）、ベクトル（1次元）、行列（2次元）、あるいはもっと多くの次元を持つことができます。これは事実上テンソルです。他のMLフレームワークのテンソルも同様な振る舞いをし、通常はNumPy配列と同じくらい簡単にインスタンス化することができます。
+
+返したいテンソルの種類（PyTorch、TensorFlow、あるいは素のNumPy）を指定するには、`return_tensors` 引数を用います。
+
+{#if fw === 'pt'}
+```python
+raw_inputs = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "I hate this so much!",
+]
+inputs = tokenizer(raw_inputs, padding=True, truncation=True, return_tensors="pt")
+print(inputs)
+```
+{:else}
+```python
+raw_inputs = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "I hate this so much!",
+]
+inputs = tokenizer(raw_inputs, padding=True, truncation=True, return_tensors="tf")
+print(inputs)
+```
+{/if}
+
+パディングや切り捨てなどの処理についてはまだ心配しなくて大丈夫です。これらは後で説明します。ここで覚えておくべきことは、1つの文か文のリストを渡せることと、返したいテンソルの型を指定することです（型を渡さなければ、結果としてリストのリストを得ることになります）。
+
+{#if fw === 'pt'}
+
+PyTorchのテンソルとしての結果は、以下のようになります。
+
+
+```python out
+{
+    'input_ids': tensor([
+        [  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172, 2607,  2026,  2878,  2166,  1012,   102],
+        [  101,  1045,  5223,  2023,  2061,  2172,   999,   102,     0,     0,     0,     0,     0,     0,     0,     0]
+    ]), 
+    'attention_mask': tensor([
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ])
+}
+```
+{:else}
+
+TensorFlowのテンソルとしての結果は、以下のようになります。
+
+```python out
+{
+    'input_ids': <tf.Tensor: shape=(2, 16), dtype=int32, numpy=
+        array([
+            [  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172,  2607,  2026,  2878,  2166,  1012,   102],
+            [  101,  1045,  5223,  2023,  2061,  2172,   999,   102,     0,     0,     0,     0,     0,     0,     0,     0]
+        ], dtype=int32)>, 
+    'attention_mask': <tf.Tensor: shape=(2, 16), dtype=int32, numpy=
+        array([
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        ], dtype=int32)>
+}
+```
+{/if}
+
+出力自体は、`input_ids` と `attention_mask` という2つのキーを持つ辞書です。`input_ids` には2行の整数値（各文章に1つずつ）が含まれており、各文章に含まれるトークンを一意に識別することができます。`attention_mask` が何であるかは、この章の後半で説明します。
+
+## モデルの使い方
+
+{#if fw === 'pt'}
+
+トークナイザで行ったのと同じ方法で事前学習したモデルをダウンロードすることができます。🤗 Transformersは `AutoModel` クラスを提供しており、このクラスは `from_pretrained()` メソッドも持っています。
+
+```python
+from transformers import AutoModel
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = AutoModel.from_pretrained(checkpoint)
+```
+{:else}
+
+トークナイザで行ったのと同じ方法で事前学習したモデルをダウンロードすることができます。🤗 Transformers は `TFAutoModel` クラスを提供しており、このクラスは `from_pretrained` メソッドも持っています。
+
+
+```python
+from transformers import TFAutoModel
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = TFAutoModel.from_pretrained(checkpoint)
+```
+{/if}
+
+このコードスニペットでは、以前pipelineで使用したのと同じチェックポイントをダウンロードし（実際には既にキャッシュされているはずです）、それを使ってモデルをインスタンス化しています。
+
+このアーキテクチャには基本的なTransformerモジュールだけが含まれており、いくつかの入力が与えられると、*隠れ状態(hidden states)*（*特徴量*とも呼ばれます）と呼ばれるものを出力します。各モデルの入力に対して、我々は**Transformerモデルによるその入力の文脈的理解**を表す高次元ベクトルを取り出します。
+
+もしこれが理解できなくても、心配しないでください。後ですべて説明します。
+
+これらの隠れ状態はそれ自体で役に立つこともありますが、通常は*head*と呼ばれるモデルの別の部分への入力となります。[第１章](/course/chapter1) では、異なるタスクでも同じアーキテクチャで実行されたかもしれませんが、これらのタスクにはそれぞれ異なるヘッドが使用されています。
+
+### 高次元ベクトル?
+
+Transformerモジュールが出力するベクトルは通常大きなものです。一般的に3つの次元を持ちます。
+
+- **Batch size**: 一度に処理する系列の数（この例では2）。
+- **Sequence length**: 系列の数値表現の長さ（この例では16）。
+- **Hidden size**: 各モデル入力のベクトル次元。
+
+Hidden sizeが大きいと「高次元」と言われます。Hidden sizeは非常に大きくすることができます（小さいモデルでは768が一般的で、大きいモデルでは3072以上に達することがあります）。
+
+前処理をした入力をモデルに与えてみると、このことがわかります。
+
+{#if fw === 'pt'}
+```python
+outputs = model(**inputs)
+print(outputs.last_hidden_state.shape)
+```
+
+```python out
+torch.Size([2, 16, 768])
+```
+{:else}
+```py
+outputs = model(inputs)
+print(outputs.last_hidden_state.shape)
+```
+
+```python out
+(2, 16, 768)
+```
+{/if}
+
+🤗 Transformersモデルの出力は `namedtuple` や辞書のように動作することに注意してください。（私たちが行った）属性や（`outputs["last_hidden_state"]`のような）キー、あるいは探しているものがどこにあるか正確に知っていれば（`outputs[0]`のような）インデックスによって要素にアクセスすることが可能です。
+
+### モデルヘッド(Model heads): 数値の意味を理解する
+
+モデルヘッドは高次元の隠れ状態ベクトルを入力として受け取り、それを異なる次元に射影します。モデルヘッドは、通常、1つまたはいくつかの線形層で構成されます。
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/transformer_and_head.svg" alt="A Transformer network alongside its head."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/transformer_and_head-dark.svg" alt="A Transformer network alongside its head."/>
+</div>
+
+Transformerモデルの出力は直接モデルヘッドに送られ、処理されます。
+
+この図では、モデルはその埋め込み層とそれに続く層で表現されています。埋め込み層は、トークン化された入力の各入力IDを、紐付いたトークンを表すベクトルに変換します。後続の層はアテンション機構を用いてそれらのベクトルを操作し、最終的な文の表現を生成します。
+
+🤗 Transformers には多くの異なるアーキテクチャがあり、それぞれが特定のタスクに取り組むために設計されています。以下はその一部のリストです。
+
+- `*Model` (隠れ状態を取り出す)
+- `*ForCausalLM`
+- `*ForMaskedLM`
+- `*ForMultipleChoice`
+- `*ForQuestionAnswering`
+- `*ForSequenceClassification`
+- `*ForTokenClassification`
+
+{#if fw === 'pt'}
+
+今回の例では、文章分類のヘッドを持つモデルが必要になります（文章をポジティブかネガティブかに分類できるようにするため）。そのため、実際には `AutoModel` クラスではなく、 `AutoModelForSequenceClassification` クラスを使用することになります。
+
+```python
+from transformers import AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+outputs = model(**inputs)
+```
+{:else}
+
+今回の例では、文章分類のヘッドを持つモデルが必要になります（文章をポジティブかネガティブかに分類することができます）。そこで、実際には `TFAutoModel` クラスではなく、 `TFAutoModelForSequenceClassification` クラスを利用することになります。
+
+```python
+from transformers import TFAutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+outputs = model(inputs)
+```
+{/if}
+
+ここで、入力の形を見ると、次元がかなり小さくなっています。モデルヘッドは、先ほどの高次元ベクトルを入力とし、2つの値（1ラベルにつき1つ）を含むベクトルを出力します。
+
+```python
+print(outputs.logits.shape)
+```
+
+{#if fw === 'pt'}
+```python out
+torch.Size([2, 2])
+```
+{:else}
+```python out
+(2, 2)
+```
+{/if}
+
+2つの文と2つのラベルがあるので、このモデルから得られる結果は2x2の形状です。
+
+## 出力の後処理
+
+モデルから出力される値は、それ自体では必ずしも意味をなしません。その例を見てみましょう。
+
+```python
+print(outputs.logits)
+```
+
+{#if fw === 'pt'}
+```python out
+tensor([[-1.5607,  1.6123],
+        [ 4.1692, -3.3464]], grad_fn=<AddmmBackward>)
+```
+{:else}
+```python out
+<tf.Tensor: shape=(2, 2), dtype=float32, numpy=
+    array([[-1.5606991,  1.6122842],
+           [ 4.169231 , -3.3464472]], dtype=float32)>
+```
+{/if}
+
+我々のモデルは最初の文を`[-1.5607, 1.6123]`、2番目の文を`[ 4.1692, -3.3464]`と予測しました。これは確率ではなく*logits*であり、モデルの最終層が出力した正規化されていない生のスコアです。確率に変換するためには、[SoftMax](https://en.wikipedia.org/wiki/Softmax_function)層を通る必要があります（すべての🤗 Transformersモデルはlogitsを出力します。学習用の損失関数は通常、SoftMaxなどの最後の活性化関数とクロスエントロピーのような実際の損失関数が融合されるためです）。
+
+{#if fw === 'pt'}
+```py
+import torch
+
+predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+print(predictions)
+```
+{:else}
+```py
+import tensorflow as tf
+
+predictions = tf.math.softmax(outputs.logits, axis=-1)
+print(predictions)
+```
+{/if}
+
+{#if fw === 'pt'}
+```python out
+tensor([[4.0195e-02, 9.5980e-01],
+        [9.9946e-01, 5.4418e-04]], grad_fn=<SoftmaxBackward>)
+```
+{:else}
+```python out
+tf.Tensor(
+[[4.01951671e-02 9.59804833e-01]
+ [9.9945587e-01 5.4418424e-04]], shape=(2, 2), dtype=float32)
+```
+{/if}
+
+このモデルは、最初の文は`[0.0402, 0.9598]`、2番目の文は`[0.9995,  0.0005]`と予測したことがわかるでしょう。これらは確率のスコアです。
+
+以下では、各ポジションに対応するラベルを得るには、モデル設定の `id2label` 属性を調べます（これについては次のセクションで詳しく説明します）。
+
+```python
+model.config.id2label
+```
+
+```python out
+{0: 'NEGATIVE', 1: 'POSITIVE'}
+```
+
+これで、このモデルは次のように予測したと結論づけることができます。
+ 
+- 最初の文: ネガティブ: 0.0402、ポジティブ: 0.9598
+- 第二文: ネガティブ: 0.9995、 ポジティブ: 0.0005
+
+これで、pipelineの3つのステップ、すなわち、トークナイザによる前処理、モデルへの入力、そして後処理がうまく再現できました。この先では、それぞれのステップをより深く掘り下げていきましょう。
+
+<Tip>
+
+✏️ **試してみよう!** 自分でテキストを2つ（またはそれ以上）用意し、`sentiment-analysis` pipelineで実行します。そして、ここで見た手順を自分で再現して、同様な結果が得られるかどうか確認してみましょう!
+
+</Tip>

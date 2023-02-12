@@ -1,0 +1,173 @@
+<FrameworkSwitchCourse {fw} />
+
+# <i>Finetuner</i> un modèle avec l'API Trainer
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "English", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section3.ipynb"},
+    {label: "Français", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/fr/chapter3/section3.ipynb"},
+    {label: "English", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section3.ipynb"},
+    {label: "Français", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/fr/chapter3/section3.ipynb"},
+]} />
+
+<Youtube id="nvBXf7s7vTI"/>
+
+La bibliothèque 🤗 *Transformers* fournit une classe `Trainer` pour vous aider à *finetuner* n'importe lequel des modèles pré-entraînés qu'elle met à disposition sur votre jeu de données. Une fois que vous avez fait tout le travail de prétraitement des données dans la dernière section, il ne vous reste que quelques étapes pour définir le `Trainer`. La partie la plus difficile sera probablement de préparer l'environnement pour exécuter `Trainer.train()`, car elle fonctionnera très lentement sur un CPU. Si vous n'avez pas de GPU, vous pouvez avoir accès à des GPUs ou TPUs gratuits sur [Google Colab](https://colab.research.google.com/).
+
+Les exemples de code ci-dessous supposent que vous avez déjà exécuté les exemples de la section précédente. Voici un bref résumé de ce dont vous avez besoin :
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### Entraînement
+
+La première étape avant de pouvoir définir notre `Trainer` est de définir une classe `TrainingArguments` qui contiendra tous les hyperparamètres que le `Trainer` utilisera pour l'entraînement et l'évaluation. Le seul argument que vous devez fournir est un répertoire où le modèle entraîné sera sauvegardé, ainsi que les *checkpoints*. Pour tout le reste, vous pouvez laisser les valeurs par défaut, qui devraient fonctionner assez bien pour un *finetuning* de base.
+
+```py
+from transformers import TrainingArguments
+
+training_args = TrainingArguments("test-trainer")
+```
+
+<Tip>
+
+💡 Si vous voulez télécharger automatiquement votre modèle sur le *Hub* pendant l'entraînement, passez `push_to_hub=True` dans le `TrainingArguments`. Nous en apprendrons plus à ce sujet au [chapitre 4](/course/fr/chapter4/3).
+
+</Tip>
+
+La deuxième étape consiste à définir notre modèle. Comme dans le [chapitre précédent](/course/fr/chapter2), nous utiliserons la classe `AutoModelForSequenceClassification`, avec deux labels :
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+Vous remarquerez que contrairement au [chapitre 2](/course/fr/chapter2), vous obtenez un message d'avertissement après l'instanciation de ce modèle pré-entraîné. C'est parce que BERT n'a pas été pré-entraîné à la classification de paires de phrases, donc la tête du modèle pré-entraîné a été supprimée et une nouvelle tête adaptée à la classification de séquences a été ajoutée à la place. Les messages d'avertissement indiquent que certains poids n'ont pas été utilisés (ceux correspondant à la tête de pré-entraînement abandonnée) et que d'autres ont été initialisés de manière aléatoire (ceux pour la nouvelle tête). Il conclut en vous encourageant à entraîner le modèle, ce qui est exactement ce que nous allons faire maintenant.
+
+Une fois que nous avons notre modèle, nous pouvons définir un `Trainer` en lui passant tous les objets construits jusqu'à présent : le `model`, le `training_args`, les jeux de données d'entraînement et de validation, notre `data_collator`, et notre `tokenizer` :
+
+```py
+from transformers import Trainer
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+Notez que lorsque vous passez le `tokenizer` comme nous l'avons fait ici, le `data_collator` par défaut utilisé par le `Trainer` sera un `DataCollatorWithPadding` comme défini précédemment. Ainsi, vous pouvez sauter la ligne `data_collator=data_collator` dans cet appel. Il était quand même important de vous montrer cette partie du traitement dans la section 2 !
+
+Pour *finetuner* le modèle sur notre jeu de données, il suffit d'appeler la méthode `train()` de notre `Trainer` :
+
+```py
+trainer.train()
+```
+
+Cela lancera le *finetuning* (qui devrait prendre quelques minutes sur un GPU) et indiquera la perte d'entraînement tous les 500 pas. Cependant, elle ne vous dira pas si votre modèle fonctionne bien (ou mal). Ceci est dû au fait que :
+
+1. nous n'avons pas dit au `Trainer` d'évaluer pendant l'entraînement en réglant `evaluation_strategy` à soit `"steps"` (évaluer chaque `eval_steps`) ou `"epoch"` (évaluer à la fin de chaque *epoch*).
+2. nous n'avons pas fourni au `Trainer` une fonction `compute_metrics()` pour calculer une métrique pendant ladite évaluation (sinon l'évaluation aurait juste affiché la perte, qui n'est pas un nombre très intuitif).
+
+
+### Evaluation
+
+Voyons comment nous pouvons construire une fonction `compute_metrics()` utile et l'utiliser la prochaine fois que nous entraînons. La fonction doit prendre un objet `EvalPrediction` (qui est un *tuple* nommé avec un champ `predictions` et un champ `label_ids`) et retournera un dictionnaire de chaînes de caractères vers des flottants (les chaînes de caractères étant les noms des métriques retournées, et les flottants leurs valeurs). Pour obtenir des prédictions de notre modèle, nous pouvons utiliser la commande `Trainer.predict()` :
+
+```py
+predictions = trainer.predict(tokenized_datasets["validation"])
+print(predictions.predictions.shape, predictions.label_ids.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+
+La sortie de la méthode `predict()` est un autre *tuple* nommé avec trois champs : `predictions`, `label_ids`, et `metrics`. Le champ `metrics` contiendra juste la perte sur le jeu de données passé, ainsi que quelques mesures de temps (combien de temps il a fallu pour prédire, au total et en moyenne). Une fois que nous aurons complété notre fonction `compute_metrics()` et que nous l'aurons passé au `Trainer`, ce champ contiendra également les métriques retournées par `compute_metrics()`.
+
+Comme vous pouvez le voir, `predictions` est un tableau bidimensionnel de forme 408 x 2 (408 étant le nombre d'éléments dans le jeu de données que nous avons utilisé). Ce sont les logits pour chaque élément du jeu de données que nous avons passé à `predict()` (comme vous l'avez vu dans le [chapitre précédent](/course/fr/chapter2), tous les *transformers* retournent des logits). Pour les transformer en prédictions que nous pouvons comparer à nos étiquettes, nous devons prendre l'indice avec la valeur maximale sur le second axe :
+
+```py
+import numpy as np
+
+preds = np.argmax(predictions.predictions, axis=-1)
+```
+
+Nous pouvons maintenant comparer ces `preds` aux étiquettes. Pour construire notre fonction `compute_metric()`, nous allons nous appuyer sur les métriques de la bibliothèque 🤗 [*Evaluate*](https://github.com/huggingface/evaluate/). Nous pouvons charger les métriques associées au jeu de données MRPC aussi facilement que nous avons chargé le jeu de données, cette fois avec la fonction `evaluate.load()`. L'objet retourné possède une méthode `compute()` que nous pouvons utiliser pour effectuer le calcul de la métrique :
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+metric.compute(predictions=preds, references=predictions.label_ids)
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+Les résultats exacts que vous obtiendrez peuvent varier, car l'initialisation aléatoire de la tête du modèle peut modifier les métriques obtenues. Ici, nous pouvons voir que notre modèle a une précision de 85,78% sur l'ensemble de validation et un score F1 de 89,97. Ce sont les deux métriques utilisées pour évaluer les résultats sur le jeu de données MRPC pour le benchmark GLUE. Le tableau du papier de [BERT](https://arxiv.org/pdf/1810.04805.pdf) indique un score F1 de 88,9 pour le modèle de base. Il s'agissait du modèle `uncased` alors que nous utilisons actuellement le modèle `cased`, ce qui explique le meilleur résultat.
+
+En regroupant le tout, nous obtenons notre fonction `compute_metrics()` :
+
+```py
+def compute_metrics(eval_preds):
+    metric = evaluate.load("glue", "mrpc")
+    logits, labels = eval_preds
+    predictions = np.argmax(logits, axis=-1)
+    return metric.compute(predictions=predictions, references=labels)
+```
+
+Et pour le voir utilisé en action pour rapporter les métriques à la fin de chaque époque, voici comment nous définissons un nouveau `Trainer` avec cette fonction `compute_metrics()` :
+
+```py
+training_args = TrainingArguments("test-trainer", evaluation_strategy="epoch")
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+Notez que nous créons un nouveau `TrainingArguments` avec sa `evaluation_strategy` définie sur `"epoch"` et un nouveau modèle. Sinon, nous ne ferions que continuer l'entraînement du modèle que nous avons déjà entraîné. Pour lancer un nouveau cycle d'entraînement, nous exécutons :
+
+```
+trainer.train()
+```
+
+Cette fois, il indiquera la perte et les mesures de validation à la fin de chaque époque, en plus de la perte d'entraînement. Encore une fois, le score exact de précision/F1 que vous atteignez peut être un peu différent de ce que nous avons trouvé, en raison de l'initialisation aléatoire de la tête du modèle, mais il devrait être dans la même fourchette.
+
+Le `Trainer` fonctionnera sur plusieurs GPUs ou TPUs et fournit beaucoup d'options, comme l'entraînement en précision mixte (utilisez `fp16 = True` dans vos arguments d'entraînement). Nous passerons en revue tout ce qu'il supporte dans le chapitre 10.
+
+Ceci conclut l'introduction au *fine-tuning* en utilisant l'API `Trainer`. Un exemple d'utilisation pour les tâches de NLP les plus communes es donné dans le [chapitre 7](/course/fr/chapter7), mais pour l'instant regardons comment faire la même chose en PyTorch pur.
+
+<Tip>
+
+✏️ **Essayez !** *Finetunez* un modèle sur le jeu de données GLUE SST-2, en utilisant le traitement des données que vous avez fait dans la section 2.
+
+</Tip>
