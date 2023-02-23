@@ -1,0 +1,123 @@
+# Normalización y pre-tokenización[[normalization-and-pre-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section4.ipynb"},
+]} />
+
+Antes de sumergirnos más profundamente en los tres algoritmos más comunes de tokenización usados con los modelos transformers (Byte-Pair Encoding [BPE], WordPiece, and Unigram), primero miraremos el preprocesamiento que cada tokenizador aplica al texto. Acá una descripción general de los pasos en el pipeline de tokenización:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="The tokenization pipeline.">
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="The tokenization pipeline.">
+</div>
+
+Antes de dividir un texto en subtokens (de acuerdo a su modelo), el tokenizador realiza dos pasos: _normalización_ y _pre-tokenización_.
+
+## Normalización[[normalization]]
+
+<Youtube id="4IIC2jI9CaU"/>
+
+El paso de normalización involucra una limpieza general, como la remoción de espacios en blanco innecesario, transformar a minúsculas, y/o remoción de acentos. Si estás familiarizado con [Normalización Unicode](http://www.unicode.org/reports/tr15/) (como NFC o NFKC), esto es algo que el tokenizador también puede aplicar.
+
+Los tokenizadores de la librería 🤗 Transformers tienen un atributo llamado `backend_tokenizer` que provee acceso al tokenizador subyacente de la librería 🤗 Tokenizers:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+print(type(tokenizer.backend_tokenizer))
+```
+
+```python out
+<class 'tokenizers.Tokenizer'>
+```
+
+El atributo `normalizer` del objeto `tokenizer` tiene un método `normalize_str()` que puede puedes usar para ver cómo la normalización se realiza:
+
+```py
+print(tokenizer.backend_tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+```
+
+```python out
+'hello how are u?'
+```
+
+En este ejemplo, dado que elegimos el punto de control (checkpoint) `bert-base-uncased`, la normalización aplicó transformación a minúsculas y remoción de acentos. 
+
+<Tip>
+
+✏️ **Inténtalo!** Carga un tokenizador desde el punto de control (checkpoint)`bert-base-cased` y pásale el mismo ejemplo. Cuáles son las principales diferencias que puedes ver entre las versiones cased y uncased de los tokenizadores?
+
+</Tip>
+
+## Pre-tokenización[[pre-tokenization]]
+
+<Youtube id="grlLV8AIXug"/>
+
+Como veremos en las siguientes secciones, un tokenizador no puede ser entrenado en un texto tal como viene así nada más. En vez de eso, primero necesitamos separar los textos en entidades más pequeñas, como palabras. Ahí es donde el paso de pre-tokenización entra en juego. Como vimos en el [Capítulo 2](/course/chapter2), un tokenizador basado en palabras (word-based) puede dividir el texto en palabras separando en espacios en blanco y puntuación. Esas palabras serán las fronteras de los subtokens que el tokenizador aprende durante su entrenamiento. 
+
+Para ver qué tan rápido un tokenizador rápido (fast tokenizer) realiza la pre-tokenización, podemos usar el método `pre_tokenize_str()` del atributo `pre_tokenizer` del objeto `tokenizer`:
+
+```py
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+```python out
+[('Hello', (0, 5)), (',', (5, 6)), ('how', (7, 10)), ('are', (11, 14)), ('you', (16, 19)), ('?', (19, 20))]
+```
+
+Notar como el tokenizador ya lleva registro de los offsets, el cual nos entrega el mapeo de offsets que usamos en la sección anterior. Acá el tokenizador ignora los dos espacios y los reemplaza con uno sólo, pero el offset salta entre `are` y `you` para tomar eso en cuenta. 
+
+Dado que estamos usando un tokenizador BERT, la pre-tokenización involucra separar en espacios en blanco y puntuación. Otros tokenizadores pueden tener distintas reglas para esta etapa. Por ejemplo, si usamor el tokenizador de GPT-2:
+
+```py
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+dividirá en espacios en blanco y puntuación también, pero mantendrá los espacios y los reemplazará con el símbolo `Ġ`, permitiendo recobrar los espacios originales en el caso de decodificar los tokens:
+
+```python out
+[('Hello', (0, 5)), (',', (5, 6)), ('Ġhow', (6, 10)), ('Ġare', (10, 14)), ('Ġ', (14, 15)), ('Ġyou', (15, 19)),
+ ('?', (19, 20))]
+```
+
+También notar que a diferencia del tokenizador BERT, este tokenizador no ignora los espacios dobles. 
+
+Para el último ejemplo, tenemos que mirar el tokenizador T5, el cuál está basado en el algoritmo SentencePiece:
+
+```py
+tokenizer = AutoTokenizer.from_pretrained("t5-small")
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+```python out
+[('▁Hello,', (0, 6)), ('▁how', (7, 10)), ('▁are', (11, 14)), ('▁you?', (16, 20))]
+```
+
+Al igual que el tokenizador GPT-2, este mantiene los espacios y los reemplaza con un token específico (`_`), pero el tokenizador T5 sólo divide en espacios en blanco, no en puntuación. También notar que agrego un espacio por defecto al inicio de la oración (antes de `Hello`) e ignoró el doble espacio entre `are` y `you`.
+
+Ahora que hemos visto un poco de cómo los diferentes tokenizadores procesan texto, podemos empezar a explorar los algoritmos subyacentes propiamente tal. Comenzaremos con una mirada rápida al ampliamente aplicable SentencePiece; luego, a lo largo de las 3 secciones siguientes examinaremos cómo los tres principales algoritmos usados para el trabajo de tokenización por subpalabra (subword tokenization).
+
+## SentencePiece[[sentencepiece]]
+
+[SentencePiece](https://github.com/google/sentencepiece) es un algoritmo para el preprocesamiento de texto que puedes usar con cualquiera de los modelos que veremos en las siguientes tres secciones. Éste considere el texto como una secuencia de caractéres Unicode, y reemplaza los especios con un caracter especial, `_`. Usado en conjunto con el algoritmo Unigram (ver [Sección 7](/course/chapter7/7)), ni siquiera requiere un paso de pre-tokenización, lo cual es muy útil para lenguajes donde el caracter de espacio no es usado (como el Chino o el Japonés).
+
+La otra característica principal de SentencePiece es la *tokenización reversible* (tokenización reversible): dado que no hay tratamiento especial de los espacios, decodificar los tokens se hace simplemente concatenandolos y reemplazando los `_`s con espacios -- esto resulta en el texto normalizado. Como vimos antes, el tokenizador BERT remueve los espacios repetidos, por lo que su tokenización no es reversible. 
+
+## Descripción General del Algoritmo[[algorithm-overview]]
+
+En las siguientes secciones, profundizaremos en los tres principales algoritmos de tokenización por subpalabra (subword tokenization): BPE (usado por GPT-2 y otros), WordPiece (usado por ejemplo por BERT), y Unigram (usado por T5 y otros). Antes de comenzar, aquí una rápida descripción general de cómo funciona cada uno de ellos. No dudes en regresar a esta tabla luego de leer cada una de las siguientes secciones si no te hace sentido aún. 
+
+
+Model | BPE | WordPiece | Unigram
+:----:|:---:|:---------:|:------:
+Entrenamiento | Comienza a partir de un pequeño vocabulario y aprende reglas para fusionar tokens |  Comienza a partir de un pequeño vocabulario y aprende reglas para fusionar tokens | Comienza de un gran vocabulario y aprende reglas para remover tokens
+Etapa de Entrenamiento | Fusiona los tokens correspondiente a los pares más comunes | Fusiona los tokens correspondientes al par con el mejor puntaje basado en la frecuencia del par, privilegiando  pares donde cada token individual es menos frecuente | Remueve todos los tokens en el vocabulario que minimizarán la función de pérdida (loss) calculado en el corpus completo.
+Aprende | Reglas de fusión y un vocabulario | Sólo un vocabulario | Un vocabulario con puntaje para cada token
+Codificación | Separa una palabra en caracteres y aplica las fusiones aprendidas durante el entrenamiento | Encuentra la subpalabra más larga comenzando del inicio que está en el vocabulario, luego hace lo mismo para el resto de las palabras | Encuentra la separación en tokens más probable, usando los puntajes aprendidos durante el entrenamiento
+
+Ahora profundicemos en BPE!
