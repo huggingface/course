@@ -1,6 +1,6 @@
 <FrameworkSwitchCourse {fw} />
 
-# 调试训练管道
+# 调试训练管道 [[调试训练管道]]
 
 <DocNotebookDropdown
   classNames="absolute z-10 right-0 top-0"
@@ -11,7 +11,7 @@
 
 你已经编写了一个漂亮的脚本来训练或微调给定任务的模型，尽职尽责地遵循 [Chapter 7](/course/chapter7) 中的建议。 但是当你启动命令 `trainer.train()` 时，可怕的事情发生了：你得到一个错误😱！ 或者更糟糕的是，一切似乎都很好，训练运行没有错误，但生成的模型很糟糕。 在本节中，我们将向您展示如何调试此类问题。
 
-## 调试训练管道
+## 调试训练管道 [[调试训练管道]]
 
 <Youtube id="L-WSwUWde1U"/>
 
@@ -22,7 +22,7 @@
 为了证明这一点，我们将使用以下脚本（尝试）在 [MNLI 数据集](https://huggingface.co/datasets/glue)上微调 DistilBERT 模型：
 
 ```py
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
@@ -30,7 +30,7 @@ from transformers import (
     Trainer,
 )
 
-raw_datasets = load_dataset("glue", "mnli")
+raw_datasets = evaluate.load("glue", "mnli")
 
 model_checkpoint = "distilbert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
@@ -52,7 +52,7 @@ args = TrainingArguments(
     weight_decay=0.01,
 )
 
-metric = load_metric("glue", "mnli")
+metric = evaluate.load("glue", "mnli")
 
 
 def compute_metrics(eval_pred):
@@ -76,7 +76,7 @@ trainer.train()
 'ValueError: You have to specify either input_ids or inputs_embeds'
 ```
 
-### 检查数据
+### 检查数据 [[检查数据]]
 
 这是不言而喻的，如果你的数据被破坏，“Trainer”将无法形成批次，更不用说训练你的模型了。 所以首先，你需要看看你的训练集中有什么。
 
@@ -98,7 +98,7 @@ trainer.train_dataset[0]
 为什么没有处理数据生成标记呢？ 我们确实在数据集上使用了“Dataset.map()”方法来对每个样本应用标记器。 但是如果你仔细看代码，你会发现我们在将训练和评估集传递给`Trainer`时犯了一个错误。 我们在这里没有使用 `tokenized_datasets`，而是使用了 `raw_datasets` 🤦。 所以让我们解决这个问题！
 
 ```py
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
@@ -106,7 +106,7 @@ from transformers import (
     Trainer,
 )
 
-raw_datasets = load_dataset("glue", "mnli")
+raw_datasets = evaluate.load("glue", "mnli")
 
 model_checkpoint = "distilbert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
@@ -128,7 +128,7 @@ args = TrainingArguments(
     weight_decay=0.01,
 )
 
-metric = load_metric("glue", "mnli")
+metric = evaluate.load("glue", "mnli")
 
 
 def compute_metrics(eval_pred):
@@ -200,7 +200,7 @@ transformers.models.distilbert.modeling_distilbert.DistilBertForSequenceClassifi
 我们通过解码检查了输入 ID 是否正确。 接下来是检查 `attention_mask`：
 
 ```py
-tokenizer.decode(trainer.train_dataset[0]["attention_mask"])
+trainer.train_dataset[0]["attention_mask"]
 ```
 
 ```python out
@@ -253,7 +253,7 @@ trainer.train_dataset.features["label"].names
 
 现在我们知道我们的数据集看起来不错，是时候检查训练管道的下一步了。
 
-### 从 datasets 到 dataloaders
+### 从 datasets 到 dataloaders [[从 datasets 到 dataloaders]]
 
 训练管道中可能出错的下一件事是当“Trainer”尝试从训练或验证集形成批次时。 一旦你确定 `Trainer` 的数据集是正确的，你可以尝试通过执行以下操作手动形成一个批次（可以将 `train` 替换为 `eval` 用于验证数据加载器）：
 
@@ -291,7 +291,8 @@ data_collator
 答案是因为我们没有将 `tokenizer` 传递给 `Trainer`，所以它无法创建我们想要的 `DataCollatorWithPadding`。 在实践中，您应该明确地传递您想要使用的数据整理器，以确保避免这些类型的错误。 让我们调整我们的代码来做到这一点：
 
 ```py
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
+import evaluate
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
@@ -300,7 +301,7 @@ from transformers import (
     Trainer,
 )
 
-raw_datasets = load_dataset("glue", "mnli")
+raw_datasets = evaluate.load("glue", "mnli")
 
 model_checkpoint = "distilbert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
@@ -322,7 +323,7 @@ args = TrainingArguments(
     weight_decay=0.01,
 )
 
-metric = load_metric("glue", "mnli")
+metric = evaluate.load("glue", "mnli")
 
 
 def compute_metrics(eval_pred):
@@ -371,7 +372,7 @@ batch = data_collator([actual_train_set[i] for i in range(4)])
 
 现在我们已经调试了批处理创建过程，是时候将数据传递给模型了！
 
-### 检查模型
+### 检查模型 [[检查模型]]
 
 您应该能够通过执行以下命令来获得一个批次的数据：
 
@@ -416,7 +417,8 @@ trainer.model.config.num_labels
 有两个标签，只允许 0 和 1 作为目标，但是根据错误信息我们得到一个 2。得到一个 2 实际上是正常的：如果我们记得我们之前提取的标签名称，有三个，所以我们有索引 0 , 1 和 2 在我们的数据集中。 问题是我们没有告诉我们的模型，它应该创建三个标签。 所以让我们解决这个问题！
 
 ```py
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
+import evaluate
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
@@ -425,7 +427,7 @@ from transformers import (
     Trainer,
 )
 
-raw_datasets = load_dataset("glue", "mnli")
+raw_datasets = evaluate.load("glue", "mnli")
 
 model_checkpoint = "distilbert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
@@ -447,7 +449,7 @@ args = TrainingArguments(
     weight_decay=0.01,
 )
 
-metric = load_metric("glue", "mnli")
+metric = evaluate.load("glue", "mnli")
 
 
 def compute_metrics(eval_pred):
@@ -490,7 +492,7 @@ outputs = trainer.model.to(device)(**batch)
 
 如果仍然出现错误，请确保重新启动notebook并仅执行脚本的最后一个版本。
 
-### 执行一个优化器步骤
+### 执行一个优化器步骤 [[执行一个优化器步骤]]
 
 现在我们知道我们可以构建实际通过模型检查的成批次的数据，我们已经为训练管道的下一步做好准备：计算梯度并执行优化步骤。
 
@@ -512,7 +514,7 @@ trainer.optimizer.step()
 
 同样，如果您在 `Trainer` 中使用默认优化器，则在此阶段您不应该收到错误，但如果您有自定义优化器，则可能会出现一些问题需要在这里调试。 如果您在此阶段遇到奇怪的 CUDA 错误，请不要忘记返回 CPU。 说到 CUDA 错误，前面我们提到了一个特殊情况。 现在让我们来看看。
 
-### 处理 CUDA out-of-memory错误
+### 处理 CUDA out-of-memory错误 [[处理 CUDA out-of-memory错误]]
 
 每当您收到以`RuntimeError: CUDA out of memory`开头的错误消息时，这表明您的 GPU 内存不足。 这与您的代码没有直接关联，并且它可能发生在运行良好的代码中。 此错误意味着您试图在 GPU 的内部存储器中放入太多东西，这导致了错误。 与其他 CUDA 错误一样，您需要重新启动内核才能再次运行训练。
 
@@ -524,7 +526,7 @@ trainer.optimizer.step()
 
 </Tip>
 
-### 评估模型
+### 评估模型 [[评估模型]]
 
 现在我们已经解决了代码的所有问题，一切都很完美，训练应该可以顺利进行，对吧？ 没那么快！ 如果你运行 `trainer.train()` 命令，一开始一切看起来都不错，但过一会儿你会得到以下信息：
 
@@ -626,7 +628,8 @@ compute_metrics((predictions, labels))
 
 ```py
 import numpy as np
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
+import evaluate
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
@@ -635,7 +638,7 @@ from transformers import (
     Trainer,
 )
 
-raw_datasets = load_dataset("glue", "mnli")
+raw_datasets = evaluate.load("glue", "mnli")
 
 model_checkpoint = "distilbert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
@@ -657,7 +660,7 @@ args = TrainingArguments(
     weight_decay=0.01,
 )
 
-metric = load_metric("glue", "mnli")
+metric = evaluate.load("glue", "mnli")
 
 
 def compute_metrics(eval_pred):
@@ -688,11 +691,11 @@ trainer.train()
 
 </Tip>
 
-## 在训练期间调试静默（没有任何错误提示）错误
+## 在训练期间调试静默（没有任何错误提示）错误 [[在训练期间调试静默（没有任何错误提示）错误]]
 
 我们可以做些什么来调试一个没有错误地完成但没有得到好的结果的训练？ 我们会在这里给你一些提示，但请注意，这种调试是机器学习中最难的部分，并且没有神奇的答案。
 
-### 检查您的数据（再次！）
+### 检查您的数据（再次！） [[检查您的数据（再次！）]]
 
 只有在理论上可以从您的数据中学到任何东西时，您的模型才会学到一些东西。 如果存在损坏数据的错误或标签是随机属性的，那么您很可能不会在数据集上获得任何知识。 因此，始终首先仔细检查您的解码输入和标签，然后问自己以下问题：
 
@@ -713,7 +716,7 @@ trainer.train()
 
 当您确定您的数据是完美的时，您可以通过一个简单的测试来查看模型是否能够对其进行训练。
 
-### 在一批上过度拟合你的模型
+### 在一批上过度拟合你的模型 [[在一批上过度拟合你的模型]]
 
 过度拟合通常是我们在训练时尽量避免的事情，因为这意味着模型没有学习识别我们想要的一般特征，而只是记住了训练样本。 在这种情况下，一遍又一遍地尝试在一个批次上训练您的模型是一个很好的测试，可以检查您的问题是否可以通过您尝试训练的模型来解决。 它还将帮助您查看您的初始学习率是否太高。
 
@@ -765,7 +768,7 @@ compute_metrics((preds.cpu().numpy(), labels.cpu().numpy()))
 
 </Tip>
 
-### 在你有第一个基线之前不要调整任何东西
+### 在你有第一个基线之前不要调整任何东西 [[在你有第一个基线之前不要调整任何东西]]
 
 超参数调优总是被强调为机器学习中最难的部分，但这只是帮助您在指标上有所收获的最后一步。 大多数情况下，`Trainer` 的默认超参数可以很好地为您提供良好的结果，因此在您获得超出数据集基线的东西之前，不要开始进行耗时且昂贵的超参数搜索 .
 
@@ -773,7 +776,7 @@ compute_metrics((preds.cpu().numpy(), labels.cpu().numpy()))
 
 如果您正在调整模型本身，不要尝试任何您无法合理证明的事情。 始终确保您返回过拟合测试以验证您的更改没有产生任何意外后果。
 
-### 请求帮忙
+### 请求帮忙 [[请求帮忙]]
 
 希望您会在本节中找到一些可以帮助您解决问题的建议，但如果不是这样，请记住您可以随时在 [论坛](https://discuss.huggingface.co/) 上向社区提问。
 
