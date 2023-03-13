@@ -1,0 +1,190 @@
+<FrameworkSwitchCourse {fw} />
+
+# 使用 Keras 微調一個模型
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter3/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter3/section3_tf.ipynb"},
+]} />
+
+完成上一節中的所有數據預處理工作後，您只剩下最後的幾個步驟來訓練模型。 但是請注意，`model.fit()` 命令在 CPU 上運行會非常緩慢。 如果您沒有GPU，則可以在 [Google Colab](https://colab.research.google.com/) 上使用免費的 GPU 或 TPU(需要梯子)。
+
+這一節的代碼示例假設您已經執行了上一節中的代碼示例。 下面一個簡短的摘要，包含了在開始學習這一節之前您需要的執行的代碼：
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+import numpy as np
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="tf")
+
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+
+tf_validation_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=False,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+```
+
+### 訓練模型
+
+從🤗 Transformers 導入的 TensorFlow 模型已經是 Keras 模型。 下面的視頻是對 Keras 的簡短介紹。
+
+<Youtube id="rnTGBy2ax1c"/>
+
+這意味著，一旦我們有了數據，就需要很少的工作就可以開始對其進行訓練。
+
+<Youtube id="AUozVp78dhk"/>
+
+和[第二章](/course/chapter2)使用的方法一樣, 我們將使用二分類的 `TFAutoModelForSequenceClassification`類: 
+
+```py
+from transformers import TFAutoModelForSequenceClassification
+
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+您會注意到，與 [第二章](/course/chapter2) 不同的是，您在實例化此預訓練模型後會收到警告。 這是因為 BERT 沒有對句子對進行分類進行預訓練，所以預訓練模型的 head 已經被丟棄，而是插入了一個適合序列分類的新 head。 警告表明一些權重沒有使用（對應於丟棄的預訓練頭），而其他一些權重是隨機初始化的（新頭的權重）。 最後鼓勵您訓練模型，這正是我們現在要做的。
+
+要在我們的數據集上微調模型，我們只需要在我們的模型上調用 `compile()` 方法，然後將我們的數據傳遞給 `fit()` 方法。 這將啟動微調過程（在 GPU 上應該需要幾分鐘）並輸出訓練loss，以及每個 epoch 結束時的驗證loss。
+
+<Tip>
+
+請注意🤗 Transformers 模型具有大多數 Keras 模型所沒有的特殊能力——它們可以自動使用內部計算的loss。 如果您沒有在 `compile()` 中設置損失函數，他們將默認使用內部計算的損失。 請注意，要使用內部損失，您需要將標籤作為輸入的一部分傳遞，而不是作為單獨的標籤（這是在 Keras 模型中使用標籤的正常方式）。 您將在課程的第 2 部分中看到這方面的示例，其中定義正確的損失函數可能很棘手。 然而，對於序列分類，標準的 Keras 損失函數可以正常工作，所以我們將在這裡使用它。
+
+</Tip>
+
+```py
+from tensorflow.keras.losses import SparseCategoricalCrossentropy
+
+model.compile(
+    optimizer="adam",
+    loss=SparseCategoricalCrossentropy(from_logits=True),
+    metrics=["accuracy"],
+)
+model.fit(
+    tf_train_dataset,
+    validation_data=tf_validation_dataset,
+)
+```
+
+<Tip warning={true}>
+
+請注意這裡有一個非常常見的陷阱——你只是*可以*將損失的名稱作為字符串傳遞給 Keras，但默認情況下，Keras 會假設你已經對輸出應用了 softmax。 然而，許多模型在應用 softmax 之前就輸出，也稱為 *logits*。 我們需要告訴損失函數我們的模型是否經過了softmax，唯一的方法是直接調用它，而不是用字符串的名稱。
+
+</Tip>
+
+
+### 提升訓練的效果
+
+<Youtube id="cpzq6ESSM5c"/>
+
+如果您嘗試上面的代碼，它肯定會運行，但您會發現loss只是緩慢或零星地下降。 主要原因是*學習率*。 與loss一樣，當我們將優化器的名稱作為字符串傳遞給 Keras 時，Keras 會初始化該優化器具有所有參數的默認值，包括學習率。 但是，根據長期經驗，我們知道Transformer 模型更適合使用比 Adam 的默認值（1e-3）也寫成為 10 的 -3 次方，或 0.001，低得多的學習率。 5e-5 (0.00005) 比默認值大約低 20 倍，是一個更好的起點。
+
+除了降低學習率，我們還有第二個技巧：我們可以慢慢降低學習率。在訓練過程中。 在文獻中，您有時會看到這被稱為 *decaying* 或 *annealing*學習率。 在 Keras 中，最好的方法是使用 *learning rate scheduler*。 一個好用的是`PolynomialDecay`——儘管有這個名字，但在默認設置下，它只是簡單地從初始值線性衰減學習率值在訓練過程中的最終值，這正是我們想要的。但是， 為了正確使用調度程序，我們需要告訴它訓練的次數。 我們將在下面為其計算“num_train_steps”。
+
+```py
+from tensorflow.keras.optimizers.schedules import PolynomialDecay
+
+batch_size = 8
+num_epochs = 3
+# 訓練步數是數據集中的樣本數除以batch size再乘以 epoch。
+# 注意這裡的tf_train_dataset是一個轉化為batch後的 tf.data.Dataset，
+# 不是原來的 Hugging Face Dataset，所以它的 len() 已經是 num_samples // batch_size。
+num_train_steps = len(tf_train_dataset) * num_epochs
+lr_scheduler = PolynomialDecay(
+    initial_learning_rate=5e-5, end_learning_rate=0.0, decay_steps=num_train_steps
+)
+from tensorflow.keras.optimizers import Adam
+
+opt = Adam(learning_rate=lr_scheduler)
+```
+
+<Tip>
+
+🤗 Transformers 庫還有一個 `create_optimizer()` 函數，它將創建一個具有學習率衰減的 `AdamW` 優化器。 這是一個便捷的方式，您將在本課程的後續部分中詳細瞭解。
+
+</Tip>
+
+現在我們有了全新的優化器，我們可以嘗試使用它進行訓練。 首先，讓我們重新加載模型，以重置我們剛剛進行的訓練運行對權重的更改，然後我們可以使用新的優化器對其進行編譯：
+
+```py
+import tensorflow as tf
+
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+model.compile(optimizer=opt, loss=loss, metrics=["accuracy"])
+```
+
+現在，我們再次進行fit：
+
+```py
+model.fit(tf_train_dataset, validation_data=tf_validation_dataset, epochs=3)
+```
+
+<Tip>
+
+💡 如果您想在訓練期間自動將模型上傳到 Hub，您可以在 `model.fit()` 方法中傳遞 `PushToHubCallback`。 我們將在 [第四章](/course/chapter4/3) 中進行介紹
+
+</Tip>
+
+### 模型預測
+
+<Youtube id="nx10eh4CoOs"/>
+
+
+訓練和觀察的loss下降都非常好，但是如果我們想從訓練後的模型中獲得輸出，或者計算一些指標，或者在生產中使用模型呢？ 為此，我們可以使用`predict()` 方法。 這將返回模型的輸出頭的*logits*數值，每個類一個。
+
+```py
+preds = model.predict(tf_validation_dataset)["logits"]
+```
+
+我們可以將這些 logit 轉換為模型的類別預測，方法是使用 argmax 找到最高的 logit，它對應於最有可能的類別：
+
+```py
+class_preds = np.argmax(preds, axis=1)
+print(preds.shape, class_preds.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+
+現在，讓我們使用這些 `preds` 來計算一些指標！ 我們可以像加載數據集一樣輕鬆地加載與 MRPC 數據集相關的指標，這次使用的是 `evaluate.load()` 函數。 返回的對象有一個 `compute()` 方法，我們可以使用它來進行度量計算：
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+metric.compute(predictions=class_preds, references=raw_datasets["validation"]["label"])
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+您獲得的確切結果可能會有所不同，因為模型頭的隨機初始化可能會改變它獲得的指標。 在這裡，我們可以看到我們的模型在驗證集上的準確率為 85.78%，F1 得分為 89.97。 這些是用於評估 GLUE 基準的 MRPC 數據集結果的兩個指標。 [BERT 論文](https://arxiv.org/pdf/1810.04805.pdf) 中的表格報告了基本模型的 F1 分數為 88.9。 那是 `uncased` 模型，而我們目前使用的是 `cased` 模型，這解釋了為什麼我們會獲得更好的結果。
+
+使用 Keras API 進行微調的介紹到此結束。 第 7 章將給出對大多數常見 NLP 任務執行此操作的示例。如果您想在 Keras API 上磨練自己的技能，請嘗試使第二節所使用的的數據處理在 GLUE SST-2 數據集上微調模型。

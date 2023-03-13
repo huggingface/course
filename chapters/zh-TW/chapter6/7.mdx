@@ -1,0 +1,381 @@
+# Unigram標記化
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section7.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section7.ipynb"},
+]} />
+
+在 SentencePiece 中經常使用 Unigram 算法,該算法是 AlBERT、T5、mBART、Big Bird 和 XLNet 等模型使用的標記化算法。
+
+<Youtube id="TGZfZVuF9Yc"/>
+
+<Tip>
+
+💡 本節深入介紹了 Unigram,甚至展示了一個完整的實現。如果你只想大致瞭解標記化算法,可以跳到最後。
+
+</Tip>
+
+## 訓練算法
+
+與 BPE 和 WordPiece 相比，Unigram 在另一個方向上工作：它從一個較大的詞彙表開始，然後從中刪除標記，直到達到所需的詞彙表大小。有多種選項可用於構建基本詞彙表：例如，我們可以採用預標記化單詞中最常見的子串，或者在具有大詞彙量的初始語料庫上應用 BPE。
+
+在訓練的每一步，Unigram 算法都會在給定當前詞彙的情況下計算語料庫的損失。然後，對於詞彙表中的每個符號，算法計算如果刪除該符號，整體損失會增加多少，並尋找增加最少的符號。這些符號對語料庫的整體損失影響較小，因此從某種意義上說，它們「不太需要」並且是移除的最佳候選者。
+
+這是一個非常昂貴的操作，所以我們不只是刪除與最低損失增加相關的單個符號,而且\\(p\\) (\\(p\\)是一個可以控制的超參數,通常是 10 或 20)與最低損失增加相關的符號的百分比。然後重複這個過程，直到詞彙量達到所需的大小。
+
+請注意：我們從不刪除基本字符，以確保可以標記任何單詞。
+
+這或許仍然有點模糊：算法的主要部分是計算語料庫的損失，並查看當我們從詞彙表中刪除一些標記時它會如何變化，但我們還沒有解釋如何做到這一點。這一步依賴於 Unigram 模型的標記化算法，因此我們接下來將深入研究。
+
+我們將重用前面示例中的語料庫：
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+對於此示例，我們將採用初始詞彙表的所有嚴格子字符串:
+
+```
+["h", "u", "g", "hu", "ug", "p", "pu", "n", "un", "b", "bu", "s", "hug", "gs", "ugs"]
+```
+
+## 標記化算法
+
+Unigram 模型是一種語言模型,它認為每個標記都獨立於它之前的標記。它是最簡單的語言模型,從某種意義上說, 給定先前上下文的標記 X 的概率就是標記 X 的概率。因此，如果我們使用 Unigram 語言模型生成文本，我們將始終預測最常見的標記。
+
+給定標記的概率是它在原始語料庫中的頻率(我們找到它的次數),除以詞彙表中所有標記的所有頻率的總和(以確保概率總和為 1)。例如, `"ug"` 在 `"hug"` 、 `"pug"` 以及 `"hugs"` 中，所以它在我們的語料庫中的頻率為 20。
+
+以下是詞彙表中所有可能的子詞的出現頻率:
+
+```
+("h", 15) ("u", 36) ("g", 20) ("hu", 15) ("ug", 20) ("p", 17) ("pu", 17) ("n", 16)
+("un", 16) ("b", 4) ("bu", 4) ("s", 5) ("hug", 15) ("gs", 5) ("ugs", 5)
+```
+
+所以,所有頻率之和為210, 並且子詞 `"ug"` 出現的概率是 20/210。
+
+<Tip>
+
+✏️ **現在輪到你了!** 編寫代碼來計算上面的頻率,並仔細檢查顯示的結果以及總和是否正確。
+
+</Tip>
+
+現在，為了對給定的單詞進行標記，我們將所有可能的分割視為標記，並根據 Unigram 模型計算每個分割的概率。由於所有標記都被認為是獨立的，所以這個概率只是每個標記概率的乘積。例如 `"pug"` 的標記化 `["p", "u", "g"]` 的概率為:
+
+$$P([``p", ``u", ``g"]) = P(``p") \times P(``u") \times P(``g") = \frac{5}{210} \times \frac{36}{210} \times \frac{20}{210} = 0.000389$$
+
+相比之下,標記化 `["pu", "g"]` 的概率為:
+
+$$P([``pu", ``g"]) = P(``pu") \times P(``g") = \frac{5}{210} \times \frac{20}{210} = 0.0022676$$
+
+所以一個更有可能。一般來說,具有儘可能少的標記的標記化將具有最高的概率(因為每個標記重複除以 210),這對應於我們直觀想要的:將一個單詞分成儘可能少的標記。
+
+使用 Unigram 模型對單詞進行分詞是概率最高的分詞。在示例 `"pug"` 中,這裡是我們為每個可能的分割獲得的概率:
+
+```
+["p", "u", "g"] : 0.000389
+["p", "ug"] : 0.0022676
+["pu", "g"] : 0.0022676
+```
+
+所以 `"pug"` 將被標記為 `["p", "ug"]` 或者 `["pu", "g"]`，取決於首先遇到這些分割中的哪一個（請注意：在更大的語料庫中，這樣的相等的情況很少見）。
+
+在這種情況下，很容易找到所有可能的分割並計算它們的概率,但一般來說會有點困難。有一種用於此的經典算法,稱為 *維特比(Viterbi)算法*。本質上,我們可以構建一個圖來檢測給定單詞的可能分割，如果從_a_到_b_的子詞在詞彙表中，則從字符_a_到字符_b_之間存在一個分支，並將子詞的概率歸因於該分支。
+
+為了在該圖中找到將具有最佳分數的路徑，維特比算法為單詞中的每個位置確定在該位置結束的具有最佳分數的分段。由於我們從開始到結束,可以通過循環遍歷以當前位置結尾的所有子詞，然後使用該子詞開始位置的最佳標記化分數來找到最佳分數。然後，我們只需要展開到達終點所採取的路徑。
+
+讓我們看一個使用我們的詞彙表和單詞 `"unhug"` 的例子。對於每個位置，以最好的分數結尾的子詞如下：
+
+```
+Character 0 (u): "u" (score 0.171429)
+Character 1 (n): "un" (score 0.076191)
+Character 2 (h): "un" "h" (score 0.005442)
+Character 3 (u): "un" "hu" (score 0.005442)
+Character 4 (g): "un" "hug" (score 0.005442)
+```
+
+因此 `"unhug"` 將被標記為 `["un", "hug"]`。
+
+<Tip>
+
+✏️ **現在輪到你了!** 確定單詞 `"huggun"` 的標記化及其分數。
+
+</Tip>
+
+## 回到訓練
+
+現在我們已經瞭解了標記化的工作原理,我們可以更深入地研究訓練期間使用的損失。在任何給定的階段,這個損失是通過對語料庫中的每個單詞進行標記來計算的,使用當前詞彙表和由語料庫中每個標記的頻率確定的 Unigram 模型(如前所述)。
+
+語料庫中的每個詞都有一個分數,損失是這些分數的負對數似然 -- 即所有詞的語料庫中所有詞的總和 `-log(P(word))`。
+
+讓我們用以下語料庫回到我們的例子:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+每個單詞的標記化及其各自的分數是:
+
+```
+"hug": ["hug"] (score 0.071428)
+"pug": ["pu", "g"] (score 0.007710)
+"pun": ["pu", "n"] (score 0.006168)
+"bun": ["bu", "n"] (score 0.001451)
+"hugs": ["hug", "s"] (score 0.001701)
+```
+
+所以損失是:
+
+```
+10 * (-log(0.071428)) + 5 * (-log(0.007710)) + 12 * (-log(0.006168)) + 4 * (-log(0.001451)) + 5 * (-log(0.001701)) = 169.8
+```
+
+現在我們需要計算刪除每個標記如何影響損失。這相當乏味,所以我們在這裡只對兩個標記進行操作,並保存整個過程以備有代碼來幫助我們。在這個(非常)特殊的情況下,我們對所有單詞有兩個等效的標記:正如我們之前看到的,例如, `"pug"` 可以以相同的分數被標記為 `["p", "ug"]`。因此,去除詞彙表中的 `"pu"` 標記將給出完全相同的損失。
+
+另一方面,去除 `"hug"` 損失變得更糟, 因為 `"hug"` 和 `"hugs"` 的標記化會變成:
+
+```
+"hug": ["hu", "g"] (score 0.006802)
+"hugs": ["hu", "gs"] (score 0.001701)
+```
+
+這些變化將導致損失增加:
+
+```
+- 10 * (-log(0.071428)) + 10 * (-log(0.006802)) = 23.5
+```
+
+因此, 標記 `"pu"`可能會從詞彙表中刪除,但不會刪除 `"hug"`.
+
+## 實現 Unigram
+
+現在讓我們在代碼中實現我們迄今為止看到的所有內容。與 BPE 和 WordPiece 一樣,這不是 Unigram 算法的有效實現(恰恰相反),但它應該可以幫助你更好地理解它。
+
+我們將使用與之前相同的語料庫作為示例:
+
+```python
+corpus = [
+    "This is the Hugging Face course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+這一次,我們將使用 `xlnet-base-cased` 作為我們的模型:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("xlnet-base-cased")
+```
+
+與 BPE 和 WordPiece 一樣,我們首先計算語料庫中每個單詞的出現次數:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+然後,我們需要將我們的詞彙表初始化為大於我們最終想要的詞彙量。我們必須包含所有基本字符(否則我們將無法標記每個單詞),但對於較大的子字符串,我們將只保留最常見的字符,因此我們按頻率對它們進行排序:
+
+```python
+char_freqs = defaultdict(int)
+subwords_freqs = defaultdict(int)
+for word, freq in word_freqs.items():
+    for i in range(len(word)):
+        char_freqs[word[i]] += freq
+        # Loop through the subwords of length at least 2
+        for j in range(i + 2, len(word) + 1):
+            subwords_freqs[word[i:j]] += freq
+
+# Sort subwords by frequency
+sorted_subwords = sorted(subwords_freqs.items(), key=lambda x: x[1], reverse=True)
+sorted_subwords[:10]
+```
+
+```python out
+[('▁t', 7), ('is', 5), ('er', 5), ('▁a', 5), ('▁to', 4), ('to', 4), ('en', 4), ('▁T', 3), ('▁Th', 3), ('▁Thi', 3)]
+```
+
+我們用最優的子詞對字符進行分組,以獲得大小為 300 的初始詞彙表:
+
+```python
+token_freqs = list(char_freqs.items()) + sorted_subwords[: 300 - len(char_freqs)]
+token_freqs = {token: freq for token, freq in token_freqs}
+```
+
+<Tip>
+
+💡 SentencePiece 使用一種稱為增強後綴數組(ESA)的更高效算法來創建初始詞彙表。
+
+</Tip>
+
+接下來,我們計算所有頻率的總和,將頻率轉換為概率。對於我們的模型,我們將存儲概率的對數,因為添加對數比乘以小數在數值上更穩定,這將簡化模型損失的計算:
+
+```python
+from math import log
+
+total_sum = sum([freq for token, freq in token_freqs.items()])
+model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+N現在主要功能是使用 Viterbi 算法標記單詞的功能。正如我們之前看到的,該算法計算單詞的每個子串的最佳分段,我們將其存儲在名為 `best_segmentations` 的變量中。我們將在單詞的每個位置(從 0 到其總長度)存儲一個字典,有兩個鍵:最佳分割中最後一個標記的開始索引,以及最佳分割的分數。使用最後一個標記的開始索引,一旦列表完全填充,我們將能夠檢索完整的分段。
+
+填充列表只需兩個循環:主循環遍歷每個起始位置,第二個循環嘗試從該起始位置開始的所有子字符串。如果子串在詞彙表中,我們有一個新的詞分段,直到該結束位置,我們將其與 `best_segmentations` 相比較。
+
+一旦主循環完成,我們就從結尾開始,從一個開始位置跳到下一個,記錄我們前進的標記,直到我們到達單詞的開頭:
+
+```python
+def encode_word(word, model):
+    best_segmentations = [{"start": 0, "score": 1}] + [
+        {"start": None, "score": None} for _ in range(len(word))
+    ]
+    for start_idx in range(len(word)):
+        # This should be properly filled by the previous steps of the loop
+        best_score_at_start = best_segmentations[start_idx]["score"]
+        for end_idx in range(start_idx + 1, len(word) + 1):
+            token = word[start_idx:end_idx]
+            if token in model and best_score_at_start is not None:
+                score = model[token] + best_score_at_start
+                # If we have found a better segmentation ending at end_idx, we update
+                if (
+                    best_segmentations[end_idx]["score"] is None
+                    or best_segmentations[end_idx]["score"] > score
+                ):
+                    best_segmentations[end_idx] = {"start": start_idx, "score": score}
+
+    segmentation = best_segmentations[-1]
+    if segmentation["score"] is None:
+        # We did not find a tokenization of the word -> unknown
+        return ["<unk>"], None
+
+    score = segmentation["score"]
+    start = segmentation["start"]
+    end = len(word)
+    tokens = []
+    while start != 0:
+        tokens.insert(0, word[start:end])
+        next_start = best_segmentations[start]["start"]
+        end = start
+        start = next_start
+    tokens.insert(0, word[start:end])
+    return tokens, score
+```
+
+我們已經可以在一些詞上嘗試我們的初始模型:
+
+```python
+print(encode_word("Hopefully", model))
+print(encode_word("This", model))
+```
+
+```python out
+(['H', 'o', 'p', 'e', 'f', 'u', 'll', 'y'], 41.5157494601402)
+(['This'], 6.288267030694535)
+```
+
+現在很容易計算模型在語料庫上的損失!
+
+```python
+def compute_loss(model):
+    loss = 0
+    for word, freq in word_freqs.items():
+        _, word_loss = encode_word(word, model)
+        loss += freq * word_loss
+    return loss
+```
+
+我們可以檢查它是否適用於我們擁有的模型:
+
+```python
+compute_loss(model)
+```
+
+```python out
+413.10377642940875
+```
+
+計算每個標記的分數也不是很難;我們只需要計算通過刪除每個標記獲得的模型的損失:
+
+```python
+import copy
+
+
+def compute_scores(model):
+    scores = {}
+    model_loss = compute_loss(model)
+    for token, score in model.items():
+        # We always keep tokens of length 1
+        if len(token) == 1:
+            continue
+        model_without_token = copy.deepcopy(model)
+        _ = model_without_token.pop(token)
+        scores[token] = compute_loss(model_without_token) - model_loss
+    return scores
+```
+
+我們可以在給定的標記上嘗試:
+
+```python
+scores = compute_scores(model)
+print(scores["ll"])
+print(scores["his"])
+```
+
+自從 `"ll"` 用於標記化 `"Hopefully"`, 刪除它可能會讓我們使用標記 `"l"` 兩次相反,我們預計它將產生正損失。 `"his"` 僅在單詞`"This"` 內使用,它被標記為自身,所以我們期望它的損失為零。結果如下:
+
+```python out
+6.376412403623874
+0.0
+```
+
+<Tip>
+
+💡 這種方法非常低效,因此 SentencePiece 使用了沒有標記 X 的模型損失的近似值:它不是從頭開始,而是通過其在剩餘詞彙表中的分段替換標記 X。這樣,所有分數可以與模型損失同時計算。
+
+</Tip>
+
+完成所有這些後,我們需要做的最後一件事是將模型使用的特殊標記添加到詞彙表中,然後循環直到我們從詞彙表中修剪了足夠的標記以達到我們想要的大小:
+
+```python
+percent_to_remove = 0.1
+while len(model) > 100:
+    scores = compute_scores(model)
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+    # Remove percent_to_remove tokens with the lowest scores.
+    for i in range(int(len(model) * percent_to_remove)):
+        _ = token_freqs.pop(sorted_scores[i][0])
+
+    total_sum = sum([freq for token, freq in token_freqs.items()])
+    model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+然後,為了標記一些文本,我們只需要應用預標記化,然後使用我們的 `encode_word()` 函數:
+
+```python
+def tokenize(text, model):
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in words_with_offsets]
+    encoded_words = [encode_word(word, model)[0] for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+
+
+tokenize("This is the Hugging Face course.", model)
+```
+
+```python out
+['▁This', '▁is', '▁the', '▁Hugging', '▁Face', '▁', 'c', 'ou', 'r', 's', 'e', '.']
+```
+
+Unigram 就是這樣!希望現在你感覺自己是標記器所有方面的專家。在下一節中,我們將深入研究 🤗 Tokenizers 庫的構建塊,並向您展示如何使用它們來構建您自己的標記器。
