@@ -1,0 +1,996 @@
+<FrameworkSwitchCourse {fw} />
+
+# 翻譯
+
+{#if fw === 'pt'}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter7/section4_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter7/section4_pt.ipynb"},
+]} />
+
+{:else}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter7/section4_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter7/section4_tf.ipynb"},
+]} />
+
+{/if}
+
+現在讓我們深入研究翻譯。這是另一個[sequence-to-sequence 任務](/course/chapter1/7)，這意味著這是一個可以表述為從一個序列到另一個序列的問題。從這個意義上說，這個問題非常類似[文本摘要](/course/chapter7/6)，並且您可以將我們將在此處學習到的一些內容遷移到其他的序列到序列問題，例如：
+
+- **風格遷移** : 創建一個模型將某種風格遷移到一段文本（例如，正式的風格遷移到休閒的風格或莎士比亞英語到現代英語）
+- **生成問題的回答** ：創建一個模型，在給定上下文的情況下生成問題的答案
+
+<Youtube id="1JvfrvZgi6c"/>
+
+如果您有足夠大的兩種（或更多）語言的文本語料庫，您可以從頭開始訓練一個新的翻譯模型，就像我們在[因果語言建模](/course/chapter7/6)部分中所做的那樣。然而，微調現有的翻譯模型會更快，無論是從像 mT5 或 mBART 這樣的多語言模型微調到特定的語言對，或者是專門用於從一種語言翻譯成另一種語言的模型。
+
+在本節中，我們將對[KDE4 數據集](https://huggingface.co/datasets/kde4)上的Marian模型進行微調，該模型經過了從英語到法語的翻譯預訓練(因為很多“ Hugging Face”的員工會說這兩種語言)，它是[KDE應用程序](https://apps.kde.org/)本地化文件的數據集。我們將使用的模型已經在從[Opus 數據集](https://opus.nlpl.eu/)(實際上包含KDE4數據集)中提取的法語和英語文本的大型語料庫上進行了預先訓練。但是，即使我們使用的預訓練模型在其預訓練期間使用了這部分數據集，我們也會看到，經過微調後，我們可以得到一個更好的版本。
+
+完成後，我們將擁有一個模型，可以進行這樣的翻譯：
+
+<iframe src="https://course-demos-marian-finetuned-kde4-en-to-fr.hf.space" frameBorder="0" height="350" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+<iframe src="https://course-demos-marian-finetuned-kde4-en-to-fr-darkmode.hf.space" frameBorder="0" height="350" title="Gradio app" class="hidden dark:block container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+<a class="flex justify-center" href="/huggingface-course/marian-finetuned-kde4-en-to-fr">
+<img class="block dark:hidden lg:w-3/5" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/modeleval-marian-finetuned-kde4-en-to-fr.png" alt="One-hot encoded labels for question answering."/>
+<img class="hidden dark:block lg:w-3/5" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/modeleval-marian-finetuned-kde4-en-to-fr-dark.png" alt="One-hot encoded labels for question answering."/>
+</a>
+
+與前面的部分一樣，您可以使用以下代碼找到我們將訓練並上傳到 Hub 的實際模型，並[在這裡](https://huggingface.co/huggingface-course/marian-finetuned-kde4-en-to-fr?text=This+plugin+allows+you+to+automatically+translate+web+pages+between+several+languages.)查看模型輸出的結果
+
+## 準備數據
+
+為了從頭開始微調或訓練翻譯模型，我們需要一個適合該任務的數據集。如前所述，我們將使用[KDE4 數據集](https://huggingface.co/datasets/kde4)在本節中，但您可以很容易地調整代碼以使用您自己的數據，只要您有要互譯的兩種語言的句子對。如果您需要複習如何將自定義數據加載到 **Dataset** 可以複習一下[第五章](/course/chapter5).
+
+### KDE4 數據集
+
+像往常一樣，我們使用 **load_dataset()** 函數：
+
+```py
+from datasets import load_dataset, load_metric
+
+raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
+```
+
+如果您想使用不同的語言對，您可以使用它們的代碼來指定它們。該數據集共有 92 種語言可用；您可以通過[數據集卡片](https://huggingface.co/datasets/kde4)展開其上的語言標籤來查看它們.
+
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/language_tags.png" alt="Language available for the KDE4 dataset." width="100%">
+
+我們來看看數據集：
+
+```py
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'translation'],
+        num_rows: 210173
+    })
+})
+```
+
+我們有 210,173 對句子，但在一次訓練過程中，我們需要創建自己的驗證集。正如我們在[第五章](/course/chapter5)學的的那樣, **Dataset** 有一個 **train_test_split()** 方法,可以幫我們拆分數據集。我們將設定固定的隨機數種子：
+
+```py
+split_datasets = raw_datasets["train"].train_test_split(train_size=0.9, seed=20)
+split_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'translation'],
+        num_rows: 189155
+    })
+    test: Dataset({
+        features: ['id', 'translation'],
+        num_rows: 21018
+    })
+})
+```
+
+我們可以將 **test** 的鍵重命名為 **validation** 像這樣：
+
+```py
+split_datasets["validation"] = split_datasets.pop("test")
+```
+
+現在讓我們看一下數據集的一個元素：
+
+```py
+split_datasets["train"][1]["translation"]
+```
+
+```python out
+{'en': 'Default to expanded threads',
+ 'fr': 'Par défaut, développer les fils de discussion'}
+```
+
+我們得到一個字典，其中包含我們請求的兩種語言的兩個句子。這個充滿技術計算機科學術語的數據集的一個特殊之處在於它們都完全用法語翻譯。然而，法國工程師通常很懶惰，在交談時，大多數計算機科學專用詞彙都用英語表述。例如，“threads”這個詞很可能出現在法語句子中，尤其是在技術對話中；但在這個數據集中，它被翻譯成更正確的“fils de Discussion”。我們使用的預訓練模型已經在一個更大的法語和英語句子語料庫上進行了預訓練，採用了更簡單的選擇，即保留單詞的原樣:
+
+```py
+from transformers import pipeline
+
+model_checkpoint = "Helsinki-NLP/opus-mt-en-fr"
+translator = pipeline("translation", model=model_checkpoint)
+translator("Default to expanded threads")
+```
+
+```python out
+[{'translation_text': 'Par défaut pour les threads élargis'}]
+```
+
+這種情況的另一個例子是“plugin”這個詞，它不是正式的法語詞，但大多數母語人士都能理解，也不會費心去翻譯。
+在 KDE4 數據集中，這個詞在法語中被翻譯成更正式的“module d’extension”：
+```py
+split_datasets["train"][172]["translation"]
+```
+
+```python out
+{'en': 'Unable to import %1 using the OFX importer plugin. This file is not the correct format.',
+ 'fr': "Impossible d'importer %1 en utilisant le module d'extension d'importation OFX. Ce fichier n'a pas un format correct."}
+```
+
+然而，我們的預訓練模型堅持使用簡練而熟悉的英文單詞：
+
+```py
+translator(
+    "Unable to import %1 using the OFX importer plugin. This file is not the correct format."
+)
+```
+
+```python out
+[{'translation_text': "Impossible d'importer %1 en utilisant le plugin d'importateur OFX. Ce fichier n'est pas le bon format."}]
+```
+
+看看我們的微調模型是否能識別數據集的這些特殊性。（劇透警告：它會）。
+
+<Youtube id="0Oxphw4Q9fo"/>
+
+<Tip>
+
+✏️ **輪到你了！** 另一個在法語中經常使用的英語單詞是“email”。在訓練數據集中找到使用這個詞的第一個樣本。它是如何翻譯的？預訓練模型如何翻譯同一個英文句子？
+
+</Tip>
+
+### 處理數據
+
+<Youtube id="XAR8jnZZuUs"/>
+
+您現在應該知道我們的下一步該做些什麼了：所有文本都需要轉換為token ID，以便模型能夠理解它們。對於這個任務，我們需要同時標記輸入和目標。我們的首要任務是創建我們的 **tokenizer** 對象。如前所述，我們將使用 Marian 英語到法語的預訓練模型。如果您使用另一對語言嘗試此代碼，請確保調整模型Checkpoint。[Helsinki-NLP](https://huggingface.co/Helsinki-NLP)組織提供了多種語言的一千多種模型。
+
+```python
+from transformers import AutoTokenizer
+
+model_checkpoint = "Helsinki-NLP/opus-mt-en-fr"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, return_tensors="tf")
+```
+
+您可以將 **model_checkpoint** 更換為[Hub](https://huggingface.co/models)上你喜歡的任何其他型號，或本地保存的預訓練模型和標記器。
+
+<Tip>
+
+💡 如果正在使用mart、mBART-50或M2 M100等多語言標記器，則需要在tokenizer中設置tokenizer.src_lang和tokenizer.tgt_lang為正確的輸入和目標的語言代碼。
+
+</Tip>
+
+我們的數據準備非常簡單。 只需要記住一件事：您照常處理輸入，但對於這次的輸出目標，您需要將標記器包裝在上下文管理器“as_target_tokenizer()”中。
+
+Python 中的上下文管理器引入了 **with** 語句，當您有兩個相關的操作要成對執行時很有用。最常見的例子是當您寫入或讀取文件時，下面是一個例子：
+
+```
+with open(file_path) as f:
+    content = f.read()
+```
+
+這裡成對執行的兩個相關操作是打開和關閉文件的操作。打開的文件f對應的對象只在with下的縮進塊內有效；在該塊之前打開，在該塊的末尾關閉。
+
+在本例中，上下文管理器 as_target_tokenizer() 將在執行縮進塊之前將標記器設置為輸出語言（此處為法語），然後將其設置回輸入語言（此處為英語）。
+
+因此，預處理一個樣本如下所示：
+
+```python
+en_sentence = split_datasets["train"][1]["translation"]["en"]
+fr_sentence = split_datasets["train"][1]["translation"]["fr"]
+
+inputs = tokenizer(en_sentence)
+with tokenizer.as_target_tokenizer():
+    targets = tokenizer(fr_sentence)
+```
+
+如果我們忘記在上下文管理器中標記目標，它們將被輸入標記器標記，在Marian模型的情況下，會導致輸出的異常：
+
+```python
+wrong_targets = tokenizer(fr_sentence)
+print(tokenizer.convert_ids_to_tokens(wrong_targets["input_ids"]))
+print(tokenizer.convert_ids_to_tokens(targets["input_ids"]))
+```
+
+```python out
+['▁Par', '▁dé', 'f', 'aut', ',', '▁dé', 've', 'lop', 'per', '▁les', '▁fil', 's', '▁de', '▁discussion', '</s>']
+['▁Par', '▁défaut', ',', '▁développer', '▁les', '▁fils', '▁de', '▁discussion', '</s>']
+```
+
+正如我們所看到的，使用英語標記器來預處理法語句子會產生更多的標記，因為標記器不知道任何法語單詞(除了那些也出現在英語語言中的單詞，比如“discussion”)。
+
+`inputs` 和 `targets` 都是帶有我們常用鍵（輸入 ID、注意掩碼等）的字典，所以最後一步是在輸入中設置一個 `"labels"` 鍵。 我們在數據集的預處理函數中執行此操作：
+
+```python
+max_input_length = 128
+max_target_length = 128
+
+
+def preprocess_function(examples):
+    inputs = [ex["en"] for ex in examples["translation"]]
+    targets = [ex["fr"] for ex in examples["translation"]]
+    model_inputs = tokenizer(inputs, max_length=max_input_length, truncation=True)
+
+    # Set up the tokenizer for targets
+    with tokenizer.as_target_tokenizer():
+        labels = tokenizer(targets, max_length=max_target_length, truncation=True)
+
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
+```
+
+請注意，我們為輸入和輸出設置了相同的最大長度。由於我們處理的文本看起來很短，我們使用 128。
+
+<Tip>
+
+💡如果你使用的是T5模型(更具體地說，是T5 -xxx檢查點之一)，模型將需要文本輸入有一個前綴來表示正在進行的任務，例如從英語到法語的翻譯
+
+</Tip>
+
+<Tip warning={true}>
+
+⚠️ 我們不關注目標的注意力掩碼，因為模型不會需要它。相反，對應於填充標記的標籤應設置為-100，以便在loss計算中忽略它們。這將在稍後由我們的數據整理器完成，因為我們正在應用動態填充，但是如果您在此處使用填充，您應該調整預處理函數以將與填充標記對應的所有標籤設置為 -100。
+
+</Tip>
+
+我們現在可以對數據集的所有數據一次性應用該預處理：
+
+```py
+tokenized_datasets = split_datasets.map(
+    preprocess_function,
+    batched=True,
+    remove_columns=split_datasets["train"].column_names,
+)
+```
+
+現在數據已經過預處理，我們準備好微調我們的預訓練模型！
+
+{#if fw === 'pt'}
+
+## 使用 Trainer API 微調模型
+
+使用 `Trainer` 的實際代碼將與以前相同，只是稍作改動：我們在這裡使用 [`Seq2SeqTrainer`](https://huggingface.co/transformers/main_classes/trainer.html#seq2seqtrainer)， 它是 `Trainer` 的子類，它可以正確處理這種序列到序列的評估，並使用 `generate()` 方法來預測輸入的輸出。 當我們討論評估指標時，我們將更詳細地探討這一點。
+
+首先，我們需要一個實際的模型來進行微調。 我們將使用通常的 `AutoModel` API：
+
+```py
+from transformers import AutoModelForSeq2SeqLM
+
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+## 使用 Keras 微調模型
+
+首先，我們需要一個實際的模型來進行微調。 我們將使用通常的 `AutoModel` API：
+
+```py
+from transformers import TFAutoModelForSeq2SeqLM
+
+model = TFAutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, from_pt=True)
+```
+
+<Tip warning={false}>
+
+💡 `Helsinki-NLP/opus-mt-en-fr` checkpoint只有 PyTorch 的權重，所以在使用`from_pretrained()`方法加載模型時不會使用 `from_pt=True` 參數。 當您指定`from_pt=True`，庫會自動下載並轉換PyTorch 為您提供權重。 如您所見，使用🤗transormer 在兩者之間切換非常簡單
+
+</Tip>
+
+{/if}
+
+請注意，這次我們使用的是在翻譯任務上訓練過的模型，並且實際上已經可以使用，因此沒有關於丟失權重或新初始化權重的警告。
+
+### 數據整理
+
+我們需要一個數據整理器來處理動態批處理的填充。在本例中，我們不能像[第3章](/course/chapter3)那樣使用帶填充的**DataCollatorWithPadding**，因為它只填充輸入（輸入ID、注意掩碼和令牌類型ID）。我們的標籤也應該填充到標籤中遇到的最大長度。而且，如前所述，用於填充標籤的填充值應為-100，而不是標記器的填充標記，以確保在損失計算中忽略這些填充值。
+
+這一切都可以由 [`DataCollatorForSeq2Seq`](https://huggingface.co/transformers/main_classes/data_collator.html#datacollatorforseq2seq) 完成。 與 `DataCollatorWithPadding` 一樣，它採用用於預處理輸入的`tokenizer`，但它也採用`model`。 這是因為數據整理器還將負責準備解碼器輸入 ID，它們是標籤偏移之後形成的，開頭帶有特殊標記。 由於不同架構的這種轉變略有不同，因此“DataCollatorForSeq2Seq”需要知道“模型”對象：
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model, return_tensors="tf")
+```
+
+{/if}
+
+為了在幾個樣本上進行測試，我們只需在我們標記化訓練集中的部分數據上調用它：
+
+```py
+batch = data_collator([tokenized_datasets["train"][i] for i in range(1, 3)])
+batch.keys()
+```
+
+```python out
+dict_keys(['attention_mask', 'input_ids', 'labels', 'decoder_input_ids'])
+```
+
+我們可以檢查我們的標籤是否已使用 **-100** 填充到批次的最大長度：
+
+```py
+batch["labels"]
+```
+
+```python out
+tensor([[  577,  5891,     2,  3184,    16,  2542,     5,  1710,     0,  -100,
+          -100,  -100,  -100,  -100,  -100,  -100],
+        [ 1211,     3,    49,  9409,  1211,     3, 29140,   817,  3124,   817,
+           550,  7032,  5821,  7907, 12649,     0]])
+```
+
+我們還可以查看解碼器輸入 ID，看看它們是標籤的偏移形成的版本：
+
+```py
+batch["decoder_input_ids"]
+```
+
+```python out
+tensor([[59513,   577,  5891,     2,  3184,    16,  2542,     5,  1710,     0,
+         59513, 59513, 59513, 59513, 59513, 59513],
+        [59513,  1211,     3,    49,  9409,  1211,     3, 29140,   817,  3124,
+           817,   550,  7032,  5821,  7907, 12649]])
+```
+
+以下是我們數據集中第一個和第二個元素的標籤：
+
+```py
+for i in range(1, 3):
+    print(tokenized_datasets["train"][i]["labels"])
+```
+
+```python out
+[577, 5891, 2, 3184, 16, 2542, 5, 1710, 0]
+[1211, 3, 49, 9409, 1211, 3, 29140, 817, 3124, 817, 550, 7032, 5821, 7907, 12649, 0]
+```
+
+{#if fw === 'pt'}
+
+我們將把這個 `data_collator` 傳遞給 `Seq2SeqTrainer`。 接下來，讓我們看一下評估指標。
+
+{:else}
+
+我們現在可以使用 `data_collator` 將我們的每個數據集轉換為 `tf.data.Dataset`，準備好進行訓練：
+
+```python
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["input_ids", "attention_mask", "labels"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=32,
+)
+tf_eval_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["input_ids", "attention_mask", "labels"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=16,
+)
+```
+
+{/if}
+
+
+### 評估指標
+
+<Youtube id="M05L1DhFqcw"/>
+
+{#if fw === 'pt'}
+
+`Seq2SeqTrainer` 添加到其超類 `Trainer` 的功能是在評估或預測期間使用 `generate()` 方法的能力。 在訓練期間，模型將使用帶有注意掩碼的“decoder_input_ids”，以確保它不使用預測的標記之後的標記，以加快訓練速度。 在推理過程中，我們將無法使用預測的標記之後的標記，因為我們沒有標籤，因此使用相同的設置使用帶有注意掩碼的“decoder_input_ids”，評估我們的模型是個好主意。
+
+正如我們在[第一章](/course/chapter1/6)看到的，解碼器通過一個一個地預測標記來執行推理——這是🤗 Transformers 在幕後通過 **generate()** 方法實現的。如果我們設置 predict_with_generate=True，Seq2 Seq Trainer 將允許我們使用該方法進行評估。
+
+
+{/if}
+
+用於翻譯的傳統指標是[BLEU 分數](https://en.wikipedia.org/wiki/BLEU), 由Kishore Papineni等人在[2002年的一篇文章](https://aclanthology.org/P02-1040.pdf)中引入。BLEU 分數評估翻譯與其標籤的接近程度。它不衡量模型生成輸出的可懂度或語法正確性，而是使用統計規則來確保生成輸出中的所有單詞也出現在目標中。此外，如果相同單詞在目標中沒有重複，則有規則懲罰相同單詞的重複（以避免模型輸出類似 **the the the the the**的句子 ) 並輸出比目標中短的句子（以避免模型輸出像 **the** 這樣的句子）。
+
+BLEU 的一個缺點是它需要文本已經被分詞，這使得比較使用不同標記器的模型之間的分數變得困難。因此，當今用於基準翻譯模型的最常用指標是[SacreBLEU](https://github.com/mjpost/sacrebleu)，它通過標準化標記化步驟解決了這個缺點（和其他的一些缺點）。要使用此指標，我們首先需要安裝 SacreBLEU 庫：
+
+```py
+!pip install sacrebleu
+```
+
+然後我們可以就像我們在[第三章](/course/chapter3)那樣通過 **load_metric()** 加載它 ：
+
+```py
+from datasets import load_metric
+
+metric = load_metric("sacrebleu")
+```
+
+該指標將文本作為輸入和目標結果。它旨在接受多個可接受的目標，因為同一個句子通常有多個可接受的翻譯——我們使用的數據集只提供一個，但在 NLP 中找到將多個句子作為標籤的數據集不是一個難題。因此，預測結果應該是一個句子列表，而參考應該是一個句子列表的列表。
+
+讓我們嘗試一個例子：
+
+```py
+predictions = [
+    "This plugin lets you translate web pages between several languages automatically."
+]
+references = [
+    [
+        "This plugin allows you to automatically translate web pages between several languages."
+    ]
+]
+metric.compute(predictions=predictions, references=references)
+```
+
+```python out
+{'score': 46.750469682990165,
+ 'counts': [11, 6, 4, 3],
+ 'totals': [12, 11, 10, 9],
+ 'precisions': [91.67, 54.54, 40.0, 33.33],
+ 'bp': 0.9200444146293233,
+ 'sys_len': 12,
+ 'ref_len': 13}
+```
+
+這得到了 46.75 的 BLEU 分數，這是相當不錯的——作為參考，原始 Transformer 模型在[“Attention Is All You Need” 論文](https://arxiv.org/pdf/1706.03762.pdf)類似的英語和法語翻譯任務中獲得了 41.8 的 BLEU 分數！ （有關各個指標的更多信息，例如 **counts** 和 **bp** ，見[SacreBLEU 倉庫](https://github.com/mjpost/sacrebleu/blob/078c440168c6adc89ba75fe6d63f0d922d42bcfe/sacrebleu/metrics/bleu.py#L74).) 另一方面，如果我們嘗試使用翻譯模型中經常出現的兩種糟糕的預測類型（大量重複或太短），我們將得到相當糟糕的 BLEU 分數：
+
+```py
+predictions = ["This This This This"]
+references = [
+    [
+        "This plugin allows you to automatically translate web pages between several languages."
+    ]
+]
+metric.compute(predictions=predictions, references=references)
+```
+
+```python out
+{'score': 1.683602693167689,
+ 'counts': [1, 0, 0, 0],
+ 'totals': [4, 3, 2, 1],
+ 'precisions': [25.0, 16.67, 12.5, 12.5],
+ 'bp': 0.10539922456186433,
+ 'sys_len': 4,
+ 'ref_len': 13}
+```
+
+```py
+predictions = ["This plugin"]
+references = [
+    [
+        "This plugin allows you to automatically translate web pages between several languages."
+    ]
+]
+metric.compute(predictions=predictions, references=references)
+```
+
+```python out
+{'score': 0.0,
+ 'counts': [2, 1, 0, 0],
+ 'totals': [2, 1, 0, 0],
+ 'precisions': [100.0, 100.0, 0.0, 0.0],
+ 'bp': 0.004086771438464067,
+ 'sys_len': 2,
+ 'ref_len': 13}
+```
+
+分數可以從 0 到 100，越高越好。
+
+{#if fw === 'tf'}
+
+為了從模型輸出可以被評估基準可以使用的文本，我們將使用 **tokenizer.batch_decode()** 方法。我們只需要清理標籤中所有 **-100** （標記器會自動為填充標記做同樣的事情）：
+
+```py
+import numpy as np
+
+
+def compute_metrics():
+    all_preds = []
+    all_labels = []
+    sampled_dataset = tokenized_datasets["validation"].shuffle().select(range(200))
+    tf_generate_dataset = sampled_dataset.to_tf_dataset(
+        columns=["input_ids", "attention_mask", "labels"],
+        collate_fn=data_collator,
+        shuffle=False,
+        batch_size=4,
+    )
+    for batch in tf_generate_dataset:
+        predictions = model.generate(
+            input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
+        )
+        decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        labels = batch["labels"].numpy()
+        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+        decoded_preds = [pred.strip() for pred in decoded_preds]
+        decoded_labels = [[label.strip()] for label in decoded_labels]
+        all_preds.extend(decoded_preds)
+        all_labels.extend(decoded_labels)
+
+    result = metric.compute(predictions=all_preds, references=all_labels)
+    return {"bleu": result["score"]}
+```
+
+{:else}
+
+為了從模型輸出到度量可以使用的文本，我們將使用 `tokenizer.batch_decode()` 方法。 我們只需要清理標籤中的所有 `-100`（標記器將自動對填充標記執行相同操作）：
+
+```py
+import numpy as np
+
+
+def compute_metrics(eval_preds):
+    preds, labels = eval_preds
+    # In case the model returns more than the prediction logits
+    if isinstance(preds, tuple):
+        preds = preds[0]
+
+    decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+
+    # Replace -100s in the labels as we can't decode them
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+    # Some simple post-processing
+    decoded_preds = [pred.strip() for pred in decoded_preds]
+    decoded_labels = [[label.strip()] for label in decoded_labels]
+
+    result = metric.compute(predictions=decoded_preds, references=decoded_labels)
+    return {"bleu": result["score"]}
+```
+
+{/if}
+
+現在這已經完成了，我們已經準備好微調我們的模型了！
+
+### 微調模型
+
+第一步是登錄 Hugging Face，這樣您就可以將結果上傳到模型中心。有一個方便的功能可以幫助您在notebook中完成此操作：
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+這將顯示一個小部件，您可以在其中輸入您的 Hugging Face 登錄憑據。
+
+如果您不是在notebook上運行代碼，只需在終端中輸入以下行：
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'tf'}
+
+在我們開始之前，讓我們看看我們在沒有任何訓練的情況下從我們的模型中得到了什麼樣的結果：
+
+```py
+print(compute_metrics())
+```
+
+```
+{'bleu': 33.26983701454733}
+```
+
+一旦完成，我們就可以準備編譯和訓練模型所需的一切。 注意當使用 `tf.keras.mixed_precision.set_global_policy("mixed_float16")`時——這將告訴 Keras 使用 float16 進行訓練，這可以顯著提高支持它的 GPU（Nvidia 20xx/V100 或更高版本）的速度。
+
+```python
+from transformers import create_optimizer
+from transformers.keras_callbacks import PushToHubCallback
+import tensorflow as tf
+
+# The number of training steps is the number of samples in the dataset, divided by the batch size then multiplied
+# by the total number of epochs. Note that the tf_train_dataset here is a batched tf.data.Dataset,
+# not the original Hugging Face Dataset, so its len() is already num_samples // batch_size.
+num_epochs = 3
+num_train_steps = len(tf_train_dataset) * num_epochs
+
+optimizer, schedule = create_optimizer(
+    init_lr=5e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Train in mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+接下來，我們定義一個 `PushToHubCallback` 以便在訓練期間將我們的模型上傳到 Hub，正如我們在 [第 2 節]((/course/chapter7/2)) 中看到的，然後我們只需擬合模型時添加該回調函數：
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(
+    output_dir="marian-finetuned-kde4-en-to-fr", tokenizer=tokenizer
+)
+
+model.fit(
+    tf_train_dataset,
+    validation_data=tf_eval_dataset,
+    callbacks=[callback],
+    epochs=num_epochs,
+)
+```
+
+請注意，您可以使用 `hub_model_id` 參數指定要推送到的存儲庫的名稱（當您想把模型推送到指定的組織的時候，您也必須使用此參數）。 例如，當我們將模型推送到 [`huggingface-course` 組織](https://huggingface.co/huggingface-course) 時，我們添加了 `hub_model_id="huggingface-course/marian-finetuned-kde4-en- to-fr"` 到 `Seq2SeqTrainingArguments`。 默認情況下，使用的存儲庫將在您的命名空間中，並以您設置的輸出目錄命名，因此這裡將是 `"sgugger/marian-finetuned-kde4-en-to-fr"`。
+
+<Tip>
+
+💡如果您使用的輸出目錄已經存在，則它需要是您要推送到的存儲庫的本地克隆。如果不是，您將在定義您的名稱時會遇到錯誤，並且需要設置一個新名稱。
+
+</Tip>
+
+最後，讓我們看看訓練結束後我們的指標是什麼樣的：
+
+```py
+print(compute_metrics())
+```
+
+```
+{'bleu': 57.334066271545865}
+```
+
+在這個階段，您可以使用模型中心上的推理小部件來測試您的模型並與您的朋友分享。 您已經成功地微調了翻譯任務中的模型——恭喜！
+
+{:else}
+
+一旦完成，我們就可以定義我們的 `Seq2SeqTrainingArguments`。 與 `Trainer` 一樣，我們使用 `TrainingArguments` 的子類，其中包含更多可以設置的字段：
+
+```python
+from transformers import Seq2SeqTrainingArguments
+
+args = Seq2SeqTrainingArguments(
+    f"marian-finetuned-kde4-en-to-fr",
+    evaluation_strategy="no",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=64,
+    weight_decay=0.01,
+    save_total_limit=3,
+    num_train_epochs=3,
+    predict_with_generate=True,
+    fp16=True,
+    push_to_hub=True,
+)
+```
+
+除了通常的超參數（如學習率、訓練輪數、批次大小和一些權重衰減）之外，與我們在前幾節中看到的相比，這裡有一些變化：
+
+- 我們沒有設置任何定期評估，因為評估需要耗費一定的時間；我們只會在訓練開始之前和結束之後評估我們的模型一次。
+- 我們設置fp16=True，這可以加快支持fp16的 GPU 上的訓練速度。
+- 和上面我們討論的那樣，我們設置predict_with_generate=True
+- 我們用push_to_hub=True在每個 epoch 結束時將模型上傳到 Hub。
+
+請注意，您可以使用 `hub_model_id` 參數指定要推送到的存儲庫的名稱（當您想把模型推送到指定的組織的時候，您也必須使用此參數）。 例如，當我們將模型推送到 [`huggingface-course` 組織](https://huggingface.co/huggingface-course) 時，我們添加了 `hub_model_id="huggingface-course/marian-finetuned-kde4-en- to-fr"` 到 `Seq2SeqTrainingArguments`。 默認情況下，使用的存儲庫將在您的命名空間中，並以您設置的輸出目錄命名，因此這裡將是 `"sgugger/marian-finetuned-kde4-en-to-fr"`。
+
+<Tip>
+
+💡如果您使用的輸出目錄已經存在，則它需要是您要推送到的存儲庫的本地克隆。如果不是，您將在定義您的名稱時會遇到錯誤，並且需要設置一個新名稱。
+
+</Tip>
+
+
+最後，我們需要將所有內容傳遞給 **Seq2SeqTrainer** ：
+
+```python
+from transformers import Seq2SeqTrainer
+
+trainer = Seq2SeqTrainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+在訓練之前，我們將首先查看我們的模型獲得的分數，以仔細檢查我們的微調沒有讓事情變得更糟。此命令需要一些時間，因此您可以在執行時喝杯咖啡：
+
+```python
+trainer.evaluate(max_length=max_target_length)
+```
+
+```python out
+{'eval_loss': 1.6964408159255981,
+ 'eval_bleu': 39.26865061007616,
+ 'eval_runtime': 965.8884,
+ 'eval_samples_per_second': 21.76,
+ 'eval_steps_per_second': 0.341}
+```
+
+BLEU的分數還不錯，這反映了我們的模型已經擅長將英語句子翻譯成法語句子。
+
+接下來是訓練，這也需要一些時間：
+
+```python
+trainer.train()
+```
+
+請注意，當訓練發生時，每次保存模型時（這裡是每個時期），它都會在後臺上傳到 Hub。這樣，如有必要，您將能夠在另一臺機器上繼續您的訓練。
+
+訓練完成後，我們再次評估我們的模型——希望我們會看到 BLEU 分數有所改善！
+
+```py
+trainer.evaluate(max_length=max_target_length)
+```
+
+```python out
+{'eval_loss': 0.8558505773544312,
+ 'eval_bleu': 52.94161337775576,
+ 'eval_runtime': 714.2576,
+ 'eval_samples_per_second': 29.426,
+ 'eval_steps_per_second': 0.461,
+ 'epoch': 3.0}
+```
+
+這是近 14 點的改進，這很棒。
+
+最後，我們使用 **push_to_hub()** 方法來確保我們上傳模型的最新版本。這 **Trainer** 還創建了一張包含所有評估結果的模型卡並上傳。此模型卡包含可幫助模型中心為推理演示選擇小部件的元數據。通常不需要做額外的更改，因為它可以從模型類中推斷出正確的小部件，但在這種情況下，相同的模型類可以用於所有類型的序列到序列問題，所以我們指定它是一個翻譯模型：
+
+```py
+trainer.push_to_hub(tags="translation", commit_message="Training complete")
+```
+
+如果您想檢查命令執行的結果，此命令將返回它剛剛執行的提交的 URL，可以打開url進行檢查：
+
+```python out
+'https://huggingface.co/sgugger/marian-finetuned-kde4-en-to-fr/commit/3601d621e3baae2bc63d3311452535f8f58f6ef3'
+```
+
+在此階段，您可以使用模型中心上的推理小部件來測試您的模型並與您的朋友分享。您已成功微調翻譯任務的模型 - 恭喜！
+
+如果您想更深入地瞭解訓練循環，我們現在將向您展示如何使用 🤗 Accelerate 做同樣的事情。
+
+{/if}
+
+{#if fw === 'pt'}
+
+## 自定義訓練循環
+
+現在讓我們看一下完整的訓練循環，以便您可以輕鬆自定義所需的部分。它看起來很像我們在[本章第二節](/course/chapter7/2)和[第三章第四小節](/course/chapter3/4)所做的。
+
+### 準備訓練所需的一切
+
+您已經多次看到所有這些，因此這一塊會簡略進行。首先我們將構建我們的數據集的**DataLoader** ，在將數據集設置為 **torch** 格式，我們就得到了 PyTorch 張量：
+
+```py
+from torch.utils.data import DataLoader
+
+tokenized_datasets.set_format("torch")
+train_dataloader = DataLoader(
+    tokenized_datasets["train"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], collate_fn=data_collator, batch_size=8
+)
+```
+
+接下來我們重新實例化我們的模型，以確保我們不會繼續上一節的微調，而是再次從預訓練模型開始重新訓練：
+
+```py
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+然後我們需要一個優化器：
+
+```py
+from transformers import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+一旦我們擁有所有這些對象，我們就可以將它們發送到 `accelerator.prepare()` 方法。 請記住，如果您想在 Colab 筆記本訓練中使用TPU，則需要將所有這些代碼移動到訓練函數中，並且不應執行任何實例化“加速器”的對象。
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator()
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+現在我們已經發送了我們的 **train_dataloader** 到 **accelerator.prepare()** ，我們可以使用它的長度來計算訓練步驟的數量。請記住，我們應該始終在準備好數據加載器後執行此操作，因為該方法會更改 **DataLoader** .我們使用從學習率衰減到 0 的經典線性學習率調度：
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 3
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+最後，要將我們的模型推送到 Hub，我們需要創建一個 **Repository** 工作文件夾中的對象。如果您尚未登錄，請先登錄 Hugging Face。我們將從我們想要為模型提供的模型 ID 中確定存儲庫名稱（您可以自由地用自己的選擇替換 **repo_name** ；它需要包含您的用戶名，可以使用**get_full_repo_name()**函數的查看目前的repo_name）：
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "marian-finetuned-kde4-en-to-fr-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/marian-finetuned-kde4-en-to-fr-accelerate'
+```
+
+然後我們可以在本地文件夾中克隆該存儲庫。如果它已經存在，這個本地文件夾應該是我們正在使用的存儲庫的克隆：
+
+```py
+output_dir = "marian-finetuned-kde4-en-to-fr-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+我們現在可以通過調用 **repo.push_to_hub()** 方法上傳我們保存的任何內容 **output_dir** 。這將幫助我們在每個 epoch 結束時上傳過程中的模型。
+
+### 訓練循環
+
+我們現在準備編寫完整的訓練循環。為了簡化它的評估部分，我們定義了這個 **postprocess()** 函數接收預測結果和正確標籤並將它們轉換為我們 **metric** 對象所需要的字符串列表：
+
+```py
+def postprocess(predictions, labels):
+    predictions = predictions.cpu().numpy()
+    labels = labels.cpu().numpy()
+
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+
+    # Replace -100 in the labels as we can't decode them.
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+    # Some simple post-processing
+    decoded_preds = [pred.strip() for pred in decoded_preds]
+    decoded_labels = [[label.strip()] for label in decoded_labels]
+    return decoded_preds, decoded_labels
+```
+
+訓練循環看起來和[本章第二節](/course/chapter7/2)與[第三章](/course/chapter3)很像，在評估部分有一些不同 - 所以讓我們專注於這一點！
+
+首先要注意的是我們使用 `generate()` 方法來計算預測，但這是我們基礎模型上的一個方法，而不是包裝模型🤗 Accelerate 在 `prepare()` 方法中創建。 這就是為什麼我們先解包模型，然後調用這個方法。
+
+第二件事是，就像[token 分類](/course/chapter7/2)，兩個進程可能將輸入和標籤填充為不同的形狀，因此我們在調用 **gather()** 方法之前使用 **accelerator.pad_across_processes()** 使預測和標籤具有相同的形狀。如果我們不這樣做，評估要麼出錯，要麼永遠在阻塞。
+
+```py
+from tqdm.auto import tqdm
+import torch
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Training
+    model.train()
+    for batch in train_dataloader:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluation
+    model.eval()
+    for batch in tqdm(eval_dataloader):
+        with torch.no_grad():
+            generated_tokens = accelerator.unwrap_model(model).generate(
+                batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                max_length=128,
+            )
+        labels = batch["labels"]
+
+        # Necessary to pad predictions and labels for being gathered
+        generated_tokens = accelerator.pad_across_processes(
+            generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
+        )
+        labels = accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
+
+        predictions_gathered = accelerator.gather(generated_tokens)
+        labels_gathered = accelerator.gather(labels)
+
+        decoded_preds, decoded_labels = postprocess(predictions_gathered, labels_gathered)
+        metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+
+    results = metric.compute()
+    print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
+
+    # Save and upload
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+```python out
+epoch 0, BLEU score: 53.47
+epoch 1, BLEU score: 54.24
+epoch 2, BLEU score: 54.44
+```
+
+完成此操作後，您應該有一個模型，其結果與使用 `Seq2SeqTrainer` 訓練的模型非常相似。 您可以在 [*huggingface-course/marian-finetuned-kde4-en-to-fr-accelerate*](https://huggingface.co/huggingface-course/marian-finetuned-kde4-en-to-fr-accelerate）查看訓練完的結果。 如果您想測試對訓練循環的任何調整，您可以通過編輯上面顯示的代碼直接實現它們！
+
+{/if}
+
+## 使用微調後的模型
+
+我們已經向您展示瞭如何將我們在模型中心微調的模型與推理小部件一起使用。 要在“管道”中本地使用它，我們只需要指定正確的模型標識符：
+
+```py
+from transformers import pipeline
+
+# Replace this with your own checkpoint
+model_checkpoint = "huggingface-course/marian-finetuned-kde4-en-to-fr"
+translator = pipeline("translation", model=model_checkpoint)
+translator("Default to expanded threads")
+```
+
+```python out
+[{'translation_text': 'Par défaut, développer les fils de discussion'}]
+```
+
+正如預期的那樣，我們的預訓練模型將其知識適應了我們對其進行微調的語料庫，而不是單獨留下英文單詞“threads”，而是將其翻譯成法語官方版本。 “”的翻譯也是一樣的：
+
+```py
+translator(
+    "Unable to import %1 using the OFX importer plugin. This file is not the correct format."
+)
+```
+
+```python out
+[{'translation_text': "Impossible d'importer %1 en utilisant le module externe d'importation OFX. Ce fichier n'est pas le bon format."}]
+```
+
+風格適應的另一個很好的例子！
+
+<Tip>
+
+✏️ **輪到你了！** “電子郵件”這個詞在模型返回了什麼？
+
+</Tip>
