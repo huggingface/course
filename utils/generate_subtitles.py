@@ -75,6 +75,7 @@ def generate_subtitles(language: str, youtube_language_code: str = None, is_task
 
 
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--language", type=str, help="Language to generate subtitles for")
