@@ -1,0 +1,124 @@
+# 標準化和預標記化
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section4.ipynb"},
+]} />
+
+在我們更深入地研究與 Transformer 模型（字節對編碼 [BPE]、WordPiece 和 Unigram）一起使用的三種最常見的子詞標記化算法之前，我們將首先看一下每個標記器應用於文本的預處理。以下是標記化管道中步驟的高級概述：
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="The tokenization pipeline.">
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="The tokenization pipeline.">
+</div>
+
+在將文本拆分為子標記之前（根據其模型），分詞器執行兩個步驟： _normalization_ 和 _pre-tokenization_.
+
+## 正常化
+
+<Youtube id="4IIC2jI9CaU"/>
+
+標準化步驟涉及一些常規清理，例如刪除不必要的空格、小寫和/或刪除重音符號。如果你熟悉[Unicode normalization](http://www.unicode.org/reports/tr15/)（例如 NFC 或 NFKC），這也是 tokenizer 可能應用的東西。
+
+🤗Transformers **tokenizer** 有一個屬性叫做 **backend_tokenizer** 它提供了對 🤗 Tokenizers 庫中底層標記器的訪問：
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+print(type(tokenizer.backend_tokenizer))
+```
+
+```python out
+<class 'tokenizers.Tokenizer'>
+```
+
+**normalizer** 的屬性 **tokenizer** 對象有一個 **normalize_str()** 我們可以用來查看標準化是如何執行的方法：
+
+```py
+print(tokenizer.backend_tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+```
+
+```python out
+'hello how are u?'
+```
+
+在這個例子中，因為我們選擇了 **bert-base-uncased** 檢查點，標準化應用小寫並刪除重音。
+
+<Tip>
+
+✏️ **試試看!** 從檢查點加載標記器並將相同的示例傳遞給它。您可以看到分詞器的帶殼和無殼版本之間的主要區別是什麼？
+
+
+</Tip>
+
+## 預標記化
+
+<Youtube id="grlLV8AIXug"/>
+
+正如我們將在下一節中看到的，分詞器不能單獨在原始文本上進行訓練。相反，我們首先需要將文本拆分為小實體，例如單詞。這就是預標記化步驟的用武之地。 正如我們在[Chapter 2](/course/chapter2), 基於單詞的標記器可以簡單地將原始文本拆分為空白和標點符號的單詞。這些詞將是分詞器在訓練期間可以學習的子標記的邊界。
+
+要查看快速分詞器如何執行預分詞，我們可以使用 **pre_tokenize_str()** 的方法 **pre_tokenizer** 的屬性 **tokenizer** 目的：
+
+```py
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+```python out
+[('Hello', (0, 5)), (',', (5, 6)), ('how', (7, 10)), ('are', (11, 14)), ('you', (16, 19)), ('?', (19, 20))]
+```
+
+請注意分詞器如何已經跟蹤偏移量，這就是它如何為我們提供上一節中使用的偏移量映射。這裡分詞器忽略了這兩個空格，只用一個替換它們，但偏移量在 **are** 和 **you** 考慮到這一點。
+
+由於我們使用的是 BERT 分詞器，預分詞涉及對空格和標點符號進行拆分。對於這一步，其他標記器可以有不同的規則。例如，如果我們使用 GPT-2 標記器：
+
+```py
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+它也會在空格和標點符號上拆分，但它會保留空格並將它們替換為 **Ġ** 符號，如果我們解碼令牌，則使其能夠恢復原始空格：
+
+```python out
+[('Hello', (0, 5)), (',', (5, 6)), ('Ġhow', (6, 10)), ('Ġare', (10, 14)), ('Ġ', (14, 15)), ('Ġyou', (15, 19)),
+ ('?', (19, 20))]
+```
+
+另請注意，與 BERT 分詞器不同，此分詞器不會忽略雙空格
+
+最後一個例子，讓我們看一下基於 SentencePiece 算法的 T5 分詞器：
+
+```py
+tokenizer = AutoTokenizer.from_pretrained("t5-small")
+tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+```
+
+```python out
+[('▁Hello,', (0, 6)), ('▁how', (7, 10)), ('▁are', (11, 14)), ('▁you?', (16, 20))]
+```
+
+與 GPT-2 標記器一樣，這個標記器保留空格並用特定標記替換它們（ **_** )，但 T5 分詞器只在空格上拆分，而不是標點符號。還要注意，它默認在句子的開頭添加了一個空格（之前 **Hello** ) 並忽略了之間的雙空格 **are** 和 **you** .
+
+現在我們已經瞭解了一些不同的標記器如何處理文本，我們可以開始探索底層算法本身。我們首先快速瀏覽一下廣泛適用的 SentencePiece；然後，在接下來的三個部分中，我們將研究用於子詞標記化的三種主要算法是如何工作的。
+
+## 句子
+
+[SentencePiece](https://github.com/google/sentencepiece) 是一種用於文本預處理的標記化算法，您可以將其與我們將在接下來的三個部分中看到的任何模型一起使用。它將文本視為 Unicode 字符序列，並用特殊字符替換空格， **▁** .與 Unigram 算法結合使用（參見[section 7](/course/chapter7/7)), 它甚至不需要預標記化步驟，這對於不使用空格字符的語言（如中文或日語）非常有用。
+
+SentencePiece 的另一個主要特點是可逆標記化：由於沒有對空格進行特殊處理，因此只需通過將它們連接起來並替換 **_** s 帶空格——這會導致標準化的文本。正如我們之前看到的，BERT 分詞器刪除了重複的空格，因此它的分詞是不可逆的。
+
+## 算法概述
+
+在下面的部分中，我們將深入研究三種主要的子詞標記化算法：BPE（由 GPT-2 和其他人使用）、WordPiece（例如由 BERT 使用）和 Unigram（由 T5 和其他人使用）。在我們開始之前，這裡是它們各自工作原理的快速概述。如果您還沒有理解，請在閱讀下一節後立即回到此表。
+
+
+Model | BPE | WordPiece | Unigram
+:----:|:---:|:---------:|:------:
+Training | Starts from a small vocabulary and learns rules to merge tokens |  Starts from a small vocabulary and learns rules to merge tokens | Starts from a large vocabulary and learns rules to remove tokens
+Training step | Merges the tokens corresponding to the most common pair | Merges the tokens corresponding to the pair with the best score based on the frequency of the pair, privileging pairs where each individual token is less frequent | Removes all the tokens in the vocabulary that will minimize the loss computed on the whole corpus
+Learns | Merge rules and a vocabulary | Just a vocabulary | A vocabulary with a score for each token
+Encoding | Splits a word into characters and applies the merges learned during training | Finds the longest subword starting from the beginning that is in the vocabulary, then does the same for the rest of the word | Finds the most likely split into tokens, using the scores learned during training
+
+現在讓我們深入瞭解 BPE！

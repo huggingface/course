@@ -1,0 +1,639 @@
+<FrameworkSwitchCourse {fw} />
+
+# QA 管道中的快速標記器
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section3b_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section3b_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section3b_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section3b_tf.ipynb"},
+]} />
+
+{/if}
+
+我們現在將深入研究 **question-answering** 管道，看看如何利用偏移量從上下文中獲取手頭問題的答案，有點像我們在上一節中對分組實體所做的。然後我們將看到我們如何處理最終被截斷的非常長的上下文。如果您對問答任務不感興趣，可以跳過此部分。
+
+{#if fw === 'pt'}
+
+<Youtube id="_wxyB3j3mk4"/>
+
+{:else}
+
+<Youtube id="b3u8RzBCX9Y"/>
+
+{/if}
+
+## 使用 `question-answering` 管道
+
+正如我們在[Chapter 1](/course/chapter1)，我們可以使用 **question-answering** 像這樣的管道以獲得問題的答案：
+
+```py
+from transformers import pipeline
+
+question_answerer = pipeline("question-answering")
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch, and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+```python out
+{'score': 0.97773,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+與其他管道不同，它不能截斷和拆分長於模型接受的最大長度的文本（因此可能會丟失文檔末尾的信息），此管道可以處理非常長的上下文，並將返回回答這個問題，即使它在最後：
+
+```py
+long_context = """
+🤗 Transformers: State of the Art NLP
+
+🤗 Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+🤗 Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internals are exposed as consistently as possible.
+  - Model files can be used independently of the library for quick experiments.
+
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question_answerer(question=question, context=long_context)
+```
+
+```python out
+{'score': 0.97149,
+ 'start': 1892,
+ 'end': 1919,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+讓我們看看它是如何做到這一切的！
+
+## 使用模型進行問答
+
+與任何其他管道一樣，我們首先對輸入進行標記化，然後通過模型將其發送。默認情況下用於的檢查點 **question-answering** 管道是[distilbert-base-cased-distilled-squad](https://huggingface.co/distilbert-base-cased-distilled-squad)（名稱中的“squad”來自模型微調的數據集；我們將在[Chapter 7](/course/chapter7/7)):
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFAutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = TFAutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="tf")
+outputs = model(**inputs)
+```
+
+{/if}
+
+請注意，我們將問題和上下文標記為一對，首先是問題
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens.svg" alt="An example of tokenization of question and context"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens-dark.svg" alt="An example of tokenization of question and context"/>
+</div>
+
+問答模型的工作方式與我們迄今為止看到的模型略有不同。以上圖為例，該模型已經過訓練，可以預測答案開始的標記的索引（此處為 21）和答案結束處的標記的索引（此處為 24）。這就是為什麼這些模型不返回一個 logits 的張量，而是返回兩個：一個用於對應於答案的開始標記的 logits，另一個用於對應於答案的結束標記的 logits。由於在這種情況下我們只有一個包含 66 個標記的輸入，我們得到：
+
+```py
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([1, 66]) torch.Size([1, 66])
+```
+
+{:else}
+
+```python out
+(1, 66) (1, 66)
+```
+
+{/if}
+
+為了將這些 logits 轉換為概率，我們將應用一個 softmax 函數——但在此之前，我們需要確保我們屏蔽了不屬於上下文的索引。我們的輸入是 **[CLS] question [SEP] context [SEP]** ，所以我們需要屏蔽問題的標記以及 **[SEP]** 令牌。我們將保留 **[CLS]** 然而，因為某些模型使用它來表示答案不在上下文中。
+
+由於我們將在之後應用 softmax，我們只需要用一個大的負數替換我們想要屏蔽的 logits。在這裡，我們使用 **-10000** ：
+
+{#if fw === 'pt'}
+
+```py
+import torch
+
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+mask = torch.tensor(mask)[None]
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+{:else}
+
+```py
+import tensorflow as tf
+
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+mask = tf.constant(mask)[None]
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+{/if}
+
+現在我們已經正確屏蔽了與我們不想預測的位置相對應的 logits，我們可以應用 softmax：
+
+{#if fw === 'pt'}
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)[0]
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)[0]
+```
+
+{:else}
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1)[0].numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1)[0].numpy()
+```
+
+{/if}
+
+在這個階段，我們可以採用開始和結束概率的 argmax——但我們最終可能會得到一個大於結束索引的開始索引，所以我們需要採取更多的預防措施。我們將計算每個可能的概率 **start_index** 和 **end_index** 在哪裡 **start_index <= end_index** ，然後取元組 **(start_index, end_index)** 以最高的概率。
+
+假設事件“答案開始於 **start_index** ”和“答案結束於 **end_index** ” 要獨立，答案開始於的概率 **start_index** 並結束於 **end_index** 是：
+
+$$\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]$$ 
+
+所以，要計算所有的分數，我們只需要計算所有的產品 \\(\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]\\) where `start_index <= end_index`.
+
+首先讓我們計算所有可能的產品：
+```py
+scores = start_probabilities[:, None] * end_probabilities[None, :]
+```
+
+{#if fw === 'pt'}
+
+然後我們將屏蔽這些值 **start_index > end_index** 通過將它們設置為 **0** （其他概率都是正數）。這 **torch.triu()** 函數返回作為參數傳遞的 2D 張量的上三角部分，因此它會為我們做屏蔽：
+
+```py
+scores = torch.triu(scores)
+```
+
+{:else}
+然後我們將屏蔽這些值 **start_index > end_index** 通過將它們設置為 **0** （其他概率都是正數）。這 **torch.triu()** 函數返回作為參數傳遞的 2D 張量的上三角部分，因此它會為我們做屏蔽：
+
+```py
+scores = np.triu(scores)
+```
+
+{/if}
+
+現在我們只需要得到最大值的索引。由於 PyTorch 將返回展平張量中的索引，因此我們需要使用地板除法 **//** 和模數 **%** 操作以獲得 **start_index** 和 **end_index** ：
+
+```py
+max_index = scores.argmax().item()
+start_index = max_index // scores.shape[1]
+end_index = max_index % scores.shape[1]
+print(scores[start_index, end_index])
+```
+
+我們還沒有完全完成，但至少我們已經有了正確的答案分數（您可以通過將其與上一節中的第一個結果進行比較來檢查這一點）：
+
+```python out
+0.97773
+```
+
+<Tip>
+
+✏️ **試試看!** 計算五個最可能的答案的開始和結束索引。
+
+</Tip>
+
+我們有 **start_index** 和 **end_index** 就標記而言的答案，所以現在我們只需要轉換為上下文中的字符索引。這是偏移量非常有用的地方。我們可以像在令牌分類任務中一樣抓住它們並使用它們：
+
+```py
+inputs_with_offsets = tokenizer(question, context, return_offsets_mapping=True)
+offsets = inputs_with_offsets["offset_mapping"]
+
+start_char, _ = offsets[start_index]
+_, end_char = offsets[end_index]
+answer = context[start_char:end_char]
+```
+
+現在我們只需要格式化所有內容以獲得我們的結果：
+
+```py
+result = {
+    "answer": answer,
+    "start": start_char,
+    "end": end_char,
+    "score": scores[start_index, end_index],
+}
+print(result)
+```
+
+```python out
+{'answer': 'Jax, PyTorch and TensorFlow',
+ 'start': 78,
+ 'end': 105,
+ 'score': 0.97773}
+```
+
+太棒了！這和我們的第一個例子一樣！
+
+<Tip>
+
+✏️ **試試看!** 使用您之前計算的最佳分數來顯示五個最可能的答案。要檢查您的結果，請返回到第一個管道並在調用它時傳入。
+
+</Tip>
+
+## 處理長上下文
+
+如果我們嘗試對我們之前作為示例使用的問題和長上下文進行標記化，我們將獲得比在 **question-answering** 管道（即 384）：
+
+```py
+inputs = tokenizer(question, long_context)
+print(len(inputs["input_ids"]))
+```
+
+```python out
+461
+```
+
+因此，我們需要在最大長度處截斷我們的輸入。有幾種方法可以做到這一點，但我們不想截斷問題，只想截斷上下文。由於上下文是第二個句子，我們將使用 **"only_second"** 截斷策略。那麼出現的問題是問題的答案可能不在截斷上下文中。例如，在這裡，我們選擇了一個答案在上下文末尾的問題，當我們截斷它時，答案不存在
+
+```py
+inputs = tokenizer(question, long_context, max_length=384, truncation="only_second")
+print(tokenizer.decode(inputs["input_ids"]))
+```
+
+```python out
+"""
+[CLS] Which deep learning libraries back [UNK] Transformers? [SEP] [UNK] Transformers : State of the Art NLP
+
+[UNK] Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+[UNK] Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internal [SEP]
+"""
+```
+
+這意味著模型將很難選擇正確的答案。為了解決這個問題， **question-answering** 管道允許我們將上下文分成更小的塊，指定最大長度。為確保我們不會在完全錯誤的位置拆分上下文以找到答案，它還包括塊之間的一些重疊。
+
+我們可以讓分詞器（快或慢）通過添加來為我們做這件事 **return_overflowing_tokens=True** ，我們可以指定我們想要的重疊 **stride** 爭論。這是一個使用較小句子的示例：
+
+```py
+sentence = "This sentence is not too long but we are going to split it anyway."
+inputs = tokenizer(
+    sentence, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+```python out
+'[CLS] This sentence is not [SEP]'
+'[CLS] is not too long [SEP]'
+'[CLS] too long but we [SEP]'
+'[CLS] but we are going [SEP]'
+'[CLS] are going to split [SEP]'
+'[CLS] to split it anyway [SEP]'
+'[CLS] it anyway. [SEP]'
+```
+
+正如我們所看到的，句子已被分成多個塊，使得每個條目 **inputs["input_ids"]** 最多有 6 個標記（我們需要添加填充以使最後一個條目與其他條目的大小相同）並且每個條目之間有 2 個標記的重疊。
+
+讓我們仔細看看標記化的結果：
+
+```py
+print(inputs.keys())
+```
+
+```python out
+dict_keys(['input_ids', 'attention_mask', 'overflow_to_sample_mapping'])
+```
+
+正如預期的那樣，我們得到了輸入 ID 和一個注意力掩碼。最後一個鍵， **overflow_to_sample_mapping** , 是一個映射，它告訴我們每個結果對應哪個句子——這裡我們有 7 個結果，它們都來自我們通過標記器的（唯一）句子：
+
+```py
+print(inputs["overflow_to_sample_mapping"])
+```
+
+```python out
+[0, 0, 0, 0, 0, 0, 0]
+```
+
+當我們將幾個句子標記在一起時，這更有用。例如，這個：
+
+```py
+sentences = [
+    "This sentence is not too long but we are going to split it anyway.",
+    "This sentence is shorter but will still get split.",
+]
+inputs = tokenizer(
+    sentences, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+print(inputs["overflow_to_sample_mapping"])
+```
+
+讓我們：
+
+```python out
+[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+```
+
+這意味著第一個句子像以前一樣分成 7 個塊，接下來的 4 個塊來自第二個句子。
+
+
+現在讓我們回到我們的長期背景。默認情況下 **question-answering** 管道使用的最大長度為 384，正如我們之前提到的，步長為 128，這對應於模型微調的方式（您可以通過傳遞 **max_seq_len** 和 **stride** 調用管道時的參數）。因此，我們將在標記化時使用這些參數。我們還將添加填充（具有相同長度的樣本，因此我們可以構建張量）以及請求偏移量：
+
+```py
+inputs = tokenizer(
+    question,
+    long_context,
+    stride=128,
+    max_length=384,
+    padding="longest",
+    truncation="only_second",
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+```
+
+那些 **inputs** 將包含模型期望的輸入 ID 和注意力掩碼，以及偏移量和 **overflow_to_sample_mapping** 我們剛剛談到。由於這兩個不是模型使用的參數，我們將把它們從 **inputs** （我們不會存儲地圖，因為它在這裡沒有用）在將其轉換為張量之前：
+
+{#if fw === 'pt'}
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("pt")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+torch.Size([2, 384])
+```
+
+{:else}
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("tf")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+(2, 384)
+```
+
+{/if}
+
+我們的長上下文被分成兩部分，這意味著在它通過我們的模型後，我們將有兩組開始和結束 logits：
+
+```py
+outputs = model(**inputs)
+
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([2, 384]) torch.Size([2, 384])
+```
+
+{:else}
+
+```python out
+(2, 384) (2, 384)
+```
+
+{/if}
+
+和以前一樣，我們在採用 softmax 之前首先屏蔽不屬於上下文的標記。我們還屏蔽了所有填充標記（由注意掩碼標記）：
+
+{#if fw === 'pt'}
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+# Mask all the [PAD] tokens
+mask = torch.logical_or(torch.tensor(mask)[None], (inputs["attention_mask"] == 0))
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+{:else}
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+# Mask all the [PAD] tokens
+mask = tf.math.logical_or(tf.constant(mask)[None], inputs["attention_mask"] == 0)
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+{/if}
+
+然後我們可以使用 softmax 將我們的 logits 轉換為概率：
+
+{#if fw === 'pt'}
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)
+```
+
+{:else}
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1).numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1).numpy()
+```
+
+{/if}
+
+下一步與我們對小上下文所做的類似，但我們對兩個塊中的每一個都重複它。我們將分數歸因於所有可能的答案跨度，然後取得分最高的跨度：
+
+{#if fw === 'pt'}
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = torch.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+{:else}
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = np.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+{/if}
+
+```python out
+[(0, 18, 0.33867), (173, 184, 0.97149)]
+```
+
+這兩個候選對應於模型能夠在每個塊中找到的最佳答案。該模型對正確答案在第二部分更有信心（這是一個好兆頭！）。現在我們只需要將這兩個標記跨度映射到上下文中的字符跨度（我們只需要映射第二個標記以獲得我們的答案，但看看模型在第一個塊中選擇了什麼很有趣）。
+
+<Tip>
+
+✏️ **試試看!** 修改上面的代碼以返回五個最可能的答案的分數和跨度（總計，而不是每個塊）。
+
+</Tip>
+
+這 **offsets** 我們之前抓取的實際上是一個偏移量列表，每個文本塊有一個列表：
+
+```py
+for candidate, offset in zip(candidates, offsets):
+    start_token, end_token, score = candidate
+    start_char, _ = offset[start_token]
+    _, end_char = offset[end_token]
+    answer = long_context[start_char:end_char]
+    result = {"answer": answer, "start": start_char, "end": end_char, "score": score}
+    print(result)
+```
+
+```python out
+{'answer': '\n🤗 Transformers: State of the Art NLP', 'start': 0, 'end': 37, 'score': 0.33867}
+{'answer': 'Jax, PyTorch and TensorFlow', 'start': 1892, 'end': 1919, 'score': 0.97149}
+```
+
+如果我們忽略第一個結果，我們會得到與這個長上下文的管道相同的結果——是的！
+
+<Tip>
+
+✏️ **試試看!** 使用您之前計算的最佳分數來顯示五個最可能的答案（對於整個上下文，而不是每個塊）。要檢查您的結果，請返回到第一個管道並在調用它時傳入。
+
+</Tip>
+
+我們對分詞器功能的深入研究到此結束。我們將在下一章再次將所有這些付諸實踐，屆時我們將向您展示如何在一系列常見的 NLP 任務上微調模型。
