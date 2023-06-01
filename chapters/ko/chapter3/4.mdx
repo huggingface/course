@@ -1,0 +1,360 @@
+# 전체 학습[[a-full-training]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+]} />
+
+<Youtube id="Dh9CL8fyG80"/>
+
+이제 `Trainer` 클래스를 사용하지 않고 이전 섹션에서 했던 것과 동일한 결과를 얻는 방법을 살펴보겠습니다. 다시 말하지만, 섹션 2에서 이미 데이터 처리를 완료했다고 가정합니다. 이번 섹션을 공부할 때 필요한 모든 작업을 수행하는 코드는 다음과 같습니다:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### 학습을 위한 준비[[prepare-for-training]]
+
+실제로 학습 루프(training loop)를 작성하기 전에 몇 가지 객체를 정의해야 합니다. 첫 번째는 배치(batch)를 반복하는 데 사용할 dataloaders입니다. 그러나 이 dataloaders를 정의하기 전에 `Trainer`가 자동으로 수행한 몇 가지 작업을 직접 처리하기 위해 `tokenized_datasets`에 약간의 후처리를 적용해야 합니다. 구체적으로 다음을 수행해야 합니다:
+
+- 모델이 필요로 하지 않는 값이 저장된 열(columns)을 제거합니다. (`sentence1`, `sentence2` 등)
+- 열 레이블(column label)의 이름을 `labels`로 바꿉니다. 이는 모델이 `labels`라는 이름으로 매개변수를 받기 때문입니다.
+- 파이썬 리스트 대신 PyTorch 텐서(tensors)를 반환하도록 datasets의 형식을 설정합니다.
+
+`tokenized_datasets`에는 이러한 작업을 위한 별도의 메서드들이 존재합니다:
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+tokenized_datasets["train"].column_names
+```
+
+위에서 보듯이 결과적으로 `tokenized_datasets`에는 모델이 허용하는 `columns`만 존재함을 알 수 있습니다.
+
+```python
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+이제 이 작업이 완료되었으므로 dataloader를 쉽게 정의할 수 있습니다:
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+데이터 처리에 오류가 없는지 빠르게 확인하기 위해 다음과 같이 배치(batch)를 검사할 수 있습니다:
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+실제 데이터 형태(shapes)가 살짝 다를 수 있는데 이는 학습 dataloader에 대해 `shuffle=True`를 설정하고 배치(batch) 내에서의 최대 길이로 패딩(padding)하기 때문입니다.
+
+이제 데이터 전처리가 완전히 끝났습니다. 기계학습 실무자(ML practitioners)들에게는 만족스럽기도 하겠지만 일부 명확하지 않은 부분도 있을 수 있겠습니다. 이제 모델로 돌아가 봅시다. 이전 섹션에서 수행한 것과 동일한 방법으로 모델을 인스턴스화(instantiate)합니다:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+학습 과정에서 모든 것들이 원활하게 진행될 수 있는지 확인하기 위해 배치(batch)를 이 모델에 한번 전달해 봅시다:
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+모든 🤗Transformers 모델은 매개변수에 `labels`이 포함되어 있다면 손실(loss)과 함께 logit값(batch내 각 입력에 대해 logit값이 2개이므로 크기가 8 x 2인 텐서)도 반환합니다.
+
+학습 루프(training loop)를 작성할 준비가 거의 되었습니다! 그런데 아직 최적화 함수(optimizer) 및 학습률 스케줄러(learning rate scheduler) 지정 작업이 남아 있습니다. 여기서는 앞에서 배운 `Trainer`의 기본 설정을 그대로 사용하겠습니다. `Trainer`가 사용하는 최적화 함수는 `AdamW`이며 이는 `Adam`과 거의 동일하지만 weight decay regularization (Ilya Loshchilov, Frank Hutter 저. ["Decoupled Weight Decay Regularization"](https://arxiv.org/abs/1711.05101) 참조)을 적용했다는 사실에 차이가 납니다:
+
+```py
+from transformers import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+마지막으로, Trainer에서 디폴트로 사용되는 학습률 스케줄러(learning rate scheduler)는 최대값(5e-5)에서 0까지 선형 감쇠(linear decay)합니다. 이를 적절하게 정의하려면 우리가 수행할 학습 단계의 횟수를 알아야 합니다. 이는 실행하려는 에포크(epochs) 수에 학습 배치(batch)의 개수를 곱한 것입니다. 학습 배치의 개수는 학습 dataloader의 길이와 같습니다. `Trainer`는 디폴트로 3개의 에포크(epochs)를 사용하므로 다음을 따릅니다:
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+### 학습 루프[[the-training-loop]]
+
+가용 GPU가 있는 경우 GPU를 사용하는 것이 좋습니다. CPU를 사용하면 학습은 몇 분 정도가 아니라 몇 시간이 걸립니다. 이를 위해, 모델과 배치(batch)를 적재할 장치(device)를 정의합니다:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+device
+```
+
+```python out
+device(type='cuda')
+```
+
+이제 학습할 준비가 되었습니다! 학습이 언제 끝날지 정보를 얻기 위해 `tqdm` 라이브러리를 사용하여 학습 단계(training steps)를 기준으로 진행 표시줄(progress bar)을 출력할 수 있도록 합니다:
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+학습 루프(training loop)의 주요 부분이 본 강좌의 소개(Introduction) 장에서 소개한 내용과 매우 유사하다는 것을 알 수 있습니다. 위 코드에서는 어떠한 중간 출력도 없으므로, 모델의 성능이나 손실 등에 대해 아무 것도 알려주지 않습니다. 이를 위해 평가 루프(evaluation loop)를 추가해야 합니다.
+
+### 평가 루프[[the-evaluation-loop]]
+
+이전에 수행했던 것처럼, 🤗Evaluate 라이브러리에서 제공하는 평가 메트릭(metrics)을 사용합니다. 우리는 이미 `metric.compute()` 메서드를 살펴보았지만 `metric.add_batch()` 메서드로 평가 루프(evaluation loop)를 실행하면서 배치(batch)별 평가 메트릭(metrics) 계산 결과를 누적할 수 있습니다. 모든 배치(batch)를 누적하고 나면 `metric.compute()`로 최종 결과를 얻을 수 있습니다. 평가 루프에서 이 모든 것을 구현하는 방법은 다음과 같습니다:
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+다시 말하지만, 모델 헤드 초기화(model head initialization) 및 데이터 셔플링의 무작위성(randomness) 인해 결과가 약간 차이가 나긴 하지만 그 차이가 크면 안됩니다.
+
+<Tip>
+
+✏️ **직접 해보기** 훈련 루프를 수정하여 SST-2 데이터셋으로 모델을 미세 조정해보세요.
+
+</Tip>
+
+### 🤗Accelerate 라이브러리를 사용한 학습 루프 가속화[[supercharge-your-training-loop-with-accelerate]]
+
+<Youtube id="s7dy8QRgjJ0" />
+
+앞에서 정의한 학습 루프(training loop)는 단일 CPU 또는 단일 GPU에서 제대로 작동합니다. 그러나 [🤗Accelerate](https://github.com/huggingface/accelerate) 라이브러리를 사용하여 몇 가지 설정만 하면 여러 GPU 또는 TPU에서 분산 학습(distributed training)을 수행할 수 있습니다. 학습 및 검증 dataloader를 생성 한 후, 학습 루프(training loop)의 형태는 다음과 같습니다:
+
+```py
+from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+위 학습 루프를 수정한 변경 사항은 다음과 같습니다:
+
+```diff
++ from accelerate import Accelerator
+  from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
++ accelerator = Accelerator()
+
+  model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+  optimizer = AdamW(model.parameters(), lr=3e-5)
+
+- device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+- model.to(device)
+
++ train_dataloader, eval_dataloader, model, optimizer = accelerator.prepare(
++     train_dataloader, eval_dataloader, model, optimizer
++ )
+
+  num_epochs = 3
+  num_training_steps = num_epochs * len(train_dataloader)
+  lr_scheduler = get_scheduler(
+      "linear",
+      optimizer=optimizer,
+      num_warmup_steps=0,
+      num_training_steps=num_training_steps
+  )
+
+  progress_bar = tqdm(range(num_training_steps))
+
+  model.train()
+  for epoch in range(num_epochs):
+      for batch in train_dataloader:
+-         batch = {k: v.to(device) for k, v in batch.items()}
+          outputs = model(**batch)
+          loss = outputs.loss
+-         loss.backward()
++         accelerator.backward(loss)
+
+          optimizer.step()
+          lr_scheduler.step()
+          optimizer.zero_grad()
+          progress_bar.update(1)
+```
+
+추가할 첫 번째 라인은 `import` 라인입니다. 두 번째 추가 라인에서 시스템 환경 설정을 파악하고 적절한 분산 설정을 초기화하는 `Accelerator` 개체를 인스턴스화합니다. 🤗Accelerate가 장치 배치(device placement)를 자동으로 처리하므로 장치에 모델을 배치하는 라인(`model.to(device)`)을 제거할 수 있습니다. 아니면 원할 경우, `device` 대신 `accelerator.device`를 사용하도록 변경할 수 있습니다.
+
+그런 다음 dataloaders, 모델(model) 및 최적화 함수(optimizer)를 `accelerator.prepare()`로 입력하는 부분에서 대부분의 작업이 수행됩니다. 이 과정에서 입력한 객체들을 적절한 컨테이너로 감싸서(wrapping) 분산 학습(distributed training)이 의도대로 작동되도록 합니다. 나머지 변경 사항은 `device`에 배치(batch)를 복사하는 라인을 제거(해당 라인을 그대로 유지하고 싶다면 `device` 대신에 `accelerate.device`를 사용하세요.)하고 `loss.backward()`를 `accelerator.backward()`로 대치하는 작업입니다.
+
+<Tip>
+
+⚠️ Cloud TPU가 제공하는 속도 향상의 이점을 얻으려면 토크나이저의 `padding="max_length"` 및 `max_length` 인수를 사용하여 샘플을 고정 길이로 채우는 것이 좋습니다.
+
+</Tip>
+
+전체 코드를 복사하여 사용하고 싶다면 🤗Accelerate를 사용한 다음의 완전한 학습 루프(training loop)를 참고하세요:
+
+```py
+from accelerate import Accelerator
+from transformers import AdamW, AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+위 코드를 `train.py` 스크립트에 붙여넣기하여 모든 종류의 분산 환경(distributed setup)에서 스크립트를 실행할 수 있습니다. 분산 환경에서 사용해 보려면 다음 명령을 실행하십시오 (노트북 환경에서 실행하면 안됩니다. 반드시 서버에 로그인을 해서 실행해야 그 결과가 보여집니다):
+
+```bash
+accelerate config
+```
+
+몇 가지 질문에 답하라는 메시지가 뜨고 이 명령이 사용하는 구성 파일에 입력된 답을 덤프하라는 메시지가 표시됩니다:
+
+```
+accelerate launch train.py
+```
+
+위 명령어로 분산 학습(distributed training)을 시작합니다.
+
+Notebook에서 이것을 시도하려면(예를 들어, Colab의 TPU로 테스트하기 위해) `training_function()`에 코드를 붙여넣고 다음을 사용하여 마지막 셀을 실행하세요:
+
+```python
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+더 많은 예제는 [🤗Accelerate 리포지터리](https://github.com/huggingface/accelerate/tree/main/examples)를 참고하세요.

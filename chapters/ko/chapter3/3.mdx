@@ -1,0 +1,170 @@
+<FrameworkSwitchCourse {fw} />
+
+# Trainer API를 이용한 모델 미세 조정[[fine-tuning-a-model-with-the-trainer-api]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section3.ipynb"},
+]} />
+
+<Youtube id="nvBXf7s7vTI"/>
+
+🤗Transformers는 `Trainer` 클래스를 제공함으로써 여러분의 데이터셋을 이용하여 사전 학습된 모델(pretrained models)을 미세 조정(fine-tuning)할 수 있도록 도와줍니다. 이전 섹션에서 설명한 모든 데이터 전처리 작업을 완료했다면, `Trainer`를 정의하는데 몇가지 단계만 거치면 됩니다. 가장 어려운 부분은 `Trainer.train()`을 실행할 환경을 준비하는 것입니다. 이 작업 자체가 CPU에서 매우 느리게 실행되기 때문입니다. GPU가 설정되지 않은 경우, Google Colab에서 무료 GPU 또는 TPU에 액세스할 수 있습니다.
+아래 코드 예제에서는 이전 섹션의 예제를 모두 실행했다고 가정합니다. 이 코드는 이번 섹션의 예제를 실행하기 위해 필요한 사항을 간략하게 요약한 것입니다:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### 학습[[training]]
+
+`Trainer`를 정의하기 전에 먼저 수행할 단계는 `Trainer`가 학습 및 평가에 사용할 모든 하이퍼파라미터(hyperparameters)를 포함하는 `TrainingArguments` 클래스를 정의하는 것입니다. 여기서 우리가 제공해야 할 유일한 매개변수는 학습된 모델이 저장될 디렉토리입니다. 나머지는 모두 기본값(default values)을 그대로 활용하면 됩니다. 기본적인 미세 조정(fine-tuning)에는 이 정도면 충분합니다.
+
+```py
+from transformers import TrainingArguments
+
+training_args = TrainingArguments("test-trainer")
+```
+
+<Tip>
+
+💡 만약 훈련 중에 모델을 자동으로 Hub에 업로드하고 싶다면, `TrainingArguments`에 `push_to_hub=True`를 전달하세요. [Chapter 4](/course/chapter4/3)에서 이에 대해 더 자세히 알아보게 될 것입니다.
+
+</Tip>
+
+두 번째 단계는 모델을 정의하는 것입니다. [이전 장](/course/chapter2)에서와 같이, 두 개의 레이블이 있는 `AutoModelForSequenceClassification` 클래스를 사용합니다.
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+[2장](/course/chapter2)과 달리, 사전 학습된 모델을 인스턴스화한 후 경고(warnings)가 출력되는 것을 알 수 있습니다. 이는 BERT가 문장 쌍 분류에 대해 사전 학습되지 않았기 때문에 사전 학습된 모델의 헤드(model head)를 버리고 시퀀스 분류에 적합한 새로운 헤드를 대신 추가했기 때문입니다. 경고의 내용은 일부 가중치(weights)가 사용되지 않았으며(제거된 사전 학습 헤드에 해당하는 가중치) 일부 가중치가 무작위로 초기화되었음을(새로운 헤드에 대한 가중치) 나타냅니다. 마지막 부분에서 우리가 수행하는 문장 쌍 분류에 대한 미세 조정을 해도 좋다고 설명하고 있습니다.
+
+모델(model), `training_args`, 학습집합 및 검증집합, `data_collator` 및 토크나이저 등, 지금까지 구성된 모든 개체를 전달하여 `Trainer`를 정의할 수 있습니다:
+
+```py
+from transformers import Trainer
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+위에서 보듯이, 토크나이저를 전달할 때 `Trainer`가 사용하는 기본 `data_collator`는 이전에 정의된 `DataCollatorWithPadding`이 됩니다. 따라서 이 호출에서 `data_collator=data_collator` 행을 생략할 수 있습니다.
+
+데이터셋으로 모델을 미세 조정(fine-tuning)하려면 `Trainer`의 `train()` 메서드를 호출하기만 하면 됩니다:
+
+```py
+trainer.train()
+```
+
+미세 조정이 시작되고(GPU에서 몇 분 정도 소요됨) 500단계마다 학습 손실(training loss)이 보고됩니다. 그러나 모델의 성능이 좋은지 혹은 나쁜지는 알려주지 않습니다. 그 이유는 다음과 같습니다:
+
+1. 학습 과정에서 평가가 수행되도록 `Trainer`에게 `evaluation_strategy` 매개변수를 `"steps"`(매 `eval_steps`마다 평가)나 `"epoch"`(각 epoch 마지막에 평가) 등으로 지정하지 않았습니다.
+2. 평가 방법 혹은 평가 척도를 정의한 `compute_metrics()` 함수를 `Trainer`에 지정하지 않았습니다. 평가 방법 지정이 안된 상태에서는 평가 과정에서 손실(loss)을 출력했을 것입니다. 직관적인 값은 아니지요.
+
+### 평가[[evaluation]]
+
+유용한 `compute_metrics()` 함수를 구현하고 이를 학습할 때 사용하는 방법을 살펴보겠습니다. 이 함수는 `EvalPrediction` 객체(`predictions` 필드와 `label_ids` 필드가 포함된 네임드튜플(named tuple))를 필요로 하며 문자열과 실수값(floats)을 매핑하는 딕셔너리를 반환합니다. 여기서 문자열은 반환된 메트릭(metrics)의 이름이고 실수값(floats)은 해당 메트릭에 기반한 평가 결과값입니다. 우선 모델에서 예측의 결과를 얻으려면 `Trainer.predict()` 명령을 사용할 수 있습니다:
+
+```py
+predictions = trainer.predict(tokenized_datasets["validation"])
+print(predictions.predictions.shape, predictions.label_ids.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+
+`predict()` 메서드의 출력은 3개의 필드(`predictions`, `label_ids` 및 `metrics`)가 있는 또 다른 네임드튜플(named tuple)입니다. metrics 필드에는 전달된 데이터셋의 손실(loss)과 시간 메트릭(time metrics) 값만 포함됩니다. 시간 메트릭(time metrics)은 예측에 걸린 전체 및 평균 시간을 나타냅니다. `compute_metrics()` 함수를 구성하고 `Trainer`에 전달하면 해당 필드에는 `compute_metrics()`에서 반환한 메트릭(metrics)도 포함됩니다.
+
+보시다시피 `predictions`는 모양이 408 x 2인 2차원 배열입니다. 408은 우리가 예측에 사용한 데이터셋의 요소 개수입니다. 이는 우리가 `predict()`에 전달한 데이터셋의 각 요소에 대한 로짓(logit)값들입니다. [이전 장](/course/chapter2)에서 보았듯이 모든 Transformer 모델은 로짓(logit)값을 반환합니다. 이 로짓(logit)값들을 레이블과 비교할 수 있는 예측 결과로 변환하려면 두 번째 축(second axis)에 존재하는 항목에서 최대값이 있는 인덱스를 가져와야 합니다:
+
+```py
+import numpy as np
+
+preds = np.argmax(predictions.predictions, axis=-1)
+```
+
+이제 `preds`를 레이블(labels)과 비교할 수 있습니다. `compute_metric()` 함수를 구성하기 위해 [🤗Evaluate](https://github.com/huggingface/evaluate/) 라이브러리에서 제공하는 메트릭(metrics)을 사용합니다. `evaluate.load()` 함수를 사용하여 데이터셋을 로드하는 것처럼 손쉽게 MRPC 데이터셋과 관련된 메트릭(metrics)을 로드할 수 있습니다. 로드된 객체에는 메트릭(metrics) 계산을 수행하는 데 사용할 수 있는 `compute()` 메서드가 있습니다:
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+metric.compute(predictions=preds, references=predictions.label_ids)
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+모델 헤드를 무작위로 초기화하면 계산된 메트릭이 변경될 수 있으므로 정확한 결과는 다를 수 있습니다. 여기서는 모델이 검증 집합에서 86.76%의 정확도(accuracy)와 90.69의 F1 점수를 가지고 있음을 알 수 있습니다(여러분의 결과값과는 다를 수도 있습니다.). 이는 GLUE 벤치마크의 MRPC 데이터셋에 대한 예측 결과를 평가하는데 사용되는 두 가지 메트릭(metrics)입니다. [BERT 논문](https://arxiv.org/pdf/1810.04805.pdf)의 테이블은 기본 모델에 대해 F1 점수 88.9를 보고했습니다. 해당 논문에서 사용된 모델은 소문자 모델(`uncased` model)이었고 여기서는 대소문자 구분 모델(`cased` model)을 활용했으므로 성능 차이가 발생하고 있습니다.
+
+지금까지 설명한 모든 것을 함께 종합하면 `compute_metrics()` 함수를 얻을 수 있습니다:
+
+```py
+def compute_metrics(eval_preds):
+    metric = evaluate.load("glue", "mrpc")
+    logits, labels = eval_preds
+    predictions = np.argmax(logits, axis=-1)
+    return metric.compute(predictions=predictions, references=labels)
+```
+
+각 에포크(epoch)가 끝날 때 메트릭(metrics)을 출력하도록 하기 위해서, `compute_metrics()` 함수를 사용하여 새 `Trainer`를 정의하는 방법을 아래 코드에서 보여주고 있습니다:
+
+```py
+training_args = TrainingArguments("test-trainer", evaluation_strategy="epoch")
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+`evaluation_strategy` 매개변수가 `"epoch"`으로 설정되고 새로운 `TrainingArguments`와 모델을 생성합니다. 그렇지 않으면 이미 앞에서 학습된(fine-tuned) 모델의 학습을 계속해서 수행할 것입니다. 새로운 학습 실행을 시작하기 위해 다음을 실행합니다:
+
+```py
+trainer.train()
+```
+
+이번에는 학습 손실(training loss) 외에 각 epoch가 끝날 때 검증 손실(validation loss) 및 메트릭(metrics)을 보고합니다. 다시 말하지만, 정확한 정확도(accuracy)/F1 점수는 모델의 무작위 헤드 초기화로 인해 각각의 실행 결과가 약간 다를 수 있지만 유사한 범위 내에 있어야 합니다.
+
+`Trainer`는 다중 GPU 또는 TPU에서 즉시 사용할 수 있으며 혼합 정밀도 학습(mixed-precision training, 학습 매개변수에서 `fp16 = True` 사용하는 경우)과 같은 다양한 옵션을 제공합니다. 10장에서 지원하는 모든 옵션들을 살펴볼 것입니다.
+
+이것으로 `Trainer` API를 사용한 미세 조정(fine-tuning) 방법에 대한 설명을 마칩니다. 가장 자주 수행되는 NLP 작업(tasks)에 대해 이 작업을 수행하는 예는 [7장](/course/chapter7)에서 제공되지만, 다음 섹션에서 이 API를 사용하지 않고 PyTorch에서 동일한 작업을 수행하는 방법을 살펴보겠습니다.
+
+<Tip>
+
+✏️ **직접 해보기** 2장에서 수행한 데이터 처리를 사용하여 GLUE SST-2 데이터셋에서 모델을 미세 조정(fine-tune)하세요.
+
+</Tip>
+
