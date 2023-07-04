@@ -21,6 +21,9 @@ re_end_code = re.compile(r"^```\s*$")
 frameworks = {"pt": "PyTorch", "tf": "TensorFlow"}
 
 PATH_TO_COURSE = Path("chapters/")
+# Languages to exlude from the notebook generation because the notebooks were
+# created manually
+LANGS_TO_EXCLUDE = ["fr"]
 
 
 def read_and_split_frameworks(fname):
@@ -198,7 +201,7 @@ def build_notebook(fname, title, output_dir="."):
         installs = ["!pip install datasets evaluate transformers[sentencepiece]"]
         if section_name in sections_with_accelerate:
             installs.append("!pip install accelerate")
-            installs.append("# To run the training on TPU, you will need to uncomment the followin line:")
+            installs.append("# To run the training on TPU, you will need to uncomment the following line:")
             installs.append(
                 "# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
             )
@@ -277,6 +280,8 @@ if __name__ == "__main__":
     languages = [f.stem for f in PATH_TO_COURSE.iterdir() if f.is_dir()]
 
     for language in languages:
+        if language in LANGS_TO_EXCLUDE:
+            continue
         language_output_dir = f"{args.output_dir}/{language}"
         create_notebooks(language, language_output_dir)
         # Remove empty notebook folders
