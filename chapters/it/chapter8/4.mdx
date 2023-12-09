@@ -1,0 +1,787 @@
+<FrameworkSwitchCourse {fw} />
+
+# Fare il debug della training pipeline
+
+<CourseFloatingBanner chapter={8}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/it/chapter8/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/it/chapter8/section4.ipynb"},
+]} />
+
+Hai scritto un bello script per addestrare o affinare un modello su un determinato compito, seguendo scrupolosamente i consigli del [Capitolo 7](/course/chapter7). Ma quando lanci il comando `trainer.train()`, succede qualcosa di orribile: si ottiene un errore 😱! O peggio, tutto sembra andare bene e il training viene eseguito senza errori, ma il modello che ne risulta fa schifo. In questa sezione mostreremo cosa è possibile fare per eseguire il debug di questo tipo di problemi.
+
+## Fare il debug della training pipeline
+
+<Youtube id="L-WSwUWde1U"/>
+
+Il problema quando si ha un errore da `trainer.train()` è che potrebbe provenire da più fonti, poiché il `Trainer` di solito mette insieme molte cose. Converte i dataset in _dataloader_, quindi l'errore potrebbe essere dato da qualcosa di sbagliato nel dataset stesso, o da un problema qualche problema nel provare a raggruppare in un batch elementi del dataset. Poi prende un batch di dati e lo invia al modello, quindi il problema potrebbe anche essere nel codice del modello. Successivamente, calcola i gradienti ed esegue la fase di ottimizzazione, quindi il problema potrebbe essere nel tuo _optimizer_. E anche se tutto va bene per il training, qualcosa potrebbe andare storto durante la valutazione se c'è un problema con la metrica selezionata.
+
+Il modo migliore per eseguire il debug di un errore che si verifica in `trainer.train()` è quello di esaminare manualmente l'intera pipeline per vedere dove le cose sono andate storte. L'errore è spesso molto facile da risolvere.
+
+Per dimostrarlo, useremo il seguente script che ha lo scopo di affinare un modello DistilBERT sul [dataset MNLI](https://huggingface.co/datasets/glue):
+
+```py
+from datasets import load_dataset, load_metric
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = load_metric("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=raw_datasets["train"],
+    eval_dataset=raw_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+Se provi a eseguirlo, otterrai un errore piuttosto criptico:
+
+```python out
+'ValueError: You have to specify either input_ids or inputs_embeds'
+```
+
+### Controlla i dati
+
+Non c'è bisogno di dirlo, ma se i dati sono corrotti, il `Trainer` non sarà in grado di formare i batch e tanto meno di addestrare il modello. Quindi, per prima cosa, è necessario dare un'occhiata a cosa c'è nel training set(_insieme di addestramento_).
+
+Per evitare di passare infinite ore a cercare di risolvere qualcosa che non è la fonte del bug, consigliamo di usare `trainer.train_dataset` per controllare l'insieme di dati e nient'altro. Quindi facciamo così:
+
+```py
+trainer.train_dataset[0]
+```
+
+```python out
+{'hypothesis': 'Product and geography are what make cream skimming work. ',
+ 'idx': 0,
+ 'label': 1,
+ 'premise': 'Conceptually cream skimming has two basic dimensions - product and geography.'}
+```
+
+Hai notato qualcosa di sbagliato? Questo, insieme al messaggio di errore sulla mancanza di `input_ids`, dovrebbe farci capire che qui abbiamo testo, non numeri che invece il modello può interpretare. In questo caso, l'errore originale è molto fuorviante, perché il `Trainer` rimuove automaticamente le colonne che non corrispondono alla firma del modello (cioè i parametri che il modello si aspetta). Ciò significa che in questo caso tutto, a parte _label_, è stato scartato. Non c'è stato quindi nessun problema nel creare i batch di dati e poi inviarli al modello, invece è il modello che a sua volta si è lamentato di non aver ricevuto l'input corretto.
+
+Perché i dati non sono stati processati? Abbiamo usato il metodo `Dataset.map()` sui set di dati per applicare il tokenizer a ogni campione. Ma se si osserva attentamente il codice, si noterà che abbiamo commesso un errore nel passare i training set e il validation set (_insieme di valutazione_) al `Trainer`. Qui invece di usare `tokenized_datasets`, abbiamo usato `raw_datasets` 🤦. Quindi correggiamo questo errore!
+
+```py
+from datasets import load_dataset, load_metric
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = load_metric("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+Questo nuovo codice ora darà un errore diverso (un miglioramento!):
+
+```python out
+'ValueError: expected sequence of length 43 at dim 1 (got 37)'
+```
+
+Osservando il traceback, si nota che l'errore si verifica nel punto in cui i dati vengono raccolti:
+
+```python out
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+```
+
+Quindi, bisogna concentrarsi su questo. Prima di farlo, però, finiamo d'ispezionare i nostri dati, per essere sicuri al 100% che siano corretti.
+
+Una cosa da fare sempre quando si esegue il debug di una sessione di addestramento è dare un'occhiata agli input del modello decodificati. Non possiamo dare un senso ai numeri che gli diamo direttamente in pasto, quindi dobbiamo guardare cosa rappresentano quei numeri. Nella computer vision, ad esempio, ciò significa guardare le immagini decodificate dei pixel passati, nel campo del riconoscimento vocale significa ascoltare i campioni audio decodificati e per il nostro esempio di NLP significa usare il nostro tokenizer per decodificare gli input:
+
+```py
+tokenizer.decode(trainer.train_dataset[0]["input_ids"])
+```
+
+```python out
+'[CLS] conceptually cream skimming has two basic dimensions - product and geography. [SEP] product and geography are what make cream skimming work. [SEP]'
+```
+
+Questo sembra corretto. Si dovrebbe fare così per tutte le chiavi degli input:
+
+```py
+trainer.train_dataset[0].keys()
+```
+
+```python out
+dict_keys(['attention_mask', 'hypothesis', 'idx', 'input_ids', 'label', 'premise'])
+```
+
+Si noti che le chiavi che non corrispondono a input accettati dal modello saranno automaticamente scartate, quindi qui terremo solo `input_ids`, `attention_mask` e `label` (che sarà rinominata `labels`). Per ricontrollare la firma del modello, si può stampare la classe del modello e poi controllare la sua documentazione:
+
+```py
+type(trainer.model)
+```
+
+```python out
+transformers.models.distilbert.modeling_distilbert.DistilBertForSequenceClassification
+```
+
+Quindi, nel nostro caso, possiamo controllare i parametri accettati in [questa pagina](https://huggingface.co/transformers/model_doc/distilbert.html#distilbertforsequenceclassification). Il `Trainer` registrerà anche le colonne che sta scartando.
+
+Abbiamo controllato che gli ID in ingresso siano corretti decodificandoli. Il prossimo passo è la `attention_mask`:
+
+```py
+trainer.train_dataset[0]["attention_mask"]
+```
+
+```python out
+[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+Poiché non abbiamo applicato il padding nel nostro preprocessing, questo sembra perfettamente naturale. Per essere sicuri che non ci siano problemi con la attention mask (_maschera di attenzione_), controlliamo che sia della stessa lunghezza dei nostri ID di input:
+
+```py
+len(trainer.train_dataset[0]["attention_mask"]) == len(
+    trainer.train_dataset[0]["input_ids"]
+)
+```
+
+```python out
+True
+```
+
+Bene! Infine, controlliamo la nostra label:
+
+```py
+trainer.train_dataset[0]["label"]
+```
+
+```python out
+1
+```
+
+Come gli ID degli input, si tratta di un numero che non ha senso di per sé. Come abbiamo visto prima, la mappa tra gli interi e i nomi delle label è memorizzata all'interno dell'attributo `names` della corrispondente *feature* del dataset:
+
+```py
+trainer.train_dataset.features["label"].names
+```
+
+```python out
+['entailment', 'neutral', 'contradiction']
+```
+
+Quindi `1` significa `neutral` (_neutro_), il che significa che le due frasi viste sopra non sono in contraddizione e che la prima non implica la seconda. Sembra corretto!
+
+Non abbiamo token type ID (_ID del tipo di token_) qui, perché DistilBERT non li prevede; se li hai nel tuo modello, devi anche assicurarti che corrispondano correttamente alla posizione della prima e della seconda frase nell'input.
+
+<Tip>
+
+✏️ **Prova tu!** Controlla che tutto sia corretto nel secondo elemento del training set.
+
+</Tip>
+
+In questo caso, il controllo viene effettuato solo sul training set, ma è necessario ricontrollare allo stesso modo anche il validation set e il test set.
+
+Ora che sappiamo che i nostri set di dati sono corretti, è il momento di verificare la fase successiva della pipeline di addestramento.
+
+### Dai dataset ai dataloader
+
+La prossima cosa che può andare storta nella pipeline di addestramento è quando il `Trainer` cerca di formare dei batch dal training o dal validation set. Una volta che si è sicuri che i set di dati del `Trainer` sono corretti, si può provare a formare manualmente un batch eseguendo quanto segue (sostituire `train` con `eval` per il dataloader di validazione):
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+Questo codice crea il training dataloader (_caricatore di dati di addestramento_), quindi lo itera, fermandosi alla prima iterazione. Se il codice viene eseguito senza errori, si ha il primo batch di addestramento che può essere ispezionato; se il codice dà errore, si sa con certezza che il problema è nel dataloader, come in questo caso:
+
+```python out
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+
+ValueError: expected sequence of length 45 at dim 1 (got 76)
+```
+
+L'ispezione dell'ultimo frame del traceback dovrebbe essere sufficiente a fornire un indizio, ma cerchiamo di scavare un po' più a fondo. La maggior parte dei problemi durante la creazione dei batch si verifica a causa del raggruppamento degli esempi in un singolo batch, quindi la prima cosa da controllare in caso di dubbio è quale `collate_fn` il tuo `DataLoader` sta usando:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+data_collator
+```
+
+```python out
+<function transformers.data.data_collator.default_data_collator(features: List[InputDataClass], return_tensors='pt') -> Dict[str, Any]>
+```
+
+È il `default_data_collator`, ma non è quello che vogliamo in questo caso. Vogliamo che i nostri esempi siano espansi fino ad essere come la frase più lunga del batch, cosa che viene fatta dal collettore `DataCollatorWithPadding`. Questo collatore di dati dovrebbe essere usato di default da `Trainer`, quindi perché non viene usato qui?
+
+La risposta è che non abbiamo passato il `tokenizer` al `Trainer`, quindi non ha potuto creare il `DataCollatorWithPadding` che volevamo. In pratica, non si dovrebbe mai esitare a passare esplicitamente il collettore di dati che si vuole usare, per essere sicuri di evitare questo tipo di errori. Adattiamo il nostro codice per fare esattamente questo:
+
+```py
+from datasets import load_dataset, load_metric
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = load_metric("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+La buona notizia? Non riceviamo più lo stesso errore di prima, il che è sicuramente un miglioramento. La cattiva notizia? Otteniamo invece un famigerato errore CUDA:
+
+```python out
+RuntimeError: CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`
+```
+
+Questo è un male perché gli errori di CUDA sono estremamente difficili da debuggare in generale. Vedremo tra poco come risolvere questo problema, ma prima terminiamo l'analisi della creazione di batch.
+
+Se siete sicuri che il tuo collettore di dati è quello giusto, dovresti provare ad applicarlo su un paio di campioni del tuo set di dati:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+batch = data_collator([trainer.train_dataset[i] for i in range(4)])
+```
+
+Questo codice fallirà perché il `train_dataset` contiene colonne di tipo stringa, che il `Trainer` solitamente rimuove. È possibile rimuoverle manualmente o, se si vuole replicare esattamente ciò che il `Trainer` fa dietro le quinte, si può chiamare il metodo privato `Trainer._remove_unused_columns()` che fa questo:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+actual_train_set = trainer._remove_unused_columns(trainer.train_dataset)
+batch = data_collator([actual_train_set[i] for i in range(4)])
+```
+
+Se l'errore persiste, si potrebbe eseguire manualmente il debug di ciò che accade all'interno del collettore di dati.
+
+Ora che abbiamo eseguito il debug del processo di creazione del batch, è il momento di passarne uno attraverso il modello!
+
+### Passaggio attraverso il modello
+
+Dovrebbe essere possibile ottenere un batch eseguendo il seguente comando:
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+Se si esegue questo codice in un notebook, è possibile che si verifichi un errore CUDA simile a quello visto in precedenza, nel qual caso è necessario riavviare il notebook e rieseguire l'ultimo snippet senza la riga `trainer.train()`. Questa è la seconda cosa più fastidiosa degli errori CUDA: rompono irrimediabilmente il kernel. La cosa più fastidiosa è che sono difficili da debuggare.
+
+Perché? Questo ha a che fare con il modo in cui funzionano le GPU. Sono estremamente efficienti nell'eseguire molte operazioni in parallelo, ma l'inconveniente è che quando una di queste istruzioni produce un errore, non lo si sa immediatamente. È solo quando il programma chiama una sincronizzazione dei processi multipli sulla GPU che esso si accorge che qualcosa è andato storto, quindi l'errore viene effettivamente sollevato in un punto che non ha niente a che fare con ciò che lo ha creato. Per esempio, se guardiamo il nostro traceback precedente, l'errore è stato sollevato durante il backward pass (_percorso discendente_), ma vedremo tra un minuto che in realtà deriva da qualcosa nel forward pass (_percorso ascendente_).
+
+Come si fa a fare il debug di questi errori? La risposta è semplice: non lo facciamo. A meno che l'errore CUDA non sia un errore out-of-memory (il che significa che la memoria della GPU non è sufficiente), si dovrebbe sempre tornare alla CPU per eseguire il debug.
+
+Per fare questo nel nostro caso, dobbiamo semplicemente rimettere il modello sulla CPU e chiamarlo sul nostro batch -- il batch restituito dal `DataLoader` non è ancora stato spostato sulla GPU:
+
+```python
+outputs = trainer.model.cpu()(**batch)
+```
+
+```python out
+~/.pyenv/versions/3.7.9/envs/base/lib/python3.7/site-packages/torch/nn/functional.py in nll_loss(input, target, weight, size_average, ignore_index, reduce, reduction)
+   2386         )
+   2387     if dim == 2:
+-> 2388         ret = torch._C._nn.nll_loss(input, target, weight, _Reduction.get_enum(reduction), ignore_index)
+   2389     elif dim == 4:
+   2390         ret = torch._C._nn.nll_loss2d(input, target, weight, _Reduction.get_enum(reduction), ignore_index)
+
+IndexError: Target 2 is out of bounds.
+```
+
+Quindi, il quadro si fa più chiaro. Invece di avere un errore CUDA, ora abbiamo un `IndexError` nel calcolo della loss (_funzione di perdita_) (quindi niente a che fare con il backward pass, come abbiamo detto prima). Più precisamente, possiamo vedere che è il target 2 a creare l'errore, quindi questo è un ottimo momento per controllare il numero di label del nostro modello:
+
+```python
+trainer.model.config.num_labels
+```
+
+```python out
+2
+```
+
+Con due label, solo gli 0 e gli 1 sono ammessi come target, ma secondo il messaggio di errore abbiamo ottenuto un 2. Ottenere un 2 è in realtà normale: se ricordiamo i nomi delle etichette che abbiamo estratto in precedenza, ce n'erano tre, quindi abbiamo gli indici 0, 1 e 2 nel nostro dataset. Il problema è che non l'abbiamo detto al nostro modello, il quale si sarebbe dovuto creare con tre label. Quindi, risolviamo il problema!
+
+```py
+from datasets import load_dataset, load_metric
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = load_metric("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+Non abbiamo ancora incluso la riga `trainer.train()`, per prendere tempo e verificare che tutto sia a posto. Se richiediamo un batch e lo passiamo al nostro modello, ora funziona senza errori!
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+outputs = trainer.model.cpu()(**batch)
+```
+
+Il passo successivo consiste nel tornare a usare la GPU e verificare che tutto funzioni ancora:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+batch = {k: v.to(device) for k, v in batch.items()}
+
+outputs = trainer.model.to(device)(**batch)
+```
+
+Se si verifica ancora un errore, assicurarsi di riavviare il notebook ed eseguire solo l'ultima versione dello script.
+
+### Esecuzione di un passaggio di ottimizzazione
+
+Ora che sappiamo che possiamo costruire batch che passano effettivamente attraverso il modello, siamo pronti per la fase successiva della pipeline di addestramento: calcolare i gradienti ed eseguire una fase di ottimizzazione.
+
+La prima parte consiste nel richiamare il metodo `backward()` sulla loss:
+
+```py
+loss = outputs.loss
+loss.backward()
+```
+
+È abbastanza raro che si verifichi un errore in questa fase, ma se si verifica, assicurati di tornare ad usare la CPU per ottenere un messaggio di errore più utile.
+
+Per eseguire la fase di ottimizzazione, è sufficiente creare l'oggetto `optimizer` e richiamare il suo metodo `step()`:
+
+```py
+trainer.create_optimizer()
+trainer.optimizer.step()
+```
+
+Anche in questo caso, se si utilizza l'ottimizzatore predefinito nel `Trainer`, non si dovrebbe ottenere un errore in questa fase, ma se hai un ottimizzatore personalizzato, potrebbero esserci dei problemi da risolvere. Non dimenticare di tornare alla CPU se ottieni uno strano errore CUDA in questa fase. A proposito di errori CUDA, prima abbiamo menzionato un caso speciale. Vediamo ora questo caso.
+
+### Come gestire gli errori out-of-memory di CUDA
+
+Ogni volta che si riceve un messaggio di errore che inizia con `RuntimeError: CUDA out of memory`, indica che la memoria della GPU è esaurita. Questo errore non è direttamente collegato al codice e può verificarsi anche con uno script che funziona perfettamente. Questo errore significa che si è tentato di mettere troppe cose nella memoria interna della GPU e che si è verificato un errore. Come per altri errori di CUDA, è necessario riavviare il kernel per poter eseguire nuovamente l'allenamento.
+
+Per risolvere questo problema, è sufficiente utilizzare meno spazio sulla GPU, cosa che spesso è più facile a dirsi che a farsi. Per prima cosa, assicuratevi di non avere due modelli sulla GPU contemporaneamente (a meno che non sia necessario per il vostro problema, ovviamente). Poi, è probabile che si debba ridurre la dimensione del batch, in quanto influisce direttamente sulle dimensioni di tutti gli output intermedi del modello e dei loro gradienti. Se il problema persiste, si può considerare di utilizzare una versione più piccola del modello.
+
+<Tip>
+
+Nella prossima parte del corso, esamineremo tecniche più avanzate che possono aiutare a ridurre l'impatto sulla memoria e ad affinare i modelli più grandi.
+
+</Tip>
+
+### Valutazione del modello
+
+Ora che abbiamo risolto tutti i problemi con il nostro codice, tutto è perfetto e l'addestramento dovrebbe girare senza intoppi, giusto? Non così veloce! Se si esegue il comando `trainer.train()`, all'inizio sembrerà tutto a posto, ma dopo un po' si otterrà il seguente risultato:
+
+```py
+# This will take a long time and error out, so you shouldn't run this cell
+trainer.train()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+Ti accorgerai che questo errore compare durante la fase di valutazione, quindi è l'ultima cosa che dobbiamo debuggare.
+
+È possibile eseguire il ciclo di valutazione del `Trainer` indipendentemente dall'addestramento, in questo modo:
+
+```py
+trainer.evaluate()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+<Tip>
+
+💡 Bisogna sempre assicurarsi di poter eseguire `trainer.evaluate()` prima di lanciare `trainer.train()`, per evitare di sprecare molte risorse di calcolo prima di incorrere in un errore.
+
+</Tip>
+
+Prima di tentare il debug di un problema nel ciclo di valutazione, è necessario assicurarsi di aver dato un'occhiata ai dati, di essere in grado di generare correttamente un batch e di poter eseguire il modello su di esso. Abbiamo completato tutti questi passaggi, quindi il codice seguente può essere eseguito senza errori:
+
+```py
+for batch in trainer.get_eval_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+```
+
+L'errore arriva più tardi, alla fine della fase di valutazione, e se guardiamo il traceback vediamo questo:
+
+```python trace
+~/git/datasets/src/datasets/metric.py in add_batch(self, predictions, references)
+    431         """
+    432         batch = {"predictions": predictions, "references": references}
+--> 433         batch = self.info.features.encode_batch(batch)
+    434         if self.writer is None:
+    435             self._init_writer()
+```
+
+Questo ci dice che l'errore ha origine nel modulo `datasets/metric.py`, quindi si tratta di un problema con la nostra funzione `compute_metrics()`. La funzione accetta una tupla con i logit e le label come array NumPy, quindi proviamo a dargliela in pasto:
+
+```py
+predictions = outputs.logits.cpu().numpy()
+labels = batch["labels"].cpu().numpy()
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+Otteniamo lo stesso errore, quindi il problema risiede sicuramente in quella funzione. Se guardiamo al suo codice, vediamo che sta solo trasferendo le `predictions` e le `labels` a `metric.compute()`. C'è quindi un problema con questo metodo? Non proprio. Diamo una rapida occhiata alle dimensioni:
+
+```py
+predictions.shape, labels.shape
+```
+
+```python out
+((8, 3), (8,))
+```
+
+Le nostre previsioni sono ancora dei logit, non le vere previsioni, ed è per questo che la metrica restituisce questo errore (un po' oscuro). La soluzione è abbastanza semplice: basta aggiungere un argmax nella funzione `compute_metrics()`:
+
+```py
+import numpy as np
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+{'accuracy': 0.625}
+```
+
+Ora il nostro errore è stato risolto! Questo era l'ultimo, quindi il nostro script ora addestrerà correttamente un modello.
+
+Per riferimento, ecco lo script completamente corretto:
+
+```py
+import numpy as np
+from datasets import load_dataset, load_metric
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = load_metric("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+In questo caso, non ci sono più problemi e il nostro script affinerà un modello che dovrebbe dare risultati ragionevoli. Ma cosa possiamo fare quando l'addestramento procede senza errori e il modello addestrato non funziona affatto bene? Questa è la parte più difficile di machine learning e ti mostreremo alcune tecniche che possono aiutarti.
+
+<Tip>
+
+💡 Se si utilizza un ciclo di addestramento manuale, per il debug della pipeline di addestramento valgono gli stessi passaggi, ma è più facile separarli. Assicurati però di non aver dimenticato il `model.eval()` o il `model.train()` nei punti giusti, o lo `zero_grad()` a ogni passo!
+
+</Tip>
+
+## Debug degli errori silenziosi durante l'addestramento
+
+Cosa possiamo fare per eseguire il debug di un addestramento che viene completato senza errori, ma che non produce buoni risultati? Qui ti daremo alcuni suggerimenti, ma sappi che questo tipo di debugging è la parte più difficile di machine learning e non esiste una soluzione magica.
+
+### Controllare i dati (di nuovo!)
+
+Il tuo modello imparerà qualcosa solo se è effettivamente possibile imparare qualcosa dai tuoi dati. Se c'è un bug che corrompe i dati o le label sono assegnate in modo casuale, è molto probabile che non si riesca ad addestrare il modello sul dataset. Quindi, inizia sempre con un doppio controllo degli input e delle label decodificate e poniti le seguenti domande:
+
+- I dati decodificati sono comprensibili?
+- Sei d'accordo con le label?
+- C'è una label più comune delle altre?
+- Quale dovrebbe essere la funzione di perdita/metrica se il modello predicesse una risposta a caso/sempre la stessa risposta?
+
+<Tip warning={true}>
+
+⚠️ Se effettui un addestramento in modo distribuito, stampa campioni del set di dati in ogni processo e controlla molto attentamente che ottieni la stessa cosa. Un bug comune è la presenza di una qualche fonte di casualità nella creazione dei dati che fa sì che ogni processo abbia una versione diversa del set di dati.
+
+</Tip>
+
+Dopo aver esaminato i dati, esamina alcune previsioni del modello e decodificale. Se il modello prevede sempre la stessa cosa, potrebbe essere perché il tuo set di dati è influenzato verso una categoria (per i problemi di classificazione); tecniche come fare oversampling (_sovra-campionamento_) delle classi rare potrebbero aiutare.
+
+Se la funzione di perdita/metrica ottenuta con il tuo modello iniziale è molto diversa da quella che ci si aspetterebbe per le previsioni casuali, ricontrolla il modo in cui viene calcolata la funzione o la metrica, perché probabilmente c'è un bug. Se si utilizzano diverse funzioni che aggiungi alla fine, assicurati che siano della stessa grandezza.
+
+Quando sei sicuro/a che i dati sono perfetti, puoi verificare se il modello è in grado di addestrarsi su di essi con un semplice test.
+
+### Fare overfitting del modello su un batch
+
+L'overfitting è di solito qualcosa che cerchiamo di evitare durante l'addestramento, poiché significa che il modello non sta imparando a riconoscere le proprietà generali che vogliamo, ma sta invece memorizzando i campioni di addestramento. Tuttavia, provare ad addestrare il modello su un batch più e più volte è un buon test per verificare se il problema così come è stato inquadrato può essere risolto dal modello che si sta cercando di addestrare. Inoltre, ti aiuterà a capire se il learning rate (_tasso di apprendimento_) iniziale è troppo alta.
+
+Una volta definito il `Trainer`, è molto semplice: basta prendere un batch dal training set, ed eseguire un piccolo ciclo di addestramento manuale utilizzando solo quel batch per qualcosa come 20 step:
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+trainer.create_optimizer()
+
+for _ in range(20):
+    outputs = trainer.model(**batch)
+    loss = outputs.loss
+    loss.backward()
+    trainer.optimizer.step()
+    trainer.optimizer.zero_grad()
+```
+
+<Tip>
+
+💡 Se i dati di addestramento sono sbilanciati, assicurati di creare un batch di dati di addestramento contenente tutte le label.
+
+</Tip>
+
+Il modello risultante dovrebbe avere risultati quasi perfetti sullo stesso `batch`. Calcoliamo la metrica sulle previsioni risultanti:
+
+```py
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+preds = outputs.logits
+labels = batch["labels"]
+
+compute_metrics((preds.cpu().numpy(), labels.cpu().numpy()))
+```
+
+```python out
+{'accuracy': 1.0}
+```
+
+100% di accuratezza, questo è un bell'esempio di overfitting (il che significa che se provi il tuo modello su qualsiasi altra frase, molto probabilmente ti darà una risposta sbagliata)!
+
+Se non si riesci a far sì che il modello ottenga risultati perfetti come questo, significa che c'è qualcosa di sbagliato nel modo in cui si è impostato il problema o con i dati, e quindi dovresti risolvere questa cosa. Solo quando riesci a superare il test di overfitting puoi essere sicuro/a che il tuo modello possa effettivamente imparare qualcosa.
+
+<Tip warning={true}>
+
+⚠️ Sarà necessario ricreare il modello e il `Trainer` dopo questo test, poiché il modello ottenuto probabilmente non sarà in grado di recuperare e imparare qualcosa di utile sul set di dati completo.
+
+</Tip>
+
+### Non calibrare niente prima di avere una prima baseline
+
+Hyperparameter tuning (_calibrazione degli iperparametri_) è sempre considerato come la parte più difficile di machine learning, ma è solo l'ultimo passo per aiutarti a migliorare un po' la metrica. Nella maggior parte dei casi, gli iperparametri predefiniti del `Trainer` funzionano bene per dare buoni risultati, quindi non ci si deve lanciare in una ricerca di iperparametri dispendiosa in termini di tempo e di costi, finché non si è ottenuto qualcosa che batta la baseline (_base di partenza_) che si ha sul dataset.
+
+Una volta ottenuto un modello sufficientemente buono, si può iniziare a modificarlo un po'. Non provare a eseguire l'addestramento un migliaio di volte con iperparametri diversi, ma confronta un paio di esecuzioni che hanno valori diversi per un iperparametro così da avere un'idea di quale abbia il maggiore impatto.
+
+Se stai modificando il modello stesso, mantieni le cose semplici e non provare nulla che non possa essere ragionevolmente giustificato. Assicurati sempre di rifare il test di overfitting per verificare che la modifica non abbia avuto conseguenze indesiderate.
+
+### Chiedere aiuto
+
+Speriamo che in questa sezione tu abbia trovato qualche consiglio utile a risolvere il tuo problema, ma se così non fosse, ricordati che puoi sempre chiedere aiuto alla community nei [forum](https://discuss.huggingface.co/). 
+
+Qui di seguito sono riportate alcune risorse aggiuntive che potrebbero rivelarsi utili:
+
+- ["Reproducibility as a vehicle for engineering best practices"](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p) di Joel Grus
+- ["Checklist for debugging neural networks"](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21) di Cecelia Shao
+- ["How to unit test machine learning code"](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765) di Chase Roberts
+- ["A Recipe for Training Neural Networks"](http://karpathy.github.io/2019/04/25/recipe/) di Andrej Karpathy
+
+Naturalmente, non tutti i problemi che incontrerai durante l'addestramento delle reti neurali sono colpa tua! Se si incontra qualcosa nella libreria 🤗 Transformers o 🤗 Datasets che non sembra corretto, è possibile che si sia trovato un bug. Dovresti assolutamente segnalarcelo e nella prossima sezione ti spiegheremo esattamente come fare.

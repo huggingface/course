@@ -1,0 +1,1203 @@
+<FrameworkSwitchCourse {fw} />
+
+# 问答 [[问答]]
+
+{#if fw === 'pt'}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter7/section7_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter7/section7_pt.ipynb"},
+]} />
+
+{:else}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter7/section7_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter7/section7_tf.ipynb"},
+]} />
+
+{/if}
+
+是时候看问答了! 这项任务有多种形式, 但我们将在本节中关注的一项称为*提取*的问答。问题的答案就在 _给定的文档_ 之中。
+
+<Youtube id="ajPx5LwJD-I"/>
+
+我们将使用 [SQuAD 数据集](https://rajpurkar.github.io/SQuAD-explorer/) 微调一个BERT模型, 其中包括群众工作者对一组维基百科文章提出的问题。以下是一个小的测试样例:
+
+<iframe src="https://course-demos-bert-finetuned-squad.hf.space" frameBorder="0" height="450" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+本节使用的代码已经上传到了Hub。你可以在 [这里](https://huggingface.co/huggingface-course/bert-finetuned-squad?context=%F0%9F%A4%97+Transformers+is+backed+by+the+three+most+popular+deep+learning+libraries+%E2%80%94+Jax%2C+PyTorch+and+TensorFlow+%E2%80%94+with+a+seamless+integration+between+them.+It%27s+straightforward+to+train+your+models+with+one+before+loading+them+for+inference+with+the+other.&question=Which+deep+learning+libraries+back+%F0%9F%A4%97+Transformers%3F) 找到它并尝试用它进行预测。
+
+<Tip>
+
+💡 像 BERT 这样的纯编码器模型往往很擅长提取诸如 "谁发明了 Transformer 架构?"之类的事实性问题的答案。但在给出诸如 "为什么天空是蓝色的?" 之类的开放式问题时表现不佳。在这些更具挑战性的情况下, T5 和 BART 等编码器-解码器模型通常使用以与 [文本摘要](/course/chapter7/5) 非常相似的方式合成信息。如果你对这种类型的*生成式*问答感兴趣, 我们建议您查看我们基于 [ELI5 数据集](https://huggingface.co/datasets/eli5) 的 [演示](https://yjernite.github.io/lfqa.html)。
+
+</Tip>
+
+## 准备数据 [[准备数据]]
+
+最常用作抽取式问答的学术基准的数据集是 [SQuAD](https://rajpurkar.github.io/SQuAD-explorer/), 所以这就是我们将在这里使用的。还有一个更难的 [SQuAD v2](https://huggingface.co/datasets/squad_v2) 基准, 其中包括没有答案的问题。只要你自己的数据集包含上下文列、问题列和答案列, 你就应该能够调整以下步骤。
+
+### SQuAD 数据集 [[SQuAD 数据集]]
+
+像往常一样, 我们只需一步就可以下载和缓存数据集, 这要归功于 `load_dataset()`:
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("squad")
+```
+
+然后我们可以查看这个对象以, 了解有关 SQuAD 数据集的更多信息:
+
+```py
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'title', 'context', 'question', 'answers'],
+        num_rows: 87599
+    })
+    validation: Dataset({
+        features: ['id', 'title', 'context', 'question', 'answers'],
+        num_rows: 10570
+    })
+})
+```
+
+看起来我们拥有所需的 `context` 、`question` 和 `answers` 字段, 所以让我们打印训练集的第一个元素:
+
+```py
+print("Context: ", raw_datasets["train"][0]["context"])
+print("Question: ", raw_datasets["train"][0]["question"])
+print("Answer: ", raw_datasets["train"][0]["answers"])
+```
+
+```python out
+Context: 'Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend "Venite Ad Me Omnes". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive (and in a direct line that connects through 3 statues and the Gold Dome), is a simple, modern stone statue of Mary.'
+Question: 'To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France?'
+Answer: {'text': ['Saint Bernadette Soubirous'], 'answer_start': [515]}
+```
+
+`context` 和 `question` 字段使用起来非常简单。但是 `answers` 字段有点棘手, 因为它将字典与两个都是列表的字段组成。这是在评估过程中 `squad` 指标所期望的格式; 如果你使用的是自己的数据, 则不必担心将答案采用相同的格式。`text` 字段比较明显, 而 `answer_start` 字段包含上下文中每个答案的起始字符索引。
+
+在训练期间, 只有一种可能的答案。我们可以使用 `Dataset.filter()` 方法:
+
+```py
+raw_datasets["train"].filter(lambda x: len(x["answers"]["text"]) != 1)
+```
+
+```python out
+Dataset({
+    features: ['id', 'title', 'context', 'question', 'answers'],
+    num_rows: 0
+})
+```
+
+然而, 对于评估, 每个样本都有几个可能的答案, 它们可能相同或不同:
+
+```py
+print(raw_datasets["validation"][0]["answers"])
+print(raw_datasets["validation"][2]["answers"])
+```
+
+```python out
+{'text': ['Denver Broncos', 'Denver Broncos', 'Denver Broncos'], 'answer_start': [177, 177, 177]}
+{'text': ['Santa Clara, California', "Levi's Stadium", "Levi's Stadium in the San Francisco Bay Area at Santa Clara, California."], 'answer_start': [403, 355, 355]}
+```
+
+我们不会深入研究评估脚本, 因为它都会被一个 🤗 Datasets 指标包裹起来, 但简短的版本是一些问题有几个可能的答案, 这个脚本会将预测的答案与所有​​的可接受的答案并获得最高分。例如, 我们看一下索引 2 处的样本e:
+
+```py
+print(raw_datasets["validation"][2]["context"])
+print(raw_datasets["validation"][2]["question"])
+```
+
+```python out
+'Super Bowl 50 was an American football game to determine the champion of the National Football League (NFL) for the 2015 season. The American Football Conference (AFC) champion Denver Broncos defeated the National Football Conference (NFC) champion Carolina Panthers 24–10 to earn their third Super Bowl title. The game was played on February 7, 2016, at Levi\'s Stadium in the San Francisco Bay Area at Santa Clara, California. As this was the 50th Super Bowl, the league emphasized the "golden anniversary" with various gold-themed initiatives, as well as temporarily suspending the tradition of naming each Super Bowl game with Roman numerals (under which the game would have been known as "Super Bowl L"), so that the logo could prominently feature the Arabic numerals 50.'
+'Where did Super Bowl 50 take place?'
+```
+
+我们可以看到, 答案确实可以是我们之前看到的三种可能性之一。
+
+### 处理训练数据 [[处理训练数据]]
+
+<Youtube id="qgaM0weJHpA"/>
+
+让我们从预处理训练数据开始。困难的部分将是为问题的答案生成标签, 这将是与上下文中的答案相对应的标记的开始和结束位置。
+
+但是, 我们不要超越自己。首先, 我们需要使用分词器将输入中的文本转换为模型可以理解的 ID:
+
+```py
+from transformers import AutoTokenizer
+
+model_checkpoint = "bert-base-cased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+如前所述, 我们将对 BERT 模型进行微调, 但你可以使用任何其他模型类型, 只要它实现了快速标记器即可。你可以在 [this big table](https://huggingface.co/transformers/#supported-frameworks) 中看到所有快速版本的架构, 并检查你正在使用的 `tokenizer` 对象确实由 🤗 Tokenizers 支持, 你可以查看它的 `is_fast` 属性:
+
+```py
+tokenizer.is_fast
+```
+
+```python out
+True
+```
+
+我们可以将问题和上下文一起传递给我们的标记器, 它会正确插入特殊标记以形成如下句子:
+
+```
+[CLS] question [SEP] context [SEP]
+```
+
+让我们仔细检查一下:
+
+```py
+context = raw_datasets["train"][0]["context"]
+question = raw_datasets["train"][0]["question"]
+
+inputs = tokenizer(question, context)
+tokenizer.decode(inputs["input_ids"])
+```
+
+```python out
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Architecturally, '
+'the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin '
+'Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms '
+'upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred '
+'Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a '
+'replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette '
+'Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 statues '
+'and the Gold Dome ), is a simple, modern stone statue of Mary. [SEP]'
+```
+
+然后标签将成为开始和结束答案的标记的索引, 并且模型的任务是预测输入中每个标记的开始和结束 logit, 理论标签如下:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/qa_labels.svg" alt="One-hot encoded labels for question answering."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/qa_labels-dark.svg" alt="One-hot encoded labels for question answering."/>
+</div>
+
+在这种情况下, 上下文不会太长, 但是数据集中的一些示例的上下文很长, 会超过我们设置的最大长度(在这种情况下为 384)。正如我们在 [第六章](/course/chapter6/4) 中所看到的, 当我们探索 `question-answering` 管道的内部结构时, 我们将通过从我们的数据集的一个样本中创建几个训练特征来处理长上下文, 它们之间有一个滑动窗口。
+
+要使用当前示例查看其工作原理, 我们可以将长度限制为 100, 并使用 50 个标记的滑动窗口。提醒一下, 我们使用:
+
+- `max_length` 设置最大长度 (此处为 100)
+- `truncation="only_second"` 用于当带有上下文的问题太长时, 截断上下文t (位于第二个位置) 
+- `stride` 设置两个连续块之间的重叠标记数 (这里为 50)
+- `return_overflowing_tokens=True` 让标记器知道我们想要溢出的标记
+
+```py
+inputs = tokenizer(
+    question,
+    context,
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+```python out
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basi [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP]. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 statues and the Gold Dome ), is a simple, modern stone statue of Mary. [SEP]'
+```
+
+如我们所见, 我们的示例被分成四个输入, 每个输入都包含问题和上下文的一部分。 请注意, 问题的答案 ("Bernadette Soubirous") 仅出现在第三个也是最后一个输入中, 因此通过以这种方式处理长上下文, 我们将创建一些答案不包含在上下文中的训练示例。对于这些示例, 标签将是 `start_position = end_position = 0` (所以我们预测 `[CLS]` 标记)。我们还将在答案被截断的不幸情况下设置这些标签, 以便我们只有它的开始(或结束)。对于答案完全在上下文中的示例, 标签将是答案开始的标记的索引和答案结束的标记的索引。
+
+数据集为我们提供了上下文中答案的开始字符, 通过添加答案的长度, 我们可以找到上下文中的结束字符。要将它们映射到令牌索引, 我们将需要使用我们在 [第六章](/course/chapter6/4) 中研究的偏移映射。我们可以让标记器通过传递 `return_offsets_mapping=True` 来返回这些值:
+
+```py
+inputs = tokenizer(
+    question,
+    context,
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+inputs.keys()
+```
+
+```python out
+dict_keys(['input_ids', 'token_type_ids', 'attention_mask', 'offset_mapping', 'overflow_to_sample_mapping'])
+```
+
+如我们所见, 我们取回了通常的输入 ID、令牌类型 ID 和注意掩码, 以及我们需要的偏移映射和一个额外的键, `overflow_to_sample_mapping`。当我们同时标记多个文本时, 相应的值将对我们有用(我们应该这样做以受益于我们的标记器由 Rust 支持的事实)。由于一个样本可以提供多个特征, 因此它将每个特征映射到其来源的示例。因为这里我们只标记了一个例子, 我们得到一个 `0` 的列表:
+
+```py
+inputs["overflow_to_sample_mapping"]
+```
+
+```python out
+[0, 0, 0, 0]
+```
+
+但是, 如果我们标记更多示例, 这将变得更加有用:
+
+```py
+inputs = tokenizer(
+    raw_datasets["train"][2:6]["question"],
+    raw_datasets["train"][2:6]["context"],
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+
+print(f"The 4 examples gave {len(inputs['input_ids'])} features.")
+print(f"Here is where each comes from: {inputs['overflow_to_sample_mapping']}.")
+```
+
+```python out
+'The 4 examples gave 19 features.'
+'Here is where each comes from: [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3].'
+```
+
+正如我们所看到的, 前三个示例 (在训练集中的索引 2、3 和 4 处) 每个都给出了四个特征, 最后一个示例(在训练集中的索引 5 处) 给出了 7 个特征。
+
+此信息将有助于将我们获得的每个特征映射到其相应的标签。如前所述, 这些标签是:
+
+- `(0, 0)` 如果答案不在上下文的相应范围内
+- `(start_position, end_position)` 如果答案在上下文的相应范围内, 则 `start_position` 是答案开头的标记索引 (在输入 ID 中), 并且 `end_position` 是答案结束的标记的索引 (在输入 ID 中)。
+
+为了确定是哪种情况以及标记的位置, 以及(如果相关的话)标记的位置, 我们首先在输入 ID 中找到开始和结束上下文的索引。我们可以使用标记类型 ID 来执行此操作, 但由于这些 ID 不一定存在于所有模型中 (例如, DistilBERT 不需要它们), 我们将改为使用我们的标记器返回的 `BatchEncoding` 的 `sequence_ids()` 方法。
+
+一旦我们有了这些标记索引, 我们就会查看相应的偏移量, 它们是两个整数的元组, 表示原始上下文中的字符范围。因此, 我们可以检测此特征中的上下文块是在答案之后开始还是在答案开始之前结束(在这种情况下, 标签是 `(0, 0)`)。如果不是这样, 我们循环查找答案的第一个和最后一个标记:
+
+```py
+answers = raw_datasets["train"][2:6]["answers"]
+start_positions = []
+end_positions = []
+
+for i, offset in enumerate(inputs["offset_mapping"]):
+    sample_idx = inputs["overflow_to_sample_mapping"][i]
+    answer = answers[sample_idx]
+    start_char = answer["answer_start"][0]
+    end_char = answer["answer_start"][0] + len(answer["text"][0])
+    sequence_ids = inputs.sequence_ids(i)
+
+    # Find the start and end of the context
+    idx = 0
+    while sequence_ids[idx] != 1:
+        idx += 1
+    context_start = idx
+    while sequence_ids[idx] == 1:
+        idx += 1
+    context_end = idx - 1
+
+    # If the answer is not fully inside the context, label is (0, 0)
+    if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+        start_positions.append(0)
+        end_positions.append(0)
+    else:
+        # Otherwise it's the start and end token positions
+        idx = context_start
+        while idx <= context_end and offset[idx][0] <= start_char:
+            idx += 1
+        start_positions.append(idx - 1)
+
+        idx = context_end
+        while idx >= context_start and offset[idx][1] >= end_char:
+            idx -= 1
+        end_positions.append(idx + 1)
+
+start_positions, end_positions
+```
+
+```python out
+([83, 51, 19, 0, 0, 64, 27, 0, 34, 0, 0, 0, 67, 34, 0, 0, 0, 0, 0],
+ [85, 53, 21, 0, 0, 70, 33, 0, 40, 0, 0, 0, 68, 35, 0, 0, 0, 0, 0])
+```
+
+让我们看一些结果来验证我们的方法是否正确。对于我们发现的第一个特征, 我们将 `(83, 85)` 作为标签, 让我们将理论答案与从 83 到 85 (包括)的标记解码范围进行比较:
+
+```py
+idx = 0
+sample_idx = inputs["overflow_to_sample_mapping"][idx]
+answer = answers[sample_idx]["text"][0]
+
+start = start_positions[idx]
+end = end_positions[idx]
+labeled_answer = tokenizer.decode(inputs["input_ids"][idx][start : end + 1])
+
+print(f"Theoretical answer: {answer}, labels give: {labeled_answer}")
+```
+
+```python out
+'Theoretical answer: the Main Building, labels give: the Main Building'
+```
+
+所以这是一场比赛! 现在让我们检查索引 4, 我们将标签设置为 `(0, 0)`, 这意味着答案不在该功能的上下文块中
+
+```py
+idx = 4
+sample_idx = inputs["overflow_to_sample_mapping"][idx]
+answer = answers[sample_idx]["text"][0]
+
+decoded_example = tokenizer.decode(inputs["input_ids"][idx])
+print(f"Theoretical answer: {answer}, decoded example: {decoded_example}")
+```
+
+```python out
+'Theoretical answer: a Marian place of prayer and reflection, decoded example: [CLS] What is the Grotto at Notre Dame? [SEP] Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grot [SEP]'
+```
+
+事实上, 我们在上下文中看不到答案。
+
+<Tip>
+
+✏️ **轮到你了!** 使用 XLNet 架构时, 在左侧应用填充, 并切换问题和上下文。将我们刚刚看到的所有代码改编为 XLNet 架构 (并添加 `padding=True`)。请注意, `[CLS]` 标记可能不在应用填充的 0 位置。
+
+</Tip>
+
+现在我们已经逐步了解了如何预处理我们的训练数据, 我们可以将其分组到一个函数中, 我们将应用于整个训练数据集。我们会将每个特征填充到我们设置的最大长度, 因为大多数上下文会很长 (并且相应的样本将被分成几个特征), 所以在这里应用动态填充没有真正的好处:
+
+```py
+max_length = 384
+stride = 128
+
+
+def preprocess_training_examples(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=max_length,
+        truncation="only_second",
+        stride=stride,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    offset_mapping = inputs.pop("offset_mapping")
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    answers = examples["answers"]
+    start_positions = []
+    end_positions = []
+
+    for i, offset in enumerate(offset_mapping):
+        sample_idx = sample_map[i]
+        answer = answers[sample_idx]
+        start_char = answer["answer_start"][0]
+        end_char = answer["answer_start"][0] + len(answer["text"][0])
+        sequence_ids = inputs.sequence_ids(i)
+
+        # Find the start and end of the context
+        idx = 0
+        while sequence_ids[idx] != 1:
+            idx += 1
+        context_start = idx
+        while sequence_ids[idx] == 1:
+            idx += 1
+        context_end = idx - 1
+
+        # If the answer is not fully inside the context, label is (0, 0)
+        if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+            start_positions.append(0)
+            end_positions.append(0)
+        else:
+            # Otherwise it's the start and end token positions
+            idx = context_start
+            while idx <= context_end and offset[idx][0] <= start_char:
+                idx += 1
+            start_positions.append(idx - 1)
+
+            idx = context_end
+            while idx >= context_start and offset[idx][1] >= end_char:
+                idx -= 1
+            end_positions.append(idx + 1)
+
+    inputs["start_positions"] = start_positions
+    inputs["end_positions"] = end_positions
+    return inputs
+```
+
+请注意, 我们定义了两个常数来确定使用的最大长度以及滑动窗口的长度, 并且我们在标记化之前添加了一点清理: SQuAD 数据集中的一些问题在开头有额外的空格, 并且不添加任何内容的结尾 (如果你使用像 RoBERTa 这样的模型, 则在标记化时会占用空间), 因此我们删除了那些额外的空格。
+
+为了将此函数应用于整个训练集, 我们使用 `Dataset.map()` 方法与 `batched=True` 标志。这是必要的, 因为我们正在更改数据集的长度(因为一个示例可以提供多个训练特征):
+
+```py
+train_dataset = raw_datasets["train"].map(
+    preprocess_training_examples,
+    batched=True,
+    remove_columns=raw_datasets["train"].column_names,
+)
+len(raw_datasets["train"]), len(train_dataset)
+```
+
+```python out
+(87599, 88729)
+```
+
+正如我们所见, 预处理增加了大约 1,000 个特征。我们的训练集现在可以使用了-- 让我们深入研究验证集的预处理!
+
+### 处理验证数据 [[处理验证数据]]
+
+预处理验证数据会稍微容易一些, 因为我们不需要生成标签(除非我们想计算验证损失, 但这个数字并不能真正帮助我们理解模型有多好)。真正的乐趣是将模型的预测解释为原始上下文的跨度。为此, 我们只需要存储偏移映射和某种方式来将每个创建的特征与它来自的原始示例相匹配。由于原始数据集中有一个 ID 列, 我们将使用该 ID。
+
+我们将在这里添加的唯一内容是对偏移映射的一点点清理。它们将包含问题和上下文的偏移量, 但是一旦我们进入后处理阶段, 我们将无法知道输入 ID 的哪一部分对应于上下文以及哪一部分是问题(我们使用的 `sequence_ids()` 方法仅可用于标记器的输出)。因此, 我们将与问题对应的偏移量设置为 `None`:
+
+```py
+def preprocess_validation_examples(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=max_length,
+        truncation="only_second",
+        stride=stride,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    example_ids = []
+
+    for i in range(len(inputs["input_ids"])):
+        sample_idx = sample_map[i]
+        example_ids.append(examples["id"][sample_idx])
+
+        sequence_ids = inputs.sequence_ids(i)
+        offset = inputs["offset_mapping"][i]
+        inputs["offset_mapping"][i] = [
+            o if sequence_ids[k] == 1 else None for k, o in enumerate(offset)
+        ]
+
+    inputs["example_id"] = example_ids
+    return inputs
+```
+
+我们可以像以前一样将此函数应用于整个验证数据集:
+
+```py
+validation_dataset = raw_datasets["validation"].map(
+    preprocess_validation_examples,
+    batched=True,
+    remove_columns=raw_datasets["validation"].column_names,
+)
+len(raw_datasets["validation"]), len(validation_dataset)
+```
+
+```python out
+(10570, 10822)
+```
+
+I在这种情况下, 我们只添加了几百个样本, 因此验证数据集中的上下文似乎有点短。
+
+现在我们已经对所有数据进行了预处理, 我们可以开始训练了。
+
+{#if fw === 'pt'}
+
+## 使用 `Trainer` API 微调模型 [[使用 `Trainer` API 微调模型]]
+
+这个例子的训练代码看起来很像前面几节中的代码 -- 最难的是编写 `compute_metrics()` 函数。由于我们将所有样本填充到我们设置的最大长度, 因此没有数据整理器要定义, 所以这个度量计算真的是我们唯一需要担心的事情。困难的部分是将模型预测后处理为原始示例中的文本范围; 一旦我们这样做了, 🤗 Datasets 库中的指标将为我们完成大部分工作。
+
+{:else}
+
+## 使用 Keras 微调模型 [[使用 Keras 微调模型]]
+
+这个示例的训练代码看起来很像前几节中的代码, 但是计算指标将是唯一的挑战。因为我们将所有的样本填充到我们设置的最大长度, 所以不需要定义数据整理器, 所以这个度量计算实际上是我们唯一需要担心的事情。困难的部分是将模型预测后处理成原始例子中的文本范围; 一旦我们完成了这些, 🤗 Datasets 库中的指标将为我们完成大部分工作。
+
+{/if}
+
+### 后处理 [[后处理]]
+
+{#if fw === 'pt'}
+
+<Youtube id="BNy08iIWVJM"/>
+
+{:else}
+
+<Youtube id="VN67ZpN33Ss"/>
+
+{/if}
+
+该模型将在输入ID中为答案的开始和结束位置输出Logit, 正如我们在探索 [`question-answering` pipeline](/course/chapter6/3b) 时看到的那样。后处理步骤将类似于我们在那里所做的, 所以这里是我们采取的行动的快速提醒:
+
+- 我们屏蔽了与上下文之外的标记相对应的开始和结束 logits。
+- 然后, 我们使用 softmax 将开始和结束 logits 转换为概率。
+- 我们通过取对应的两个概率的乘积来给每个 `(start_token, end_token)` 组合赋值。
+- 我们寻找产生有效答案的最高分数的配对 (例如, `start_token` 低于 `end_token`)。
+
+在这里, 我们将稍微改变这个过程, 因为我们不需要计算实际分数 (只是预测的答案)。这意味着我们可以跳过 softmax 步骤。为了更快, 我们也不会对所有可能的 `(start_token, end_token)` 对进行评分, 而只会对对应于最高 `n_best` 的那些对进行评分 (使用 `n_best=20`)。由于我们将跳过 softmax, 因此这些分数将是 logit 分数, 并且将通过取 start 和 end logits 的总和来获得 (而不是乘积, 因为规则 \\(\log(ab) = \log(a) + \log(b)\\))。
+
+为了证明这一切, 我们需要一些预测。由于我们还没有训练我们的模型, 我们将使用 QA 管道的默认模型对一小部分验证集生成一些预测。我们可以使用和之前一样的处理函数; 因为它依赖于全局常量 `tokenizer`, 我们只需将该对象更改为我们要临时使用的模型的标记器:
+
+```python
+small_eval_set = raw_datasets["validation"].select(range(100))
+trained_checkpoint = "distilbert-base-cased-distilled-squad"
+
+tokenizer = AutoTokenizer.from_pretrained(trained_checkpoint)
+eval_set = small_eval_set.map(
+    preprocess_validation_examples,
+    batched=True,
+    remove_columns=raw_datasets["validation"].column_names,
+)
+```
+
+现在预处理已经完成, 我们将分词器改回我们最初选择的那个:
+
+```python
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+然后, 我们删除 `eval_set` 中模型不期待的列, 用所有的小验证集构建一个批次, 然后通过模型。如果 GPU 可用, 我们会使用它来加快速度:
+
+{#if fw === 'pt'}
+
+```python
+import torch
+from transformers import AutoModelForQuestionAnswering
+
+eval_set_for_model = eval_set.remove_columns(["example_id", "offset_mapping"])
+eval_set_for_model.set_format("torch")
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+batch = {k: eval_set_for_model[k].to(device) for k in eval_set_for_model.column_names}
+trained_model = AutoModelForQuestionAnswering.from_pretrained(trained_checkpoint).to(
+    device
+)
+
+with torch.no_grad():
+    outputs = trained_model(**batch)
+```
+
+由于 `Trainer` 将为我们提供 NumPy 数组的预测, 我们获取开始和结束 logits 并将它们转换为该格式
+
+```python
+start_logits = outputs.start_logits.cpu().numpy()
+end_logits = outputs.end_logits.cpu().numpy()
+```
+
+{:else}
+
+```python
+import tensorflow as tf
+from transformers import TFAutoModelForQuestionAnswering
+
+eval_set_for_model = eval_set.remove_columns(["example_id", "offset_mapping"])
+eval_set_for_model.set_format("numpy")
+
+batch = {k: eval_set_for_model[k] for k in eval_set_for_model.column_names}
+trained_model = TFAutoModelForQuestionAnswering.from_pretrained(trained_checkpoint)
+
+outputs = trained_model(**batch)
+```
+
+为了便于实验, 让我们将这些输出转换为 NumPy 数组:
+
+```python
+start_logits = outputs.start_logits.numpy()
+end_logits = outputs.end_logits.numpy()
+```
+
+{/if}
+
+现在, 我们需要在 `small_eval_set` 中找到每个示例的预测答案。一个示例可能已经在  `eval_set` 中拆分为多个特征, 因此第一步是将 `small_eval_set` 中的每个示例映射到 `eval_set` 中相应的特征:
+
+```python
+import collections
+
+example_to_features = collections.defaultdict(list)
+for idx, feature in enumerate(eval_set):
+    example_to_features[feature["example_id"]].append(idx)
+```
+
+有了这个, 我们就可以真正开始工作, 循环遍历所有示例, 并为每个示例遍历所有相关功能。正如我们之前所说, 我们将查看 `n_best` 开始 logits 和结束 logits 的 logit 分数, 不包括以下的位置:
+
+- 一个不在上下文中的答案
+- 长度为负的答案
+- 答案太长 (我们将可能性限制在 `max_answer_length=30`)
+
+一旦我们为一个示例获得了所有可能的答案, 我们只需选择一个具有最佳 logit 分数的答案:
+
+```python
+import numpy as np
+
+n_best = 20
+max_answer_length = 30
+predicted_answers = []
+
+for example in small_eval_set:
+    example_id = example["id"]
+    context = example["context"]
+    answers = []
+
+    for feature_index in example_to_features[example_id]:
+        start_logit = start_logits[feature_index]
+        end_logit = end_logits[feature_index]
+        offsets = eval_set["offset_mapping"][feature_index]
+
+        start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+        end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+        for start_index in start_indexes:
+            for end_index in end_indexes:
+                # Skip answers that are not fully in the context
+                if offsets[start_index] is None or offsets[end_index] is None:
+                    continue
+                # Skip answers with a length that is either < 0 or > max_answer_length.
+                if (
+                    end_index < start_index
+                    or end_index - start_index + 1 > max_answer_length
+                ):
+                    continue
+
+                answers.append(
+                    {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                )
+
+    best_answer = max(answers, key=lambda x: x["logit_score"])
+    predicted_answers.append({"id": example_id, "prediction_text": best_answer["text"]})
+```
+
+预测答案的最终格式是我们将使用的度量标准所期望的格式。像往常一样, 我们可以在 🤗 Evaluate 库的帮助下加载它:
+
+```python
+import evaluate
+
+metric = evaluate.load("squad")
+```
+
+该指标期望我们上面看到的格式的预测答案 (一个字典列表, 其中一个键用于示例 ID, 一个键用于预测文本) 和以下格式的理论答案 (一个字典列表, 一个键示例的 ID 和可能答案的一键):
+
+```python
+theoretical_answers = [
+    {"id": ex["id"], "answers": ex["answers"]} for ex in small_eval_set
+]
+```
+
+我们现在可以通过查看两个列表的第一个元素来检查我们是否得到了合理的结果:
+
+```python
+print(predicted_answers[0])
+print(theoretical_answers[0])
+```
+
+```python out
+{'id': '56be4db0acb8001400a502ec', 'prediction_text': 'Denver Broncos'}
+{'id': '56be4db0acb8001400a502ec', 'answers': {'text': ['Denver Broncos', 'Denver Broncos', 'Denver Broncos'], 'answer_start': [177, 177, 177]}}
+```
+
+还不错! 现在让我们看看这个指标给我们的分数:
+
+```python
+metric.compute(predictions=predicted_answers, references=theoretical_answers)
+```
+
+```python out
+{'exact_match': 83.0, 'f1': 88.25}
+```
+
+同样, 考虑到根据 [its paper](https://arxiv.org/abs/1910.01108v2), 在 SQuAD 上微调的 DistilBERT 在整个数据集上的得分分别为 79.1 和 86.9, 这是相当不错的。
+
+{#if fw === 'pt'}
+
+现在, 让我们把刚才所做的一切放在 `compute_metrics()` 函数中, 我们将在 `Trainer` 中使用它。通常, `compute_metrics()` 函数只接收一个包含 logits 和 labels 的元组 `eval_preds`。这里我们需要更多, 因为我们必须在特征数据集中查找偏移量, 在原始上下文的示例数据集中查找, 因此我们将无法在训练期间使用此函数获得常规评估结果。我们只会在训练结束时使用它来检查结果。
+
+`compute_metrics()` 函数将与前面相同的步骤分组; 我们只是添加一个小检查, 以防我们没有提出任何有效的答案 (在这种情况下, 我们预测一个空字符串)。
+
+{:else}
+
+现在, 让我们将刚才所做的一切放入 `compute_metrics()` 函数中, 我们将在训练模型后使用该函数。我们需要传递的不仅仅是输出日志, 因为我们必须在特征数据集中寻找偏移量, 在原始上下文的示例数据集中寻找:
+
+{/if}
+
+```python
+from tqdm.auto import tqdm
+
+
+def compute_metrics(start_logits, end_logits, features, examples):
+    example_to_features = collections.defaultdict(list)
+    for idx, feature in enumerate(features):
+        example_to_features[feature["example_id"]].append(idx)
+
+    predicted_answers = []
+    for example in tqdm(examples):
+        example_id = example["id"]
+        context = example["context"]
+        answers = []
+
+        # Loop through all features associated with that example
+        for feature_index in example_to_features[example_id]:
+            start_logit = start_logits[feature_index]
+            end_logit = end_logits[feature_index]
+            offsets = features[feature_index]["offset_mapping"]
+
+            start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+            end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+            for start_index in start_indexes:
+                for end_index in end_indexes:
+                    # Skip answers that are not fully in the context
+                    if offsets[start_index] is None or offsets[end_index] is None:
+                        continue
+                    # Skip answers with a length that is either < 0 or > max_answer_length
+                    if (
+                        end_index < start_index
+                        or end_index - start_index + 1 > max_answer_length
+                    ):
+                        continue
+
+                    answer = {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                    answers.append(answer)
+
+        # Select the answer with the best score
+        if len(answers) > 0:
+            best_answer = max(answers, key=lambda x: x["logit_score"])
+            predicted_answers.append(
+                {"id": example_id, "prediction_text": best_answer["text"]}
+            )
+        else:
+            predicted_answers.append({"id": example_id, "prediction_text": ""})
+
+    theoretical_answers = [{"id": ex["id"], "answers": ex["answers"]} for ex in examples]
+    return metric.compute(predictions=predicted_answers, references=theoretical_answers)
+```
+
+我们可以检查它是否适用于我们的预测:
+
+```python
+compute_metrics(start_logits, end_logits, eval_set, small_eval_set)
+```
+
+```python out
+{'exact_match': 83.0, 'f1': 88.25}
+```
+
+看起来不错! 现在让我们用它来微调我们的模型。
+
+### 微调模型 [[微调模型]]
+
+{#if fw === 'pt'}
+
+我们现在准备好训练我们的模型了。让我们首先创建它, 像以前一样使用 `AutoModelForQuestionAnswering` 类:
+
+```python
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+我们现在准备好训练我们的模型了。让我们首先创建它, 像以前一样使用 `TFAutoModelForQuestionAnswering` 类:
+
+```python
+model = TFAutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+{/if}
+
+像往常一样, 我们收到一个警告, 有些权重没有使用(来自预训练头的), 而另一些是随机初始化的 (用于问答头的)。你现在应该已经习惯了, 但这意味着这个模型还没有准备好使用, 需要微调 -- 我们即将这样做!
+
+为了能够将我们的模型推送到 Hub, 我们需要登录 Hugging Face。 如果你在笔记本中运行此代码, 则可以使用以下实用程序函数执行此操作, 该函数会显示一个小部件, 你可以在其中输入登录凭据:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+如果你不在笔记本中工作, 只需在终端中键入以下行:
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+完成后, 我们就可以定义我们的 `TrainingArguments`。正如我们在定义函数来计算度量时所说的那样, 由于 `compute_metrics()` 函数的签名, 我们将不能有常规的求值循环。我们可以编写 `Trainer` 的子类来完成这一任务(你可以在 [question answering example script](https://github.com/huggingface/transformers/blob/master/examples/pytorch/question-answering/trainer_qa.py)中找到一种方法), 但这对于本节来说有点太长了。相反, 我们只会在训练结束时评估模型, 并在下面的"自定义训练循环"向你展示如何进行常规评估。
+
+T这确实时 `Trainer` API 显示其局限性和 🤗 Accelerate 库的亮点所在: 根据特定用例自定义类可能很痛苦, 但调整完全公开的训练循环很容易。
+
+来看看我们的 `TrainingArguments`:
+
+```python
+from transformers import TrainingArguments
+
+args = TrainingArguments(
+    "bert-finetuned-squad",
+    evaluation_strategy="no",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+    fp16=True,
+    push_to_hub=True,
+)
+```
+
+我们之前已经看到了其中的大部分: 我们设置了一些超参数 (比如学习率、训练的 epoch 数和一些权重衰减), 并表明我们希望在每个 epoch 结束时保存模型, 跳过评估, 并将我们的结果上传到模型中心。我们还使用 `fp16=True` 启用混合精度训练, 因为它可以在最近的 GPU 上很好地加快训练速度。
+
+{:else}
+
+现在, 我们可以创建我们的 TF 数据集。这次我们可以使用简单的默认数据整理器:
+
+```python
+from transformers import DefaultDataCollator
+
+data_collator = DefaultDataCollator(return_tensors="tf")
+```
+
+现在我们像往常一样创建数据集。
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    train_dataset,
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=16,
+)
+tf_eval_dataset = model.prepare_tf_dataset(
+    validation_dataset,
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=16,
+)
+```
+
+接下来, 我们设置了我们的训练超参数并编译了我们的模型:
+
+```python
+from transformers import create_optimizer
+from transformers.keras_callbacks import PushToHubCallback
+import tensorflow as tf
+
+# The number of training steps is the number of samples in the dataset, divided by the batch size then multiplied
+# by the total number of epochs. Note that the tf_train_dataset here is a batched tf.data.Dataset,
+# not the original Hugging Face Dataset, so its len() is already num_samples // batch_size.
+num_train_epochs = 3
+num_train_steps = len(tf_train_dataset) * num_train_epochs
+optimizer, schedule = create_optimizer(
+    init_lr=2e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Train in mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+最后, 我们准备好使用 `model.fit()` 进行训练了。我们使用 `PushToHubCallback` 在每个时期之后将模型上传到Hub。
+
+{/if}
+
+默认情况下, 使用的存储库将在您的命名空间中, 并以您设置的输出目录命名, 因此在我们的例子中, 它将在 `"sgugger/bert-finetuned-squad"` 中。我们可以通过传递 `hub_model_id` 来覆盖它; 例如, 为了将模型推送到 `huggingface_course` 组织, 我们使用了 `hub_model_id="huggingface_course/bert-finetuned-squad"` (这是我们在本节开头链接的模型)。
+
+{#if fw === 'pt'}
+
+<Tip>
+
+💡 如果您使用的输出目录存在, 则它需要是您要推送到的存储库的本地克隆 (因此, 如果在定义 `Trainer` 时出错, 请设置新名称)。
+
+</Tip>
+
+最后, 我们只需将所有内容传递给 `Trainer` 类并启动训练:
+
+```python
+from transformers import Trainer
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=train_dataset,
+    eval_dataset=validation_dataset,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+{:else}
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(output_dir="bert-finetuned-squad", tokenizer=tokenizer)
+
+# We're going to do validation afterwards, so no validation mid-training
+model.fit(tf_train_dataset, callbacks=[callback], epochs=num_train_epochs)
+```
+
+{/if}
+
+请注意, 在进行训练时, 每次保存模型时 (这里是每个 epoch) 它都会在后台上传到 Hub。这样, 如有必要, 你将能够在另一台机器上恢复训练。整个培训需要一段时间 (在 Titan RTX 上需要一个多小时), 因此您可以喝杯咖啡或重读课程中您发现在进行过程中更具挑战性的部分内容。另请注意, 一旦第一个 epoch 完成, 你将看到一些权重上传到 Hub, 你可以开始在其页面上使用你的模型。
+
+{#if fw === 'pt'}
+
+一旦训练完成, 我们终于可以评估我们的模型(并祈祷我们没有把所有的计算时间都花在任何事情上)。`Trainer` 的 `predict()` 方法将返回一个元组, 其中第一个元素将是模型的预测 (这里是带有开始和结束 logits 的对)。我们将其发送给 `compute_metrics()` 函数:
+
+```python
+predictions, _, _ = trainer.predict(validation_dataset)
+start_logits, end_logits = predictions
+compute_metrics(start_logits, end_logits, validation_dataset, raw_datasets["validation"])
+```
+
+{:else}
+
+一旦训练完成, 我们终于可以评估我们的模型(并祈祷我们没有把所有的计算时间都花在任何事情上)。我们的 `model` 的 `predict()` 方法将负责获取预测, 并且由于我们之前已经完成了定义 `compute_metrics()` 函数的所以艰苦工作, 因此我们可以在一行中获得结果:
+
+```python
+predictions = model.predict(tf_eval_dataset)
+compute_metrics(
+    predictions["start_logits"],
+    predictions["end_logits"],
+    validation_dataset,
+    raw_datasets["validation"],
+)
+```
+
+{/if}
+
+```python out
+{'exact_match': 81.18259224219489, 'f1': 88.67381321905516}
+```
+
+很好! 作为比较, BERT 文章中报告的该模型的基线分数是 80.8 和 88.5, 所以我们应该是正确的。
+
+{#if fw === 'pt'}
+
+最后, 我们使用 `push_to_hub()` 方法确保我们上传模型的最新版本:
+
+```py
+trainer.push_to_hub(commit_message="Training complete")
+```
+
+如果你想检查它, 这将返回它刚刚执行的提交的 URL:
+
+```python out
+'https://huggingface.co/sgugger/bert-finetuned-squad/commit/9dcee1fbc25946a6ed4bb32efb1bd71d5fa90b68'
+```
+
+`Trainer` 还起草了包含所有评估结果的模型卡并上传。
+
+{/if}
+
+在这个阶段, 你可以使用模型中心上的推理小部件来测试模型并与您的朋友、家人和最喜欢的宠物分享。你已经成功地微调了一个问答任务的模型 -- 恭喜!
+
+<Tip>
+
+✏️ **轮到你了!** 尝试另一种模型架构, 看看它是否在此任务上表现更好!
+
+</Tip>
+
+{#if fw === 'pt'}
+
+如果你想更深入地了解训练循环, 我们现在将向你展示如何使用 🤗 Accelerate 来做同样的事情。
+
+## 自定义训练循环 [[自定义训练循环]]
+
+现在让我们来看一下完整的训练循环, 这样您就可以轻松地自定义所需的部分。它看起来很像 [第三章](/course/chapter3/4) 中的训练循环, 除了评估循环。我们将能够定期评估模型, 因为我们不再受 `Trainer` 类的限制。
+
+### 为训练做准备 [[为训练做准备]]
+
+首先, 我们需要从我们的数据集中构建 `DataLoader`。我们将这些数据集的格式设置为 `"torch"`, 并删除模型未使用的验证集中的列。然后, 我们可以使用 Transformers 提供的 `default_data_collator` 作为 `collate_fn`, 并打乱训练集, 但不打乱验证集58:
+
+```py
+from torch.utils.data import DataLoader
+from transformers import default_data_collator
+
+train_dataset.set_format("torch")
+validation_set = validation_dataset.remove_columns(["example_id", "offset_mapping"])
+validation_set.set_format("torch")
+
+train_dataloader = DataLoader(
+    train_dataset,
+    shuffle=True,
+    collate_fn=default_data_collator,
+    batch_size=8,
+)
+eval_dataloader = DataLoader(
+    validation_set, collate_fn=default_data_collator, batch_size=8
+)
+```
+
+接下来我们重新实例化我们的模型, 以确保我们不会继续之前的微调, 而是再次从 BERT 预训练模型开始:
+
+```py
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+然后我们需要一个优化器。像往常一样, 我们使用经典的 `AdamW`, 它与 Adam 类似, 但对权重衰减的应用方式进行了修复:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+一旦我们拥有所有这些对象, 我们可以将它们发送给 `accelerator.prepare()` 方法。请记住, 如果您想在 Colab 笔记本中的 TPU 上进行训练, 您需要将所有这些代码移动到一个训练函数中, 并且不应该执行任何实例化 `Accelerator` 的单元。我们可以通过传递 `fp16=True` 给 `Accelerator` (或者, 如果你将代码作为脚本执行, 只需确保适当地填写 🤗 Accelerate `config` )。
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator(fp16=True)
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+从前面几节中你应该知道, 我们只能使用 `train_dataloader` 长度来计算经过 `accelerator.prepare()` 方法后的训练步骤的数量。我们使用与前几节相同的线性时间表:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 3
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+要将我们的模型推送到 Hub, 我们需要在工作文件夹中创建一个 `Repository` 对象。如果你尚未登录, 请先登录 Hugging Face Hub。我们将根据我们想要为模型提供的模型 ID 确定存储库名称 (随意用你自己的选择替换 `repo_name`; 它只需要包含你的用户名, 这就是函数 `get_full_repo_name()` 所做的):
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "bert-finetuned-squad-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/bert-finetuned-squad-accelerate'
+```
+
+然后我们可以将该存储库克隆到本地文件夹中。如果它已经存在, 这个本地文件夹应该是我们正在使用的存储库的克隆:
+
+```py
+output_dir = "bert-finetuned-squad-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+我们现在可以通过调用 `repo.push_to_hub()` 方法上传我们保存在 `output_dir` 中的任何内容。这将帮助我们在每个 epoch 结束时上传中间模型。
+
+## 训练循环 [[训练循环]]
+
+我们现在准备编写完整的训练循环。在定义了一个进度条来跟踪训练进行后, 循环分为三个部分:
+
+- 训练本身是对 `train_dataloader` 的经典迭代, 前向传递模型, 然后反向传递和优化器步骤。
+- 在计算中, 我们在将 `start_logits` 和 `end_logits` 的所有值转换为 NumPy 数组之前, 收集它们的所有值。评估循环完成后,我们将连接所有结果。请注意, 我们需要截断, 因为 `Accelerator` 可能在最后添加了一些示例, 以确保我们在每个过程中拥有相同数量的示例。
+- 保存和上传, 这里我们先保存模型和分词器, 然后调用 `repo.push_to_hub()`。正如我们之前所做的那样, 我们使用参数 `blocking=False` 来告诉 🤗 Hub 库推入一个异步进程。这样, 训练正常继续, 并且这个 (长) 指令在后台执行。
+
+这是训练循环的完整代码:
+
+```py
+from tqdm.auto import tqdm
+import torch
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Training
+    model.train()
+    for step, batch in enumerate(train_dataloader):
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluation
+    model.eval()
+    start_logits = []
+    end_logits = []
+    accelerator.print("Evaluation!")
+    for batch in tqdm(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        start_logits.append(accelerator.gather(outputs.start_logits).cpu().numpy())
+        end_logits.append(accelerator.gather(outputs.end_logits).cpu().numpy())
+
+    start_logits = np.concatenate(start_logits)
+    end_logits = np.concatenate(end_logits)
+    start_logits = start_logits[: len(validation_dataset)]
+    end_logits = end_logits[: len(validation_dataset)]
+
+    metrics = compute_metrics(
+        start_logits, end_logits, validation_dataset, raw_datasets["validation"]
+    )
+    print(f"epoch {epoch}:", metrics)
+
+    # Save and upload
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+如果这是您第一次看到使用 🤗 Accelerate 保存的模型, 让我们花点时间检查一下它附带的三行代码:
+
+```py
+accelerator.wait_for_everyone()
+unwrapped_model = accelerator.unwrap_model(model)
+unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+```
+
+第一行是不言自明的: 它告诉所有进程要等到每个人都处于那个阶段才能继续。这是为了确保我们在保存之前在每个过程中都有相同的模型。然后我们获取 `unwrapped_model`, 这是我们定义的基础模型。 `accelerator.prepare()` 方法将模型更改为在分布式训练中工作, 因此它将不再有 `save_pretrained()` 方法; `accelerator.unwrap_model()` 方法会撤销该步骤。最后, 我们调用 `save_pretrained()`, 但告诉该方法使用 `accelerator.save()` 而不是 `torch.save()`。
+
+完成后, 你应该拥有一个模型, 该模型产生的结果与使用 `Trainer` 训练的模型非常相似。你可以在 [*huggingface-course/bert-finetuned-squad-accelerate*](https://huggingface.co/huggingface-course/bert-finetuned-squad-accelerate) 上查看我们使用此代码训练的模型。如果你想测试对训练循环的任何调整, 你可以通过编辑上面显示的代码直接实现它们!
+
+{/if}
+
+## 使用微调模型 [[使用微调模型]]
+
+我们已经向您展示了如何将我们在模型中心微调的模型与推理小部件一起使用。要在 `pipeline` 中本地使用它, 你只需要指定模型标识符:
+
+```py
+from transformers import pipeline
+
+# Replace this with your own checkpoint
+model_checkpoint = "huggingface-course/bert-finetuned-squad"
+question_answerer = pipeline("question-answering", model=model_checkpoint)
+
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+```python out
+{'score': 0.9979003071784973,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+很棒! 我们的模型与该管道的默认模型一样有效!

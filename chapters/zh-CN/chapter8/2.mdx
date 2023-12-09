@@ -1,0 +1,364 @@
+# 出现错误时该怎么办 [[出现错误时该怎么办]]
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter8/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter8/section2.ipynb"},
+]} />
+
+在本节中, 我们将研究当你尝试从新调整的 Transformer 模型生成预测时可能发生的一些常见错误。这将为 [第四节](/course/chapter8/section4) 做准备, 我们将探索如何调试训练阶段本身。
+
+<Youtube id="DQ-CpJn6Rc4"/>
+
+我们为这一节准备了一个 [模板模型库](https://huggingface.co/lewtun/distilbert-base-uncased-finetuned-squad-d5716d28), 如果你想运行本章中的代码, 你首先需要将模型复制到你的 [Hugging Face Hub](https://huggingface.co) 账号。为此, 首先通过在 Jupyter 笔记本中运行以下任一命令来登录:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+或在你最喜欢的终端中执行以下操作:
+
+```bash
+huggingface-cli login
+```
+
+这将提示你输入用户名和密码, 并将在下面保存一个令牌 *~/.cache/huggingface/*。登录后, 你可以使用以下功能复制模板存储库:
+
+```python
+from distutils.dir_util import copy_tree
+from huggingface_hub import Repository, snapshot_download, create_repo, get_full_repo_name
+
+
+def copy_repository_template():
+    # Clone the repo and extract the local path
+    template_repo_id = "lewtun/distilbert-base-uncased-finetuned-squad-d5716d28"
+    commit_hash = "be3eaffc28669d7932492681cd5f3e8905e358b4"
+    template_repo_dir = snapshot_download(template_repo_id, revision=commit_hash)
+    # Create an empty repo on the Hub
+    model_name = template_repo_id.split("/")[1]
+    create_repo(model_name, exist_ok=True)
+    # Clone the empty repo
+    new_repo_id = get_full_repo_name(model_name)
+    new_repo_dir = model_name
+    repo = Repository(local_dir=new_repo_dir, clone_from=new_repo_id)
+    # Copy files
+    copy_tree(template_repo_dir, new_repo_dir)
+    # Push to Hub
+    repo.push_to_hub()
+```
+
+现在, 当你调用 `copy_repository_template()` 时, 它将在你的帐户下创建模板存储库的副本。
+
+## 从 🤗 Transformers 调试管道 [[从 🤗 Transformers 调试管道]]
+
+要开始我们调试 Transformer 模型的奇妙世界之旅, 请考虑以下场景: 你正在与一位同事合作进行问答项目, 以帮助电子商务网站的客户找到有关消费品的答案。你的同事给你发了一条消息, 比如:
+
+> 嗨! 我刚刚使用了抱抱脸课程的 [第七章](/course/chapter7/7) 中的技术进行了一个实验, 并在 SQuAD 上获得了一些很棒的结果! 我认为我们可以用这个模型作为我们项目的起点。Hub上的模型ID是 "lewtun/distillbert-base-uncased-finetuned-squad-d5716d28"。请随意测试一下 :)
+
+你首先想到的是使用 🤗 Transformers 中的 `管道`:
+
+```python
+from transformers import pipeline
+
+model_checkpoint = get_full_repo_name("distillbert-base-uncased-finetuned-squad-d5716d28")
+reader = pipeline("question-answering", model=model_checkpoint)
+```
+
+```python out
+"""
+OSError: Can't load config for 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28'. Make sure that:
+
+- 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+哦不对, 好像出了什么问题! 如果你是编程新手, 这些类型的错误一开始看起来有点神秘 (甚至是一个 `OSError`?!)。这里显示的错误只是一个更大的错误报告的最后一部分, 称为 _Python traceback_ (又名堆栈跟踪)。例如, 如果你在 Google Colab 上运行此代码, 你应该会看到类似于以下屏幕截图的内容:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/traceback.png" alt="A Python traceback." width="100%"/>
+</div>
+
+这些报告中包含很多信息, 所以让我们一起来看看关键部分。首先要注意的是, 应该从 _从底部到顶部_ 读取回溯。如果你习惯于从上到下阅读英文文本, 这可能听起来很奇怪,但它反映了这样一个事实,即回溯显示了在下载模型和标记器时 `管道` 进行的函数调用序列。(查看 [第二章](/course/chapter2) 了解有关 `pipeline` 如何在后台工作的更多详细信息。)
+
+<Tip>
+
+🚨 看到Google Colab 回溯中 "6 帧" 周围的蓝色框了吗? 这是 Colab 的一个特殊功能, 它将回溯压缩为"帧"。如果你似乎无法找到错误的来源, 请确保通过单击这两个小箭头来展开完整的回溯。
+
+</Tip>
+
+这意味着回溯的最后一行指示最后一条错误消息并给出引发的异常的名称。在这种情况下, 异常类型是`OSError`, 表示与系统相关的错误。如果我们阅读随附的错误消息, 我们可以看到模型的 *config.json* 文件似乎有问题, 我们给出了两个修复它的建议:
+
+```python out
+"""
+Make sure that:
+
+- 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+<Tip>
+
+💡 如果你遇到难以理解的错误消息, 只需将该消息复制并粘贴到 Google 或 [Stack Overflow](https://stackoverflow.com/) 搜索栏中 (是的, 真的!)。你很可能不是第一个遇到错误的人, 这是找到社区中其他人发布的解决方案的好方法。例如, 在 Stack Overflow 上搜索 `OSError: Can't load config for` 给出了几个[hits](https://stackoverflow.com/search?q=OSError%3A+Can%27t+load+config+for+), 可能是用作解决问题的起点。
+
+</Tip>
+
+第一个建议是要求我们检查模型ID是否真的正确, 所以首先要做的就是复制标识符并将其粘贴到Hub的搜索栏中:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/wrong-model-id.png" alt="The wrong model name." width="100%"/>
+</div>
+
+嗯, 看起来我们同事的模型确实不在 Hub 上... 啊哈, 但是模型名称中有一个错字! DistilBERT 的名称中只有一个 "l", 所以让我们解决这个问题并寻找 "lewtun/distilbert-base-uncased-finetuned-squad-d5716d28":
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/true-model-id.png" alt="The right model name." width="100%"/>
+</div>
+
+好的, 这很受欢迎。现在让我们尝试使用正确的模型 ID 再次下载模型:
+
+```python
+model_checkpoint = get_full_repo_name("distilbert-base-uncased-finetuned-squad-d5716d28")
+reader = pipeline("question-answering", model=model_checkpoint)
+```
+
+```python out
+"""
+OSError: Can't load config for 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28'. Make sure that:
+
+- 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+啊, 再次挫败 -- 欢迎来到机器学习工程师的日常生活! 因为我们已经修复了模型 ID, 所以问题一定出在存储库本身。访问 🤗 Hub 上存储库内容的一种快速方法是通过 `huggingface_hub` 库的 `list_repo_files()` 方法:
+
+```python
+from huggingface_hub import list_repo_files
+
+list_repo_files(repo_id=model_checkpoint)
+```
+
+```python out
+['.gitattributes', 'README.md', 'pytorch_model.bin', 'special_tokens_map.json', 'tokenizer_config.json', 'training_args.bin', 'vocab.txt']
+```
+
+有趣 -- 似乎没有配置文件存储库中的 *config.json* 文件! 难怪我们的 `pipeline` 无法加载模型; 我们的同事一定是在微调后忘记将这个文件推送到 Hub。在这种情况下, 问题似乎很容易解决: 我们可以要求他们添加文件, 或者, 因为我们可以从模型 ID 中看到使用的预训练模型是 [`distilbert-base-uncased`](https://huggingface.co/distilbert-base-uncased), 我们可以下载此模型的配置并将其推送到我们的存储库以查看是否可以解决问题。让我们试试看。使用我们在 [第二章](/course/chapter2) 中学习的技术, 我们使用 `AutoConfig` 类下载模型的配置:
+
+```python
+from transformers import AutoConfig
+
+pretrained_checkpoint = "distilbert-base-uncased"
+config = AutoConfig.from_pretrained(pretrained_checkpoint)
+```
+
+<Tip warning={true}>
+
+🚨 我们在这里采用的方法并不是万无一失的, 因为我们的同事可能在微调模型之前已经调整了 `distilbert-base-uncased` 配置。在现实生活中, 我们想首先检查它们, 但出于本节的目的, 我们假设它们使用默认配置。
+
+</Tip>
+
+然后我们可以使用配置的 `push_to_hub()` 方法将其推送到我们的模型存储库:
+
+```python
+config.push_to_hub(model_checkpoint, commit_message="Add config.json")
+```
+
+现在我们可以通过从最新提交的 `main` 分支中加载模型来测试这是否有效:
+
+```python
+reader = pipeline("question-answering", model=model_checkpoint, revision="main")
+
+context = r"""
+Extractive Question Answering is the task of extracting an answer from a text
+given a question. An example of a question answering dataset is the SQuAD
+dataset, which is entirely based on that task. If you would like to fine-tune a
+model on a SQuAD task, you may leverage the
+examples/pytorch/question-answering/run_squad.py script.
+
+🤗 Transformers is interoperable with the PyTorch, TensorFlow, and JAX
+frameworks, so you can use your favourite tools for a wide variety of tasks!
+"""
+
+question = "What is extractive question answering?"
+reader(question=question, context=context)
+```
+
+```python out
+{'score': 0.38669535517692566,
+ 'start': 34,
+ 'end': 95,
+ 'answer': 'the task of extracting an answer from a text given a question'}
+```
+
+哇哦, 成功了!让我们回顾一下你刚刚学到的东西:
+
+- Python 中的错误消息称为 _tracebacks_ , 并从下到上阅读。错误消息的最后一行通常包含定位问题根源所需的信息。
+- 如果最后一行没有包含足够的信息, 请按照您的方式进行回溯, 看看您是否可以确定源代码中发生错误的位置。
+- 如果没有任何错误消息可以帮助您调试问题, 请尝试在线搜索类似问题的解决方案。
+- `huggingface_hub` 
+// 🤗 Hub?
+库提供了一套工具, 你可以使用这些工具与 Hub 上的存储库进行交互和调试。
+
+现在你知道如何调试管道, 让我们看一下模型本身前向传递中的一个更棘手的示例。
+
+## 调试模型的前向传递 [[调试模型的前向传递]]
+
+尽管 `pipeline` 对于大多数需要快速生成预测的应用程序来说非常有用, 有时您需要访问模型的 logits (例如, 如果您有一些想要应用的自定义后处理)。为了看看在这种情况下会出现什么问题, 让我们首先从 `pipeline` 中获取模型和标记器:
+
+```python
+tokenizer = reader.tokenizer
+model = reader.model
+```
+
+接下来我们需要一个问题, 那么让我们看看是否支持我们最喜欢的框架:
+
+```python
+question = "Which frameworks can I use?"
+```
+
+正如我们在 [第七章](/course/chapter7) 中学习的, 我们需要采取的通常步骤是对输入进行标记化, 提取开始和结束标记的对数, 然后解码答案范围:
+
+```python
+import torch
+
+inputs = tokenizer(question, context, add_special_tokens=True)
+input_ids = inputs["input_ids"][0]
+outputs = model(**inputs)
+answer_start_scores = outputs.start_logits
+answer_end_scores = outputs.end_logits
+# Get the most likely beginning of answer with the argmax of the score
+answer_start = torch.argmax(answer_start_scores)
+# Get the most likely end of answer with the argmax of the score
+answer_end = torch.argmax(answer_end_scores) + 1
+answer = tokenizer.convert_tokens_to_string(
+    tokenizer.convert_ids_to_tokens(input_ids[answer_start:answer_end])
+)
+print(f"Question: {question}")
+print(f"Answer: {answer}")
+```
+
+```python out
+"""
+---------------------------------------------------------------------------
+AttributeError                            Traceback (most recent call last)
+/var/folders/28/k4cy5q7s2hs92xq7_h89_vgm0000gn/T/ipykernel_75743/2725838073.py in <module>
+      1 inputs = tokenizer(question, text, add_special_tokens=True)
+      2 input_ids = inputs["input_ids"]
+----> 3 outputs = model(**inputs)
+      4 answer_start_scores = outputs.start_logits
+      5 answer_end_scores = outputs.end_logits
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/torch/nn/modules/module.py in _call_impl(self, *input, **kwargs)
+   1049         if not (self._backward_hooks or self._forward_hooks or self._forward_pre_hooks or _global_backward_hooks
+   1050                 or _global_forward_hooks or _global_forward_pre_hooks):
+-> 1051             return forward_call(*input, **kwargs)
+   1052         # Do not call functions when jit is used
+   1053         full_backward_hooks, non_full_backward_hooks = [], []
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, start_positions, end_positions, output_attentions, output_hidden_states, return_dict)
+    723         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    724
+--> 725         distilbert_output = self.distilbert(
+    726             input_ids=input_ids,
+    727             attention_mask=attention_mask,
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/torch/nn/modules/module.py in _call_impl(self, *input, **kwargs)
+   1049         if not (self._backward_hooks or self._forward_hooks or self._forward_pre_hooks or _global_backward_hooks
+   1050                 or _global_forward_hooks or _global_forward_pre_hooks):
+-> 1051             return forward_call(*input, **kwargs)
+   1052         # Do not call functions when jit is used
+   1053         full_backward_hooks, non_full_backward_hooks = [], []
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, output_attentions, output_hidden_states, return_dict)
+    471             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+    472         elif input_ids is not None:
+--> 473             input_shape = input_ids.size()
+    474         elif inputs_embeds is not None:
+    475             input_shape = inputs_embeds.size()[:-1]
+
+AttributeError: 'list' object has no attribute 'size'
+"""
+```
+
+噢, 看起来我们的代码中有一个错误!但我们不怕一点调试。您可以在笔记本中使用 Python 调试器:
+
+<Youtube id="rSPyvPw0p9k"/>
+
+或在终端中:
+
+<Youtube id="5PkZ4rbHL6c"/>
+
+在这里, 阅读错误消息告诉我们 `'list' object has no attribute 'size'`, 我们可以看到一个 `-->` 箭头指向 `model(**inputs)` 中出现问题的行。你可以使用 Python 调试器以交互方式调试它, 但现在我们只需打印出一部分 `inputs`, 看看我们有什么:
+
+```python
+inputs["input_ids"][:5]
+```
+
+```python out
+[101, 2029, 7705, 2015, 2064]
+```
+
+这当然看起来像一个普通的 Python `list`, 但让我们仔细检查一下类型:
+
+```python
+type(inputs["input_ids"])
+```
+
+```python out
+list
+```
+
+是的, 这肯定是一个 Python `list`。那么出了什么问题呢? 回忆 [第二章](/course/chapter2) 🤗 Transformers 中的 `AutoModelForXxx` 类在 _tensors_ 上运行(PyTorch或者or TensorFlow), 一个常见的操作是使用 `Tensor.size()` 方法提取张量的维度, 例如, 在 PyTorch 中。让我们再看看回溯, 看看哪一行触发了异常:
+
+```
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, output_attentions, output_hidden_states, return_dict)
+    471             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+    472         elif input_ids is not None:
+--> 473             input_shape = input_ids.size()
+    474         elif inputs_embeds is not None:
+    475             input_shape = inputs_embeds.size()[:-1]
+
+AttributeError: 'list' object has no attribute 'size'
+```
+
+看起来我们的代码试图调用 `input_ids.size()`, 但这显然不适用于 Python `list`, 这只是一个容器。我们如何解决这个问题? 在 Stack Overflow 上搜索错误消息给出了很多相关的 [hits](https://stackoverflow.com/search?q=AttributeError%3A+%27list%27+object+has+no+attribute+%27size%27&s=c15ec54c-63cb-481d-a749-408920073e8f)。单击第一个会显示与我们类似的问题, 答案如下面的屏幕截图所示:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/stack-overflow.png" alt="An answer from Stack Overflow." width="100%"/>
+</div>
+
+答案建议我们添加 `return_tensors='pt'` 到标记器, 所以让我们看看这是否适合我们:
+
+```python out
+inputs = tokenizer(question, context, add_special_tokens=True, return_tensors="pt")
+input_ids = inputs["input_ids"][0]
+outputs = model(**inputs)
+answer_start_scores = outputs.start_logits
+answer_end_scores = outputs.end_logits
+# Get the most likely beginning of answer with the argmax of the score
+answer_start = torch.argmax(answer_start_scores)
+# Get the most likely end of answer with the argmax of the score
+answer_end = torch.argmax(answer_end_scores) + 1
+answer = tokenizer.convert_tokens_to_string(
+    tokenizer.convert_ids_to_tokens(input_ids[answer_start:answer_end])
+)
+print(f"Question: {question}")
+print(f"Answer: {answer}")
+```
+
+```python out
+"""
+Question: Which frameworks can I use?
+Answer: pytorch, tensorflow, and jax
+"""
+```
+
+不错, 成功了! 这是 Stack Overflow 非常有用的一个很好的例子: 通过识别类似的问题, 我们能够从社区中其他人的经验中受益。然而, 像这样的搜索并不总是会产生相关的答案, 那么在这种情况下你能做什么呢? 幸运的是, 有一个受欢迎的开发者社区 [Hugging Face forums](https://discuss.huggingface.co/) 可以帮助你! 在下一节中, 我们将看看如何设计可能得到回答的优秀论坛问题。

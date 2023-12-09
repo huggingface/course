@@ -1,0 +1,792 @@
+<FrameworkSwitchCourse {fw} />
+
+# Gỡ lỗi quy trình huấn luyện
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter8/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter8/section4.ipynb"},
+]} />
+
+Bạn đã viết một kịch bản tuyệt đẹp để huấn luyện hoặc tinh chỉnh một mô hình trong một tác vụ nhất định, tuân thủ một cách nghiêm túc lời khuyên từ [Chương 7](/course/chapter7). Nhưng khi bạn khởi chạy lệnh `trainr.train()`, một điều kinh khủng xảy ra: bạn gặp lỗi 😱! Hoặc tệ hơn, mọi thứ dường như ổn và quá trình huấn luyện chạy mà không có lỗi, nhưng mô hình kết quả là tồi tệ. Trong phần này, chúng tôi sẽ chỉ cho bạn những gì bạn có thể làm để gỡ lỗi các loại vấn đề này.
+
+## Gỡ lỗi quy trình huấn luyện
+
+<Youtube id="L-WSwUWde1U"/>
+
+Vấn đề khi bạn gặp lỗi trong `trainr.train()` có thể đến từ nhiều nguồn, vì `Trainer` thường tập hợp rất nhiều thứ lại với nhau. Nó chuyển đổi bộ dữ liệu thành các dataloader, do đó, vấn đề có thể là một cái gì đó sai trong bộ dữ liệu của bạn hoặc một số vấn đề khi cố gắng kết hợp hàng loạt các phần tử của bộ dữ liệu với nhau. Sau đó, nó lấy một loạt dữ liệu và đưa nó vào mô hình, vì vậy vấn đề có thể nằm ở mã mô hình. Sau đó, nó tính toán các độ dốc và thực hiện bước tối ưu hóa, vì vậy vấn đề cũng có thể nằm trong trình tối ưu hóa của bạn. Và ngay cả khi mọi thứ diễn ra tốt đẹp cho quá trình huấn luyện, vẫn có thể xảy ra sự cố trong quá trình đánh giá nếu có vấn đề với chỉ số của bạn.
+
+Cách tốt nhất để gỡ lỗi phát sinh trong `trainr.train()` là đi qua toàn pipeline này theo cách thủ công để xem mọi thứ diễn ra như thế nào. Sau đó, lỗi thường rất dễ giải quyết.
+
+Để chứng minh điều này, chúng ta sẽ sử dụng tập lệnh (cố gắng) tinh chỉnh mô hình DistilBERT trên [tập dữ liệu MNLI](https://huggingface.co/datasets/glue):
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=raw_datasets["train"],
+    eval_dataset=raw_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+Nếu bạn cố gắng thực thi nó, bạn sẽ gặp phải một lỗi khá khó hiểu:
+
+```python out
+'ValueError: You have to specify either input_ids or inputs_embeds'
+```
+
+### Kiểm tra dữ liệu của bạn
+
+Điều này không cần phải nói, nhưng nếu dữ liệu của bạn bị hỏng, `Trainer` sẽ không thể tạo ra các lô chứ đừng nói đến việc huấn luyện mô hình của bạn. Vì vậy, điều đầu tiên, bạn cần phải xem xét những gì bên trong bộ huấn luyện của bạn.
+
+Để tránh mất vô số giờ để cố gắng sửa một cái gì đó không phải là nguồn gốc của lỗi, chúng tôi khuyên bạn nên sử dụng `trainr.train_dataset` để kiểm tra. Vì vậy, hãy làm điều đó ở đây:
+
+```py
+trainer.train_dataset[0]
+```
+
+```python out
+{'hypothesis': 'Product and geography are what make cream skimming work. ',
+ 'idx': 0,
+ 'label': 1,
+ 'premise': 'Conceptually cream skimming has two basic dimensions - product and geography.'}
+```
+
+Bạn có nhận thấy điều gì đó sai không? Điều này, cùng với thông báo lỗi về việc thiếu `input_ids`, sẽ khiến bạn nhận ra đó là các văn bản chứ không phải số mà mô hình có thể hiểu được. Ở đây, lỗi ban đầu rất dễ gây hiểu nhầm bởi vì `Trainer` tự động loại bỏ các cột không khớp với đặc trưng của mô hình (nghĩa là các tham số mà mô hình mong đợi). Điều đó có nghĩa là ở đây, mọi thứ ngoại trừ nhãn đều bị loại bỏ. Do đó, không có vấn đề gì với việc tạo các lô và sau đó gửi chúng đến mô hình, điều này do đó phàn nàn rằng nó không nhận được đầu vào thích hợp.
+
+Tại sao dữ liệu không được xử lý? Chúng ta đã sử dụng phương thức `Dataset.map()` trên các tập dữ liệu để áp dụng tokenizer trên mỗi mẫu. Nhưng nếu bạn xem kỹ mã, bạn sẽ thấy rằng chúng ta đã mắc sai lầm khi chuyển các bộ huấn luyện và kiểm định cho `Trainer`. Thay vì sử dụng `tokenized_datasets` ở đây, chúng ta đã sử dụng `raw_datasets` 🤦. Vì vậy, hãy cùng sửa chữa điều này!
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+Mã mới này bây giờ sẽ đưa ra một lỗi khác (có tiến triển!):
+
+```python out
+'ValueError: expected sequence of length 43 at dim 1 (got 37)'
+```
+
+Nhìn vào dấu truy vết, chúng ta có thể thấy lỗi xảy ra trong bước đối chiếu dữ liệu:
+
+```python out
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+```
+
+Vì vậy, chúng ta nên chuyển sang điều đó. Tuy nhiên, trước khi thực hiện, chúng ta hãy hoàn thành việc kiểm tra dữ liệu của mình, để chắc chắn rằng nó chính xác 100%.
+
+Một điều bạn luôn nên làm khi gỡ lỗi một phiên huấn luyện là xem xét các đầu vào được giải mã của mô hình của bạn. Chúng ta không thể hiểu được những con số mà chúng ta cung cấp trực tiếp cho nó, vì vậy chúng ta nên xem những con số đó đại diện cho điều gì. Ví dụ: trong thị giác máy tính, điều đó có nghĩa là nhìn vào hình ảnh được giải mã của các pixel bạn chuyển qua, trong lời nói, điều đó có nghĩa là nghe các mẫu âm thanh được giải mã và đối với ví dụ NLP của chúng ta ở đây, điều đó có nghĩa là sử dụng trình tokenizer để giải mã đầu vào:
+
+```py
+tokenizer.decode(trainer.train_dataset[0]["input_ids"])
+```
+
+```python out
+'[CLS] conceptually cream skimming has two basic dimensions - product and geography. [SEP] product and geography are what make cream skimming work. [SEP]'
+```
+
+Vì vậy, điều đó có vẻ chính xác. Bạn nên làm điều này cho tất cả các phím trong đầu vào:
+
+```py
+trainer.train_dataset[0].keys()
+```
+
+```python out
+dict_keys(['attention_mask', 'hypothesis', 'idx', 'input_ids', 'label', 'premise'])
+```
+
+Lưu ý rằng các khóa không tương ứng với đầu vào được mô hình chấp nhận sẽ tự động bị loại bỏ, vì vậy ở đây chúng tôi sẽ chỉ giữ lại `input_ids`, `attention_mask`, và `label` (sẽ được đổi tên thành `labels`). Để kiểm tra kỹ mô hình, bạn có thể in loại mô hình của mình, sau đó kiểm tra tài liệu của nó:
+
+```py
+type(trainer.model)
+```
+
+```python out
+transformers.models.distilbert.modeling_distilbert.DistilBertForSequenceClassification
+```
+
+Vì vậy, trong trường hợp của mình, chúng ta có thể kiểm tra các tham số được chấp nhận trên [trang này](https://huggingface.co/transformers/model_doc/distilbert.html#distilbertforsequenceclassification). `Trainer` cũng sẽ ghi lại các cột mà nó đang loại bỏ.
+
+Chúng ta đã kiểm tra xem các ID đầu vào có chính xác hay không bằng cách giải mã chúng. Tiếp theo là `attention_mask`:
+
+```py
+trainer.train_dataset[0]["attention_mask"]
+```
+
+```python out
+[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+Vì chúng ta không áp dụng đệm trong quá trình tiền xử lý của mình, điều này có vẻ hoàn toàn tự nhiên. Để đảm bảo không có vấn đề gì với attention mask đó, hãy kiểm tra xem nó có cùng độ dài với ID đầu vào của chúng ta không:
+
+```py
+len(trainer.train_dataset[0]["attention_mask"]) == len(
+    trainer.train_dataset[0]["input_ids"]
+)
+```
+
+```python out
+True
+```
+
+Tốt đấy! Cuối cùng, hãy kiểm tra nhãn của mình:
+
+```py
+trainer.train_dataset[0]["label"]
+```
+
+```python out
+1
+```
+
+Giống như các ID đầu vào, đây là một con số không thực sự có ý nghĩa. Như chúng ta đã thấy trước đây, ánh xạ giữa các số nguyên và tên nhãn được lưu trữ bên trong thuộc tính `names` của *đặc trưng* tương ứng của tập dữ liệu:
+
+```py
+trainer.train_dataset.features["label"].names
+```
+
+```python out
+['entailment', 'neutral', 'contradiction']
+```
+
+Vì vậy, `1` có nghĩa là `neutral`, có nghĩa là hai câu chúng ta đã thấy ở trên không mâu thuẫn với nhau và câu đầu tiên không bao hàm câu thứ hai. Điều đó có vẻ đúng!
+
+Chúng ta không có token ID ở đây, vì DistilBERT không mong đợi chúng; nếu bạn có một số trong mô hình của mình, bạn cũng nên đảm bảo rằng chúng khớp đúng với vị trí của câu đầu tiên và câu thứ hai trong đầu vào.
+
+<Tip>
+
+✏️ **Đến lượt bạn!** Kiểm tra xem mọi thứ có chính xác không với phần tử thứ hai của tập dữ liệu huấn luyện.
+
+</Tip>
+
+Chúng ta chỉ thực hiện kiểm tra tập huấn luyện ở đây, nhưng tất nhiên bạn nên kiểm tra kỹ các tập kiểm định và kiểm tra theo cùng một cách.
+
+Bây giờ chúng ta biết bộ dữ liệu của mình trông ổn, đã đến lúc kiểm tra bước tiếp theo của quy trình huấn luyện.
+
+### Từ bộ dữ liệu thành dataloader
+
+Điều tiếp theo có thể xảy ra sai sót trong quy trình huấn luyện là khi `Trainer` cố gắng tạo các lô từ tập huấn luyện hoặc kiểm định. Khi bạn chắc chắn rằng tập dữ liệu của `Trainer` là chính xác, bạn có thể thử tạo một loạt theo cách thủ công bằng cách thực hiện như sau (thay thế `train` bằng `eval` cho dataloader kiểm định):
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+Mã này tạo ra dataloader huấn luyện, sau đó lặp qua nó, dừng lại ở lần lặp đầu tiên. Nếu mã thực thi mà không có lỗi, bạn có lô huấn luyện đầu tiên mà bạn có thể kiểm tra và nếu mã lỗi xảy ra, bạn biết chắc chắn vấn đề nằm trong dataloader, như trường hợp ở đây:
+
+```python out
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+
+ValueError: expected sequence of length 45 at dim 1 (got 76)
+```
+
+Việc kiểm tra khung cuối cùng của quá trình truy xuất sẽ đủ để cung cấp cho bạn manh mối, nhưng hãy tìm hiểu kỹ hơn một chút. Hầu hết các vấn đề trong quá trình tạo lô đều phát sinh do việc đối chiếu các ví dụ thành một lô duy nhất, vì vậy, điều đầu tiên cần kiểm tra khi nghi ngờ là `collate_fn` mà ` DataLoader` của bạn đang sử dụng:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+data_collator
+```
+
+```python out
+<function transformers.data.data_collator.default_data_collator(features: List[InputDataClass], return_tensors='pt') -> Dict[str, Any]>
+```
+
+Vì vậy, đây là `default_data_collator`, nhưng đó không phải là những gì chúng ta muốn trong trường hợp này. Chúng ta muốn đưa các ví dụ của mình vào câu dài nhất trong lô, được thực hiện bởi trình đối chiếu `DataCollatorWithPadding`. Và trình đối chiếu dữ liệu này được cho là được sử dụng theo mặc định bởi `Trainer`, vậy tại sao nó không được sử dụng ở đây?
+
+Câu trả lời là vì chúng ta đã không chuyển `tokenizer` cho `Trainer`, vì vậy nó không thể tạo `DataCollatorWithPadding` mà chúng ta muốn. Trong thực tế, bạn đừng bao giờ ngần ngại chuyển một cách rõ ràng bộ đối chiếu dữ liệu mà bạn muốn sử dụng, để đảm bảo rằng bạn tránh được những loại lỗi này. Hãy điều chỉnh mã của chúng ta để thực hiện chính xác điều đó:
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+Tin tốt? Chúng ta không gặp lỗi như trước nữa, đó chắc chắn là sự tiến bộ. Các tin xấu? Thay vào đó, chúng ta nhận được một lỗi CUDA khét tiếng:
+
+```python out
+RuntimeError: CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`
+```
+
+Điều này thật tệ vì lỗi CUDA nói chung rất khó gỡ lỗi. Chúng ta sẽ xem trong một phút nữa cách giải quyết vấn đề này, nhưng trước tiên hãy kết thúc phân tích của chúng ta về tạo lô.
+
+Nếu bạn chắc chắn trình đối chiếu dữ liệu của mình là đúng, bạn nên thử áp dụng nó trên một vài mẫu của tập dữ liệu của mình:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+batch = data_collator([trainer.train_dataset[i] for i in range(4)])
+```
+
+Mã này sẽ không thành công vì `train_dataset` chứa các cột chuỗi mà `Trainer` thường loại bỏ. Bạn có thể xóa chúng theo cách thủ công hoặc nếu bạn muốn sao chép chính xác những gì mà `Trainer` đang làm ở hậu trường, bạn có thể gọi phương thức riêng  `Trainer._remove_unused_columns()` để thực hiện điều đó:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+actual_train_set = trainer._remove_unused_columns(trainer.train_dataset)
+batch = data_collator([actual_train_set[i] for i in range(4)])
+```
+
+Sau đó, bạn sẽ có thể gỡ lỗi theo cách thủ công những gì xảy ra bên trong bộ đối chiếu dữ liệu nếu lỗi vẫn tiếp diễn.
+
+Bây giờ chúng ta đã gỡ lỗi quy trình tạo lô, đã đến lúc chuyển qua mô hình!
+
+### Xem qua mô hình
+
+Bạn sẽ có thể nhận được một lô bằng cách thực hiện lệnh sau:
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+Nếu bạn đang chạy mã này trong notebook, bạn có thể gặp lỗi CUDA tương tự như lỗi đã thấy trước đó, trong trường hợp đó, bạn cần khởi động lại notebook của mình và thực hiện lại đoạn mã cuối cùng mà không có dòng `trainer.train()`. Đó là điều khó chịu thứ hai về lỗi CUDA: chúng phá vỡ kernel của bạn một cách không thể khắc phục được. Điều khó chịu nhất về chúng là thực tế là chúng rất khó để gỡ lỗi.
+
+Tại sao vậy? Nó liên quan đến cách hoạt động của GPU. Chúng cực kỳ hiệu quả trong việc thực hiện song song nhiều thao tác, nhưng hạn chế là khi một trong các lệnh đó dẫn đến lỗi, bạn sẽ không biết ngay lập tức. Chỉ khi chương trình gọi đồng bộ hóa nhiều quy trình trên GPU thì nó mới nhận ra có gì đó không ổn, vì vậy lỗi thực sự được phát sinh ở một nơi không liên quan gì đến những gì đã tạo ra nó. Ví dụ, nếu chúng ta xem lại lần truy xuất trước của mình, lỗi đã được phát sinh trong quá trình truyền ngược, nhưng chúng ta sẽ thấy trong một phút rằng nó thực sự bắt nguồn từ một cái gì đó trong truyền thẳng.
+
+Vậy làm cách nào để gỡ những lỗi đó? Câu trả lời rất dễ dàng: chúng tôi không. Trừ khi lỗi CUDA của bạn là lỗi hết bộ nhớ (có nghĩa là không có đủ bộ nhớ trong GPU của bạn), bạn nên quay lại CPU để gỡ lỗi.
+
+Để thực hiện điều này trong trường hợp của mình, chúng ta chỉ cần đặt mô hình trở lại CPU và gọi nó vào lô của mình - lô được trả về bởi `DataLoader` vẫn chưa được chuyển đến GPU:
+
+```python
+outputs = trainer.model.cpu()(**batch)
+```
+
+```python out
+~/.pyenv/versions/3.7.9/envs/base/lib/python3.7/site-packages/torch/nn/functional.py in nll_loss(input, target, weight, size_average, ignore_index, reduce, reduction)
+   2386         )
+   2387     if dim == 2:
+-> 2388         ret = torch._C._nn.nll_loss(input, target, weight, _Reduction.get_enum(reduction), ignore_index)
+   2389     elif dim == 4:
+   2390         ret = torch._C._nn.nll_loss2d(input, target, weight, _Reduction.get_enum(reduction), ignore_index)
+
+IndexError: Target 2 is out of bounds.
+```
+
+Vì vậy, bức tranh ngày càng rõ ràng. Thay vì gặp lỗi CUDA, bây giờ chúng ta có `IndexError` trong tính toán mất mát (vì vậy không liên quan gì đến lan truyền ngược, như ta đã nói trước đó). Chính xác hơn, chúng ta có thể thấy rằng nhãn 2 tạo ra lỗi, vì vậy đây là thời điểm rất tốt để kiểm tra số lượng nhãn của mô hình của ta:
+
+```python
+trainer.model.config.num_labels
+```
+
+```python out
+2
+```
+
+Với hai nhãn, chỉ có 0 và 1 được phép làm nhãn, nhưng theo thông báo lỗi, chúng tôi nhận được 2. Nhận được 2 thực ra là bình thường: nếu chúng ta nhớ tên nhãn mà chúng ta đã trích xuất trước đó, có ba, vì vậy chúng ta có chỉ số 0 , 1 và 2 trong tập dữ liệu của mình. Vấn đề là chúng ta đã không nói điều đó với mô hình của mình, mô hình này lẽ ra phải được tạo với ba nhãn. Vì vậy, chúng ta hãy khắc phục điều đó!
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+Chúng ta chưa bao gồm dòng `trainer.train()`, để dành thời gian kiểm tra xem mọi thứ có ổn không. Nếu chúng ta yêu cầu một lô và chuyển nó vào mô hình của mình, nó hiện hoạt động mà không có lỗi!
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+outputs = trainer.model.cpu()(**batch)
+```
+
+Bước tiếp theo là quay lại GPU và kiểm tra xem mọi thứ vẫn hoạt động không:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+batch = {k: v.to(device) for k, v in batch.items()}
+
+outputs = trainer.model.to(device)(**batch)
+```
+
+Nếu bạn vẫn gặp lỗi, hãy đảm bảo rằng bạn khởi động lại notebook của mình và chỉ thực thi phiên bản cuối cùng của tập lệnh.
+
+### Thực hiện một bước tối ưu hóa
+
+Bây giờ ta biết rằng chúng ta có thể xây dựng các lô thực sự đi qua mô hình, chúng ta đã sẵn sàng cho bước tiếp theo của quy trình huấn luyện: tính toán độ dốc và thực hiện bước tối ưu hóa.
+
+Phần đầu tiên chỉ là vấn đề gọi phương thức `backward()` khi tính mất mát:
+
+```py
+loss = outputs.loss
+loss.backward()
+```
+
+Rất hiếm khi gặp lỗi ở giai đoạn này, nhưng nếu bạn gặp lỗi, hãy đảm bảo quay lại CPU để nhận được thông báo lỗi hữu ích.
+
+To perform the optimization step, we just need to create the `optimizer` and call its `step()` method:
+
+```py
+trainer.create_optimizer()
+trainer.optimizer.step()
+```
+
+Một lần nữa, nếu bạn đang sử dụng trình tối ưu hóa mặc định trong `Trainer`, bạn sẽ không gặp lỗi ở giai đoạn này, nhưng nếu bạn có trình tối ưu hóa tùy chỉnh, có thể có một số vấn đề cần gỡ lỗi ở đây. Đừng quên quay lại CPU nếu bạn gặp lỗi CUDA lạ ở giai đoạn này. Nói về lỗi CUDA, trước đó chúng ta đã đề cập đến một trường hợp đặc biệt. Bây giờ chúng ta hãy xem xét điều đó.
+
+### Xử lý lỗi hết bộ nhớ CUDA
+
+Bất cứ khi nào bạn nhận được thông báo lỗi bắt đầu bằng `RuntimeError: CUDA out of memory`, điều này cho biết bạn đã hết bộ nhớ GPU. Điều này không được liên kết trực tiếp với mã của bạn và nó có thể xảy ra với một tập lệnh chạy hoàn toàn tốt. Lỗi này có nghĩa là bạn đã cố gắng đưa quá nhiều thứ vào bộ nhớ trong của GPU và dẫn đến lỗi. Giống như với các lỗi CUDA khác, bạn sẽ cần khởi động lại kernel của mình để ở vị trí mà bạn có thể chạy lại quá trình huấn luyện của mình.
+
+Để giải quyết vấn đề này, bạn chỉ cần sử dụng ít dung lượng GPU hơn - điều mà nói thì dễ hơn làm. Trước tiên, hãy đảm bảo rằng bạn không có hai mô hình GPU trên cùng một lúc (tất nhiên là trừ khi đó là yêu cầu cho vấn đề của bạn). Sau đó, bạn có thể nên giảm kích thước lô của mình, vì nó ảnh hưởng trực tiếp đến kích thước của tất cả các đầu ra trung gian của mô hình và độ dốc của chúng. Nếu sự cố vẫn tiếp diễn, hãy xem xét sử dụng phiên bản mô hình nhỏ hơn của bạn.
+
+<Tip>
+
+Trong phần tiếp theo của khóa học, chúng ta sẽ xem xét các kỹ thuật nâng cao hơn có thể giúp bạn giảm dung lượng bộ nhớ và cho phép bạn tinh chỉnh các mô hình lớn nhất.
+
+</Tip>
+
+### Đánh giá mô hình
+
+Bây giờ chúng tôi đã giải quyết tất cả các vấn đề với mã của mình, mọi thứ đều hoàn hảo và quá trình huấn luyện sẽ diễn ra suôn sẻ, phải không? Không quá nhanh! Nếu bạn chạy lệnh `trainer.train()`, lúc đầu mọi thứ sẽ ổn, nhưng sau một thời gian, bạn sẽ nhận được những điều sau:
+
+```py
+# Quá trình này sẽ mất nhiều thời gian và xảy ra lỗi, vì vậy bạn không nên chạy ô này
+trainer.train()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+Bạn sẽ nhận ra lỗi này xuất hiện trong giai đoạn kiểm định, vì vậy đây là điều cuối cùng chúng tôi sẽ cần gỡ lỗi.
+
+Bạn có thể chạy vòng lặp kiểm định của `Trainer` một cách độc lập để hình thành khóa huấn luyện như sau:
+
+```py
+trainer.evaluate()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+<Tip>
+
+💡 Bạn phải luôn đảm bảo rằng mình có thể chạy `trainr.evaluate()` trước khi khởi chạy `trainer.train()`, để tránh lãng phí nhiều tài nguyên máy tính trước khi gặp lỗi.
+
+</Tip>
+
+Trước khi cố gắng gỡ lỗi một vấn đề trong vòng kiểm định, trước tiên bạn nên đảm bảo rằng bạn đã xem xét dữ liệu, có thể tạo một lô đúng cách và có thể chạy mô hình của bạn trên đó. Chúng ta đã hoàn thành tất cả các bước đó, vì vậy mã sau có thể được thực thi mà không có lỗi:
+
+```py
+for batch in trainer.get_eval_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+```
+
+Lỗi xuất hiện sau đó, vào cuối giai đoạn đánh giá và nếu chúng ta xem lại bản ghi lại, chúng ta thấy điều này:
+
+```python trace
+~/git/datasets/src/datasets/metric.py in add_batch(self, predictions, references)
+    431         """
+    432         batch = {"predictions": predictions, "references": references}
+--> 433         batch = self.info.features.encode_batch(batch)
+    434         if self.writer is None:
+    435             self._init_writer()
+```
+
+Điều này cho chúng tôi biết rằng lỗi bắt nguồn từ mô-đun `datasets/metric.py` - vì vậy đây là sự cố với hàm `compute_metrics()` của mình. Nó cần một bộ dữ liệu với các logits và các nhãn dưới dạng mảng NumPy, vì vậy chúng ta hãy thử cung cấp cho nó rằng:
+
+```py
+predictions = outputs.logits.cpu().numpy()
+labels = batch["labels"].cpu().numpy()
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+Chúng ta nhận được cùng một lỗi, vì vậy vấn đề chắc chắn nằm ở hàm đó. Nếu chúng ta nhìn lại mã của nó, chúng ta thấy nó chỉ chuyển tiếp các  `predictions` và `labels`  đến `metric.compute()`. Vậy có vấn đề gì với phương pháp đó không? Không hẳn vậy. Chúng ta hãy xem nhanh các hình dạng:
+
+```py
+predictions.shape, labels.shape
+```
+
+```python out
+((8, 3), (8,))
+```
+
+Các dự đoán của chúng tôi vẫn là logit, không phải dự đoán thực tế, đó là lý do tại sao số liệu trả về lỗi (hơi tối nghĩa) này. Việc sửa chữa khá dễ dàng; chúng ta chỉ cần thêm một argmax trong hàm `compute_metrics()`:
+
+```py
+import numpy as np
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+{'accuracy': 0.625}
+```
+
+Bây giờ lỗi của chúng ta đã được sửa chữa! Đây là lần cuối cùng, vì vậy kịch bản của chúng ta bây giờ sẽ đào tạo một mô hình đúng cách.
+
+Để tham khảo, đây là tập lệnh hoàn toàn cố định:
+
+```py
+import numpy as np
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+Trong trường hợp này, không còn vấn đề gì nữa và tập lệnh của chúng ta sẽ tinh chỉnh một mô hình sẽ cho kết quả hợp lý. Nhưng chúng ta có thể làm gì khi quá trình huấn luyện diễn ra mà không có bất kỳ lỗi nào, và mô hình được huấn luyện không hoạt động tốt chút nào? Đó là phần khó nhất của học máy và chúng ta sẽ chỉ cho bạn một vài kỹ thuật có thể hữu ích.
+
+<Tip>
+
+💡 Nếu bạn đang sử dụng vòng lặp huấn luyện thủ công, các bước tương tự sẽ áp dụng để gỡ lỗi quy trình huấn luyện của bạn, nhưng việc tách chúng ra sẽ dễ dàng hơn. Tuy nhiên, hãy đảm bảo rằng bạn không quên `model.eval()` hoặc `model.train()` ở đúng nơi, hoặc `zero_grad()` ở mỗi bước!
+
+</Tip>
+
+## Debugging silent errors during training
+
+What can we do to debug a training that completes without error but doesn't get good results? We'll give you some pointers here, but be aware that this kind of debugging is the hardest part of machine learning, and there is no magical answer.
+
+### Kiểm tra lại dữ liệu của bạn (một lần nữa!)
+
+Mô hình của bạn sẽ chỉ học được điều gì đó nếu nó thực sự có thể học được bất cứ điều gì từ dữ liệu của bạn. Nếu có lỗi làm hỏng dữ liệu hoặc các nhãn được gán ngẫu nhiên, rất có thể bạn sẽ không huấn luyện được mô hình nào về tập dữ liệu của mình. Vì vậy, hãy luôn bắt đầu bằng cách kiểm tra kỹ các đầu vào và nhãn đã được giải mã của bạn và tự hỏi bản thân những câu hỏi sau:
+
+- Dữ liệu được giải mã có dễ hiểu không?
+- Bạn có đồng ý với các nhãn?
+- Có một nhãn nào phổ biến hơn những nhãn khác không?
+- Mất mát/Chỉ số sẽ là bao nhiêu nếu mô hình dự đoán một câu trả lời ngẫu nhiên/luôn là một câu trả lời giống nhau?
+
+<Tip warning={true}>
+
+⚠️ Nếu bạn đang thực hiện huấn luyện phân tán, hãy in các mẫu tập dữ liệu của bạn trong mỗi quy trình và kiểm tra ba lần để đảm bảo bạn nhận được điều tương tự. Một lỗi phổ biến là có một số nguồn ngẫu nhiên trong quá trình tạo dữ liệu khiến mỗi quy trình có một phiên bản khác nhau của tập dữ liệu.
+
+</Tip>
+
+Sau khi xem xét dữ liệu của bạn, hãy xem qua một số dự đoán của mô hình và giải mã chúng. Nếu mô hình luôn dự đoán cùng một điều, có thể là do tập dữ liệu của bạn thiên về một loại (đối với các vấn đề phân loại); các kỹ thuật như lấy mẫu quá mức các lớp hiếm có thể hữu ích.
+
+Nếu mất mát/chỉ số đánh giá bạn nhận được trên mô hình ban đầu của mình rất khác với cái bạn mong đợi cho các dự đoán ngẫu nhiên, hãy kiểm tra kỹ cách tính toán tổn thất hoặc số liệu của bạn, vì có thể có một lỗi ở đó. Nếu bạn đang sử dụng một số mất mát mà bạn thêm vào cuối, hãy đảm bảo rằng chúng có cùng quy mô.
+
+Khi bạn chắc chắn dữ liệu của mình là hoàn hảo, bạn có thể xem liệu mô hình có khả năng huấn luyện về nó hay không bằng một bài kiểm tra đơn giản.
+
+### Học kĩ mô hình của bạn trong một lô
+
+Việc học quá nhiều thường là điều chúng ta cố gắng tránh khi huấn luyện, vì nó có nghĩa là mô hình không học cách nhận ra các đặc điểm chung ta muốn mà thay vào đó chỉ là ghi nhớ các mẫu huấn luyện. Tuy nhiên, cố gắng huấn luyện mô hình của bạn lặp đi lặp lại là một bài kiểm tra tốt để kiểm tra xem vấn đề như bạn đã định hình có thể được giải quyết bằng mô hình mà bạn đang cố gắng huấn luyện hay không. Nó cũng sẽ giúp bạn xem liệu tốc độ học ban đầu của bạn có quá cao hay không.
+
+Thực hiện điều này khi bạn đã xác định được `Trainer` của mình thực sự dễ dàng; chỉ cần lấy một loạt dữ liệu huấn luyện, sau đó chạy một vòng huấn luyện thủ công nhỏ chỉ sử dụng lô đó cho một cái gì đó giống như 20 bước:
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+trainer.create_optimizer()
+
+for _ in range(20):
+    outputs = trainer.model(**batch)
+    loss = outputs.loss
+    loss.backward()
+    trainer.optimizer.step()
+    trainer.optimizer.zero_grad()
+```
+
+<Tip>
+
+💡 Nếu dữ liệu huấn luyện của bạn không cân bằng, hãy đảm bảo tạo một loạt dữ liệu huấn luyện có chứa tất cả các nhãn.
+
+</Tip>
+
+Mô hình phải có kết quả trả về gần như hoàn hảo trên cùng một `lô`. Hãy tính toán các chỉ số trên các dự đoán kết quả:
+
+```py
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+preds = outputs.logits
+labels = batch["labels"]
+
+compute_metrics((preds.cpu().numpy(), labels.cpu().numpy()))
+```
+
+```python out
+{'accuracy': 1.0}
+```
+
+Chính xác 100%, đây là một ví dụ điển hình về việc overfitt(có nghĩa là nếu bạn thử mô hình của mình trên bất kỳ câu nào khác, rất có thể nó sẽ đưa ra câu trả lời sai)!
+
+Nếu bạn không quản lý để mô hình của mình có được kết quả hoàn hảo như thế này, điều đó có nghĩa là có điều gì đó không ổn trong cách bạn định khung vấn đề hoặc dữ liệu của mình, vì vậy bạn nên khắc phục điều đó. Chỉ khi bạn vượt qua được bài kiểm tra overfit, bạn mới có thể chắc chắn rằng mô hình của mình thực sự có thể học được điều gì đó.
+
+<Tip warning={true}>
+
+⚠️ Bạn sẽ phải tạo lại mô hình và `Trainer`của mình sau bài kiểm tra overfitt này, vì mô hình thu được có thể sẽ không thể khôi phục và học được điều gì đó hữu ích trên tập dữ liệu đầy đủ của bạn.
+
+</Tip>
+
+### Không điều chỉnh bất cứ thứ gì cho đến khi bạn có mô hình cơ sở đầu tiên
+
+Điều chỉnh siêu tham số luôn được nhấn mạnh là phần khó nhất của học máy, nhưng nó chỉ là bước cuối cùng giúp bạn hiểu được một chút về chỉ số này. Hầu hết thời gian, các siêu tham số mặc định của `Trainer` sẽ hoạt động tốt để cung cấp cho bạn kết quả tốt, vì vậy đừng khởi chạy tìm kiếm siêu tham số tốn thời gian và tốn kém cho đến khi bạn có thứ gì đó vượt qua mô hình cơ sở mà bạn có trên tập dữ liệu của mình.
+
+Khi bạn đã có một mô hình đủ tốt, bạn có thể bắt đầu điều chỉnh một chút. Đừng thử khởi chạy một nghìn lần chạy với các siêu tham số khác nhau, nhưng hãy so sánh một vài lần chạy với các giá trị khác nhau cho một siêu thông số để có được ý tưởng về giá trị nào có tác động lớn nhất.
+
+Nếu bạn đang điều chỉnh chính mô hình, hãy giữ nó đơn giản và đừng thử bất cứ điều gì mà bạn không thể biện minh một cách hợp lý. Luôn đảm bảo rằng bạn quay lại kiểm tra overfit để xác minh rằng thay đổi của bạn không gây ra bất kỳ hậu quả ngoài ý muốn nào.
+
+### Yêu cầu giúp đỡ
+
+Hy vọng rằng bạn sẽ tìm thấy một số lời khuyên trong phần này để giúp bạn giải quyết vấn đề của mình, nhưng nếu không phải vậy, hãy nhớ rằng bạn luôn có thể hỏi cộng đồng trên [diễn đàn](https://discuss.huggingface.co/).
+
+Dưới đây là một số tài liệu bổ sung có thể hữu ích:
+
+- ["Reproducibility as a vehicle for engineering best practices"](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p) bởi Joel Grus
+- ["Checklist for debugging neural networks"](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21) bởi Cecelia Shao
+- ["How to unit test machine learning code"](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765) bởi Chase Roberts
+- ["A Recipe for Training Neural Networks"](http://karpathy.github.io/2019/04/25/recipe/) bởi Andrej Karpathy
+
+Tất nhiên, không phải mọi vấn đề bạn gặp phải khi huấn luyện mạng thần kinh đều là lỗi của chính bạn! Nếu bạn gặp điều gì đó trong thư viện 🤗 Transformers hoặc 🤗 Datasets có vẻ không ổn, có thể bạn đã gặp lỗi. Bạn chắc chắn nên cho chúng tôi biết tất cả về điều đó và trong phần tiếp theo, chúng tôi sẽ giải thích chính xác cách thực hiện điều đó.

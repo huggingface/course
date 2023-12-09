@@ -1,0 +1,1211 @@
+<FrameworkSwitchCourse {fw} />
+
+# Hỏi đáp
+
+{#if fw === 'pt'}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter7/section7_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter7/section7_pt.ipynb"},
+]} />
+
+{:else}
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter7/section7_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter7/section7_tf.ipynb"},
+]} />
+
+{/if}
+
+Đã đến lúc xem phần hỏi đáp! Tác vụ này có nhiều loại, nhưng tác vụ mà chúng ta sẽ tập trung vào trong phần này được gọi là trả lời câu hỏi *khai thác*. Điều này liên quan đến việc đặt ra các câu hỏi về một tài liệu và xác định các câu trả lời dưới dạng _các khoảng của văn bản_ trong chính tài liệu đó.
+
+<Youtube id="ajPx5LwJD-I"/>
+
+Chúng ta sẽ tinh chỉnh mô hình BERT trên [bộ dữ liệu SQuAD](https://rajpurkar.github.io/SQuAD-explorer/), bao gồm các câu hỏi do cộng đồng đặt ra trên một tập các bài viết trên Wikipedia. Điều này sẽ cung cấp cho chúng ta một mô hình có thể tính toán các dự đoán như thế này:
+
+<iframe src="https://course-demos-bert-finetuned-squad.hf.space" frameBorder="0" height="450" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+Đây thực sự cách mô hình đã được huấn luyện và tải lên Hub bằng cách sử dụng mã được hiển thị trong phần này. Bạn có thể tìm thấy nó và kiểm tra các dự đoạn [tại đây](https://huggingface.co/huggingface-course/bert-finetuned-squad?context=%F0%9F%A4%97+Transformers+is+backed+by+the+three+most+popular+deep+learning+libraries+%E2%80%94+Jax%2C+PyTorch+and+TensorFlow+%E2%80%94+with+a+seamless+integration+between+them.+It%27s+straightforward+to+train+your+models+with+one+before+loading+them+for+inference+with+the+other.&question=Which+deep+learning+libraries+back+%F0%9F%A4%97+Transformers%3F).
+
+<Tip>
+
+💡 Các mô hình mã hóa như BERT có xu hướng tuyệt vời trong việc trích xuất câu trả lời cho các câu hỏi dạng thực tế như "Ai đã phát minh ra kiến trúc Transformer?" nhưng khá kém khi trả lời những câu hỏi mở như "Tại sao bầu trời lại có màu xanh?" Trong những trường hợp khó khăn hơn này, các mô hình mã hóa-giải mã như T5 và BART thường được sử dụng để tổng hợp thông tin theo cách khá giống với [tóm tắt văn bản](/course/chapter7/5). Nếu bạn quan tâm đến kiểu trả lời câu hỏi *chung chung* này, chúng tôi khuyên bạn nên xem [demo](https://yjernite.github.io/lfqa.html) của chúng tôi dựa trên [bộ dữ liệu ELI5](https://huggingface.co/datasets/eli5).
+
+</Tip>
+
+## Chuẩn bị dữ liệu
+
+Tập dữ liệu được sử dụng nhiều nhất làm tiêu chuẩn học thuật để trả lời câu hỏi khai thác là [SQuAD](https://rajpurkar.github.io/SQuAD-explorer/), vì vậy đó là tập chúng ta sẽ sử dụng ở đây. Ngoài ra còn có một điểm chuẩn khó hơn [SQuAD v2](https://huggingface.co/datasets/squad_v2), bao gồm các câu hỏi không có câu trả lời. Miễn là tập dữ liệu của riêng bạn chứa một cột cho ngữ cảnh, một cột cho câu hỏi và một cột cho câu trả lời, bạn sẽ có thể điều chỉnh các bước bên dưới.
+
+### Bộ dữ liệu SQuAD
+
+Như thường lệ, chúng ta có thể tải xuống và lưu bộ dữ liệu vào bộ nhớ cache chỉ trong một bước nhờ vào `load_dataset()`:
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("squad")
+```
+
+Sau đó, chúng ta có thể xem xét đối tượng này để tìm hiểu thêm về tập dữ liệu SQuAD:
+
+```py
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'title', 'context', 'question', 'answers'],
+        num_rows: 87599
+    })
+    validation: Dataset({
+        features: ['id', 'title', 'context', 'question', 'answers'],
+        num_rows: 10570
+    })
+})
+```
+
+Có vẻ như chúng ta có mọi thứ ta cần với các trường `context`, `question`, và `answers`, vì vậy hãy in chúng cho phần tử đầu tiên của tập huấn luyện của mình:
+
+```py
+print("Context: ", raw_datasets["train"][0]["context"])
+print("Question: ", raw_datasets["train"][0]["question"])
+print("Answer: ", raw_datasets["train"][0]["answers"])
+```
+
+```python out
+Context: 'Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend "Venite Ad Me Omnes". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive (and in a direct line that connects through 3 statues and the Gold Dome), is a simple, modern stone statue of Mary.'
+Question: 'To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France?'
+Answer: {'text': ['Saint Bernadette Soubirous'], 'answer_start': [515]}
+```
+
+Các trường `context` và `question` rất dễ sử dụng. Trường `answers` phức tạp hơn một chút vì nó so sánh một từ điển với hai trường đều là danh sách. Đây là định dạng sẽ được mong đợi bởi chỉ số `squad` trong quá trình đánh giá; nếu bạn đang sử dụng dữ liệu của riêng mình, bạn không nhất thiết phải lo lắng về việc đặt các câu trả lời ở cùng một định dạng. Trường `text` khá rõ ràng và trường `answer_start` chứa chỉ mục ký tự bắt đầu của mỗi câu trả lời trong ngữ cảnh.
+
+Trong quá trình huấn luyện, chỉ có một câu trả lời khả dĩ. Chúng ta có thể kiểm tra kỹ điều này bằng cách sử dụng phương thức `Dataset.filter()`:
+
+```py
+raw_datasets["train"].filter(lambda x: len(x["answers"]["text"]) != 1)
+```
+
+```python out
+Dataset({
+    features: ['id', 'title', 'context', 'question', 'answers'],
+    num_rows: 0
+})
+```
+
+Tuy nhiên, để đánh giá, có một số câu trả lời có thể có cho mỗi mẫu, có thể giống hoặc khác nhau:
+
+```py
+print(raw_datasets["validation"][0]["answers"])
+print(raw_datasets["validation"][2]["answers"])
+```
+
+```python out
+{'text': ['Denver Broncos', 'Denver Broncos', 'Denver Broncos'], 'answer_start': [177, 177, 177]}
+{'text': ['Santa Clara, California', "Levi's Stadium", "Levi's Stadium in the San Francisco Bay Area at Santa Clara, California."], 'answer_start': [403, 355, 355]}
+```
+
+Chúng ta sẽ không đi sâu vào tập lệnh đánh giá vì tất cả sẽ được bao bọc bởi chỉ số 🤗 Datasets, nhưng phiên bản ngắn là một số câu hỏi có một số câu trả lời có thể có và tập lệnh này sẽ so sánh một câu trả lời được dự đoán cho tất cả câu trả lời có thể chấp nhận được và dành điểm cao nhất. Ví dụ: nếu chúng ta xem xét mẫu ở chỉ mục 2:
+
+```py
+print(raw_datasets["validation"][2]["context"])
+print(raw_datasets["validation"][2]["question"])
+```
+
+```python out
+'Super Bowl 50 was an American football game to determine the champion of the National Football League (NFL) for the 2015 season. The American Football Conference (AFC) champion Denver Broncos defeated the National Football Conference (NFC) champion Carolina Panthers 24–10 to earn their third Super Bowl title. The game was played on February 7, 2016, at Levi\'s Stadium in the San Francisco Bay Area at Santa Clara, California. As this was the 50th Super Bowl, the league emphasized the "golden anniversary" with various gold-themed initiatives, as well as temporarily suspending the tradition of naming each Super Bowl game with Roman numerals (under which the game would have been known as "Super Bowl L"), so that the logo could prominently feature the Arabic numerals 50.'
+'Where did Super Bowl 50 take place?'
+```
+
+ta có thể thấy câu trả lời có thể thực ra là một trong số ba khả năng ta thấy trước đó.
+
+### Xử lý dữ liệu huấn luyện
+
+<Youtube id="qgaM0weJHpA"/>
+
+Hãy bắt đầu với việc xử lý trước dữ liệu huấn luyện. Phần khó sẽ là tạo nhãn cho câu trả lời của câu hỏi, đó sẽ là vị trí bắt đầu và kết thúc của các thẻ tương ứng với câu trả lời bên trong ngữ cảnh.
+
+Nhưng chúng ta đừng vượt lên chính mình. Đầu tiên, chúng ta cần chuyển đổi văn bản trong đầu vào thành các ID mà mô hình có thể hiểu được, sử dụng tokenizer:
+
+```py
+from transformers import AutoTokenizer
+
+model_checkpoint = "bert-base-cased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+Như đã đề cập trước đó, chúng ta sẽ tinh chỉnh mô hình BERT, nhưng bạn có thể sử dụng bất kỳ loại mô hình nào khác miễn là nó có triển khai trình tokenize nhanh. Bạn có thể xem tất cả các kiến trúc đi kèm với phiên bản nhanh trong [bảng lớn này](https://huggingface.co/transformers/#supported-frameworks) và để kiểm tra xem đối tượng `tokenizer` mà bạn đang sử dụng có thực sự là được hỗ trợ bởi 🤗 Tokenizers, bạn có thể xem thuộc tính `is_fast` của nó:
+```py
+tokenizer.is_fast
+```
+
+```python out
+True
+```
+
+Chúng ta có thể truyền câu hỏi và ngữ cảnh cho trình tokenizer của mình và nó sẽ chèn đúng các token đặc biệt để tạo thành một câu như sau:
+
+```
+[CLS] question [SEP] context [SEP]
+```
+
+Hãy cùng kiểm tra nó:
+
+```py
+context = raw_datasets["train"][0]["context"]
+question = raw_datasets["train"][0]["question"]
+
+inputs = tokenizer(question, context)
+tokenizer.decode(inputs["input_ids"])
+```
+
+```python out
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Architecturally, '
+'the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin '
+'Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms '
+'upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred '
+'Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a '
+'replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette '
+'Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 statues '
+'and the Gold Dome ), is a simple, modern stone statue of Mary. [SEP]'
+```
+
+Các nhãn sau đó sẽ là chỉ mục của các token bắt đầu và kết thúc câu trả lời và mô hình sẽ có nhiệm vụ dự đoán một logit bắt đầu và kết thúc cho mỗi token trong đầu vào, với các nhãn lý thuyết như sau:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/qa_labels.svg" alt="One-hot encoded labels for question answering."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/qa_labels-dark.svg" alt="One-hot encoded labels for question answering."/>
+</div>
+
+Trong trường hợp này, ngữ cảnh không quá dài, nhưng một số mẫu trong tập dữ liệu có ngữ cảnh rất dài sẽ vượt quá độ dài tối đa mà chúng tôi đặt (trong trường hợp này là 384). Như chúng ta đã thấy trong [Chương 6](/course/chapter6/4) khi chúng ta khám phá phần bên trong của pipeline `question-answering`, chúng ta sẽ đối phó với các ngữ cảnh dài bằng cách tạo một số đặc trưng huấn luyện từ một mẫu tập dữ liệu của mình, với cửa sổ trượt giữa chúng.
+
+Để xem cách này hoạt động như thế nào bằng cách sử dụng ví dụ hiện tại, chúng ta có thể giới hạn độ dài ở 100 và sử dụng cửa sổ trượt gồm 50 token. Xin nhắc lại, chúng ta sử dụng:
+
+- `max_length` để đặt độ dài tối đa (ở đây là 100)
+- `truncation="only_second"` để cắt ngắn ngữ cảnh (ở vị trí thứ hai) khi câu hỏi có ngữ cảnh quá dài
+- `stride` để đặt số lượng token chồng chéo giữa hai phần liên tiếp (ở đây là 50)
+- `return_overflowing_tokens=True` để cho trình tokenizer biết chúng ta muốn các token tràn
+
+```py
+inputs = tokenizer(
+    question,
+    context,
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+```python out
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basi [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP]. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 statues and the Gold Dome ), is a simple, modern stone statue of Mary. [SEP]'
+```
+
+Như chúng ta có thể thấy, ví dụ của chúng ta đã được chia thành bốn đầu vào, mỗi đầu vào chứa câu hỏi và một số phần của ngữ cảnh. Lưu ý rằng câu trả lời cho câu hỏi ("Bernadette Soubirous") chỉ xuất hiện trong đầu vào thứ ba và cuối cùng, vì vậy bằng cách xử lý các ngữ cảnh dài theo cách này, chúng ta sẽ tạo một số mẫu huấn luyện trong đó câu trả lời không được đưa vào ngữ cảnh. Đối với những ví dụ đó, nhãn sẽ là `start_position = end_position = 0` (vì vậy chúng tôi dự đoán token `[CLS]`). Chúng ta cũng sẽ đặt các nhãn đó trong trường hợp không may khi câu trả lời đã bị cắt bớt để chúng ta chỉ có phần đầu (hoặc phần cuối) của câu trả lời. Đối với các ví dụ trong đó câu trả lời nằm đầy đủ trong ngữ cảnh, các nhãn sẽ là chỉ mục của token nơi câu trả lời bắt đầu và chỉ mục của token nơi câu trả lời kết thúc.
+
+Tập dữ liệu cung cấp cho chúng ta ký tự bắt đầu của câu trả lời trong ngữ cảnh và bằng cách thêm độ dài của câu trả lời, chúng ta có thể tìm thấy ký tự kết thúc trong ngữ cảnh. Để ánh xạ chúng với các chỉ số token, chúng ta sẽ cần sử dụng ánh xạ offset mà chúng ta đã nghiên cứu trong [Chương 6](/course/chapter6/4). Chúng ta có thể yêu cầu tokenizer trả lại những thứ này bằng cách truyền theo `return_offsets_mapping=True`:
+
+```py
+inputs = tokenizer(
+    question,
+    context,
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+inputs.keys()
+```
+
+```python out
+dict_keys(['input_ids', 'token_type_ids', 'attention_mask', 'offset_mapping', 'overflow_to_sample_mapping'])
+```
+
+Như chúng ta có thể thấy, chúng ta lấy lại các ID đầu vào thông thường, token ID và attention mask, cũng như ánh xạ offset mà chúng ta yêu cầu và một khóa bổ sung, `overflow_to_sample_mapping`. Giá trị tương ứng sẽ được sử dụng cho chúng ta khi tokenize nhiều văn bản cùng một lúc (chúng ta nên làm để hưởng lợi từ thực tế là trình tokenizer được hỗ trợ bởi Rust). Vì một mẫu có thể cung cấp một số đối tượng địa lý, nên nó ánh xạ từng đối tượng địa lý với ví dụ mà nó có nguồn gốc. Bởi vì ở đây chúng ta chỉ tokenize một ví dụ, chúng ta nhận được danh sách các `0`:
+
+```py
+inputs["overflow_to_sample_mapping"]
+```
+
+```python out
+[0, 0, 0, 0]
+```
+
+Nhưng nếu chúng ta mã hóa nhiều mẫu hơn, điều này sẽ trở nên hữu ích hơn:
+
+```py
+inputs = tokenizer(
+    raw_datasets["train"][2:6]["question"],
+    raw_datasets["train"][2:6]["context"],
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+
+print(f"The 4 examples gave {len(inputs['input_ids'])} features.")
+print(f"Here is where each comes from: {inputs['overflow_to_sample_mapping']}.")
+```
+
+```python out
+'The 4 examples gave 19 features.'
+'Here is where each comes from: [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3].'
+```
+
+Như chúng ta có thể thấy, ba mẫu đầu tiên (tại chỉ số 2, 3 và 4 trong tập huấn luyện) mỗi mẫu đưa ra bốn đặc trưng và mẫu cuối cùng (tại chỉ mục 5 trong tập huấn luyện) đưa ra 7 đặc trưng.
+
+Thông tin này sẽ hữu ích để ánh xạ từng đối tượng mà chúng ta nhận được với nhãn tương ứng của nó. Như đã đề cập trước đó, các nhãn đó là:
+
+- `(0, 0)` nếu câu trả lời không nằm trong khoảng tương ứng của ngữ cảnh
+- `(start_position, end_position)` nếu câu trả lời nằm trong khoảng tương ứng của ngữ cảnh, với `start_position` là chỉ mục của token (trong các ID đầu vào) ở đầu câu trả lời và `end_position` là chỉ mục của token (trong các ID đầu vào) nơi câu trả lời kết thúc.
+
+Để xác định đây là trường hợp nào và nếu có liên quan, vị trí của các token, trước tiên chúng ta tìm các chỉ số bắt đầu và kết thúc ngữ cảnh trong các ID đầu vào. Chúng ta có thể sử dụng các token ID để thực hiện việc này, nhưng vì chúng không nhất thiết phải tồn tại cho tất cả các mô hình (ví dụ: DistilBERT không yêu cầu chúng), thay vào đó, chúng ta sẽ sử dụng phương thức `sequence_ids()` của `BatchEncoding` mà tokenizer của ta trả về.
+
+Khi ta có các chỉ mục token đó, chúng ta xem xét các offset, là các bộ giá trị của hai số nguyên đại diện cho khoảng ký tự bên trong ngữ cảnh ban đầu. Do đó, chúng ta có thể phát hiện xem đoạn ngữ cảnh trong đặc trưng này bắt đầu sau câu trả lời hay kết thúc trước khi câu trả lời bắt đầu (trong trường hợp đó nhãn là `(0, 0)`). Nếu không phải như vậy, chúng ta lặp lại để tìm mã token đầu tiên và cuối cùng của câu trả lời:
+
+```py
+answers = raw_datasets["train"][2:6]["answers"]
+start_positions = []
+end_positions = []
+
+for i, offset in enumerate(inputs["offset_mapping"]):
+    sample_idx = inputs["overflow_to_sample_mapping"][i]
+    answer = answers[sample_idx]
+    start_char = answer["answer_start"][0]
+    end_char = answer["answer_start"][0] + len(answer["text"][0])
+    sequence_ids = inputs.sequence_ids(i)
+
+    # Tìm điểm bắt đầu và kết thúc của ngữ cảnh
+    while sequence_ids[idx] != 1:
+        idx += 1
+    context_start = idx
+    while sequence_ids[idx] == 1:
+        idx += 1
+    context_end = idx - 1
+
+    # Nếu câu trả lời không hoàn toàn nằm trong ngữ cảnh, nhãn là (0, 0)
+    if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+        start_positions.append(0)
+        end_positions.append(0)
+    else:
+        # Nếu không nó sẽ là vị trí bắt đầu và kết thúc
+        idx = context_start
+        while idx <= context_end and offset[idx][0] <= start_char:
+            idx += 1
+        start_positions.append(idx - 1)
+
+        idx = context_end
+        while idx >= context_start and offset[idx][1] >= end_char:
+            idx -= 1
+        end_positions.append(idx + 1)
+
+start_positions, end_positions
+```
+
+```python out
+([83, 51, 19, 0, 0, 64, 27, 0, 34, 0, 0, 0, 67, 34, 0, 0, 0, 0, 0],
+ [85, 53, 21, 0, 0, 70, 33, 0, 40, 0, 0, 0, 68, 35, 0, 0, 0, 0, 0])
+```
+
+Hãy cùng xem một vài kết quả để xác minh rằng cách tiếp cận của chúng ta là đúng. Đối với đặc trưng đầu tiên chúng ta tìm thấy `(83, 85)` dưới dạng nhãn, hãy so sánh câu trả lời lý thuyết với khoảng token được giải mã từ 83 đến 85 (bao gồm):
+
+```py
+idx = 0
+sample_idx = inputs["overflow_to_sample_mapping"][idx]
+answer = answers[sample_idx]["text"][0]
+
+start = start_positions[idx]
+end = end_positions[idx]
+labeled_answer = tokenizer.decode(inputs["input_ids"][idx][start : end + 1])
+
+print(f"Theoretical answer: {answer}, labels give: {labeled_answer}")
+```
+
+```python out
+'Theoretical answer: the Main Building, labels give: the Main Building'
+```
+
+Kết quả khá là khớp nhau! Bây giờ chúng ta hãy kiểm tra chỉ mục 4, nơi chúng ta đặt nhãn thành `(0, 0)`, có nghĩa là câu trả lời không nằm trong phần ngữ cảnh của đặc trưng đó:
+
+```py
+idx = 4
+sample_idx = inputs["overflow_to_sample_mapping"][idx]
+answer = answers[sample_idx]["text"][0]
+
+decoded_example = tokenizer.decode(inputs["input_ids"][idx])
+print(f"Theoretical answer: {answer}, decoded example: {decoded_example}")
+```
+
+```python out
+'Theoretical answer: a Marian place of prayer and reflection, decoded example: [CLS] What is the Grotto at Notre Dame? [SEP] Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grot [SEP]'
+```
+
+Bây giờ chúng ta đã thấy từng bước cách tiền xử lý dữ liệu huấn luyện của mình, chúng ta có thể nhóm nó trong một hàm mà ta sẽ áp dụng trên toàn bộ tập dữ liệu huấn luyện. Chúng ta sẽ đệm mọi đặc trưng đến độ dài tối đa mà ta đã đặt, vì hầu hết các ngữ cảnh sẽ dài (và các mẫu tương ứng sẽ được chia thành nhiều đặc trưng), vì vậy không có lợi ích thực sự nào khi áp dụng đệm động ở đây:
+
+Thật vậy, chúng ta không thấy câu trả lời bên trong ngữ cảnh.
+
+<Tip>
+
+✏️ **Đến lượt bạn!** Khi sử dụng kiến trúc XLNet, phần đệm được áp dụng ở bên trái và câu hỏi và ngữ cảnh được chuyển đổi. Điều chỉnh tất cả mã chúng ta vừa thấy với kiến trúc XLNet (và thêm `padding=True`). Lưu ý rằng token `[CLS]` có thể không ở vị trí 0 khi áp dụng phần đệm.
+
+</Tip>
+
+Bây giờ chúng ta đã thấy từng bước cách tiền xử lý dữ liệu huấn luyện của mình, chúng ta có thể nhóm nó trong một hàm mà chúng ta sẽ áp dụng trên toàn bộ tập dữ liệu huấn luyện. Chúng ta sẽ đệm mọi đặc trưng đến độ dài tối đa mà chúng ta đã đặt, vì hầu hết các ngữ cảnh sẽ dài (và các mẫu tương ứng sẽ được chia thành nhiều đặc trưng), vì vậy không có lợi ích thực sự nào khi áp dụng đệm động ở đây:
+
+```py
+max_length = 384
+stride = 128
+
+
+def preprocess_training_examples(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=max_length,
+        truncation="only_second",
+        stride=stride,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    offset_mapping = inputs.pop("offset_mapping")
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    answers = examples["answers"]
+    start_positions = []
+    end_positions = []
+
+    for i, offset in enumerate(offset_mapping):
+        sample_idx = sample_map[i]
+        answer = answers[sample_idx]
+        start_char = answer["answer_start"][0]
+        end_char = answer["answer_start"][0] + len(answer["text"][0])
+        sequence_ids = inputs.sequence_ids(i)
+
+        # Tìm điểm bắt đầu và kết thúc của ngữ cảnh
+        idx = 0
+        while sequence_ids[idx] != 1:
+            idx += 1
+        context_start = idx
+        while sequence_ids[idx] == 1:
+            idx += 1
+        context_end = idx - 1
+
+        # Nếu câu trả lời không hoàn toàn nằm trong ngữ cảnh, nhãn là (0, 0)
+        if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+            start_positions.append(0)
+            end_positions.append(0)
+        else:
+            # Nếu không nó sẽ là vị trí token bắt đầu và kết thúc
+            idx = context_start
+            while idx <= context_end and offset[idx][0] <= start_char:
+                idx += 1
+            start_positions.append(idx - 1)
+
+            idx = context_end
+            while idx >= context_start and offset[idx][1] >= end_char:
+                idx -= 1
+            end_positions.append(idx + 1)
+
+    inputs["start_positions"] = start_positions
+    inputs["end_positions"] = end_positions
+    return inputs
+```
+
+Lưu ý rằng chúng ta đã xác định hai hằng số để xác định độ dài tối đa được sử dụng cũng như độ dài của cửa sổ trượt và ta đã thêm một chút dọn dẹp trước khi tokenize: một số câu hỏi trong tập dữ liệu SQuAD có thêm khoảng trắng ở đầu và kết thúc mà không thêm bất kỳ thứ gì (và chiếm dung lượng khi được tokenize nếu bạn sử dụng mô hình như RoBERTa), vì vậy ta đã xóa những khoảng trắng thừa đó.
+
+Để áp dụng hàm này cho toàn bộ tập huấn luyện, chúng ta sử dụng phương thức `Dataset.map()` với `batched=True`. Điều này cần thiết ở đây vì ta đang thay đổi độ dài của tập dữ liệu (vì một mẫu có thể cung cấp một số đặc trưng huấn luyện):
+
+```py
+train_dataset = raw_datasets["train"].map(
+    preprocess_training_examples,
+    batched=True,
+    remove_columns=raw_datasets["train"].column_names,
+)
+len(raw_datasets["train"]), len(train_dataset)
+```
+
+```python out
+(87599, 88729)
+```
+
+Như ta có thể thấy, quá trình tiền xử lý đã thêm khoảng 1,000 đặc trưng. Bộ huấn luyện hiện đã sẵn sàng để sử dụng - hãy cùng tìm hiểu về quá trình tiền xử lý của bộ kiểm định!
+
+### Xử lý dữ liệu kiểm định
+
+Việc xử lý trước dữ liệu kiểm định sẽ dễ dàng hơn một chút vì chúng ta không cần tạo nhãn (trừ khi chúng ta muốn tính toán mất mát kiểm định, nhưng con số đó sẽ không thực sự giúp chúng ta hiểu mô hình tốt như thế nào). Niềm vui thực sự sẽ là diễn giải các dự đoán của mô hình thành các khoảng của bối cảnh ban đầu. Đối với điều này, chúng ta sẽ chỉ cần lưu trữ cả ánh xạ offset và một số cách để khớp từng đối tượng đã tạo với ví dụ ban đầu mà nó xuất phát. Vì có một cột ID trong tập dữ liệu gốc, chúng ta sẽ sử dụng ID đó.
+
+Điều duy nhất chúng ta sẽ thêm ở đây là một chút dọn dẹp các ánh xạ offset. Chúng sẽ chứa các phần bù cho câu hỏi và ngữ cảnh, nhưng khi chúng ta đang ở giai đoạn hậu xử lý, chúng ta sẽ không có cách nào để biết phần nào của ID đầu vào tương ứng với ngữ cảnh và phần nào là câu hỏi (phương thức `sequence_ids()` ta đã sử dụng chỉ có sẵn cho đầu ra của tokenizer). Vì vậy, chúng ta sẽ đặt các offset tương ứng với câu hỏi thành `None`:
+
+```py
+def preprocess_validation_examples(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=max_length,
+        truncation="only_second",
+        stride=stride,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    example_ids = []
+
+    for i in range(len(inputs["input_ids"])):
+        sample_idx = sample_map[i]
+        example_ids.append(examples["id"][sample_idx])
+
+        sequence_ids = inputs.sequence_ids(i)
+        offset = inputs["offset_mapping"][i]
+        inputs["offset_mapping"][i] = [
+            o if sequence_ids[k] == 1 else None for k, o in enumerate(offset)
+        ]
+
+    inputs["example_id"] = example_ids
+    return inputs
+```
+
+Chúng ta có thể áp dụng hàm này trên toàn bộ tập dữ liệu kiểm định như trước đây:
+
+```py
+validation_dataset = raw_datasets["validation"].map(
+    preprocess_validation_examples,
+    batched=True,
+    remove_columns=raw_datasets["validation"].column_names,
+)
+len(raw_datasets["validation"]), len(validation_dataset)
+```
+
+```python out
+(10570, 10822)
+```
+
+Trong trường hợp này, chúng ta chỉ thêm một vài trăm mẫu, vì vậy có vẻ như các ngữ cảnh trong tập dữ liệu kiểm định ngắn hơn một chút.
+
+Bây giờ chúng ta đã tiền xử lý tất cả dữ liệu, chúng ta có thể tham gia khóa huấn luyện.
+
+{#if fw === 'pt'}
+
+## Tinh chỉnh mô hìn với API `Trainer`
+
+Đoạn mã huấn luyện cho mẫu này sẽ trông rất giống trong các phần trước - điều khó nhất sẽ là viết hàm `compute_metrics()`. Vì chúng ta đã đệm tất cả các mẫu đến độ dài tối đa mà ta đặt, không có công cụ đối chiếu dữ liệu để xác định, vì vậy việc tính toán số liệu này thực sự là điều duy nhất chúng ta phải lo lắng. Phần khó khăn sẽ là hậu xử lý các dự đoán của mô hình thành các khoảng văn bản trong các ví dụ ban đầu; khi ta đã làm điều đó, chỉ số từ thư viện 🤗 Datasets sẽ thực hiện hầu hết công việc cho mình.
+
+{:else}
+
+## Tinh chỉnh mô hìn với Keras
+
+Đoạn mã huấn luyện cho mẫu này sẽ trông rất giống trong các phần trước, nhưng việc tính toán các số liệu sẽ là một thử thách độc đáo. Vì chúng ta đã đệm tất cả các mẫu đến độ dài tối đa mà chúng ta đặt, không có công cụ đối chiếu dữ liệu để xác định, vì vậy việc tính toán số liệu này thực sự là điều duy nhất ta phải lo lắng. Phần khó sẽ là hậu xử lý các dự đoán của mô hình thành các khoảng văn bản trong các ví dụ ban đầu; khi chúng ta đã làm điều đó, chỉ số từ thư viện 🤗 Datasets sẽ thực hiện hầu hết công việc cho ta.
+
+{/if}
+
+### Hậu xử lý
+
+{#if fw === 'pt'}
+
+<Youtube id="BNy08iIWVJM"/>
+
+{:else}
+
+<Youtube id="VN67ZpN33Ss"/>
+
+{/if}
+
+Mô hình sẽ trả về các logit đầu ra cho các vị trí bắt đầu và kết thúc của câu trả lời trong ID đầu vào, như chúng ta đã thấy trong quá trình khám phá pipeline [`question-answering`](/course/chapter6/3b). Bước tiền xử lý sẽ tương tự như những gì chúng ta đã làm ở đó, vì vậy đây là lời nhắc nhanh về các bước chúng ta đã thực hiện:
+
+- Chúng ta đã che các logit bắt đầu và kết thúc tương ứng với các token bên ngoài ngữ cảnh.
+- Sau đó, chúng ta chuyển đổi các logit bắt đầu và kết thúc thành xác suất bằng cách sử dụng softmax.
+- Chúng ta quy điểm cho từng cặp `(start_token, end_token)` cách lấy tích của hai xác suất tương ứng.
+- Chúng ta đã tìm kiếm cặp có điểm tối đa mang lại câu trả lời hợp lệ (ví dụ: `start_token` thấp hơn `end_token`).
+
+Ở đây, chúng ta sẽ thay đổi quy trình này một chút vì chúng ta không cần tính điểm thực tế (chỉ là câu trả lời dự đoán). Điều này có nghĩa là chúng ta có thể bỏ qua bước softmax. Để đi nhanh hơn, chúng ta cũng sẽ không tính điểm tất cả các cặp `(start_token, end_token)` có thể, mà chỉ những cặp tương ứng với logit `n_best` cao nhất (với `n_best = 20`). Vì chúng ta sẽ bỏ qua softmax, những điểm đó sẽ là điểm logit và sẽ có được bằng cách lấy tổng của logit bắt đầu và kết thúc (thay vì nhân, vì quy tắc \(\log(ab) = \log(a) + \log(b)\\)).
+
+Để chứng minh tất cả những điều này, chúng ta sẽ cần một số loại dự đoán. Vì chúng ta chưa huấn luyện mô hình của mình, chúng ta sẽ sử dụng mô hình mặc định cho pipeline QA để tạo ra một số dự đoán trên một phần nhỏ của tập hợp kiểm. Chúng ta có thể sử dụng chức năng xử lý tương tự như trước đây; bởi vì nó dựa vào hằng số toàn cục `tokenizer`, chúng ta chỉ cần thay đổi đối tượng đó thành tokenizer của mô hình mà chúng ta muốn sử dụng tạm thời:
+
+```python
+small_eval_set = raw_datasets["validation"].select(range(100))
+trained_checkpoint = "distilbert-base-cased-distilled-squad"
+
+tokenizer = AutoTokenizer.from_pretrained(trained_checkpoint)
+eval_set = small_eval_set.map(
+    preprocess_validation_examples,
+    batched=True,
+    remove_columns=raw_datasets["validation"].column_names,
+)
+```
+
+Bây giờ, quá trình tiền xử lý đã hoàn tất, chúng ta thay đổi tokenizer trở lại cái mà chúng ta đã chọn ban đầu:
+
+```python
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+Sau đó, chúng ta loại bỏ các cột của `eval_set` mà mô hình không mong đợi, xây dựng một lô với tất cả bộ kiểm định nhỏ đó và chuyển nó qua mô hình. Nếu có sẵn GPU, chúng ta sử dụng nó để chạy nhanh hơn:
+
+{#if fw === 'pt'}
+
+```python
+import torch
+from transformers import AutoModelForQuestionAnswering
+
+eval_set_for_model = eval_set.remove_columns(["example_id", "offset_mapping"])
+eval_set_for_model.set_format("torch")
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+batch = {k: eval_set_for_model[k].to(device) for k in eval_set_for_model.column_names}
+trained_model = AutoModelForQuestionAnswering.from_pretrained(trained_checkpoint).to(
+    device
+)
+
+with torch.no_grad():
+    outputs = trained_model(**batch)
+```
+
+Vì `Trainer` sẽ trả cho ta các dự đoán dưới dạng mảng NumPy, ta sẽ lấy các logit bắt đầu và kết thúc và chuyển nó thành dạng:
+
+```python
+start_logits = outputs.start_logits.cpu().numpy()
+end_logits = outputs.end_logits.cpu().numpy()
+```
+
+{:else}
+
+```python
+import tensorflow as tf
+from transformers import TFAutoModelForQuestionAnswering
+
+eval_set_for_model = eval_set.remove_columns(["example_id", "offset_mapping"])
+eval_set_for_model.set_format("numpy")
+
+batch = {k: eval_set_for_model[k] for k in eval_set_for_model.column_names}
+trained_model = TFAutoModelForQuestionAnswering.from_pretrained(trained_checkpoint)
+
+outputs = trained_model(**batch)
+```
+
+Để dễ dàng thử nghiệm, hãy chuyển đổi các kết quả đầu ra này thành mảng NumPy:
+
+```python
+start_logits = outputs.start_logits.numpy()
+end_logits = outputs.end_logits.numpy()
+```
+
+{/if}
+
+Bây giờ, chúng ta cần tìm câu trả lời dự đoán cho từng ví dụ trong `small_eval_set` của chúng ta. Một ví dụ có thể đã được chia thành nhiều đặc trưng trong `eval_set`, vì vậy bước đầu tiên là ánh xạ từng mẫu trong `small_eval_set` với các đặc trưng tương ứng trong `eval_set`:
+
+```python
+import collections
+
+example_to_features = collections.defaultdict(list)
+for idx, feature in enumerate(eval_set):
+    example_to_features[feature["example_id"]].append(idx)
+```
+
+Với điều này trong tay, chúng ta thực sự có thể bắt đầu làm việc bằng cách lặp lại tất cả các mẫu và, đối với mỗi mẫu, thông qua tất cả các đặc trưng liên quan. Như chúng ta đã nói trước đây, chúng ta sẽ xem xét điểm logit cho các logit bắt đầu và kết thúc của `n_best`, ngoại trừ các vị trí cung cấp:
+
+- Một câu trả lời sẽ không nằm trong ngữ cảnh
+- Một câu trả lời có độ dài âm
+- Một câu trả lời quá dài (chúng ta giới hạn khả năng ở mức `max_answer_length=30`)
+
+Khi chúng ta có tất cả các câu trả lời có thể được ghi cho một mẫu, ta chỉ cần chọn một câu có điểm logit tốt nhất:
+
+```python
+import numpy as np
+
+n_best = 20
+max_answer_length = 30
+predicted_answers = []
+
+for example in small_eval_set:
+    example_id = example["id"]
+    context = example["context"]
+    answers = []
+
+    for feature_index in example_to_features[example_id]:
+        start_logit = start_logits[feature_index]
+        end_logit = end_logits[feature_index]
+        offsets = eval_set["offset_mapping"][feature_index]
+
+        start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+        end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+        for start_index in start_indexes:
+            for end_index in end_indexes:
+                # Bỏ qua các câu trả lời không đầu đủ trong ngữ cảnh
+                if offsets[start_index] is None or offsets[end_index] is None:
+                    continue
+                # Bỏ qua những câu trả lời có độ dài < 0 hoặc > max_answer_length.
+                if (
+                    end_index < start_index
+                    or end_index - start_index + 1 > max_answer_length
+                ):
+                    continue
+
+                answers.append(
+                    {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                )
+
+    best_answer = max(answers, key=lambda x: x["logit_score"])
+    predicted_answers.append({"id": example_id, "prediction_text": best_answer["text"]})
+```
+
+Định dạng cuối cùng của các câu trả lời được dự đoán là định dạng sẽ được dự đoán theo chỉ số mà chúng ta sẽ sử dụng. Như thường lệ, chúng ta có thể tải nó với sự trợ giúp của thư viện 🤗 Evaluate:
+
+```python
+import evaluate
+
+metric = evaluate.load("squad")
+```
+
+Thước đo này mong đợi các câu trả lời được dự đoán ở định dạng mà chúng ta đã thấy ở trên (danh sách các từ điển có một khóa cho ID của mẫu và một khóa cho văn bản được dự đoán) và các câu trả lời lý thuyết ở định dạng bên dưới (danh sách các từ điển có một khóa cho ID của mẫu và một khóa cho các câu trả lời có thể có):
+
+
+```python
+theoretical_answers = [
+    {"id": ex["id"], "answers": ex["answers"]} for ex in small_eval_set
+]
+```
+
+Bây giờ chúng ta có thể kiểm tra xem ta có nhận được kết quả hợp lý hay không bằng cách xem xét yếu tố đầu tiên của cả hai danh sách:
+
+```python
+print(predicted_answers[0])
+print(theoretical_answers[0])
+```
+
+```python out
+{'id': '56be4db0acb8001400a502ec', 'prediction_text': 'Denver Broncos'}
+{'id': '56be4db0acb8001400a502ec', 'answers': {'text': ['Denver Broncos', 'Denver Broncos', 'Denver Broncos'], 'answer_start': [177, 177, 177]}}
+```
+
+Không tệ lắm! Bây giờ chúng ta hãy xem xét điểm số mà số liệu mang lại cho chúng ta:
+
+```python
+metric.compute(predictions=predicted_answers, references=theoretical_answers)
+```
+
+```python out
+{'exact_match': 83.0, 'f1': 88.25}
+```
+
+Một lần nữa, điều đó khá tốt theo [bài báo của nó](https://arxiv.org/abs/1910.01108v2), DistilBERT được tinh chỉnh trên SQuAD thu được 79.1 và 86.9 trên toàn bộ tập dữ liệu.
+
+{#if fw === 'pt'}
+
+Bây giờ chúng ta hãy đặt mọi thứ ta vừa làm trong một hàm `compute_metrics()` mà ta sẽ sử dụng trong `Trainer`. Thông thường, hàm `compute_metrics()` đó chỉ nhận được một tuple `eval_preds` với các logit và nhãn. Ở đây chúng ta sẽ cần nhiều hơn một chút, vì chúng ta phải tìm trong tập dữ liệu các đặc trưng cho phần bù và trong tập dữ liệu các ví dụ cho các ngữ cảnh ban đầu, vì vậy chúng ta sẽ không thể sử dụng chức năng này để nhận kết quả đánh giá thường xuyên trong quá trình huấn luyện. Chúng ta sẽ chỉ sử dụng nó khi kết thúc khóa huấnl luyện để kiểm tra kết quả.
+
+Hàm `compute_metrics()` nhóm các bước giống như trước; chúng ta chỉ thêm một kiểm tra nhỏ trong trường hợp ta không đưa ra bất kỳ câu trả lời hợp lệ nào (trong trường hợp đó ta dự đoán một chuỗi trống).
+
+{:else}
+
+Bây giờ, hãy đặt mọi thứ ta vừa làm vào một hàm `compute_metrics()` mà ta sẽ sử dụng sau khi huấn luyện mô hình của mình. Chúng ta sẽ cần truyền nhiều hơn là nhật ký đầu ra, vì ta phải tìm trong tập dữ liệu các đặc trưng cho phần offset và trong tập dữ liệu các mẫu cho các ngữ cảnh ban đầu:
+
+{/if}
+
+```python
+from tqdm.auto import tqdm
+
+
+def compute_metrics(start_logits, end_logits, features, examples):
+    example_to_features = collections.defaultdict(list)
+    for idx, feature in enumerate(features):
+        example_to_features[feature["example_id"]].append(idx)
+
+    predicted_answers = []
+    for example in tqdm(examples):
+        example_id = example["id"]
+        context = example["context"]
+        answers = []
+
+        # Lặp qua tất cả các đặc trưng liên quan tới mẫu đó
+        for feature_index in example_to_features[example_id]:
+            start_logit = start_logits[feature_index]
+            end_logit = end_logits[feature_index]
+            offsets = features[feature_index]["offset_mapping"]
+
+            start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+            end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+            for start_index in start_indexes:
+                for end_index in end_indexes:
+                    # Bỏ qua câu trả lời không xuất hiện hoàn toàn trong ngữ cảnh
+                    if offsets[start_index] is None or offsets[end_index] is None:
+                        continue
+                    # Bỏ qua những câu trả lời với độ dài < 0 hoặc > max_answer_length
+                    if (
+                        end_index < start_index
+                        or end_index - start_index + 1 > max_answer_length
+                    ):
+                        continue
+
+                    answer = {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                    answers.append(answer)
+
+        # Chọn câu trả lời có điểm cao nhất
+        if len(answers) > 0:
+            best_answer = max(answers, key=lambda x: x["logit_score"])
+            predicted_answers.append(
+                {"id": example_id, "prediction_text": best_answer["text"]}
+            )
+        else:
+            predicted_answers.append({"id": example_id, "prediction_text": ""})
+
+    theoretical_answers = [{"id": ex["id"], "answers": ex["answers"]} for ex in examples]
+    return metric.compute(predictions=predicted_answers, references=theoretical_answers)
+```
+
+Chúng ta có thể kiểm tra nó hoạt động dựa trên dự đoán của mình:
+
+```python
+compute_metrics(start_logits, end_logits, eval_set, small_eval_set)
+```
+
+```python out
+{'exact_match': 83.0, 'f1': 88.25}
+```
+
+Trông khá ổn! Bây giờ chúng ta hãy sử dụng điều này để tinh chỉnh mô hình của mình.
+
+### Tinh chỉnh mô hình
+
+{#if fw === 'pt'}
+
+Giờ ta đã sẵn sàng để huấn luyện mô hình của mình. Hãy cũng tạo ra nó sử dụng lớp `AutoModelForQuestionAnswering` như trước đó:
+
+```python
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+Giờ ta đã sẵn sàng để huấn luyện mô hình của mình. Hãy cũng tạo ra nó sử dụng lớp `TFAutoModelForQuestionAnswering` như trước đó:
+
+```python
+model = TFAutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+{/if}
+
+Như thường lệ, chúng ta nhận được cảnh báo rằng một số trọng số không được sử dụng (các trọng số từ phần đầu huấn luyện trước) và một số trọng số khác được khởi tạo ngẫu nhiên (các trọng số cho đầu trả lời câu hỏi). Bây giờ bạn nên quen với điều này, nhưng điều đó có nghĩa là mô hình này chưa sẵn sàng để sử dụng và cần được tinh chỉnh - điều tốt là chúng ta sắp làm được điều đó!
+
+Để có thể đẩy mô hình của mình lên Hub, chúng ta cần đăng nhập vào Hugging Face. Nếu bạn đang chạy đoạn mã này trong notebook, bạn có thể làm như vậy với hàm tiện ích sau, hàm này sẽ hiển thị một tiện ích mà bạn có thể nhập thông tin đăng nhập của mình:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+Nếu bạn không làm việc trong notebook, chỉ cần nhập dòng sau vào thiết bị đầu cuối của bạn:
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+Khi điều này được thực hiện, chúng ta có thể xác định `TrainingArguments` của mình. Như ta đã nói khi xác định chức năng của mình để tính toán các chỉ số, chúng ta sẽ không thể có vòng lặp đánh giá thường xuyên vì đặc trưng của hàm `compute_metrics()`. Chúng ta có thể viết lớp con của riêng mình về `Trainer` để làm điều này (một cách tiếp cận bạn có thể tìm thấy trong [bộ lệnh mẫu cho hỏi đáp](https://github.com/huggingface/transformers/blob/master/examples/pytorch/question-answering/trainer_qa.py)), nhưng hơi dài cho phần này. Thay vào đó, chúng ta sẽ chỉ đánh giá mô hình khi kết thúc huấn luyện tại đây và chỉ cho bạn cách thực hiện đánh giá thường xuyên trong "Vòng huấn luyện tùy chỉnh" bên dưới.
+
+Đây thực sự là nơi API `Trainer` thể hiện các giới hạn của nó và là lúc thư viện 🤗 Accelerate tỏa sáng: việc tùy chỉnh lớp cho một trường hợp sử dụng cụ thể có thể gây khó khăn, nhưng việc điều chỉnh một vòng huấn luyện được tiếp xúc hoàn toàn rất dễ dàng.
+
+Chúng ta hãy xem xét các `TrainingArguments` của mình:
+
+```python
+from transformers import TrainingArguments
+
+args = TrainingArguments(
+    "bert-finetuned-squad",
+    evaluation_strategy="no",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+    fp16=True,
+    push_to_hub=True,
+)
+```
+
+Chúng ta đã thấy hầu hết những điều này trước đây: chúng ta đặt một số siêu tham số (như tốc độ học, số epoch ta dùng để huấn luyện và một số phân rã trọng số) và cho biết rằng chúng ta muốn lưu mô hình vào cuối mỗi epoch, bỏ qua đánh giá và tải kết quả của mình lên Model Hub. Chúng ta cũng cho phép huấn luyện chính xác hỗn hợp với `fp16 = True`, vì nó có thể tăng tốc huấn luyện một cách độc đáo trên GPU gần đây.
+
+{:else}
+
+Bây giờ đã xong, chúng ta có thể tạo TF Datasets của mình. Chúng ta có thể sử dụng công cụ đối chiếu dữ liệu mặc định đơn giản lần này:
+
+```python
+from transformers import DefaultDataCollator
+
+data_collator = DefaultDataCollator(return_tensors="tf")
+```
+
+Và giờ chúng ta tạo bộ dữ liệu như bình thường.
+
+```python
+tf_train_dataset = train_dataset.to_tf_dataset(
+    columns=[
+        "input_ids",
+        "start_positions",
+        "end_positions",
+        "attention_mask",
+        "token_type_ids",
+    ],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=16,
+)
+tf_eval_dataset = validation_dataset.to_tf_dataset(
+    columns=["input_ids", "attention_mask", "token_type_ids"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=16,
+)
+```
+
+Tiếp theo, chúng ta thiết lập các siêu tham số huấn luyện và biên dịch mô hình của mình:
+
+```python
+from transformers import create_optimizer
+from transformers.keras_callbacks import PushToHubCallback
+import tensorflow as tf
+
+# Số bước huấn luyện là số lượng mẫu trong tập dữ liệu, chia cho kích thước lô sau đó nhân
+# với tổng số epoch. Lưu ý rằng tf_train_dataset ở đây là tf.data.Dataset theo lô,
+# không phải là Hugging Face Dataset ban đầu, vì vậy len() của nó vốn là num_samples // batch_size.
+
+num_train_epochs = 3
+num_train_steps = len(tf_train_dataset) * num_train_epochs
+optimizer, schedule = create_optimizer(
+    init_lr=2e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Huấn luyện trong mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+Cuối cùng, ta đã sẵn sàng để huấn luyện với `model.fit()`. Ta sử dụng `PushToHubCallback` để tải mô hình lên Hub sau mỗi epoch.
+
+{/if}
+
+Mặc định, kho lưu trữ được sử dụng sẽ nằm trong không gian tên của bạn và được đặt tên theo thư mục đầu ra mà bạn đã đặt, vì vậy trong trường hợp của mình, nó sẽ nằm trong `"sgugger/bert-finetuned-squad"`. Chúng ta có thể ghi đè điều này bằng cách chuyển một `hub_model_id`; ví dụ: để đẩy mô hình vào tổ chức `huggingface_course`, chúng ta đã sử dụng `hub_model_id="huggingface_course/bert-finetuned-squad"` (là mô hình mà ta đã liên kết ở đầu phần này).
+
+{#if fw === 'pt'}
+
+<Tip>
+
+💡 Nếu thư mục đầu ra bạn đang sử dụng tồn tại, nó cần phải là bản sao cục bộ của kho lưu trữ mà bạn muốn đẩy đến (vì vậy hãy đặt tên mới nếu bạn gặp lỗi khi xác định `Trainer` của mình).
+
+</Tip>
+
+Cuối cùng, ta chỉ cần truyền mọi thứ vào lớp `Trainer` và khởi động việc huấn luyện:
+
+```python
+from transformers import Trainer
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=train_dataset,
+    eval_dataset=validation_dataset,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+{:else}
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(output_dir="bert-finetuned-squad", tokenizer=tokenizer)
+
+# Chúng ta sẽ thực hiện kiểm định sau đó, vì vậy không có quá trình huấnlluyện giữa quá trình kiểm định
+model.fit(tf_train_dataset, callbacks=[callback], epochs=num_train_epochs)
+```
+
+{/if}
+
+Lưu ý rằng trong khi quá trình huấn luyện diễn ra, mỗi khi mô hình được lưu (ở đây, mỗi epoch), nó sẽ được tải lên Hub ở chế độ nền. Bằng cách này, bạn sẽ có thể tiếp tục huấn luyện của mình trên một máy khác nếu cần. Toàn bộ quá trình huấn luyện mất một khoảng thời gian (hơn một giờ trên Titan RTX), vì vậy bạn có thể uống một ly cà phê hoặc đọc lại một số phần của khóa học mà bạn thấy khó khăn hơn trong khi tiếp tục. Cũng lưu ý rằng ngay sau khi epoch đầu tiên kết thúc, bạn sẽ thấy một số trọng số được tải lên Hub và bạn có thể bắt đầu chơi với mô hình của mình trên trang của nó.
+
+{#if fw === 'pt'}
+
+Sau khi quá trình huấn luyện hoàn tất, cuối cùng ta cũng có thể đánh giá mô hình của mình (và cầu nguyện rằng ta đã không dành tất cả thời gian tính toán vào việc gì). Phương thức `predict()` của `Trainer` sẽ trả về một bộ giá trị trong đó các phần tử đầu tiên sẽ là các dự đoán của mô hình (ở đây là một cặp với các logit bắt đầu và kết thúc). Chúng ta gửi chúng đến hàm `compute_metrics())` của mình:
+
+```python
+predictions, _, _ = trainer.predict(validation_dataset)
+start_logits, end_logits = predictions
+compute_metrics(start_logits, end_logits, validation_dataset, raw_datasets["validation"])
+```
+
+{:else}
+
+Sau khi quá trình huấn luyện hoàn tất, cuối cùng ta cũng có thể đánh giá mô hình của mình (và cầu nguyện rằng ta đã không dành tất cả thời gian tính toán vào việc gì). Phương thức `predict()` của `model` sẽ đảm nhận việc nhận các dự đoán và vì ta đã thực hiện tất cả các công việc khó khăn trong việc xác định một hàm `compute_metrics()` trước đó, chúng ta có thể nhận được kết quả của mình trong một dòng duy nhất:
+
+```python
+predictions = model.predict(tf_eval_dataset)
+compute_metrics(
+    predictions["start_logits"],
+    predictions["end_logits"],
+    validation_dataset,
+    raw_datasets["validation"],
+)
+```
+
+{/if}
+
+```python out
+{'exact_match': 81.18259224219489, 'f1': 88.67381321905516}
+```
+
+Tuyệt quá! Để so sánh, điểm cơ bản được báo cáo trong bài báo BERT cho mô hình này là 80.8 và 88.5, vì vậy chúng ta đang ở đúng vị trí của mình.
+
+{#if fw === 'pt'}
+
+Cuối cùng, ta sử dụng phương thức `push_to_hub()` để đảm bảo ta sẽ tải phiên bản mới nhất của mô hình:
+
+```py
+trainer.push_to_hub(commit_message="Training complete")
+```
+
+Điều này trả về URL của cam kết mà nó vừa thực hiện, nếu bạn muốn kiểm tra nó:
+
+```python out
+'https://huggingface.co/sgugger/bert-finetuned-squad/commit/9dcee1fbc25946a6ed4bb32efb1bd71d5fa90b68'
+```
+
+`Trainer` cũng soạn thảo một thẻ mô hình với tất cả các kết quả đánh giá và tải nó lên.
+
+{/if}
+
+Ở giai đoạn này, bạn có thể sử dụng tiện ích luận suy trên Model Hub để kiểm tra mô hình và chia sẻ mô hình đó với bạn bè, gia đình và vật nuôi yêu thích của bạn. Bạn đã tinh chỉnh thành công một mô hình trong tác vụ hỏi đáp - xin chúc mừng!
+
+<Tip>
+
+✏️ **Đến lượt bạn!** Hãy thử một kiến trúc mô hình khác để xem liệu nó có hoạt động tốt hơn trong tác vụ này không!
+
+</Tip>
+
+{#if fw === 'pt'}
+
+Nếu bạn muốn tìm hiểu sâu hơn một chút về vòng huấn luyện, bây giờ chúng tôi sẽ hướng dẫn bạn cách thực hiện điều tương tự bằng cách sử dụng 🤗 Accelerate.
+
+## Một vòng lặp huấn luyện tuỳ chỉnh
+
+Bây giờ chúng ta hãy xem toàn bộ vòng lặp huấn luyện, vì vậy bạn có thể dễ dàng tùy chỉnh các phần bạn cần. Nó sẽ trông rất giống với vòng lặp huấn luyện trong [Chương 3](/course/chapter3/4), ngoại trừ vòng lặp đánh giá. Chúng ta sẽ có thể đánh giá mô hình thường xuyên vì ta không bị hạn chế bởi lớp `Trainer` nữa.
+
+### Chuấn bị mọi thứ cho huấn luyện
+
+Đầu tiên, chúng ta cần xây dựng các `DataLoader` từ các tập dữ liệu của mình. Chúng ta đặt định dạng của các tập dữ liệu đó thành `"torch"` và xóa các cột trong tập xác thực không được mô hình sử dụng. Sau đó, chúng ta có thể sử dụng `default_data_collator` được cung cấp bởi Transformers dưới dạng `collate_fn` và xáo trộn bộ huấn luyện, nhưng không phải bộ kiểm định:
+
+```py
+from torch.utils.data import DataLoader
+from transformers import default_data_collator
+
+train_dataset.set_format("torch")
+validation_set = validation_dataset.remove_columns(["example_id", "offset_mapping"])
+validation_set.set_format("torch")
+
+train_dataloader = DataLoader(
+    train_dataset,
+    shuffle=True,
+    collate_fn=default_data_collator,
+    batch_size=8,
+)
+eval_dataloader = DataLoader(
+    validation_set, collate_fn=default_data_collator, batch_size=8
+)
+```
+
+Tiếp theo, chúng ta khôi phục mô hình của mình, để đảm bảo rằng ta không tiếp tục tinh chỉnh từ trước mà bắt đầu lại từ mô hình được huấn luyện trước BERT:
+
+```py
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+Sau đó, chúng ta sẽ cần một trình tối ưu hóa. Như thường lệ, ta sử dụng `AdamW` cổ điển, giống như Adam, nhưng với một bản sửa lỗi trong cách phân rã trọng số được áp dụng:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+Khi chúng ta có tất cả các đối tượng đó, chúng ta có thể gửi chúng đến phương thức `accelerator.prepare()`. Hãy nhớ rằng nếu bạn muốn huấn luyện về TPU trong notebook Colab, bạn sẽ cần chuyển tất cả mã này vào một hàm huấn luyện và điều đó sẽ không thực thi bất kỳ ô khởi tạo một `Accelerator` nào. Chúng ta có thể buộc huấn luyện độ chính xác hỗn hợp bằng cách chuyển `fp16=True` vào `Accelerator` (hoặc, nếu bạn đang thực thi mã dưới dạng tập lệnh, chỉ cần đảm bảo điền vào 🤗 Accelerate `config` một cách thích hợp).
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator(fp16=True)
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+Như bạn đã biết từ các phần trước, chúng ta chỉ có thể sử dụng độ dài `train_dataloader` để tính số bước huấn luyện sau khi nó đã trải qua phương thức `accelerator.prepare()`. Chúng ta sử dụng cùng một lịch trình tuyến tính như trong các phần trước:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 3
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+Để đẩy mô hình của mình lên Hub, chúng ta sẽ cần tạo một đối tượng `Repository` trong một thư mục đang làm việc. Đầu tiên hãy đăng nhập vào Hugging Face Hub, nếu bạn chưa đăng nhập. Chúng ta sẽ xác định tên kho lưu trữ từ ID mô hình mà ta muốn cung cấp cho mô hình của mình (vui lòng thay thế `repo_name` bằng sự lựa chọn của riêng bạn; nó chỉ cần chứa tên người dùng của bạn, đó là những gì hàm `get_full_repo_name()` thực hiện ):
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "bert-finetuned-squad-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/bert-finetuned-squad-accelerate'
+```
+
+Sau đó, chúng ta có thể sao chép kho lưu trữ đó trong một thư mục cục bộ. Nếu nó đã tồn tại, thư mục cục bộ này phải là bản sao của kho lưu trữ mà ta đang làm việc:
+
+```py
+output_dir = "bert-finetuned-squad-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+Giờ ta có thể tải mọi thử ta lưu trong `output_dir` bằng cách gọi phương thức `repo.push_to_hub()`. Nó sẽ giúp ta tải các mô hình tức thì ở cuối mỗi epoch.
+
+## Vòng lặp huấn luyện
+
+Bây giờ chúng ta đã sẵn sàng để viết vòng lặp huấn luyện đầy đủ. Sau khi xác định thanh tiến trình để theo dõi quá trình huấn luyện diễn ra như thế nào, vòng lặp có ba phần:
+
+- Bản thân quá trình huấn luyện, là sự lặp lại cổ điển trên `train_dataloader`, truyền thẳng qua mô hình, sau đó truyền ngược và tối ưu hóa.
+- Bước đánh giá, trong đó ta thu thập tất cả các giá trị cho `start_logits` và `end_logits` trước khi chuyển đổi chúng thành mảng NumPy. Khi vòng lặp đánh giá kết thúc, chúng ta nối tất cả các kết quả. Lưu ý rằng chúng ta cần cắt bớt vì `Accelerator` có thể đã thêm một vài mẫu vào cuối để đảm bảo chúng ta có cùng số lượng mẫu trong mỗi quy trình.
+- Lưu và tải lên, nơi trước tiên chúng ta lưu mô hình và trình mã hóa, sau đó gọi `repo.push_to_hub()`. Như chúng ta đã làm trước đây, chúng ta sử dụng đối số `blocking=False` để yêu cầu thư viện 🤗 Hub đẩy vào một quá trình không đồng bộ. Bằng cách này, quá trình huấn luyện tiếp tục diễn ra bình thường và lệnh (dài) này được thực thi ở chế độ nền.
+
+Đây là mã hoàn chỉnh cho vòng lặp huấn luyện:
+
+```py
+from tqdm.auto import tqdm
+import torch
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Huấn luyện
+    model.train()
+    for step, batch in enumerate(train_dataloader):
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Đánh giá
+    model.eval()
+    start_logits = []
+    end_logits = []
+    accelerator.print("Evaluation!")
+    for batch in tqdm(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        start_logits.append(accelerator.gather(outputs.start_logits).cpu().numpy())
+        end_logits.append(accelerator.gather(outputs.end_logits).cpu().numpy())
+
+    start_logits = np.concatenate(start_logits)
+    end_logits = np.concatenate(end_logits)
+    start_logits = start_logits[: len(validation_dataset)]
+    end_logits = end_logits[: len(validation_dataset)]
+
+    metrics = compute_metrics(
+        start_logits, end_logits, validation_dataset, raw_datasets["validation"]
+    )
+    print(f"epoch {epoch}:", metrics)
+
+    # Lưu và tải
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+Trong trường hợp đây là lần đầu tiên bạn thấy một mô hình được lưu bằng 🤗 Accelerate, hãy dành một chút thời gian để kiểm tra ba dòng mã đi kèm với nó:
+
+```py
+accelerator.wait_for_everyone()
+unwrapped_model = accelerator.unwrap_model(model)
+unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+```
+
+Dòng đầu tiên đã tự giải thích: nó cho tất cả các quá trình chờ cho đến khi mọi người ở giai đoạn đó trước khi tiếp tục. Điều này là để đảm bảo rằng chúng ta có cùng một mô hình trong mọi quy trình trước khi lưu. Sau đó, ta lấy `unwrapped_model`, là mô hình cơ sở mà ta đã xác định. Phương thức `accelerator.prepare()` thay đổi mô hình để hoạt động trong huấn luyện phân tán, vì vậy nó sẽ không có phương thức `save_pretrained()` nữa; phương thức `accelerator.unwrap_model()` hoàn tác bước đó. Cuối cùng, chúng ta gọi `save_pretrained()` nhưng yêu cầu phương thức đó sử dụng `accelerator.save()` thay vì `torch.save()`.
+
+Khi điều này được thực hiện, bạn sẽ có một mô hình tạo ra kết quả khá giống với mô hình được huấn luyện với `Trainer`. Bạn có thể kiểm tra mô hình mà ta đã huấn luyện bằng cách sử dụng mã này tại [*huggingface-course/bert-finetuned-squad-accelerate*](https://huggingface.co/huggingface-course/bert-finetuned-squad-accelerate). Và nếu bạn muốn kiểm tra bất kỳ tinh chỉnh nào đối với vòng lặp huấn luyện, bạn có thể trực tiếp thực hiện chúng bằng cách chỉnh sửa đoạn mã được hiển thị ở trên!
+
+{/if}
+
+## Sử dụng mô hình tinh chỉnh
+
+Chúng tôi đã chỉ cho bạn cách bạn có thể sử dụng mô hình mà chúng ta đã tinh chỉnh trên Model Hub bằng tiện ích luận suy. Để sử dụng nó cục bộ trong một `pipeline`, bạn chỉ cần chỉ định mã định danh mô hình:
+
+```py
+from transformers import pipeline
+
+# Thay thế nó với checkpoint của bạn
+model_checkpoint = "huggingface-course/bert-finetuned-squad"
+question_answerer = pipeline("question-answering", model=model_checkpoint)
+
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+```python out
+{'score': 0.9979003071784973,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+Tuyệt quá! Mô hình của chúng ta đang hoạt động tốt như mô hình mặc định cho pipeline này!

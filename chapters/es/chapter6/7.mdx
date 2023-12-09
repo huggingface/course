@@ -1,0 +1,382 @@
+# Tokenización Unigram[[unigram-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section7.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section7.ipynb"},
+]} />
+
+El algoritmo de Unigram es a menudo utilizado en SetencePiece, el cual es el algoritmo de tokenización usado por modelos como AlBERT, T5, mBART, Big Bird y XLNet.
+
+<Youtube id="TGZfZVuF9Yc"/>
+
+<Tip>
+
+💡 Esta sección cubre Unigram en profundidad, yendo tan lejos como para mostrar una implementación completa. Puedes saltarte hasta el final si sólo quieres una descripción general del algoritmo de tokenización. 
+
+</Tip>
+
+## Algoritmo de Entrenamiento[[training-algorithm]]
+
+Comparado con BPE y WordPiece, Unigram funciona en la otra dirección: comienza desde un gran vocabulario y remueve tokens hasta que alcanza el tamaño deseado del vocabulario.. Hay varias opciones para construir el vocabulario base: podemos tomar los substrings más comunes en palabras pre-tokenizadas, por ejemplo, o aplicar BPE en el corpus inicial con un tamaño de vocabulario grande. 
+
+En cada paso del entrenamiento, el algoritmo de Unigram calcula la pérdida (`loss`)sobre el corpus dado el vocabulario actual. Entonces para cada símbolo en el vocabulario, el algoritmo calcula cuánto incremetaría el la pérdida (`loss`) total si el símbolo se remueve, y busca por los símbolos que lo incrementarían lo menos posible. Esos símbolos tienen un efecto más bajo en la pérdida sobre el corpus, por lo que en un sentido son "menos necesarios" y son los mejores candidatos para ser removidos. 
+
+Esto es una operación bastante costosa, por lo que no removemos un sólo símbolo asociato con el incremento en la pérdida (`loss`) más baja, sino que \\(p\\) (\\(p\\) es un parámetro que puedes controlar, usualmente 10 o 20) porciento de los símbolos asociados con el incremento más bajo de la pérdida. Este proceso es repetido hasta que el vocabulario ha alcanzado el tamaño deseado. 
+
+Nota que nunca removemos los caracteres base, para asegurarnos que cada palabra pueda ser tokenizada. 
+
+Hora, esto es todavía un poco vago: la parte principal del algoritmo es calcular una pérdida (`loss`) sobre el corpus, y ver como cambia cuando removemos algunos tokens desde el vocabulario, pero no hemos explicado como hacer esto aún. Este paso se basa en el algoritmo de tokenización de un modelo Unigram, por lo que profundizaremos en esto a continuación.
+
+Usaremos el corpus de los ejemplos previos:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+y para este ejemplo, tomaremos todos los substrings strictos para el vocabulario inicial. 
+
+```
+["h", "u", "g", "hu", "ug", "p", "pu", "n", "un", "b", "bu", "s", "hug", "gs", "ugs"]
+```
+
+## Algoritmo de Tokenización[[tokenization-algorithm]]
+
+Un modelo Unigram es un tipo de modelo de lenguaje que considera cada token como independiente de los tokens antes que él. Es el modelo de lenguaje más simple, en el sentido de que la probabilidad de que el token X dado el contexto previo es sólo la probabilidad del token X. Por lo que, si usamos un modelo de Lenguaje Unigram para generar texto, siempre predeciríamos el token más común.
+
+La probabilidad de un token dado es su frecuencia (el número de veces en el cual lo encontramos) en el corpus original, dividido por la suma de todas las frecuencias de todos los tokens en el vocabulario (para asegurarnos que las probabilidad sumen 1). Por ejemplo, `"ug"` está presente en `"hug"`, `"pug"`, y `"hugs"`, por lo que tiene una frecuencia de 20 en nuestro corpus. 
+
+Acá están las frecuencias de todas las posibles subpalabras en el vocabulario:
+
+```
+("h", 15) ("u", 36) ("g", 20) ("hu", 15) ("ug", 20) ("p", 17) ("pu", 17) ("n", 16)
+("un", 16) ("b", 4) ("bu", 4) ("s", 5) ("hug", 15) ("gs", 5) ("ugs", 5)
+```
+
+Por lo que, la suma de todas las frecuencias es 210, y la probabilidad de la subpalabra `"ug"` es por lo tanto 20/210.
+
+<Tip>
+
+✏️ **Ahora es tu turno!** Escribe el código para calcular las frecuencias de arriba y chequea que los resultados mostrados son correctos, como también la suma total.
+
+</Tip>
+
+Ahora, para tokenizar una palabra dada, miramos todas las posibles segmentaciones en tokens y calculamos la probabilidad de cada uno de acuerdo al modelo Unigram. Dado que todos los tokens se consideran como independientes, esta probabilidad es sólo el producto de la probabilidad de cada token. Por ejemplo, la tokenización `["p", "u", "g"]` de `"pug"` tiene como probabilidad: 
+
+$$P([``p", ``u", ``g"]) = P(``p") \times P(``u") \times P(``g") = \frac{5}{210} \times \frac{36}{210} \times \frac{20}{210} = 0.000389$$
+
+Comparativamente, la tokenización `["pu", "g"]` tiene como probabilidad:
+
+$$P([``pu", ``g"]) = P(``pu") \times P(``g") = \frac{5}{210} \times \frac{20}{210} = 0.0022676$$
+
+por lo que es un poco más probable. En general, las tokenizaciones con el menor número de tokens posibles tendrán la probabilidad más alta (debido a la división por 210 repetida para cada token), lo cual corresponde a lo que queremos intuitivamente: separar una palabra en el menor número de tokens posibles. 
+
+La tokenización de una palabra con el modelo Unigram es entonces la tokenización con la probabilidad más alta. Acá están las probabilidades para el ejemplo de `"pug"` que obtendríamos para cada posible segmentación:
+
+```
+["p", "u", "g"] : 0.000389
+["p", "ug"] : 0.0022676
+["pu", "g"] : 0.0022676
+```
+
+Por lo que, `"pug"` sería tokenizado como `["p", "ug"]` o `["pu", "g"]`, dependiendo de cual de esas segmentaciones e encuentre primero (notar que en un corpus grande, casos equivalentes como este serán raros).
+
+En este caso, fue fácil encontrar todas las posibles segmentaciones y calcular sus probabilidades, pero en general, va a ser un poco más difícil. Hay un algoritmo clásico usado para esto, llamado el *Algoritmo de Viterbi* (*Viterbi algorithm*). Esencialmente, podemos construir un grafo para detectar las posibles segmentaciones de una palabra dada diciendo que existe una rama que va desde el caracter _a_ hasta el caracter _b_ si la subpalabra de _a_ hasta _b_ está en el vocabulario, y se atribuye a esa rama la probabilidad de la subpalabra. 
+
+Para encontrar el camino en dicho grafo que va a tener el mejor puntaje el Algoritmo de Viterbi determina, por cada posición en la palabra, la segmentacion con el mejor puntaje que termina en esa posición. Dado que vamos desde el inicio al final, el mejor puntaje puede ser encontrado iterando a través de todas las subpalabras que terminan en la posición actual y luego usando el mejor puntaje de tokenización desde la posición en que esta palabra comienza. Luego sólo tenemos que desenrollar el camino tomado para llegar al final. 
+
+Echemos un vistazo a un ejemplo usando nuestro vocabulario y la palabra `"unhug"`. Para cada posición, las subpalabras con el mejor puntaje terminando ahí son las siguientes:
+
+```
+Character 0 (u): "u" (score 0.171429)
+Character 1 (n): "un" (score 0.076191)
+Character 2 (h): "un" "h" (score 0.005442)
+Character 3 (u): "un" "hu" (score 0.005442)
+Character 4 (g): "un" "hug" (score 0.005442)
+```
+
+Por lo tanto, `"unhug"` se tokenizaría como `["un", "hug"]`.
+
+<Tip>
+
+✏️ **Ahora es tu turno!** Determina la tokenización de la palabra `"huggun"`, y su puntaje
+
+
+</Tip>
+
+## De vuelta al entrenamiento[[back-to-training]]
+
+Ahora que hemos visto cómo funciona la tokenización, podemos ir un poco más profundo en la pérdida (`loss`) usada durante el entrenamiento. En cualquier etapa, esta pérdida (`loss`) es calculada tokenizando cualquier palabra en el corpus, usando el vocabulario actual y el modelo Unigram determinado por las frecuencias de cada token en el corpus (como se vió antes).
+
+Cada palabra en el corpus tiene un puntaje, y la pérdida (`loss`) es la log verosimilitud negativa (negative log likelihood) de estos puntajes -- es decir, la suma por todas las palabras en el corpus de todos los `-log(P(word))`.
+
+Volvamos a nuestro ejemplo con el siguiente corpus:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+La tokenización de cada palabra con sus respectivos puntajes es:
+
+```
+"hug": ["hug"] (score 0.071428)
+"pug": ["pu", "g"] (score 0.007710)
+"pun": ["pu", "n"] (score 0.006168)
+"bun": ["bu", "n"] (score 0.001451)
+"hugs": ["hug", "s"] (score 0.001701)
+```
+
+Por lo que la loss es:
+
+```
+10 * (-log(0.071428)) + 5 * (-log(0.007710)) + 12 * (-log(0.006168)) + 4 * (-log(0.001451)) + 5 * (-log(0.001701)) = 169.8
+```
+
+Ahora necesitamos calcular cómo remover cada token afecta a la pérdida (`loss`). Esto es bastante tedioso, por lo que lo haremos sólo para dos tokens avá y nos ahorraremos el proceso entero para cuando tengamos código que nos ayude. En este (muy) particular caso, teníamos dos tokenizaciones equivalentes de todas las palabras: como vimos antes, por ejemplo, `"pug"` podría ser tokenizado como `["p", "ug"]` con el mismo puntaje. Por lo tanto, removiendo el token `"pu"` del vocabulario nos dará la misma pérdida.
+
+Por otro lado, remover, `"hug"` hará nuestra pérdida peor, porque la tokenización de `"hug"` y `"hugs"` se convertirá en:
+
+```
+"hug": ["hu", "g"] (score 0.006802)
+"hugs": ["hu", "gs"] (score 0.001701)
+```
+
+Estos cambios causarán que la pérdida aumenta en:
+
+```
+- 10 * (-log(0.071428)) + 10 * (-log(0.006802)) = 23.5
+```
+
+Por lo tanto, el token `"pu"` será probablemente removido del vocabulario, pero `"hug"`.
+
+## Implementando Unigram[[implementing-unigram]]
+
+Ahora, implementemos todo lo que hemos visto hasta ahora en código. Al igual que BPE y WordPiece, esta es una implementación no tan eficiente del algoritmo Unigram (de hecho, todo lo contrario), pero debería ayudar a entenderla un poco mejor. 
+
+Usaremos el mismo corpus que antes como nuestro ejemplo:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+Esta vez, usaremos `xlnet-base-cased` como nuestro modelo:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("xlnet-base-cased")
+```
+
+Al igual que BPE y WordPiece, comenzamos contando el número de ocurrencias para cada palabra en el corpus:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+Luego, necesitamos inicializar nuestro vocabulario a algo más grande que el tamaño de vocabulario que querremos al final. Tenemos que incluir, todos los caracteres básicos (de otra manera no seremos capaces de tokenizar cada palabra), pero para los substrings más grandes mantendremos sólos los más comunes, de manera que los ordenemos por frecuencia:
+
+```python
+char_freqs = defaultdict(int)
+subwords_freqs = defaultdict(int)
+for word, freq in word_freqs.items():
+    for i in range(len(word)):
+        char_freqs[word[i]] += freq
+        # Loop through the subwords of length at least 2
+        for j in range(i + 2, len(word) + 1):
+            subwords_freqs[word[i:j]] += freq
+
+# Sort subwords by frequency
+sorted_subwords = sorted(subwords_freqs.items(), key=lambda x: x[1], reverse=True)
+sorted_subwords[:10]
+```
+
+```python out
+[('▁t', 7), ('is', 5), ('er', 5), ('▁a', 5), ('▁to', 4), ('to', 4), ('en', 4), ('▁T', 3), ('▁Th', 3), ('▁Thi', 3)]
+```
+
+Agrupamos los caracteres con las mejores subpalabras para llegar a un vocabulario inicial de 300:
+
+```python
+token_freqs = list(char_freqs.items()) + sorted_subwords[: 300 - len(char_freqs)]
+token_freqs = {token: freq for token, freq in token_freqs}
+```
+
+<Tip>
+
+💡 SentencePiece usa un algoritmo más eficiente llamado Enhanced Suffix Array (ESA) para crear el vocabulario inicial. 
+
+</Tip>
+
+A continuación, calculamos la suma de todas las frecuencias, para convertir las frecuencias en probabilidades. Para nuestro modelo, almacenaremos los logaritmos de las probabilidades, porque es numericamente más estable sumar logaritmos que multiplicar números pequeños, y esto simplificará el cálculo de la pérdida (`loss`) del modelo:
+
+```python
+from math import log
+
+total_sum = sum([freq for token, freq in token_freqs.items()])
+model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+Ahora, la función es la que tokeniza palabras usando el algoritmo de Viterbi. Como vimos antes, el algoritmo calcula la mejor segmentación de cada substring de la palabra, la cual almacenará en una variable llamada `best_segmentations`. Almacenaremos un diccionario por posición en la palabra (desde 0 hasta su largo total), con dos claves: el índice de inicio del último token en la mejor segmentación, y el puntaje de la mejor segmentación. Con el índice del inicio del último token, seremos capaces de recuperar la segmentación total una vez que la lista esté completamente poblada. 
+
+Poblar la lista se hace con dos ciclos: el ciclo principal recorre cada posición de inicio, y el segundo loop, prueba todos los substrings comenaando en esa posición. Si el substring está en el vocabulario, tenemos una nueva segmentación de la palabra hasta esa posición final, la cual comparamos con lo que está en `best_segmentations`.
+
+Una vez que el ciclo principal se termina, empezamos desde el final y saltamos de una posición de inicio hasta la siguiente, guardando los tokens a medida que avanzamos, hasta alcanzar el inicio de la palabra:
+
+```python
+def encode_word(word, model):
+    best_segmentations = [{"start": 0, "score": 1}] + [
+        {"start": None, "score": None} for _ in range(len(word))
+    ]
+    for start_idx in range(len(word)):
+        # This should be properly filled by the previous steps of the loop
+        best_score_at_start = best_segmentations[start_idx]["score"]
+        for end_idx in range(start_idx + 1, len(word) + 1):
+            token = word[start_idx:end_idx]
+            if token in model and best_score_at_start is not None:
+                score = model[token] + best_score_at_start
+                # If we have found a better segmentation ending at end_idx, we update
+                if (
+                    best_segmentations[end_idx]["score"] is None
+                    or best_segmentations[end_idx]["score"] > score
+                ):
+                    best_segmentations[end_idx] = {"start": start_idx, "score": score}
+
+    segmentation = best_segmentations[-1]
+    if segmentation["score"] is None:
+        # We did not find a tokenization of the word -> unknown
+        return ["<unk>"], None
+
+    score = segmentation["score"]
+    start = segmentation["start"]
+    end = len(word)
+    tokens = []
+    while start != 0:
+        tokens.insert(0, word[start:end])
+        next_start = best_segmentations[start]["start"]
+        end = start
+        start = next_start
+    tokens.insert(0, word[start:end])
+    return tokens, score
+```
+
+Ya podemos probar nuestro modelo inicial en algunas palabras:
+
+```python
+print(encode_word("Hopefully", model))
+print(encode_word("This", model))
+```
+
+```python out
+(['H', 'o', 'p', 'e', 'f', 'u', 'll', 'y'], 41.5157494601402)
+(['This'], 6.288267030694535)
+```
+
+Ahora es fácil calcular la pérdida (`loss`) del modelo en el corpus!
+
+```python
+def compute_loss(model):
+    loss = 0
+    for word, freq in word_freqs.items():
+        _, word_loss = encode_word(word, model)
+        loss += freq * word_loss
+    return loss
+```
+
+Podemos chequear que funciona en el modelo que tenemos:
+
+```python
+compute_loss(model)
+```
+
+```python out
+413.10377642940875
+```
+
+Calcular los puntajes para cada token no es tan difícil tampoco; sólo tenemos que calcular la pérdida para los modelos obtenidos al eliminar cada token:
+
+```python
+import copy
+
+
+def compute_scores(model):
+    scores = {}
+    model_loss = compute_loss(model)
+    for token, score in model.items():
+        # We always keep tokens of length 1
+        if len(token) == 1:
+            continue
+        model_without_token = copy.deepcopy(model)
+        _ = model_without_token.pop(token)
+        scores[token] = compute_loss(model_without_token) - model_loss
+    return scores
+```
+
+Podemos probarlo en token dado: 
+
+```python
+scores = compute_scores(model)
+print(scores["ll"])
+print(scores["his"])
+```
+
+Dado que `"ll"` se usa en la tokenización de `"Hopefully"`, y removerlo nos hará probablemente usar el token `"l"` dos veces, esperamos que tendrá una pérdida positiva. `"his"` es sólo usado dentro de la palabra `"This"`, lo cuál es tokenizado como sí mismo, por lo que esperamos que tenga pérdida cero. Acá están los resultados:
+
+```python out
+6.376412403623874
+0.0
+```
+
+<Tip>
+
+💡 Este acercamiento es muy ineficiente, por lo que SentencePiece usa una aproximación de la pérdida del modelo sin el token X: en vez de comenzar desde cero, sólo reemplaza el token X por su segmentación en el vocabulario que queda. De esta manera, todos los puntajes se pueden calcular de una sóla vez al mismo tiempo que la pérdida del modelo.
+
+</Tip>
+
+Con todo esto en su lugar, lo último que necesitamos hacer es agregar los tokens especiales usados por el modelo al vocabulario, e iterar hasta haber podado suficientes tokens de nuestro vocabulario hasta alcanzar el tamaño deseado:
+
+```python
+percent_to_remove = 0.1
+while len(model) > 100:
+    scores = compute_scores(model)
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+    # Remove percent_to_remove tokens with the lowest scores.
+    for i in range(int(len(model) * percent_to_remove)):
+        _ = token_freqs.pop(sorted_scores[i][0])
+
+    total_sum = sum([freq for token, freq in token_freqs.items()])
+    model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+Luego, para tokenizar algo de texto, sólo necesitamos aplicar la pre-tokenización y luego usar nuestra función `encode_word()`:
+
+```python
+def tokenize(text, model):
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in words_with_offsets]
+    encoded_words = [encode_word(word, model)[0] for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+
+
+tokenize("This is the Hugging Face course.", model)
+```
+
+```python out
+['▁This', '▁is', '▁the', '▁Hugging', '▁Face', '▁', 'c', 'ou', 'r', 's', 'e', '.']
+```
+
+Eso es todo para Unigram! Ojalá a esta altura te sientas como un experto en todos los aspectos de los tokenizadores. En la siguiente sección, ahondaremos en las unidades básicas de la librería 🤗 Tokenizers, y te mostraremos cómo puedes usarlo para construir tu propio tokenizador.

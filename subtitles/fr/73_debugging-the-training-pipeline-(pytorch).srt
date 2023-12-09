@@ -1,0 +1,171 @@
+1
+00:00:06,080 --> 00:00:10,960
+Dans cette vidéo, nous verrons comment déboguer une erreur que vous rencontrez lors de l'exécution de `trainer.train()`.
+
+2
+00:00:12,240 --> 00:00:17,280
+À titre d'exemple, nous utiliserons ce script qui finetune un modèle BERT sur le jeu de données GLUE MNLI.
+
+3
+00:00:17,840 --> 00:00:20,880
+Consultez les vidéos liées ci-dessous pour voir comment nous sommes arrivés à un tel script,
+
+4
+00:00:21,680 --> 00:00:26,960
+ici, nous voulons apprendre à déboguer les problèmes qu'il contient. L'exécution du script génère une erreur assez
+
+5
+00:00:26,960 --> 00:00:31,920
+rapidement. Cela se produit à la ligne où nous donnons les entrées au modèle, selon le « Traceback ».
+
+6
+00:00:32,640 --> 00:00:36,720
+Cela nous indique qu'il y a un problème, mais le problème peut provenir de nombreuses causes différentes.
+
+7
+00:00:37,520 --> 00:00:41,600
+Pour déboguer une erreur dans une entraînement, vous devez vous assurer que chaque étape du pipeline d'entraînement
+
+8
+00:00:41,600 --> 00:00:46,160
+fonctionne comme prévu. Cela signifie vérifier que les entrées de votre jeu de données sont correctes,
+
+9
+00:00:46,800 --> 00:00:50,560
+vous pouvez les regrouper, les donner au modèle pour obtenir une perte,
+
+10
+00:00:50,560 --> 00:00:54,080
+puis calculer les gradients de cette perte avant d'effectuer une étape d'optimisation.
+
+11
+00:00:55,280 --> 00:01:00,480
+Commençons donc par examiner le jeu de données d'entraînement utilisé par ce `trainer`. Il y a certainement un
+
+12
+00:01:00,480 --> 00:01:07,040
+problème car nous voyons des textes et non des chiffres. Le message d'erreur nous indiquait que le modèle n'avait pas reçu
+
+13
+00:01:07,040 --> 00:01:13,120
+d'`input_ids` et que nous n'en avons pas dans le jeu de données. En examinant notre code, nous pouvons constater que nous avons
+
+14
+00:01:13,120 --> 00:01:18,800
+fait une erreur et transmis les mauvais jeux de données au Trainer. Alors réparons cela et exécutons à nouveau.
+
+15
+00:01:20,240 --> 00:01:25,680
+Nous avons maintenant une nouvelle erreur. L'inspection du « Traceback » nous indique que cela se produit lorsque nous essayons de créer un batch,
+
+16
+00:01:25,680 --> 00:01:31,920
+spécifiquement pour regrouper les caractéristiques dans un tenseur. Nous pouvons le confirmer en demandant au Trainer de
+
+17
+00:01:31,920 --> 00:01:37,600
+nous fournir un batch du chargeur de données d'entraînement, qui reproduit la même erreur. Soit en inspectant
+
+18
+00:01:37,600 --> 00:01:43,600
+les entrées, soit en déboguant, nous pouvons alors voir qu'elles ne sont pas toutes de la même taille. En effet, nous n'avons
+
+19
+00:01:43,600 --> 00:01:48,240
+pas passé d'assembleur de données pour effectuer le rembourrage dans le Trainer et nous n'avons pas non plus rembourré
+
+20
+00:01:48,240 --> 00:01:53,440
+le prétraitement des données. Le rembourrage à l'intérieur du Trainer est normalement la valeur par défaut, mais uniquement si vous fournissez
+
+21
+00:01:53,440 --> 00:01:58,800
+votre tokenizer au Trainer, et nous avons oublié de le faire. Alors résolvons le problème et recommençons.
+
+22
+00:02:00,320 --> 00:02:06,400
+Cette fois, nous obtenons une méchante erreur CUDA. Elles sont très difficiles à déboguer car d'une part,
+
+23
+00:02:07,120 --> 00:02:11,280
+elles mettent votre noyau dans un état irrécupérable (vous devez donc redémarrer votre
+
+24
+00:02:11,280 --> 00:02:15,840
+notebook depuis le début) et d'autre part, le « Traceback » est complètement inutile pour celles-là.
+
+25
+00:02:16,800 --> 00:02:22,240
+Ici, le « Traceback » nous indique que l'erreur se produit lorsque nous effectuons le calcul du gradient avec `loss.backward`,
+
+26
+00:02:22,240 --> 00:02:27,840
+mais comme nous le verrons plus tard, ce n'est pas le cas. En effet, tout ce qui se passe
+
+27
+00:02:27,840 --> 00:02:33,520
+sur le GPU est effectué de manière asynchrone : lorsque vous exécutez l'appel de modèle, ce que fait le programme
+
+28
+00:02:33,520 --> 00:02:39,280
+est simplement d'empiler cela dans la file d'attente du GPU, puis (si le GPU n'avait aucune tâche en cours à faire),
+
+29
+00:02:39,280 --> 00:02:43,920
+le travail commencera sur le GPU en même temps que le CPU passera à l'instruction suivante.
+
+30
+00:02:44,800 --> 00:02:50,000
+En continuant avec l'extraction de la perte, celle-ci est empilée dans la file d'attente du GPU pendant que le CPU passe
+
+31
+00:02:50,000 --> 00:02:54,960
+à l'instruction `loss.backward`. Mais le GPU n'a toujours pas terminé la passe avant du
+
+32
+00:02:54,960 --> 00:03:01,760
+modèle puisque tout cela n'a pris aucun temps. Le CPU arrête d'avancer, car `loss.backward` en tant
+
+33
+00:03:01,760 --> 00:03:09,360
+qu'instruction lui indiquant d'attendre que les GPU soient finis pour être sûr que les gradients sont corrects. Et lorsque le GPU rencontre une erreur,
+
+34
+00:03:09,360 --> 00:03:15,040
+il renvoie un message au CPU, qui génère l'erreur au mauvais endroit.
+
+35
+00:03:16,080 --> 00:03:20,320
+Donc, pour déboguer cela, nous devrons exécuter les prochaines étapes du pipeline d'entraînement sur le CPU.
+
+36
+00:03:20,960 --> 00:03:26,320
+C'est très facile à faire, et nous obtenons un « Traceback » auquel nous pouvons faire confiance cette fois. Comme nous l'avons déjà dit,
+
+37
+00:03:26,320 --> 00:03:32,720
+l'erreur se produit lors de la passe avant du modèle et nons dans la passe arrière. C'est une erreur d'index.
+
+38
+00:03:33,360 --> 00:03:38,800
+Avec un peu de débogage, nous voyons que nous avons des étiquettes allant de 0 à 2, donc trois valeurs différentes,
+
+39
+00:03:38,800 --> 00:03:44,240
+mais nos sorties ont une forme de taille de batch par 2. Il semble que notre modèle ait le mauvais nombre
+
+40
+00:03:44,240 --> 00:03:50,320
+d'étiquettes ! Nous pouvons en effet le confirmer, et maintenant que nous savons qu'il est facile de le corriger dans le code en ajoutant
+
+41
+00:03:50,320 --> 00:03:58,720
+`num_labels=3` lorsque nous créons le modèle. Le script d'entraînement va maintenant s'exécuter jusqu'à la fin ! Nous n'en avions pas
+
+42
+00:03:58,720 --> 00:04:02,640
+encore besoin, mais voici comment déboguer l'étape suivante du pipeline, le calcul du gradient,
+
+43
+00:04:03,360 --> 00:04:13,840
+ainsi que l'étape d'optimisation. Avec tout cela, bonne chance pour déboguer vos propres entraînements !

@@ -1,0 +1,374 @@
+# WordPiece tokenization
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/vi/chapter6/section6.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/vi/chapter6/section6.ipynb"},
+]} />
+
+WordPiece là một thuật toán tokenize được Google phát triển để huấn luyện trước BERT. Nó đã được tái sử dụng trong một vài mô hình Transformer dựa trên BERT, như DistilBERT, MobileBERT, Funnel Transformers, và MPNET. Nó khá tương tự với BPE về mặt huấn luyện, nhưng tokenize thực sự được thực hiện hoàn toàn khác.
+
+<Youtube id="qpv6ms_t_1A"/>
+
+<Tip>
+
+💡 Phần này sẽ đi sâu vào WordPiece, cũng như các triển khai đầy đủ của nó. Bạn có thể bỏ qua phần cuối nếu bạn chỉ muốn có một cái nhìn tổng quan về thuật toán tokenize này.
+
+</Tip>
+
+## Thuật toán huấn luyện
+
+<Tip warning={true}>
+
+⚠️ Google không bao giờ có nguồn mở về cách triển khai các thuật toán huấn luyện của WordPiece,vì vậy những gì dưới đây là phỏng đoán tốt nhất của chúng tôi dựa trên các tài liệu đã xuất bản. Nó có thể không chính xác 100%.
+
+</Tip>
+
+Giống như BPE, WordPiece bắt đầu từ một từ vựng nhỏ bao gồm các token đặc biệt được sử dụng bởi mô hình và bảng chữ cái đầu tiên. Vì nó xác định các từ phụ bằng cách thêm tiền tố (như `##` cho BERT), ban đầu mỗi từ được tách bằng cách thêm tiền tố đó vào tất cả các ký tự bên trong từ. Vì vậy, ví dụ, `"word"` được chia như thế này:
+
+```
+w ##o ##r ##d
+```
+
+Vì vậy, bảng chữ cái chứa tất cả các kí tự xuất hiện ở đầu của một từ và các kí tự xuất hiện bên trong của từ được thêm một tiền tố của WordPiece phía trước.
+
+Sau đó, một lần nữa, giống như BPE, WordPiece học các quy tắc hợp nhất. Sự khác biệt chính là cách chọn cặp được hợp nhất. Thay vì chọn cặp phổ biến nhất, WordPiece tính điểm cho từng cặp, sử dụng công thức sau:
+
+$$\mathrm{score} = (\mathrm{freq\_of\_pair}) / (\mathrm{freq\_of\_first\_element} \times \mathrm{freq\_of\_second\_element})$$
+
+Bằng cách chia tần suất của cặp cho tích tần suất của từng con của nó, thuật toán ưu tiên hợp nhất các cặp mà các bộ phận riêng lẻ ít thường xuyên hơn trong từ vựng. Ví dụ: nó sẽ không nhất thiết phải hợp nhất `("un", "##able")` ngay cả khi cặp đó xuất hiện rất thường xuyên trong từ vựng, vì hai cặp `"un"` và `"##able"` mỗi từ có thể sẽ xuất hiện bằng nhiều từ khác và có tần suất cao. Ngược lại, một cặp như `("hu", "##gging")` có thể sẽ được hợp nhất nhanh hơn (giả sử từ "hugging" xuất hiện thường xuyên trong từ vựng) vì `"hu"` và `"##gging"`có khả năng ít xuất hiện hơn với từng cá thể.
+
+Hãy cùng nhìn vào cùng bộ tự vựng chúng ta sử dụng cho BPE:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+Nó sẽ được chia ra như sau:
+
+```
+("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##g" "##s", 5)
+```
+
+vì vậy từ vựng ban đầu sẽ là `["b", "h", "p", "##g", "##n", "##s", "##u"]` (nếu ta tạm quên các token đặc biệt). Cặp thường gặp nhất là `("##u", "##g")` (xuất hiện 20 lần), nhưng tần suất xuất hiện riêng của `"##u"` rất cao, vì vậy điểm của nó không phải là cao nhất (đó là 1 / 36). Tất cả các cặp có `"##u"`thực sự có cùng điểm (1 / 36), vì vậy điểm tốt nhất thuộc về cặp `("##g", "##s")` -- cặp duy nhất không có `"##u"` -- là 1 / 20, và phép hợp nhất đầu tiên đã học là `("##g", "##s") -> ("##gs")`.
+
+Lưu ý rằng khi hợp nhất, chúng ta loại bỏ `##` giữa hai token, vì vậy chúng ta thêm `"##gs"` vào từ vựng và áp dụng hợp nhất trong các từ của ngữ liệu:
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs"]
+Corpus: ("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##gs", 5)
+```
+
+Tại thời điểm này, `"##u"` nằm trong tất cả các cặp có thể có, vì vậy tất cả chúng đều có cùng điểm. Giả sử trong trường hợp này, cặp đầu tiên được hợp nhất, vì vậy `("h", "##u") -> "hu"`. Điều này đưa chúng ta đến:
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu"]
+Corpus: ("hu" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+Sau đó, điểm số tốt nhất tiếp theo được chia sẻ bởi `("hu", "##g")` and `("hu", "##gs")` (với 1/15, so với 1/21 của các cặp khác), vì vậy cặp đầu tiên có điểm lớn nhất được hợp nhất:
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu", "hug"]
+Corpus: ("hug", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+và tiếp tục như vậy cho đến khi chúng ta đạt được kích thước bộ từ vựng mong muốn.
+
+<Tip>
+
+✏️ **Giờ đến lượt bạn!** Bộ quy luật hợp nhất tiếp theo là gì?
+
+</Tip>
+
+## Thuật toán tokenize
+
+Tokenize của WordPiece khác BPE ở chỗ WordPiece chỉ lưu từ vựng cuối cùng, không lưu các quy tắc hợp nhất đã học. Bắt đầu từ từ cần tokenize, WordPiece tìm từ con dài nhất có trong từ vựng, sau đó tách từ đó ra. Ví dụ: nếu chúng ta sử dụng từ vựng đã học trong ví dụ trên, đối với từ `"hugs"` từ phụ dài nhất bắt đầu từ đầu mà bên trong từ vựng là `"hug"`, vì vậy chúng ta tách ở đó và nhận được `["hug","##s"]`. Sau đó, chúng ta tiếp tục với `"##s"`, trong từ vựng, vì vậy tokenize của `"hugs"` là  `["hug","##s"]`.
+
+Với BPE, chúng ta sẽ áp dụng các phép hợp nhất đã học theo thứ tự và token điều này thành `["hu", "##gs"]`, do đó, cách mã hoá sẽ khác.
+
+Ví dụ khác, hãy xem từ `"bugs"` sẽ được tokenize như thế nào. `"b"`  là từ phụ dài nhất bắt đầu từ đầu của từ có trong từ vựng, vì vậy chúng tôi tách ở đó và nhận được `["b", "##ugs"]`. Sau đó, `"##u"` là từ con dài nhất bắt đầu ở đầu `"##ugs"` có trong từ vựng, vì vậy chúng ta tách ở đó và nhận được `["b", "##u, "##gs"]`. Cuối cùng, `"##gs"` có trong từ vựng, vì vậy danh sách cuối cùng này là mã hóa của `"bugs"`.
+
+Khi quá trình tokenize đến giai đoạn không thể tìm thấy một từ khóa phụ trong từ vựng, toàn bộ từ được tokenize thành không xác định - vì vậy, ví dụ: `"mug"` sẽ được tokenize là  `["[UNK]"]`, cũng như `"bum"` (ngay cả khi chúng ta có thể bắt đầu bằng `"b"` và `"##u"`, `"##m"` không phải thuộc bộ từ vựng và kết quả tokenize sẽ chỉ là `["[UNK]"]`, không phải `["b", "##u", "[UNK]"]`). Đây là một điểm khác biệt so với BPE, chỉ phân loại các ký tự riêng lẻ không có trong từ vựng là không xác định.
+
+<Tip>
+
+✏️ **Giờ đến lượt bạn!** `"pugs"` sẽ được tokenize như thế nào?
+
+</Tip>
+
+## Triển khai WordPiece
+
+Bây giờ chúng ta hãy xem xét việc triển khai thuật toán WordPiece. Giống như với BPE, đây chỉ là phương pháp sư phạm và bạn sẽ không thể sử dụng nó trên một kho ngữ liệu lớn.
+
+Chúng tôi sẽ sử dụng cùng một kho dữ liệu như trong ví dụ BPE:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+Đầu tiên, ta cần tiền tokenize kho ngữ liệu thành các từ, Vì ta sao chép lại WordPiece tokenizer (như BERT), ta sẽ sử dụng `bert-base-cased` tokenizer cho pre-tokenization:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+```
+
+sau đó ta sẽ tính tần suất của mỗi từ trong kho ngữ liệu như cách ta làm với pre-tokenization:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+```python out
+defaultdict(
+    int, {'This': 3, 'is': 2, 'the': 1, 'Hugging': 1, 'Face': 1, 'Course': 1, '.': 4, 'chapter': 1, 'about': 1,
+    'tokenization': 1, 'section': 1, 'shows': 1, 'several': 1, 'tokenizer': 1, 'algorithms': 1, 'Hopefully': 1,
+    ',': 1, 'you': 1, 'will': 1, 'be': 1, 'able': 1, 'to': 1, 'understand': 1, 'how': 1, 'they': 1, 'are': 1,
+    'trained': 1, 'and': 1, 'generate': 1, 'tokens': 1})
+```
+
+Như chúng ta đã thấy trước đây, bảng chữ cái là tập hợp duy nhất bao gồm tất cả các chữ cái đầu tiên của từ và tất cả các chữ cái khác xuất hiện trong các từ có tiền tố là `##`:
+
+```python
+alphabet = []
+for word in word_freqs.keys():
+    if word[0] not in alphabet:
+        alphabet.append(word[0])
+    for letter in word[1:]:
+        if f"##{letter}" not in alphabet:
+            alphabet.append(f"##{letter}")
+
+alphabet.sort()
+alphabet
+
+print(alphabet)
+```
+
+```python out
+['##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k', '##l', '##m', '##n', '##o', '##p', '##r', '##s',
+ '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u',
+ 'w', 'y']
+```
+
+Ta cũng thêm các kí tự đặc biệt từ mô hình ở đầu bộ tự vựng. Trong trường hợp của BERT, ta có danh sách `["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]`:
+
+```python
+vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + alphabet.copy()
+```
+
+Tiếp theo, chúng ta cần tách từng từ, với tất cả các chữ cái không phải là tiền tố đầu tiên bởi `##`:
+
+```python
+splits = {
+    word: [c if i == 0 else f"##{c}" for i, c in enumerate(word)]
+    for word in word_freqs.keys()
+}
+```
+
+Bây giờ chúng ta đã sẵn sàng để luyện tập, hãy viết một hàm tính điểm của từng cặp. Chúng ta sẽ cần sử dụng điều này ở mỗi bước huấn luyện:
+
+```python
+def compute_pair_scores(splits):
+    letter_freqs = defaultdict(int)
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            letter_freqs[split[0]] += freq
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            letter_freqs[split[i]] += freq
+            pair_freqs[pair] += freq
+        letter_freqs[split[-1]] += freq
+
+    scores = {
+        pair: freq / (letter_freqs[pair[0]] * letter_freqs[pair[1]])
+        for pair, freq in pair_freqs.items()
+    }
+    return scores
+```
+
+Hãy cùng nhìn vào một phần của bộ từ điển sau lần chia đầu:
+
+```python
+pair_scores = compute_pair_scores(splits)
+for i, key in enumerate(pair_scores.keys()):
+    print(f"{key}: {pair_scores[key]}")
+    if i >= 5:
+        break
+```
+
+```python out
+('T', '##h'): 0.125
+('##h', '##i'): 0.03409090909090909
+('##i', '##s'): 0.02727272727272727
+('i', '##s'): 0.1
+('t', '##h'): 0.03571428571428571
+('##h', '##e'): 0.011904761904761904
+```
+
+Giờ thì tìm cặp có điểm cao nhất chỉ cần một vòng lắp nhanh:
+
+```python
+best_pair = ""
+max_score = None
+for pair, score in pair_scores.items():
+    if max_score is None or max_score < score:
+        best_pair = pair
+        max_score = score
+
+print(best_pair, max_score)
+```
+
+```python out
+('a', '##b') 0.2
+```
+
+Vậy quy tắc hợp nhất đầu tiên là `('a', '##b') -> 'ab'`, và ta thêm `'ab'` vào bộ từ vựng:
+
+```python
+vocab.append("ab")
+```
+
+Tiếp theo, ta cần áp dụng hợp nhất trong từ điển `splits`, Hãy cùng viết một hàm cho nó:
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                merge = a + b[2:] if b.startswith("##") else a + b
+                split = split[:i] + [merge] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+Và ta có thể thấy kết quả lần hợp nhất đầu tiện:
+
+```py
+splits = merge_pair("a", "##b", splits)
+splits["about"]
+```
+
+```python out
+['ab', '##o', '##u', '##t']
+```
+
+Giờ thì ta đã có tất cả những gì ta cần để lặp cho đến khi học hết tất cả các hợp nhất ta muốn. Hãy cũng hướng tới bộ từ vựng có kích thước là 70:
+
+```python
+vocab_size = 70
+while len(vocab) < vocab_size:
+    scores = compute_pair_scores(splits)
+    best_pair, max_score = "", None
+    for pair, score in scores.items():
+        if max_score is None or max_score < score:
+            best_pair = pair
+            max_score = score
+    splits = merge_pair(*best_pair, splits)
+    new_token = (
+        best_pair[0] + best_pair[1][2:]
+        if best_pair[1].startswith("##")
+        else best_pair[0] + best_pair[1]
+    )
+    vocab.append(new_token)
+```
+
+Giờ ta có thể nhìn vào bộ từ điển được tạo ra:
+
+```py
+print(vocab)
+```
+
+```python out
+['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k',
+ '##l', '##m', '##n', '##o', '##p', '##r', '##s', '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H',
+ 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u', 'w', 'y', 'ab', '##fu', 'Fa', 'Fac', '##ct', '##ful', '##full', '##fully',
+ 'Th', 'ch', '##hm', 'cha', 'chap', 'chapt', '##thm', 'Hu', 'Hug', 'Hugg', 'sh', 'th', 'is', '##thms', '##za', '##zat',
+ '##ut']
+```
+
+Như có thể thấy, so với BPE, tokenizer này học các phần của từ như là token nhanh hơn một chút.
+
+<Tip>
+
+💡 Sử dụng `train_new_from_iterator()` trên cùng kho ngữ liệu sẽ không mang về kết quả kho ngữ liệu y hệt. Đó là bởi thư viện 🤗 Tokenizers không triển khai WordPiece cho huấn luyện (vì chúng ta không hoàn toàn nằm rõ bên trong), và sử dụng BPE thay vào đó.
+
+</Tip>
+
+Để tokenize những đoạn văn mới, ta tiền tokenize nó, chia nhỏ và áp dụng thuật toán tokenize cho từng từ. Vậy đó, chúng ta nhìn vào cụm từ con dài nhất bắt đầu từ đầu từ đầu tiên và chia nhỏ nó, sau đó lặp lại quy trình với phần thứ hai, và tiếp tục cho đến hết từ và các từ tiếp theo trong văn bản: 
+
+```python
+def encode_word(word):
+    tokens = []
+    while len(word) > 0:
+        i = len(word)
+        while i > 0 and word[:i] not in vocab:
+            i -= 1
+        if i == 0:
+            return ["[UNK]"]
+        tokens.append(word[:i])
+        word = word[i:]
+        if len(word) > 0:
+            word = f"##{word}"
+    return tokens
+```
+
+Hãy cũng kiểm tra trên một từ có tronng và không có trong bộ từ vựng:
+
+```python
+print(encode_word("Hugging"))
+print(encode_word("HOgging"))
+```
+
+```python out
+['Hugg', '##i', '##n', '##g']
+['[UNK]']
+```
+
+Giờ hãy cùng viết một hàm tokenize văn bản:
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    encoded_words = [encode_word(word) for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+```
+
+Ta có thể thử trên bất kì văn bản nào:
+
+```python
+tokenize("This is the Hugging Face course!")
+```
+
+```python out
+['Th', '##i', '##s', 'is', 'th', '##e', 'Hugg', '##i', '##n', '##g', 'Fac', '##e', 'c', '##o', '##u', '##r', '##s',
+ '##e', '[UNK]']
+```
+
+Đó là những gì ta cần biết về thuật toán WordPiece! Tiếp theo, chúng ta sẽ cùng tìm hiểu về Unigram.

@@ -1,0 +1,489 @@
+<FrameworkSwitchCourse {fw} />
+
+# Debugging the training pipeline [[Debugging the training pipeline]]
+
+<DocNotebookDropdown
+  classNames="absolute z-10 right-0 top-0"
+  options={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/chapter8/section4_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/chapter8/section4_tf.ipynb"},
+]} />
+
+你已经编写了一个漂亮的脚本来训练或微调给定任务的模型，尽职尽责地遵循 [第七章](/course/chapter7) 中的建议。 但是当你启动命令 `model.fit()` 时，可怕的事情发生了：你得到一个错误😱！ 或者更糟糕的是，一切似乎都很好，训练运行没有错误，但生成的模型很糟糕。 在本节中，我们将向您展示如何调试此类问题。
+
+## Debugging the training pipeline
+
+<Youtube id="N9kO52itd0Q"/>
+
+The problem when you encounter an error in `model.fit()` is that it could come from multiple sources, as training usually brings together a lot of things that you've been working on up until that point. The problem could be something wrong in your dataset, or some issue when trying to batch elements of the datasets together. Or it could be something wrong in the model code, or your loss function or optimizer. And even if everything goes well for training, something could still go wrong during the evaluation if there is a problem with your metric.
+
+The best way to debug an error that arises in `model.fit()` is to manually go through this whole pipeline to see where things went awry. The error is then often very easy to solve.
+
+To demonstrate this, we will use the following script that (tries to) fine-tune a DistilBERT model on the [MNLI dataset](https://huggingface.co/datasets/glue):
+
+当您在 `model.fit()` 中遇到错误时，问题在于它可能来自多个来源，因为训练通常会汇集很多您在此之前一直在做的事情。 问题可能是您的数据集中有问题，或者是在尝试将数据集的元素批处理在一起时出现问题。 或者模型代码、损失函数或优化器中可能有问题。 即使训练一切顺利，如果您的指标有问题，评估期间仍然可能出现问题。
+
+调试 `model.fit()` 中出现的错误的最佳方法是手动检查整个管道，看看哪里出了问题。 错误通常很容易解决。
+
+为了证明这一点，我们将使用以下脚本（尝试）在 [MNLI 数据集](https://huggingface.co/datasets/glue)上微调 DistilBERT 模型：
+
+```py
+from datasets import load_dataset
+from transformers import (
+    AutoTokenizer,
+    TFAutoModelForSequenceClassification,
+)
+
+raw_datasets = evaluate.load("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+
+train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["input_ids", "labels"], batch_size=16, shuffle=True
+)
+
+validation_dataset = tokenized_datasets["validation_matched"].to_tf_dataset(
+    columns=["input_ids", "labels"], batch_size=16, shuffle=True
+)
+
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+model.compile(loss="sparse_categorical_crossentropy", optimizer="adam")
+
+model.fit(train_dataset)
+```
+
+如果您尝试执行它，在进行数据集转换时可能会收到一些“VisibleDeprecationWarning”——这是我们已知的 UX 问题，因此请忽略它。 如果你在 2021 年 11 月之后阅读这门课程并且它仍在继续，那么请在推特上 @carrigmat 上发送愤怒的推文，直到他修复它。
+
+然而，更严重的问题是我们得到了一个彻底的错误。 它真的非常长：
+
+```python out
+ValueError: No gradients provided for any variable: ['tf_distil_bert_for_sequence_classification/distilbert/embeddings/word_embeddings/weight:0', '...']
+```
+
+这意味着什么？ 我们试图训练我们的数据，但我们没有梯度？ 这很令人困惑。 我们甚至不知道该如何开始调试类似的东西？ 当你得到的错误并不能立即表明问题出在哪里时，最好的解决方案通常是按顺序检查所有内容，确保在每个阶段一切看起来都是正确的。 当然，开始的地方总是...
+
+### 检查您的数据 [[检查您的数据]]
+
+这是不言而喻的，但如果您的数据已损坏，Keras 将无法为您修复它。 所以首先，你需要看看你的训练集中有什么。
+
+尽管查看 `raw_datasets` 和 `tokenized_datasets` 很诱人，但我们强烈建议您在数据将要进入模型的地方直接查看数据。 这意味着应该从您使用 `to_tf_dataset()` 函数创建的 `tf.data.Dataset` 读取输出！ 那么我们该怎么做呢？ `tf.data.Dataset` 对象一次给我们整个批次并且不支持索引，所以我们不能只请求 `train_dataset[0]`。 但是，我们可以礼貌地向它要一批：
+
+```py
+for batch in train_dataset:
+    break
+```
+
+`break` 在一次迭代后结束循环，因此这会抓取来自`train_dataset` 的第一批并将其保存为`batch`。 现在，让我们看看里面有什么：
+
+```python out
+{'attention_mask': <tf.Tensor: shape=(16, 76), dtype=int64, numpy=
+ array([[1, 1, 1, ..., 0, 0, 0],
+        [1, 1, 1, ..., 0, 0, 0],
+        [1, 1, 1, ..., 0, 0, 0],
+        ...,
+        [1, 1, 1, ..., 1, 1, 1],
+        [1, 1, 1, ..., 0, 0, 0],
+        [1, 1, 1, ..., 0, 0, 0]])>,
+ 'label': <tf.Tensor: shape=(16,), dtype=int64, numpy=array([0, 2, 1, 2, 1, 1, 2, 0, 0, 0, 1, 0, 1, 2, 2, 1])>,
+ 'input_ids': <tf.Tensor: shape=(16, 76), dtype=int64, numpy=
+ array([[ 101, 2174, 1010, ...,    0,    0,    0],
+        [ 101, 3174, 2420, ...,    0,    0,    0],
+        [ 101, 2044, 2048, ...,    0,    0,    0],
+        ...,
+        [ 101, 3398, 3398, ..., 2051, 2894,  102],
+        [ 101, 1996, 4124, ...,    0,    0,    0],
+        [ 101, 1999, 2070, ...,    0,    0,    0]])>}
+```
+
+这看起来不错，不是吗？我们将 `labels` 、`attention_mask` 和 `input_ids` 传递给模型，这应该是计算输出和计算损失所需的一切。那么为什么我们没有梯度呢？仔细看：我们将单个字典作为输入传递，但训练批次通常是输入张量或字典，加上标签张量。我们的标签只是我们输入字典中的一个键。
+
+这是一个问题吗？实际上，并非总是如此！但这是您在使用 TensorFlow 训练 Transformer 模型时会遇到的最常见问题之一。我们的模型都可以在内部计算损失，但要做到这一点，需要在输入字典中传递标签。这是当我们没有为 `compile()` 指定损失值时使用的损失。另一方面，Keras 通常希望标签与输入字典分开传递，如果你不这样做，损失计算通常会失败。
+
+问题现在变得更清楚了：我们传递了一个“损失”参数，这意味着我们要求 Keras 为我们计算损失，但我们将标签作为模型的输入传递，而不是放在 Keras 期望的地方的！我们需要二选一：要么使用模型的内部损失并将标签保留在原处，要么继续使用 Keras 损失，但将标签移动到 Keras 期望的位置。为简单起见，让我们采用第一种方法。将对 `compile()` 的调用更改为：
+
+```py
+model.compile(optimizer="adam")
+```
+
+现在我们将使用模型的内部损失，这个问题应该解决了！
+
+<Tip>
+
+✏️ **轮到你了！** 作为我们解决其他问题后的可选挑战，你可以尝试回到这一步，让模型使用原始 Keras 计算的损失而不是内部损失。 您需要将 `"labels"` 添加到 `to_tf_dataset()` 的 `label_cols` 参数，以确保正确输出标签，这将为您提供梯度——但我们指定的损失还有一个问题 . 训练仍然会遇到这个问题，学习会非常缓慢，并且会在多次训练损失时达到稳定状态。 你能弄清楚它是什么吗？
+
+一个 ROT13 编码的提示，如果你卡住了：Vs lbh ybbx ng gur bhgchgf bs FrdhraprPynffvsvpngvba zbqryf va Genafsbezref, gurve svefg bhgchg vf `ybtvgf`。 荣格纳 ybtvgf?
+
+第二个提示：Jura lbh fcrpvsl bcgvzvmref, npgvingvbaf 是 ybffrf jvgu fgevatf, Xrenf frgf nyy gur nethzrag inyhrf gb gurve qrsnhygf。 Jung nethzragf qbrf FcnefrPngrtbevpnyPebffragebcl unir, naq jung ner gurve qrsnhygf?
+
+</Tip>
+
+现在，让我们尝试训练。 我们现在应该得到梯度，所以希望（这里播放不祥的音乐）我们可以调用 `model.fit()` 一切都会正常工作！
+
+```python out
+  246/24543 [..............................] - ETA: 15:52 - loss: nan
+```
+
+Oh no. 
+
+`nan` 不是一个非常令人开心的损失值。 尽管如此，我们已经检查了我们的数据，它看起来还不错。 如果这不是问题，我们下一步该去哪里？ 显而易见的下一步是...
+
+### 检查你的模型 [[检查你的模型]]
+
+`model.fit()` 是 Keras 中一个非常方便的函数，但它为您做了很多事情，这使得准确找到问题发生的位置变得更加棘手。 如果您正在调试您的模型，一个真正有用的策略是只将一个批次传递给模型，并详细查看该批次的输出。 如果模型抛出错误，另一个非常有用的提示是使用 `run_eagerly=True` `compile()` 模型。 这会使它变慢很多，但它会使错误消息更容易理解，因为它们会准确地指出问题发生在模型代码的哪个位置。
+
+不过，目前我们还不需要 `run_eagerly`。 让我们通过模型运行我们之前得到的“批处理”，看看输出是什么样子的：
+
+```py
+model(batch)
+```
+
+```python out
+TFSequenceClassifierOutput(loss=<tf.Tensor: shape=(16,), dtype=float32, numpy=
+array([nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan,
+       nan, nan, nan], dtype=float32)>, logits=<tf.Tensor: shape=(16, 2), dtype=float32, numpy=
+array([[nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan],
+       [nan, nan]], dtype=float32)>, hidden_states=None, attentions=None)
+```
+
+嗯，这很棘手。一切都是`nan`！但这很奇怪，不是吗？我们所有的 logits 怎么会变成“nan”？ `nan` 的意思是“不是数字”。 `nan` 值经常出现在您执行禁止操作时，例如除以零。但是，在机器学习中了解 `nan` 非常重要的一件事是，该值倾向于*传播*。如果将一个数字乘以 `nan`，则输出也是 `nan`。如果你在输出、损失或梯度的任何地方得到一个“nan”，那么它会迅速传播到你的整个模型中——因为当那个“nan”值通过你的网络传播回来时，你会得到nan 梯度，当使用这些梯度计算权重更新时，您将获得 nan 权重，这些权重将计算更多的 nan 输出！很快，整个网络将只是“nan”的一大块。一旦发生这种情况，就很难看出问题是从哪里开始的。我们如何隔离“nan”第一次出现的地方？
+
+答案是尝试*重新初始化*我们的模型。一旦我们开始训练，我们就会在某个地方得到一个“nan”，它很快就会传播到整个模型中。所以，让我们从检查点加载模型而不做任何权重更新，看看我们从哪里得到一个 `nan` 值：
+
+```py
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+model(batch)
+```
+
+当我们运行它时，我们得到：
+
+```py out
+TFSequenceClassifierOutput(loss=<tf.Tensor: shape=(16,), dtype=float32, numpy=
+array([0.6844486 ,        nan,        nan, 0.67127866, 0.7068601 ,
+              nan, 0.69309855,        nan, 0.65531296,        nan,
+              nan,        nan, 0.675402  ,        nan,        nan,
+       0.69831556], dtype=float32)>, logits=<tf.Tensor: shape=(16, 2), dtype=float32, numpy=
+array([[-0.04761693, -0.06509043],
+       [-0.0481936 , -0.04556257],
+       [-0.0040929 , -0.05848458],
+       [-0.02417453, -0.0684005 ],
+       [-0.02517801, -0.05241832],
+       [-0.04514256, -0.0757378 ],
+       [-0.02656011, -0.02646275],
+       [ 0.00766164, -0.04350497],
+       [ 0.02060014, -0.05655622],
+       [-0.02615328, -0.0447021 ],
+       [-0.05119278, -0.06928903],
+       [-0.02859691, -0.04879177],
+       [-0.02210129, -0.05791225],
+       [-0.02363213, -0.05962167],
+       [-0.05352269, -0.0481673 ],
+       [-0.08141848, -0.07110836]], dtype=float32)>, hidden_states=None, attentions=None)
+```
+
+*现在*我们到了某个地方！ 我们的 logits 中没有 `nan` 值，这令人放心。 但是我们确实在损失中看到了一些“nan”值！ 这些样本有什么特别导致这个问题的吗？ 让我们看看它们是哪些（请注意，如果您自己运行此代码，您可能会得到不同的索引，因为数据集已被随机打乱）：
+
+```python
+import numpy as np
+
+loss = model(batch).loss.numpy()
+indices = np.flatnonzero(np.isnan(loss))
+indices
+```
+
+```python out
+array([ 1,  2,  5,  7,  9, 10, 11, 13, 14])
+```
+
+让我们看看这些来自样本的输入id：
+
+```python
+input_ids = batch["input_ids"].numpy()
+input_ids[indices]
+```
+
+```python out
+array([[  101,  2007,  2032,  2001,  1037, 16480,  3917,  2594,  4135,
+        23212,  3070,  2214, 10170,  1010,  2012,  4356,  1997,  3183,
+         6838, 12953,  2039,  2000,  1996,  6147,  1997,  2010,  2606,
+         1012,   102,  6838,  2001,  3294,  6625,  3773,  1996,  2214,
+         2158,  1012,   102,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  1998,  6814,  2016,  2234,  2461,  2153,  1998, 13322,
+         2009,  1012,   102,  2045,  1005,  1055,  2053,  3382,  2008,
+         2016,  1005,  2222,  3046,  8103,  2075,  2009,  2153,  1012,
+          102,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  1998,  2007,  1996,  3712,  4634,  1010,  2057,  8108,
+         2025,  3404,  2028,  1012,  1996,  2616, 18449,  2125,  1999,
+         1037,  9666,  1997,  4100,  8663, 11020,  6313,  2791,  1998,
+         2431,  1011,  4301,  1012,   102,  2028,  1005,  1055,  5177,
+         2110,  1998,  3977,  2000,  2832,  2106,  2025,  2689,  2104,
+         2122,  6214,  1012,   102,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  1045,  2001,  1999,  1037, 13090,  5948,  2007,  2048,
+         2308,  2006,  2026,  5001,  2043,  2026,  2171,  2001,  2170,
+         1012,   102,  1045,  2001,  3564,  1999,  2277,  1012,   102,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  2195,  4279,  2191,  2039,  1996,  2181,  2124,  2004,
+         1996,  2225,  7363,  1012,   102,  2045,  2003,  2069,  2028,
+         2451,  1999,  1996,  2225,  7363,  1012,   102,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  2061,  2008,  1045,  2123,  1005,  1056,  2113,  2065,
+         2009,  2428, 10654,  7347,  2030,  2009,  7126,  2256,  2495,
+         2291,   102,  2009,  2003,  5094,  2256,  2495,  2291,  2035,
+         2105,  1012,   102,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  2051,  1010,  2029,  3216,  2019,  2503,  3444,  1010,
+         6732,  1996,  2265,  2038, 19840,  2098,  2125,  9906,  1998,
+         2003,  2770,  2041,  1997,  4784,  1012,   102,  2051,  6732,
+         1996,  2265,  2003,  9525,  1998,  4569,  1012,   102,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101,  1996, 10556,  2140, 11515,  2058,  1010,  2010,  2162,
+         2252,  5689,  2013,  2010,  7223,  1012,   102,  2043,  1996,
+        10556,  2140, 11515,  2058,  1010,  2010,  2252,  3062,  2000,
+         1996,  2598,  1012,   102,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0],
+       [  101, 13543,  1999,  2049,  6143,  2933,  2443,   102,  2025,
+        13543,  1999,  6143,  2933,  2003,  2443,   102,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0,     0,     0,     0,     0,     0,
+            0,     0,     0,     0]])
+```
+
+嗯，这里有很多东西，但没有什么不寻常的。 让我们看看标签：
+
+```python out
+labels = batch['labels'].numpy()
+labels[indices]
+```
+
+```python out
+array([2, 2, 2, 2, 2, 2, 2, 2, 2])
+```
+
+啊! `nan` 样本都具有相同的标签，即标签 2。这是一个非常明显的提示。 当我们的标签为 2 时，我们会得到loss为 `nan`，这表明这是检查模型中标签数量的好时机：
+
+```python
+model.config.num_labels
+```
+
+```python out
+2
+```
+
+现在我们看到了问题：模型认为只有两个类，但标签上升到 2，这意味着实际上有三个类（因为 0 也是一个类）。 这就是我们得到“nan”的方式——通过尝试计算不存在的类的损失！ 让我们尝试改变它并再次拟合模型：
+
+```
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+model.compile(optimizer='adam')
+model.fit(train_dataset)
+```
+
+```python out
+  869/24543 [>.............................] - ETA: 15:29 - loss: 1.1032
+```
+
+我们在训练！ 没有更多的'nan's，我们的损失正在减少......有点。 如果你观察一段时间，你可能会开始有点不耐烦，因为损失值一直居高不下。 让我们在这里停止训练并尝试考虑可能导致此问题的原因。 在这一点上，我们很确定数据和模型都没有问题，但是我们的模型并没有很好地学习。 还剩下什么？ 是时候...
+
+### 检查你的超参数 [[检查你的超参数]]
+
+如果你回头看上面的代码，你可能根本看不到任何超参数，除了 `batch_size`，这似乎不是罪魁祸首。不过，不要被迷惑；总是有超参数，如果你看不到它们，那只是意味着你不知道它们的设置是什么。特别要记住关于 Keras 的一个关键点：如果您使用字符串设置损失函数、优化器或激活函数，_它的所有参数都将设置为它们的默认值_。这意味着即使为此使用字符串非常方便，但在这样做时您应该非常小心，因为它很容易对您隐藏关键的事情。 （任何尝试上述方式的人都应该仔细注意这一事实。）
+
+在这种情况下，我们在哪里设置了带有字符串的参数？我们最初使用字符串设置损失，但我们不再这样做了。但是，我们正在使用字符串设置优化器。难道这对我们隐瞒了什么？让我们看看[关于它的一些讨论](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/Adam)。
+
+这里有什么需要注意的吗？没错——学习率！当我们只使用字符串“adam”时，我们将获得默认的学习率，即 0.001，即 1e-3。这对于transormer模型来说太高了！一般来说，我们建议您的模型尝试 1e-5 和 1e-4 之间的学习率；这比我们在这里实际使用的值小 10X 到 100X 之间。听起来这可能是一个主要问题，所以让我们尝试减少它。为此，我们需要导入实际的“优化器”对象。当我们这样做的时候，让我们从检查点重新初始化模型，以防高学习率的训练损坏了它的权重：
+
+```python
+from tensorflow.keras.optimizers import Adam
+
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+model.compile(optimizer=Adam(5e-5))
+```
+
+<Tip>
+
+💡您还可以从🤗 Transformers 中导入 `create_optimizer()` 函数，这将为您提供具有正确权重衰减以及学习率预热和学习率衰减的 AdamW 优化器。 此优化器通常会产生比使用默认 Adam 优化器获得的结果稍好一些的结果。
+
+</Tip>
+
+现在，我们可以尝试使用新的、改进后的学习率来拟合模型：
+
+```python
+model.fit(train_dataset)
+```
+
+```python out
+319/24543 [..............................] - ETA: 16:07 - loss: 0.9718
+```
+
+现在我们的损失真的在某个地方！ 训练终于看起来奏效了。 这里有一个教训：当你的模型正在运行但损失没有下降，并且你确定你的数据没问题时，检查学习率和权重衰减等超参数是个好主意。 将其中任何一个设置得太高很可能导致训练在高损失值下“停滞”。
+
+## 其他潜在问题 [[其他潜在问题]]
+
+我们已经涵盖了上面脚本中的问题，但您可能会遇到其他几个常见错误。 让我们看一个（非常不完整的）列表。
+
+### 处理内存不足错误 [[处理内存不足错误]]
+
+内存不足的迹象是“分配张量时出现 OOM”之类的错误——OOM 是“内存不足”的缩写。 在处理大型语言模型时，这是一个非常常见的危险。 如果遇到这种情况，一个好的策略是将批量大小减半并重试。 但请记住，有些型号*非常*大。 例如，全尺寸 GPT-2 的参数为 1.5B，这意味着您将需要 6 GB 的内存来存储模型，另外需要 6 GB 的内存用于梯度下降！ 无论您使用什么批量大小，训练完整的 GPT-2 模型通常需要超过 20 GB 的 VRAM，而只有少数 GPU 拥有。 像“distilbert-base-cased”这样更轻量级的模型更容易运行，训练也更快。
+
+<Tip>
+
+在课程的下一部分中，我们将介绍更先进的技术，这些技术可以帮助您减少内存占用并让您微调最大的模型。
+
+</Tip>
+
+### TensorFlow 🦛饿饿 [[TensorFlow 🦛饿饿]]
+
+您应该注意的 TensorFlow 的一个特殊怪癖是，它会在您加载模型或进行任何训练后立即为自己分配 *所有 * GPU 内存，然后根据需要分配该内存。这与其他框架的行为不同，例如 PyTorch，后者根据 CUDA 的需要分配内存，而不是在内部进行。 TensorFlow 方法的一个优点是，当您耗尽内存时，它通常会给出有用的错误，并且它可以从该状态恢复而不会导致整个 CUDA 内核崩溃。但也有一个重要的缺点：如果你同时运行两个 TensorFlow 进程，那么**你将度过一段糟糕的时光**。
+
+如果您在 Colab 上运行，则无需担心这一点，但如果您在本地运行，这绝对是您应该小心的事情。特别要注意，关闭笔记本选项卡并不一定会关闭该笔记本！您可能需要选择正在运行的笔记本（带有绿色图标的笔记本）并在目录列表中手动关闭它们。任何使用 TensorFlow 的正在运行的笔记本仍可能占用大量 GPU 内存，这意味着您启动的任何新笔记本都可能会遇到一些非常奇怪的问题。
+
+如果您开始运行之前正确的代码却收到有关 CUDA、BLAS 或 cuBLAS 的错误，这通常是罪魁祸首。您可以使用类似 `nvidia-smi` 的命令来检查 - 当您关闭或重新启动当前笔记本时，您的大部分内存是否空闲，或者是否仍在使用中？如果它仍在使用中，则有其他东西在占用它！
+
+### 检查您的数据（再次！） [[检查您的数据（再次！）]]
+
+只有在理论上可以从您的数据中学到任何东西时，您的模型才会学到一些东西。 如果存在损坏数据的错误或标签是随机属性的，那么您很可能不会在数据集上获得任何知识。这里一个有用的工具是`tokenizer.decode()`。 这会将 `input_ids` 转换回字符串，因此您可以查看数据并查看您的训练数据是否正在教授您希望它教授的内容。 例如，像我们上面所做的那样从 `tf.data.Dataset` 中获取 `batch` 后，您可以像这样解码第一个元素：
+
+```py
+input_ids = batch["input_ids"].numpy()
+tokenizer.decode(input_ids[0])
+```
+
+Then you can compare it with the first label, like so:
+
+```py
+labels = batch["labels"].numpy()
+label = labels[0]
+```
+一旦您可以像这样查看您的数据，您可以问自己以下问题：
+
+- 解码后的数据是否可以理解？
+- 你认同这些标签吗？
+- 有没有一个标签比其他标签更常见？
+- 如果模型预测随机的答案/总是相同的答案，那么loss/评估指标应该是多少？
+
+查看您的数据后，查看模型的一些预测并对其进行解码。 如果模型总是预测同样的事情，那可能是因为你的数据集偏向一个类别（针对分类问题）； 过采样稀有类等技术可能会有所帮助。
+
+如果您在初始模型上获得的loss/评估指标与您期望的随机预测的loss/评估指标非常不同，请仔细检查您的loss或评估指标的计算方式，因为那里可能存在错误。 如果您使用最后添加的多个loss，请确保它们具有相同的规模。
+
+当您确定您的数据是完美的时，您可以通过一个简单的测试来查看模型是否能够对其进行训练。
+
+### 在一批上过度拟合你的模型 [[在一批上过度拟合你的模型]]
+
+过度拟合通常是我们在训练时尽量避免的事情，因为这意味着模型没有学习识别我们想要的一般特征，而只是记住了训练样本。 但是，一遍又一遍地尝试在一个批次上训练您的模型是一个很好的测试，可以检查您构建的问题是否可以通过您尝试训练的模型来解决。 它还将帮助您查看您的初始学习率是否太高。
+
+一旦你定义了你的“模型”，这样做真的很容易； 只需获取一批训练数据，然后将该“批次”视为您的整个数据集，并在其上fit大量epoch：
+
+```py
+for batch in train_dataset:
+    break
+
+# Make sure you have run model.compile() and set your optimizer, [[Make sure you have run model.compile() and set your optimizer,]]
+# and your loss/metrics if you're using them [[and your loss/metrics if you're using them]]
+
+model.fit(batch, epochs=20)
+```
+
+<Tip>
+
+💡 如果您的训练数据不平衡，请确保构建一批包含所有标签的训练数据。
+
+</Tip>
+
+生成的模型在“批次”上应该有接近完美的结果，损失迅速下降到 0（或您正在使用的损失的最小值）。
+
+如果你没有设法让你的模型获得这样的完美结果，这意味着你构建问题或数据的方式有问题，所以你应该修复它。 只有当你设法通过过拟合测试时，你才能确定你的模型实际上可以学到一些东西。
+
+<Tip warning={true}>
+
+⚠️ 在此测试之后，您将不得不重新创建您的模型和“Trainer”，因为获得的模型可能无法在您的完整数据集上恢复和学习有用的东西。
+
+</Tip>
+
+### 在你有第一个基线之前不要调整任何东西 [[在你有第一个基线之前不要调整任何东西]]
+
+超参数调整总是被强调为机器学习中最难的部分，但这只是帮助您在指标上获得一点点提升的最后一步。 例如将默认的 Adam 学习率 1e-3 与 Transformer 模型一起使用，当然会使学习进行得非常缓慢或完全停止，但大多数时候“合理”的超参数，例如从 1e-5 到 5e-5 的学习率，会很好地给你带来好的结果。因此，在您获得超出数据集基线的东西之前，不要开始进行耗时且昂贵的超参数搜索。
+
+一旦你有一个足够好的模型，你就可以开始稍微调整一下。 不要尝试使用不同的超参数启动一千次运行，而是比较一个超参数的不同值的几次运行，以了解哪个影响最大。
+
+如果您正在调整模型本身，不要尝试任何您无法合理证明的事情。 始终确保您返回过拟合测试以验证您的更改没有产生任何意外后果。
+
+### 请求帮忙 [[请求帮忙]]
+
+希望您会在本节中找到一些可以帮助您解决问题的建议，但如果不是这样，请记住您可以随时在 [论坛](https://discuss.huggingface.co/) 上向社区提问。
+
+以下是一些可能有用的额外资源：
+
+- [“作为工程最佳实践工具的再现性”](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p)，作者：Joel Grus
+- [“神经网络调试清单”](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21) 作者：Cecelia Shao
+- [“如何对机器学习代码进行单元测试”](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765) by Chase Roberts
+- [“训练神经网络的秘诀”](http://karpathy.github.io/2019/04/25/recipe/)作者：Andrej Karpathy
+
+当然，并不是你在训练神经网络时遇到的每一个问题都是你自己的错！ 如果您在 🤗 Transformers 或 🤗 Datasets 库中遇到看起来不正确的内容，您可能遇到了错误。 你应该告诉我们这一切，在下一节中，我们将准确解释如何做到这一点。

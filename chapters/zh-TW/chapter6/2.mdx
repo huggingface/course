@@ -1,0 +1,256 @@
+# 根據已有的tokenizer訓練新的tokenizer
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section2.ipynb"},
+]} />
+
+如果您感興趣的語言中沒有可用的語言模型，或者如果您的語料庫與您的語言模型所訓練的語料庫有很大不同，您很可能希望從適合您的數據的標記器從頭開始重新訓練模型 . 這將需要在您的數據集上訓練一個新的標記器。 但這究竟是什麼意思？ 當我們在 [第二章](/course/chapter2) 中第一次查看標記器時，我們看到大多數 Transformer 模型使用_子詞分詞算法_。 為了識別哪些子詞是感興趣的並且在手頭的語料庫中最常出現，標記器需要仔細查看語料庫中的所有文本——我們稱之為*training*的過程。 這種訓練的確切規則取決於所使用的標記器的類型，我們將在本章後面討論三種主要算法。
+
+<Youtube id="DJimQynXZsQ"/>
+
+<Tip warning={true}>
+
+⚠️ 訓練標記器與訓練模型不同！模型訓練使用隨機梯度下降使每個batch的loss小一點。它本質上是隨機的（這意味著在進行兩次相同的訓練時，您必須設置一些隨機數種子才能獲得相同的結果）。訓練標記器是一個統計過程，它試圖確定哪些子詞最適合為給定的語料庫選擇，用於選擇它們的確切規則取決於分詞算法。它是確定性的，這意味著在相同的語料庫上使用相同的算法進行訓練時，您總是會得到相同的結果。
+
+</Tip>
+
+## 準備語料庫
+
+🤗 Transformers 中有一個非常簡單的 API，你可以用它來訓練一個新的標記器，使它與現有標記器相同的特徵： **AutoTokenizer.train_new_from_iterator()** .為了復現這一點，假設我們想從頭開始訓練 GPT-2，但使用英語以外的語言。我們的首要任務是在訓練語料庫中收集該語言的大量數據。為了提供每個人都能理解的示例，我們在這裡不會使用俄語或中文之類的語言，而是使用在特定領域的英語語言：Python 代碼。
+
+[🤗 Datasets](https://github.com/huggingface/datasets)庫可以幫助我們組裝一個 Python 源代碼語料庫。我們將使用**load_dataset()**功能下載和緩存[CodeSearchNet](https://huggingface.co/datasets/code_search_net)數據集。該數據集是為[CodeSearchNet 挑戰](https://wandb.ai/github/CodeSearchNet/benchmark)而創建的幷包含來自 GitHub 上開源庫的數百萬種編程語言的函數。在這裡，我們將加載此數據集的 Python 部分：
+
+```py
+from datasets import load_dataset
+
+# This can take a few minutes to load, so grab a coffee or tea while you wait!
+raw_datasets = load_dataset("code_search_net", "python")
+```
+
+我們可以查看訓練集的部分，以查看我們數據集中有哪些列：
+
+```py
+raw_datasets["train"]
+```
+
+```python out
+Dataset({
+    features: ['repository_name', 'func_path_in_repository', 'func_name', 'whole_func_string', 'language', 
+      'func_code_string', 'func_code_tokens', 'func_documentation_string', 'func_documentation_tokens', 'split_name', 
+      'func_code_url'
+    ],
+    num_rows: 412178
+})
+```
+
+我們可以看到數據集將文檔字符串與代碼分開，並且有他們各自的標記化後的結果。 這裡。 我們將只使用 `whole_func_string` 列來訓練我們的標記器。 我們可以通過指定到 `train` 中的一部分來查看這些函數的一個示例：
+
+```py
+print(raw_datasets["train"][123456]["whole_func_string"])
+```
+
+應該打印以下內容：
+
+```out
+def handle_simple_responses(
+      self, timeout_ms=None, info_cb=DEFAULT_MESSAGE_CALLBACK):
+    """Accepts normal responses from the device.
+
+    Args:
+      timeout_ms: Timeout in milliseconds to wait for each response.
+      info_cb: Optional callback for text sent from the bootloader.
+
+    Returns:
+      OKAY packet's message.
+    """
+    return self._accept_responses('OKAY', info_cb, timeout_ms=timeout_ms)
+```
+
+我們需要做的第一件事是將數據集轉換為迭代器文本列表 - 例如，文本列表。使用文本列表將使我們的標記器運行得更快（訓練成批文本而不是一個接一個地處理單個文本），如果我們想避免一次將所有內容都放在內存中，它應該是一個迭代器。如果你的語料庫很大，你會想要利用這樣一個特性：🤗 Datasets 不會將所有內容都加載到 RAM 中，而是將數據集的元素存儲在磁盤上。
+
+執行以下操作將創建一個包含 1,000 個文本的列表的列表，但會將所有內容加載到內存中：
+
+```py
+# Don't uncomment the following line unless your dataset is small!
+# training_corpus = [raw_datasets["train"][i: i + 1000]["whole_func_string"] for i in range(0, len(raw_datasets["train"]), 1000)]
+```
+
+使用 Python 生成器，我們可以避免 Python 將任何內容加載到內存中，直到真正需要為止。要創建這樣的生成器，您只需要將括號替換為圓括號：
+
+```py
+training_corpus = (
+    raw_datasets["train"][i : i + 1000]["whole_func_string"]
+    for i in range(0, len(raw_datasets["train"]), 1000)
+)
+```
+
+這行代碼不會獲取數據集的任何元素；它只是創建了一個可以在 Python 中使用的對象 **for** 環形。文本只會在您需要時加載（即，當您處於 **for** 需要它們的循環），並且一次只會加載 1,000 個文本。這樣，即使您正在處理龐大的數據集，也不會耗盡所有內存。
+
+生成器對象的問題在於它只能使用一次，每次訪問它將給出下一個值。 下面是一個例子：
+
+```py
+gen = (i for i in range(10))
+print(list(gen))
+print(list(gen))
+```
+
+我們第一次得到了這個列表，然後是一個空列表：
+
+```python out
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+[]
+```
+
+這就是我們定義一個返回生成器的函數的原因：
+
+```py
+def get_training_corpus():
+    return (
+        raw_datasets["train"][i : i + 1000]["whole_func_string"]
+        for i in range(0, len(raw_datasets["train"]), 1000)
+    )
+
+
+training_corpus = get_training_corpus()
+```
+
+您還可以在一個 **for** 循環內部使用 **yield** 關鍵字定義您的生成器：
+
+```py
+def get_training_corpus():
+    dataset = raw_datasets["train"]
+    for start_idx in range(0, len(dataset), 1000):
+        samples = dataset[start_idx : start_idx + 1000]
+        yield samples["whole_func_string"]
+```
+
+這將產生與以前完全相同的生成器，但允許您使用比列表生成式中更復雜的邏輯。
+
+## 訓練一個新的標記器
+
+現在我們的語料庫是文本批量迭代器的形式，我們準備訓練一個新的標記器。為此，我們首先需要加載要與模型配對的標記器（此處為 GPT-2）：
+
+```py
+from transformers import AutoTokenizer
+
+old_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+即使我們要訓練一個新的標記器，最好還是這樣做以避免完全從頭開始。這樣，我們就不必指定任何關於標記化算法或我們想要使用的特殊標記；我們的新標記器將與 GPT-2 完全相同，唯一會改變的是輸入的數據，這將取決於我們訓練的語料。
+
+首先讓我們看看這個標記器將如何處理示例的數據：
+
+```py
+example = '''def add_numbers(a, b):
+    """Add the two numbers `a` and `b`."""
+    return a + b'''
+
+tokens = old_tokenizer.tokenize(example)
+tokens
+```
+
+```python out
+['def', 'Ġadd', '_', 'n', 'umbers', '(', 'a', ',', 'Ġb', '):', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġ"""', 'Add', 'Ġthe', 'Ġtwo',
+ 'Ġnumbers', 'Ġ`', 'a', '`', 'Ġand', 'Ġ`', 'b', '`', '."', '""', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġreturn', 'Ġa', 'Ġ+', 'Ġb']
+```
+
+這個標記器有一些特殊的符號，比如 **Ċ** 和 **Ġ** ，分別表示空格和換行符。正如我們所看到的，這不是太有效：標記器為每個空格返回單獨的標記，當它可以將縮進級別組合在一起時（因為在代碼中具有四個或八個空格的集合將非常普遍）。它也有點奇怪地拆分了函數名稱，而習慣使用**_**的函數命名的方法。
+
+讓我們訓練一個新的標記器，看看它是否能解決這些問題。為此，我們將使用 **train_new_from_iterator()** 方法：
+
+```py
+tokenizer = old_tokenizer.train_new_from_iterator(training_corpus, 52000)
+```
+如果您的語料庫非常大，此命令可能需要一些時間，但對於這個 1.6 GB 文本數據集，它的速度非常快（在具有 12 個內核的 AMD Ryzen 9 3900X CPU 上為 1 分 16 秒）。
+
+注意 **AutoTokenizer.train_new_from_iterator()** 僅當您使用的標記器是“快速（fast）”標記器時才有效。正如您將在下一節中看到的，🤗 Transformers 庫包含兩種類型的標記器：一些完全用 Python 編寫，而另一些（快速的）由 🤗 Tokenizers 庫支持，該庫用[Rust](https://www.rust-lang.org)編程語言編寫。 Python 是最常用於數據科學和深度學習應用程序的語言，但是當需要並行化以提高速度時，必須用另一種語言編寫。例如，模型計算核心的矩陣乘法是用 CUDA 編寫的，CUDA 是一個針對 GPU 的優化 C 庫。
+
+用純 Python 訓練一個全新的標記器會非常緩慢，這就是我們開發 🤗 Tokenizers庫的原因。請注意，正如您無需學習 CUDA 語言即可在 GPU 上執行您的模型一樣，您也無需學習 Rust 即可使用快速標記器。 🤗 Tokenizers 庫為許多內部調用 Rust 代碼的方法提供 Python 綁定；例如，並行化新標記器的訓練，或者，正如我們在[第三章](/course/chapter3)中看到的，對一批輸入進行標記化。
+
+大多數 Transformer 模型都有可用的快速標記器（您可以[在這裡](https://huggingface.co/transformers/#supported-frameworks)檢查一些例外情況)，如果 **AutoTokenizer** 可用，API 總是為您選擇快速標記器。在下一節中，我們將看看快速標記器具有的其他一些特殊功能，這些功能對於標記分類和問答等任務非常有用。然而，在深入研究之前，讓我們在上一個示例中嘗試我們全新的標記器：
+
+```py
+tokens = tokenizer.tokenize(example)
+tokens
+```
+
+```python out
+['def', 'Ġadd', '_', 'numbers', '(', 'a', ',', 'Ġb', '):', 'ĊĠĠĠ', 'Ġ"""', 'Add', 'Ġthe', 'Ġtwo', 'Ġnumbers', 'Ġ`',
+ 'a', '`', 'Ġand', 'Ġ`', 'b', '`."""', 'ĊĠĠĠ', 'Ġreturn', 'Ġa', 'Ġ+', 'Ġb']
+```
+
+在這裡我們再次看到特殊符號 **Ċ** 和 **Ġ** 表示空格和換行符，但我們也可以看到我們的標記器學習了一些高度特定於 Python 函數語料庫的標記：例如，有一個 **ĊĠĠĠ** 表示縮進的標記，以及 **Ġ** 表示開始文檔字符串的三個引號的標記。標記器還正確使用**_**命名的規範將函數名稱拆分為  .這是一個非常緊湊的表示；相比之下，在同一個例子中使用簡單的英語標記器會給我們一個更長的句子：
+
+```py
+print(len(tokens))
+print(len(old_tokenizer.tokenize(example)))
+```
+
+```python out
+27
+36
+```
+
+讓我們再看一個例子：
+
+```python
+example = """class LinearLayer():
+    def __init__(self, input_size, output_size):
+        self.weight = torch.randn(input_size, output_size)
+        self.bias = torch.zeros(output_size)
+
+    def __call__(self, x):
+        return x @ self.weights + self.bias
+    """
+tokenizer.tokenize(example)
+```
+
+```python out
+['class', 'ĠLinear', 'Layer', '():', 'ĊĠĠĠ', 'Ġdef', 'Ġ__', 'init', '__(', 'self', ',', 'Ġinput', '_', 'size', ',',
+ 'Ġoutput', '_', 'size', '):', 'ĊĠĠĠĠĠĠĠ', 'Ġself', '.', 'weight', 'Ġ=', 'Ġtorch', '.', 'randn', '(', 'input', '_',
+ 'size', ',', 'Ġoutput', '_', 'size', ')', 'ĊĠĠĠĠĠĠĠ', 'Ġself', '.', 'bias', 'Ġ=', 'Ġtorch', '.', 'zeros', '(',
+ 'output', '_', 'size', ')', 'ĊĊĠĠĠ', 'Ġdef', 'Ġ__', 'call', '__(', 'self', ',', 'Ġx', '):', 'ĊĠĠĠĠĠĠĠ',
+ 'Ġreturn', 'Ġx', 'Ġ@', 'Ġself', '.', 'weights', 'Ġ+', 'Ġself', '.', 'bias', 'ĊĠĠĠĠ']
+```
+
+除了一個縮進對應的token，這裡我們還可以看到一個雙縮進的token： **ĊĠĠĠĠĠĠĠ** .特殊的 Python 詞如 **class** , **init** , **call** , **self** ， 和 **return** 每個都被標記為一個標記，我們可以看到，以及分裂 **_** 和 **.** 標記器甚至可以正確拆分駝峰式名稱： **LinearLayer** 被標記為 **[ĠLinear, Layer]** .
+
+## 保存標記器
+
+為了確保我們以後可以使用它，我們需要保存我們的新標記器。就像模型一樣，是通過 **save_pretrained()** 方法：
+
+```py
+tokenizer.save_pretrained("code-search-net-tokenizer")
+```
+
+這將創建一個名為的*code-search-net-tokenizer*的新文件夾，它將包含重新加載標記器所需要的所有文件。如果您想與您的同事和朋友分享這個標記器，您可以通過登錄您的帳戶將其上傳到 Hub。如果您在notebook上工作，有一個方便的功能可以幫助您：
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+這將顯示一個小部件，您可以在其中輸入您的 Hugging Face 登錄憑據。如果您不是在notebook上工作，只需在終端中輸入以下行：
+
+```bash
+huggingface-cli login
+```
+
+登錄後，您可以通過執行以下命令來推送您的標記器：
+
+```py
+tokenizer.push_to_hub("code-search-net-tokenizer")
+```
+
+這將在您的命名空間中創建一個名為**code-search-net-tokenizer**的新存儲庫  ，包含標記器文件。然後，您可以使用以下命令從任何地方加載標記器的 **from_pretrained()** 方法：
+
+```py
+# Replace "huggingface-course" below with your actual namespace to use your own tokenizer
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+```
+
+您現在已準備好從頭開始訓練語言模型並根據您手頭的任務對其進行微調！我們將在[第七章](/course/chapter7)進行這部分。但首先，在本章的其餘部分，我們將仔細研究快速標記器，並詳細探討調用 **train_new_from_iterator()** 方法時實際發生的情況 .
