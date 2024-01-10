@@ -1,0 +1,643 @@
+<FrameworkSwitchCourse {fw} />
+
+# Tokenizadores Rápidos en un Pipeline de Question-Answering[[fast-tokenizers-in-the-qa-pipeline]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_tf.ipynb"},
+]} />
+
+{/if}
+
+Ahora nos sumergiremos en el pipeline de `question-answering` (preguntas y respuestas) y veremos como hacer uso de los offsets para tomar la respuesta de la pregunta desde el contexto, un poco como lo que hicimos para las entidades agrupadas en la sección previa. Luego veremos como lidiar con contextos muy largos que terminan siendo truncados. Puedes saltar esta sección si no estás interesado en la tarea de pregunta y respuesta (_question answering_).
+
+{#if fw === 'pt'}
+
+<Youtube id="_wxyB3j3mk4"/>
+
+{:else}
+
+<Youtube id="b3u8RzBCX9Y"/>
+
+{/if}
+
+## Usando el pipeline de `question-answering`[[using-the-question-answering-pipeline]]
+
+Como vimos en el [Capítulo 1](/course/chapter1), podemos usar el pipeline de `question-answering` para obtener la respuesta a una pregunta de la siguiente manera:
+
+```py
+from transformers import pipeline
+
+question_answerer = pipeline("question-answering")
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch, and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+```python out
+{'score': 0.97773,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+A diferencia de otros pipelines, los cuales no pueden truncar y dividir textos que son más largos que el largo máximo aceptado por el modelo (y por lo tanto perder información al final de un documento), este pipeline puede lidiar con contextos muy largos y retornará una respuesta a la pregunta incluso si está al final.
+
+```py
+long_context = """
+🤗 Transformers: State of the Art NLP
+
+🤗 Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+🤗 Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internals are exposed as consistently as possible.
+  - Model files can be used independently of the library for quick experiments.
+
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question_answerer(question=question, context=long_context)
+```
+
+```python out
+{'score': 0.97149,
+ 'start': 1892,
+ 'end': 1919,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+¡Veamos cómo hace todo esto!
+
+## Usando un modelo para question answering[[using-a-model-for-question-answering]]
+
+Como para cualquier otro pipeline, empezamos tokenizando nuestro input y lo envíamos a través del modelo. El punto de control (`checkpoint`) usado por defecto para el pipeline de `question-answering` es [`distilbert-base-cased-distilled-squad`](https://huggingface.co/distilbert-base-cased-distilled-squad) (el "squad" en el nombre viene del conjunto de datos en el cual se le hizo fine-tune; hablaremos más acerca del conjunto de datos SQuAD en el [Capítulo 7](/course/chapter7/7))
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFAutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = TFAutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="tf")
+outputs = model(**inputs)
+```
+
+{/if}
+
+Notar que tokenizamos nuestra y el contexto como un par, con la pregunta primero. 
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens.svg" alt="An example of tokenization of question and context"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens-dark.svg" alt="An example of tokenization of question and context"/>
+</div>
+
+Los modelos para question answering funcionan de manera un poco distinta de los modelos que hemos visto hasta ahora. Usando la imagen de arriba como ejemplo, el modelo ha sido entrenado para predecir el índice de los tokens al inicio de la respuesta (en este caso el 21) y el índice del token donde la respuesta termina (en este caso el 24). Esto porque estos modelos no retornar un tensor de logits sino dos: uno para los logits correspondientes al token de inicio de la respuesta, y uno para los logits correspondientes al token de término de la respuesta. Dado que en este caso tenemos un input conteniendo 66 tokens, obtenemos:
+
+```py
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([1, 66]) torch.Size([1, 66])
+```
+
+{:else}
+
+```python out
+(1, 66) (1, 66)
+```
+
+{/if}
+
+Para convertir estos logits en probabilidades, aplicaremos la función softmax -- pero antes de eso, necesitamos asegurarnos que enmascaramos los índices que no son parte del contexto. Nuestro input es `[CLS] pregunta [SEP] contexto [SEP]`, por lo que necesitamos enmascarar los tokens de la pregunta como también el token `[SEP]`. Mantredemos el token `[CLS]`, ya que algunos modelos lo usan para indicar que la respuesta no está en el contexto. 
+
+Dado que aplicaremos una softmax después, sólo necesitamos reemplazar los logits que queremos enmascarar con un número negativo muy grande. En este caso, usamos el `-10000`:
+
+{#if fw === 'pt'}
+
+```py
+import torch
+
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+mask = torch.tensor(mask)[None]
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+{:else}
+
+```py
+import tensorflow as tf
+
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+mask = tf.constant(mask)[None]
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+{/if}
+
+Ahora que tenemos enmascarados los logits de manera apropiada correspondientes a los tokens que no queremos predecir. Podemos aplicar la softmax:
+
+{#if fw === 'pt'}
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)[0]
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)[0]
+```
+
+{:else}
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1)[0].numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1)[0].numpy()
+```
+
+{/if}
+
+En esta punto, podemos tomar el argmax de las probabilidades de inicio y fin -- pero podríamos terminar con un índice de inicio que es mayot que índice de término, por lo que necesitamos tomar unas pocas precauciones más. Calcularemos la probabilidad de cada posible `start_index` and `end_index` (índice de inicio y final respectivamente) donde `start_index <= end_index`, luego tomamos la tupla `(start_index, end_index)` con la probabilidad más alta. 
+
+Asumiendo que los eventos "La respuesta comienzda en `start_index`" y "La respuesta termina en `end_index`" son independientes, la probabilidad de que la respuesta inicie en `start_index` y termine en `end_index` es:
+
+$$\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]$$ 
+
+Así que para calcular todos los puntajes, necesitamos calcular todos los productos \\(\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]\\) donde `start_index <= end_index`.
+
+Primero calculemos todos los posibles productos:
+
+```py
+scores = start_probabilities[:, None] * end_probabilities[None, :]
+```
+
+{#if fw === 'pt'}
+
+Luego enmascararemos los valores donde `start_index > end_index` reemplazándolos como 0 (las otras probabilidades son todos números positivos). La función `torch.triu()` retorna la parte triangular superior de el tensor 2D pasado como argumento, por lo que hará el enmascaramiento por nosotros. 
+
+```py
+scores = torch.triu(scores)
+```
+
+{:else}
+
+
+Luego enmascararemos los valores donde `start_index > end_index` reemplazándolos como 0 (las otras probabilidades son todos números positivos). La función `np.triu()` retorna la parte triangular superior de el tensor 2D pasado como argumento, por lo que hará el enmascaramiento por nosotros. 
+
+```py
+import numpy as np
+
+scores = np.triu(scores)
+```
+
+{/if}
+
+Ahora basta con obtener el índice el máximo. Dado que Pytorch retornará el índice en el tensor aplanado, necesitamos usar las operaciones división entera `//` y módulo `%` para obtener el `start_index` y el `end_index`: 
+
+```py
+max_index = scores.argmax().item()
+start_index = max_index // scores.shape[1]
+end_index = max_index % scores.shape[1]
+print(scores[start_index, end_index])
+```
+
+No estamos listos aún, pero al menos ya tenemos el puntaje correcto para la respuesta (puedes chequear esto comparándolo con el primer resultado en la sección previa):
+
+```python out
+0.97773
+```
+
+<Tip>
+
+✏️ **Inténtalo!** Calcula los índices de inicio y término para las cinco respuestas más probables.
+
+</Tip>
+
+Tenemos el `start_index` y el `end_index` de la respuesta en términos de tokens, así que ahora sólo necesitamos convertirlos en los índices de caracteres en el contexto. Aquí es donde los offsets serán sumamente útiles. Podemos tomarlos y usarlos como lo hicimos en la tarea de clasificación de tokens:
+
+```py
+inputs_with_offsets = tokenizer(question, context, return_offsets_mapping=True)
+offsets = inputs_with_offsets["offset_mapping"]
+
+start_char, _ = offsets[start_index]
+_, end_char = offsets[end_index]
+answer = context[start_char:end_char]
+```
+
+Ahora sólo tenemos que dar formato a todo para tener nuestros resultados:
+
+```py
+result = {
+    "answer": answer,
+    "start": start_char,
+    "end": end_char,
+    "score": scores[start_index, end_index],
+}
+print(result)
+```
+
+```python out
+{'answer': 'Jax, PyTorch and TensorFlow',
+ 'start': 78,
+ 'end': 105,
+ 'score': 0.97773}
+```
+
+Genial! Obtuvimos lo mismo que en nuestro primer ejemplo!
+
+<Tip>
+
+✏️ **Inténtalo!** Usaremos los mejores puntajes calculados anteriormente para mostrar las cinco respuestas más probables. Para revisar nuestros resultados regresa al primer pipeline y agrega `top_k=5` al llamarlo.
+
+</Tip>
+
+## Manejando contextos largos[[handling-long-contexts]]
+
+Si tratamos de tokenizar la pregunta en un contexto largo que usamos en el ejemplo previamente, tendremos un número de tokens que es más alto que el largo máximo usado en el pipeline de `question-answering` (que es 384):
+
+```py
+inputs = tokenizer(question, long_context)
+print(len(inputs["input_ids"]))
+```
+
+```python out
+461
+```
+
+Entonces, necesitaremos truncar nuestras entradas/inputs al largo máximo. Hay varias maneras de hacer esto, pero no queremos truncar la pregunta, sólo el contexto. Dado que el contexto es la segunda oración, usaremos la estrategia de truncamiento `"only_second"`. El problema que aparece es que la respuesta a la pregunta podría no estar en el contexto truncado. En este caso, por ejemplo, elegimos una pregunta donde la respuesta está hacia el final del contexto, y cuando truncamos la respuesta no está presente:
+
+```py
+inputs = tokenizer(question, long_context, max_length=384, truncation="only_second")
+print(tokenizer.decode(inputs["input_ids"]))
+```
+
+```python out
+"""
+[CLS] Which deep learning libraries back [UNK] Transformers? [SEP] [UNK] Transformers : State of the Art NLP
+
+[UNK] Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+[UNK] Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internal [SEP]
+"""
+```
+
+Esto significa que el modelo le costará bastante elegir la respuesta correcta. Para corregir eso, el pipeline de `question-answering` permite separar el contexto en trozos pequeños, especificando el largo máximo. Para asegurarnos que no separemos el contexto exactamente en un lugar incorrecto donde podríamos encontrar la respuesta, también incluye algunos traslapes (overlaps) entre los trozos. 
+
+Podemos hacer que el tokenizador (rápido o lento) haga esto por nosotros agregando `return_overflowing_tokens=True`, y podemos especificar el traslape (overlap) que queremos con el argumento `stride`. Acá un ejemplo, usando una oración corta:
+
+```py
+sentence = "This sentence is not too long but we are going to split it anyway."
+inputs = tokenizer(
+    sentence, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+```python out
+'[CLS] This sentence is not [SEP]'
+'[CLS] is not too long [SEP]'
+'[CLS] too long but we [SEP]'
+'[CLS] but we are going [SEP]'
+'[CLS] are going to split [SEP]'
+'[CLS] to split it anyway [SEP]'
+'[CLS] it anyway. [SEP]'
+```
+
+Como podemos ver, la oración ha sido dividida en trozos de tal manera que cada entrada en `inputs["input_ids"] tiene a lo más 6 tokens (tendríamos que agregar relleno (`padding`) en el último trozo para tener el mismo largo que los otros) y hay traslape (overlap) de 2 tokens entre cada uno de los trozos. 
+
+Miremos de cerca el resultado de la tokenización:
+
+```py
+print(inputs.keys())
+```
+
+```python out
+dict_keys(['input_ids', 'attention_mask', 'overflow_to_sample_mapping'])
+```
+
+Como se esperaba, obtenemos los IDs de entrada y una máscara de atención (attention mask). La última clave, `overflow_to_sample_mapping`, es un mapa que nos dice a qué oraciones corresponde cada resultado -- en este caso tenemos 7 resultados, todos provenientes de la (única) oración que le pasamos al tokenizador:
+
+```py
+print(inputs["overflow_to_sample_mapping"])
+```
+
+```python out
+[0, 0, 0, 0, 0, 0, 0]
+```
+
+Esto es más útil cuando tokenizamos varias oraciones juntas. Por ejemplo así:
+
+```py
+sentences = [
+    "This sentence is not too long but we are going to split it anyway.",
+    "This sentence is shorter but will still get split.",
+]
+inputs = tokenizer(
+    sentences, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+print(inputs["overflow_to_sample_mapping"])
+```
+
+obtenemos:
+
+```python out
+[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+```
+
+lo que significa que la primera oración está dividida en 7 trozos igual que antes, y los siguientes 4 trozos vienen de la segunda oración.
+
+Ahora volvamos a nuestro contexto largo. Por defecto el pipeline de `question-answering` usa un largo máximo de 384, como mencionamos antes, y un stride de 128, lo que corresponde a la manera en la que al modelo se le hizo fine-tuning (puedes ajustar esos parámetros pasando los argumentos `max_seq_len` y `stride` al llamar el pipeline). Por lo tanto, usaremos esos parámetros al tokenizar. También agregaremos relleno (`padding`) (para tener muestras del mismo largo, para que podamos construir los tensores) como también pedir los offsets:
+
+```py
+inputs = tokenizer(
+    question,
+    long_context,
+    stride=128,
+    max_length=384,
+    padding="longest",
+    truncation="only_second",
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+```
+
+Esos `inputs` contendrán los IDs de entrada y las máscaras de atención (attention masks) que el modelo espera, así como los offsets y el `overflow_to_sample_mapping` que hablamos antes. Dado que esos dos no son parámetros usados por el modelo, los sacaremos de los `inputs` (y no guardaremos el mapa, ya que no es útil acá) antes de convertirlo en un tensor:
+
+{#if fw === 'pt'}
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("pt")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+torch.Size([2, 384])
+```
+
+{:else}
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("tf")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+(2, 384)
+```
+
+{/if}
+
+Nuestro contexto largo fue dividido en dos, lo que significa que después de pasar por nuestro modelo, tendremos 2 sets de logits de inicio y término:
+
+```py
+outputs = model(**inputs)
+
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([2, 384]) torch.Size([2, 384])
+```
+
+{:else}
+
+```python out
+(2, 384) (2, 384)
+```
+
+{/if}
+
+Al igual que antes, primero enmascaramos los tokens que no son parte del contexto antes de aplicar softmax. También enmascaramos todos los tokens de de relleno (`padding`) (de acuerdo a la máscara de atención (attention masks)):
+
+{#if fw === 'pt'}
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+# Mask all the [PAD] tokens
+mask = torch.logical_or(torch.tensor(mask)[None], (inputs["attention_mask"] == 0))
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+{:else}
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+# Mask all the [PAD] tokens
+mask = tf.math.logical_or(tf.constant(mask)[None], inputs["attention_mask"] == 0)
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+{/if}
+
+Luego podemos usar la función softmax para convertir nuestros logits en probabilidades:
+
+{#if fw === 'pt'}
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)
+```
+
+{:else}
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1).numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1).numpy()
+```
+
+{/if}
+
+El siguiente paso es similar a lo que hicimos para el contexto pequeño, pero lo repetimos para cada uno de nuestros dos trozos. Le atribuímos un puntaje a todas las posibles respuestas, para luego tomar la respuesta con el mejor puntaje:
+
+{#if fw === 'pt'}
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = torch.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+{:else}
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = np.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+{/if}
+
+```python out
+[(0, 18, 0.33867), (173, 184, 0.97149)]
+```
+
+Estos dos candidatos corresponden a las mejores respuestas que el modelo fue capaz de encontrar en cada trozo. El modelo está mucho más confiado de que la respuesta correcta está en la segunda parte (¡lo que es una buena señal!). Ahora sólo tenemos que mapear dichos tokens a los caracteres en el contexto (sólo necesitamos mapear la segunda para obtener nuestra respuesta, pero es interesante ver que el modelo ha elegido en el primer trozo).
+
+<Tip>
+
+✏️ **Inténtalo!** Adapta el código de arriba pra retornar los puntajes de las 5 respuestas más probables (en total, no por trozo).
+
+</Tip>
+
+Los `offsets` que tomamos antes es en realidad una lista de offsets, con una lista por trozo de texto:
+
+```py
+for candidate, offset in zip(candidates, offsets):
+    start_token, end_token, score = candidate
+    start_char, _ = offset[start_token]
+    _, end_char = offset[end_token]
+    answer = long_context[start_char:end_char]
+    result = {"answer": answer, "start": start_char, "end": end_char, "score": score}
+    print(result)
+```
+
+```python out
+{'answer': '\n🤗 Transformers: State of the Art NLP', 'start': 0, 'end': 37, 'score': 0.33867}
+{'answer': 'Jax, PyTorch and TensorFlow', 'start': 1892, 'end': 1919, 'score': 0.97149}
+```
+
+Si ignoramos el primer resultado, obtenemos el mismo resultado que nuestro pipeline para el contexto largo -- bien!
+
+<Tip>
+
+✏️ **Inténtalo!** Usa los mejores puntajes que calculaste antes para mostrar las 5 respuestas más probables. Para revisar tus resultados, regresa al primer pipeline y agrega `top_k=5` al llamarlo.
+
+</Tip>
+
+Esto concluye nuestra profundización en las capacidades de los tokenizadores. Pondremos todo esto en práctica de nuevo en el siguiente capítulo, cuando te mostremos cómo hacer fine-tuning a un modelo en una variedad de tareas comunes de PLN.
