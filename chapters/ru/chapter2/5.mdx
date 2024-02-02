@@ -1,0 +1,338 @@
+<FrameworkSwitchCourse {fw} />
+
+# Handling multiple sequences[[handling-multiple-sequences]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_tf.ipynb"},
+]} />
+
+{/if}
+
+{#if fw === 'pt'}
+<Youtube id="M6adb1j2jPI"/>
+{:else}
+<Youtube id="ROxrFOEbsQE"/>
+{/if}
+
+In the previous section, we explored the simplest of use cases: doing inference on a single sequence of a small length. However, some questions emerge already:
+
+- How do we handle multiple sequences?
+- How do we handle multiple sequences *of different lengths*?
+- Are vocabulary indices the only inputs that allow a model to work well?
+- Is there such a thing as too long a sequence?
+
+Let's see what kinds of problems these questions pose, and how we can solve them using the 🤗 Transformers API.
+
+## Models expect a batch of inputs[[models-expect-a-batch-of-inputs]]
+
+In the previous exercise you saw how sequences get translated into lists of numbers. Let's convert this list of numbers to a tensor and send it to the model:
+
+{#if fw === 'pt'}
+```py
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+input_ids = torch.tensor(ids)
+# This line will fail.
+model(input_ids)
+```
+
+```python out
+IndexError: Dimension out of range (expected to be in range of [-1, 0], but got 1)
+```
+{:else}
+```py
+import tensorflow as tf
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+input_ids = tf.constant(ids)
+# This line will fail.
+model(input_ids)
+```
+
+```py out
+InvalidArgumentError: Input to reshape is a tensor with 14 values, but the requested shape has 196 [Op:Reshape]
+```
+{/if}
+
+Oh no! Why did this fail? "We followed the steps from the pipeline in section 2.
+
+The problem is that we sent a single sequence to the model, whereas 🤗 Transformers models expect multiple sentences by default. Here we tried to do everything the tokenizer did behind the scenes when we applied it to a `sequence`. But if you look closely, you'll see that the tokenizer didn't just convert the list of input IDs into a tensor, it added a dimension on top of it:
+
+{#if fw === 'pt'}
+```py
+tokenized_inputs = tokenizer(sequence, return_tensors="pt")
+print(tokenized_inputs["input_ids"])
+```
+
+```python out
+tensor([[  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172,
+          2607,  2026,  2878,  2166,  1012,   102]])
+```
+{:else}
+```py
+tokenized_inputs = tokenizer(sequence, return_tensors="tf")
+print(tokenized_inputs["input_ids"])
+```
+
+```py out
+<tf.Tensor: shape=(1, 16), dtype=int32, numpy=
+array([[  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662,
+        12172,  2607,  2026,  2878,  2166,  1012,   102]], dtype=int32)>
+```
+{/if}
+
+Let's try again and add a new dimension:
+
+{#if fw === 'pt'}
+```py
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+
+input_ids = torch.tensor([ids])
+print("Input IDs:", input_ids)
+
+output = model(input_ids)
+print("Logits:", output.logits)
+```
+{:else}
+```py
+import tensorflow as tf
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+
+input_ids = tf.constant([ids])
+print("Input IDs:", input_ids)
+
+output = model(input_ids)
+print("Logits:", output.logits)
+```
+{/if}
+
+We print the input IDs as well as the resulting logits — here's the output:
+
+{#if fw === 'pt'}
+```python out
+Input IDs: [[ 1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172,  2607, 2026,  2878,  2166,  1012]]
+Logits: [[-2.7276,  2.8789]]
+```
+{:else}
+```py out
+Input IDs: tf.Tensor(
+[[ 1045  1005  2310  2042  3403  2005  1037 17662 12172  2607  2026  2878
+   2166  1012]], shape=(1, 14), dtype=int32)
+Logits: tf.Tensor([[-2.7276208  2.8789377]], shape=(1, 2), dtype=float32)
+```
+{/if}
+
+*Batching* is the act of sending multiple sentences through the model, all at once. If you only have one sentence, you can just build a batch with a single sequence: 
+
+```
+batched_ids = [ids, ids]
+```
+
+This is a batch of two identical sequences!
+
+<Tip>
+
+✏️ **Try it out!** Convert this `batched_ids` list into a tensor and pass it through your model. Check that you obtain the same logits as before (but twice)!
+
+</Tip>
+
+Batching allows the model to work when you feed it multiple sentences. Using multiple sequences is just as simple as building a batch with a single sequence. There's a second issue, though. When you're trying to batch together two (or more) sentences, they might be of different lengths. If you've ever worked with tensors before, you know that they need to be of rectangular shape, so you won't be able to convert the list of input IDs into a tensor directly. To work around this problem, we usually *pad* the inputs.
+
+## Padding the inputs[[padding-the-inputs]]
+
+The following list of lists cannot be converted to a tensor:
+
+```py no-format
+batched_ids = [
+    [200, 200, 200],
+    [200, 200]
+]
+```
+
+In order to work around this, we'll use *padding* to make our tensors have a rectangular shape. Padding makes sure all our sentences have the same length by adding a special word called the *padding token* to the sentences with fewer values. For example, if you have 10 sentences with 10 words and 1 sentence with 20 words, padding will ensure all the sentences have 20 words. In our example, the resulting tensor looks like this:
+
+```py no-format
+padding_id = 100
+
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, padding_id],
+]
+```
+
+The padding token ID can be found in `tokenizer.pad_token_id`. Let's use it and send our two sentences through the model individually and batched together:
+
+{#if fw === 'pt'}
+```py no-format
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence1_ids = [[200, 200, 200]]
+sequence2_ids = [[200, 200]]
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+print(model(torch.tensor(sequence1_ids)).logits)
+print(model(torch.tensor(sequence2_ids)).logits)
+print(model(torch.tensor(batched_ids)).logits)
+```
+
+```python out
+tensor([[ 1.5694, -1.3895]], grad_fn=<AddmmBackward>)
+tensor([[ 0.5803, -0.4125]], grad_fn=<AddmmBackward>)
+tensor([[ 1.5694, -1.3895],
+        [ 1.3373, -1.2163]], grad_fn=<AddmmBackward>)
+```
+{:else}
+```py no-format
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence1_ids = [[200, 200, 200]]
+sequence2_ids = [[200, 200]]
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+print(model(tf.constant(sequence1_ids)).logits)
+print(model(tf.constant(sequence2_ids)).logits)
+print(model(tf.constant(batched_ids)).logits)
+```
+
+```py out
+tf.Tensor([[ 1.5693678 -1.3894581]], shape=(1, 2), dtype=float32)
+tf.Tensor([[ 0.5803005  -0.41252428]], shape=(1, 2), dtype=float32)
+tf.Tensor(
+[[ 1.5693681 -1.3894582]
+ [ 1.3373486 -1.2163193]], shape=(2, 2), dtype=float32)
+```
+{/if}
+
+There's something wrong with the logits in our batched predictions: the second row should be the same as the logits for the second sentence, but we've got completely different values!
+
+This is because the key feature of Transformer models is attention layers that *contextualize* each token. These will take into account the padding tokens since they attend to all of the tokens of a sequence. To get the same result when passing individual sentences of different lengths through the model or when passing a batch with the same sentences and padding applied, we need to tell those attention layers to ignore the padding tokens. This is done by using an attention mask.
+
+## Attention masks[[attention-masks]]
+
+*Attention masks* are tensors with the exact same shape as the input IDs tensor, filled with 0s and 1s: 1s indicate the corresponding tokens should be attended to, and 0s indicate the corresponding tokens should not be attended to (i.e., they should be ignored by the attention layers of the model).
+
+Let's complete the previous example with an attention mask:
+
+{#if fw === 'pt'}
+```py no-format
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+attention_mask = [
+    [1, 1, 1],
+    [1, 1, 0],
+]
+
+outputs = model(torch.tensor(batched_ids), attention_mask=torch.tensor(attention_mask))
+print(outputs.logits)
+```
+
+```python out
+tensor([[ 1.5694, -1.3895],
+        [ 0.5803, -0.4125]], grad_fn=<AddmmBackward>)
+```
+{:else}
+```py no-format
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+attention_mask = [
+    [1, 1, 1],
+    [1, 1, 0],
+]
+
+outputs = model(tf.constant(batched_ids), attention_mask=tf.constant(attention_mask))
+print(outputs.logits)
+```
+
+```py out
+tf.Tensor(
+[[ 1.5693681  -1.3894582 ]
+ [ 0.5803021  -0.41252586]], shape=(2, 2), dtype=float32)
+```
+{/if}
+
+Now we get the same logits for the second sentence in the batch.
+
+Notice how the last value of the second sequence is a padding ID, which is a 0 value in the attention mask.
+
+<Tip>
+
+✏️ **Try it out!** Apply the tokenization manually on the two sentences used in section 2 ("I've been waiting for a HuggingFace course my whole life." and "I hate this so much!"). Pass them through the model and check that you get the same logits as in section 2. Now batch them together using the padding token, then create the proper attention mask. Check that you obtain the same results when going through the model!
+
+</Tip>
+
+## Longer sequences[[longer-sequences]]
+
+With Transformer models, there is a limit to the lengths of the sequences we can pass the models. Most models handle sequences of up to 512 or 1024 tokens, and will crash when asked to process longer sequences. There are two solutions to this problem:
+
+- Use a model with a longer supported sequence length.
+- Truncate your sequences.
+
+Models have different supported sequence lengths, and some specialize in handling very long sequences. [Longformer](https://huggingface.co/docs/transformers/model_doc/longformer) is one example, and another is [LED](https://huggingface.co/docs/transformers/model_doc/led). If you're working on a task that requires very long sequences, we recommend you take a look at those models.
+
+Otherwise, we recommend you truncate your sequences by specifying the `max_sequence_length` parameter:
+
+```py
+sequence = sequence[:max_sequence_length]
+```
