@@ -1,0 +1,1072 @@
+<FrameworkSwitchCourse {fw} />
+
+# Summarization[[summarization]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_tf.ipynb"},
+]} />
+
+{/if}
+
+
+In this section we'll take a look at how Transformer models can be used to condense long documents into summaries, a task known as _text summarization_. This is one of the most challenging NLP tasks as it requires a range of abilities, such as understanding long passages and generating coherent text that captures the main topics in a document. However, when done well, text summarization is a powerful tool that can speed up various business processes by relieving the burden of domain experts to read long documents in detail.
+
+<Youtube id="yHnr5Dk2zCI"/>
+
+Although there already exist various fine-tuned models for summarization on the [Hugging Face Hub](https://huggingface.co/models?pipeline_tag=summarization&sort=downloads), almost all of these are only suitable for English documents. So, to add a twist in this section, we'll train a bilingual model for English and Spanish. By the end of this section, you'll have a [model](https://huggingface.co/huggingface-course/mt5-small-finetuned-amazon-en-es) that can summarize customer reviews like the one shown here:
+
+<iframe src="https://course-demos-mt5-small-finetuned-amazon-en-es.hf.space" frameBorder="0" height="400" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+As we'll see, these summaries are concise because they're learned from the titles that customers provide in their product reviews. Let's start by putting together a suitable bilingual corpus for this task.
+
+## Preparing a multilingual corpus[[preparing-a-multilingual-corpus]]
+
+We'll use the [Multilingual Amazon Reviews Corpus](https://huggingface.co/datasets/amazon_reviews_multi) to create our bilingual summarizer. This corpus consists of Amazon product reviews in six languages and is typically used to benchmark multilingual classifiers. However, since each review is accompanied by a short title, we can use the titles as the target summaries for our model to learn from! To get started, let's download the English and Spanish subsets from the Hugging Face Hub:
+
+```python
+from datasets import load_dataset
+
+spanish_dataset = load_dataset("amazon_reviews_multi", "es")
+english_dataset = load_dataset("amazon_reviews_multi", "en")
+english_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 200000
+    })
+    validation: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 5000
+    })
+    test: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 5000
+    })
+})
+```
+
+As you can see, for each language there are 200,000 reviews for the `train` split, and 5,000 reviews for each of the `validation` and `test` splits. The review information we are interested in is contained in the `review_body` and `review_title` columns. Let's take a look at a few examples by creating a simple function that takes a random sample from the training set with the techniques we learned in [Chapter 5](/course/chapter5):
+
+```python
+def show_samples(dataset, num_samples=3, seed=42):
+    sample = dataset["train"].shuffle(seed=seed).select(range(num_samples))
+    for example in sample:
+        print(f"\n'>> Title: {example['review_title']}'")
+        print(f"'>> Review: {example['review_body']}'")
+
+
+show_samples(english_dataset)
+```
+
+```python out
+'>> Title: Worked in front position, not rear'
+'>> Review: 3 stars because these are not rear brakes as stated in the item description. At least the mount adapter only worked on the front fork of the bike that I got it for.'
+
+'>> Title: meh'
+'>> Review: Does it’s job and it’s gorgeous but mine is falling apart, I had to basically put it together again with hot glue'
+
+'>> Title: Can\'t beat these for the money'
+'>> Review: Bought this for handling miscellaneous aircraft parts and hanger "stuff" that I needed to organize; it really fit the bill. The unit arrived quickly, was well packaged and arrived intact (always a good sign). There are five wall mounts-- three on the top and two on the bottom. I wanted to mount it on the wall, so all I had to do was to remove the top two layers of plastic drawers, as well as the bottom corner drawers, place it when I wanted and mark it; I then used some of the new plastic screw in wall anchors (the 50 pound variety) and it easily mounted to the wall. Some have remarked that they wanted dividers for the drawers, and that they made those. Good idea. My application was that I needed something that I can see the contents at about eye level, so I wanted the fuller-sized drawers. I also like that these are the new plastic that doesn\'t get brittle and split like my older plastic drawers did. I like the all-plastic construction. It\'s heavy duty enough to hold metal parts, but being made of plastic it\'s not as heavy as a metal frame, so you can easily mount it to the wall and still load it up with heavy stuff, or light stuff. No problem there. For the money, you can\'t beat it. Best one of these I\'ve bought to date-- and I\'ve been using some version of these for over forty years.'
+```
+
+<Tip>
+
+✏️ **Try it out!** Change the random seed in the `Dataset.shuffle()` command to explore other reviews in the corpus. If you're a Spanish speaker, take a look at some of the reviews in `spanish_dataset` to see if the titles also seem like reasonable summaries.
+
+</Tip>
+
+This sample shows the diversity of reviews one typically finds online, ranging from positive to negative (and everything in between!). Although the example with the "meh" title is not very informative, the other titles look like decent summaries of the reviews themselves. Training a summarization model on all 400,000 reviews would take far too long on a single GPU, so instead we'll focus on generating summaries for a single domain of products. To get a feel for what domains we can choose from, let's convert `english_dataset` to a `pandas.DataFrame` and compute the number of reviews per product category:
+
+```python
+english_dataset.set_format("pandas")
+english_df = english_dataset["train"][:]
+# Show counts for top 20 products
+english_df["product_category"].value_counts()[:20]
+```
+
+```python out
+home                      17679
+apparel                   15951
+wireless                  15717
+other                     13418
+beauty                    12091
+drugstore                 11730
+kitchen                   10382
+toy                        8745
+sports                     8277
+automotive                 7506
+lawn_and_garden            7327
+home_improvement           7136
+pet_products               7082
+digital_ebook_purchase     6749
+pc                         6401
+electronics                6186
+office_product             5521
+shoes                      5197
+grocery                    4730
+book                       3756
+Name: product_category, dtype: int64
+```
+
+The most popular products in the English dataset are about household items, clothing, and wireless electronics. To stick with the Amazon theme, though, let's focus on summarizing book reviews -- after all, this is what the company was founded on! We can see two product categories that fit the bill (`book` and `digital_ebook_purchase`), so let's filter the datasets in both languages for just these products. As we saw in [Chapter 5](/course/chapter5), the `Dataset.filter()` function allows us to slice a dataset very efficiently, so we can define a simple function to do this:
+
+```python
+def filter_books(example):
+    return (
+        example["product_category"] == "book"
+        or example["product_category"] == "digital_ebook_purchase"
+    )
+```
+
+Now when we apply this function to `english_dataset` and `spanish_dataset`, the result will contain just those rows involving the book categories. Before applying the filter, let's switch the format of `english_dataset` from `"pandas"` back to `"arrow"`:
+
+```python
+english_dataset.reset_format()
+```
+
+We can then apply the filter function, and as a sanity check let's inspect a sample of reviews to see if they are indeed about books:
+
+```python
+spanish_books = spanish_dataset.filter(filter_books)
+english_books = english_dataset.filter(filter_books)
+show_samples(english_books)
+```
+
+```python out
+'>> Title: I\'m dissapointed.'
+'>> Review: I guess I had higher expectations for this book from the reviews. I really thought I\'d at least like it. The plot idea was great. I loved Ash but, it just didnt go anywhere. Most of the book was about their radio show and talking to callers. I wanted the author to dig deeper so we could really get to know the characters. All we know about Grace is that she is attractive looking, Latino and is kind of a brat. I\'m dissapointed.'
+
+'>> Title: Good art, good price, poor design'
+'>> Review: I had gotten the DC Vintage calendar the past two years, but it was on backorder forever this year and I saw they had shrunk the dimensions for no good reason. This one has good art choices but the design has the fold going through the picture, so it\'s less aesthetically pleasing, especially if you want to keep a picture to hang. For the price, a good calendar'
+
+'>> Title: Helpful'
+'>> Review: Nearly all the tips useful and. I consider myself an intermediate to advanced user of OneNote. I would highly recommend.'
+```
+
+Okay, we can see that the reviews are not strictly about books and might refer to things like calendars and electronic applications such as OneNote. Nevertheless, the domain seems about right to train a summarization model on. Before we look at various models that are suitable for this task, we have one last bit of data preparation to do: combining the English and Spanish reviews as a single `DatasetDict` object. 🤗 Datasets provides a handy `concatenate_datasets()` function that (as the name suggests) will stack two `Dataset` objects on top of each other. So, to create our bilingual dataset, we'll loop over each split, concatenate the datasets for that split, and shuffle the result to ensure our model doesn't overfit to a single language:
+
+```python
+from datasets import concatenate_datasets, DatasetDict
+
+books_dataset = DatasetDict()
+
+for split in english_books.keys():
+    books_dataset[split] = concatenate_datasets(
+        [english_books[split], spanish_books[split]]
+    )
+    books_dataset[split] = books_dataset[split].shuffle(seed=42)
+
+# Peek at a few examples
+show_samples(books_dataset)
+```
+
+```python out
+'>> Title: Easy to follow!!!!'
+'>> Review: I loved The dash diet weight loss Solution. Never hungry. I would recommend this diet. Also the menus are well rounded. Try it. Has lots of the information need thanks.'
+
+'>> Title: PARCIALMENTE DAÑADO'
+'>> Review: Me llegó el día que tocaba, junto a otros libros que pedí, pero la caja llegó en mal estado lo cual dañó las esquinas de los libros porque venían sin protección (forro).'
+
+'>> Title: no lo he podido descargar'
+'>> Review: igual que el anterior'
+```
+
+This certainly looks like a mix of English and Spanish reviews! Now that we have a training corpus, one final thing to check is the distribution of words in the reviews and their titles. This is especially important for summarization tasks, where short reference summaries in the data can bias the model to only output one or two words in the generated summaries. The plots below show the word distributions, and we can see that the titles are heavily skewed toward just 1-2 words:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/review-lengths.svg" alt="Word count distributions for the review titles and texts."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/review-lengths-dark.svg" alt="Word count distributions for the review titles and texts."/>
+</div>
+
+To deal with this, we'll filter out the examples with very short titles so that our model can produce more interesting summaries. Since we're dealing with English and Spanish texts, we can use a rough heuristic to split the titles on whitespace and then use our trusty `Dataset.filter()` method as follows:
+
+```python
+books_dataset = books_dataset.filter(lambda x: len(x["review_title"].split()) > 2)
+```
+
+Now that we've prepared our corpus, let's take a look at a few possible Transformer models that one might fine-tune on it!
+
+## Models for text summarization[[models-for-text-summarization]]
+
+If you think about it, text summarization is a similar sort of task to machine translation: we have a body of text like a review that we'd like to "translate" into a shorter version that captures the salient features of the input. Accordingly, most Transformer models for summarization adopt the encoder-decoder architecture that we first encountered in [Chapter 1](/course/chapter1), although there are some exceptions like the GPT family of models which can also be used for summarization in few-shot settings. The following table lists some popular pretrained models that can be fine-tuned for summarization.
+
+| Transformer model | Description                                                                                                                                                                                                    | Multilingual? |
+| :---------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-----------: |
+|    [GPT-2](https://huggingface.co/gpt2-xl)    | Although trained as an auto-regressive language model, you can make GPT-2 generate summaries by appending "TL;DR" at the end of the input text.                                                                          |      ❌       |
+|   [PEGASUS](https://huggingface.co/google/pegasus-large)   | Uses a pretraining objective to predict masked sentences in multi-sentence texts. This pretraining objective is closer to summarization than vanilla language modeling and scores highly on popular benchmarks. |      ❌       |
+|     [T5](https://huggingface.co/t5-base)      | A universal Transformer architecture that formulates all tasks in a text-to-text framework; e.g., the input format for the model to summarize a document is `summarize: ARTICLE`.                              |      ❌       |
+|     [mT5](https://huggingface.co/google/mt5-base)     | A multilingual version of T5, pretrained on the multilingual Common Crawl corpus (mC4), covering 101 languages.                                                                                                |      ✅       |
+|    [BART](https://huggingface.co/facebook/bart-base)     | A novel Transformer architecture with both an encoder and a decoder stack trained to reconstruct corrupted input that combines the pretraining schemes of BERT and GPT-2.                                    |      ❌       |
+|  [mBART-50](https://huggingface.co/facebook/mbart-large-50)   | A multilingual version of BART, pretrained on 50 languages.                                                                                                                                                     |      ✅       |
+
+As you can see from this table, the majority of Transformer models for summarization (and indeed most NLP tasks) are monolingual. This is great if your task is in a "high-resource" language like English or German, but less so for the thousands of other languages in use across the world. Fortunately, there is a class of multilingual Transformer models, like mT5 and mBART, that come to the rescue. These models are pretrained using language modeling, but with a twist: instead of training on a corpus of one language, they are trained jointly on texts in over 50 languages at once!
+
+We'll focus on mT5, an interesting architecture based on T5 that was pretrained in a text-to-text framework. In T5, every NLP task is formulated in terms of a prompt prefix like `summarize:` which conditions the model to adapt the generated text to the prompt. As shown in the figure below, this makes T5 extremely versatile, as you can solve many tasks with a single model!
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/t5.svg" alt="Different tasks performed by the T5 architecture."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/t5-dark.svg" alt="Different tasks performed by the T5 architecture."/>
+</div>
+
+mT5 doesn't use prefixes, but shares much of the versatility of T5 and has the advantage of being multilingual. Now that we've picked a model, let's take a look at preparing our data for training.
+
+
+<Tip>
+
+✏️ **Try it out!** Once you've worked through this section, see how well mT5 compares to mBART by fine-tuning the latter with the same techniques. For bonus points, you can also try fine-tuning T5 on just the English reviews. Since T5 has a special prefix prompt, you'll need to prepend `summarize:` to the input examples in the preprocessing steps below.
+
+</Tip>
+
+## Preprocessing the data[[preprocessing-the-data]]
+
+<Youtube id="1m7BerpSq8A"/>
+
+Our next task is to tokenize and encode our reviews and their titles. As usual, we begin by loading the tokenizer associated with the pretrained model checkpoint. We'll use `mt5-small` as our checkpoint so we can fine-tune the model in a reasonable amount of time:
+
+```python
+from transformers import AutoTokenizer
+
+model_checkpoint = "google/mt5-small"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+<Tip>
+
+💡 In the early stages of your NLP projects, a good practice is to train a class of "small" models on a small sample of data. This allows you to debug and iterate faster toward an end-to-end workflow. Once you are confident in the results, you can always scale up the model by simply changing the model checkpoint!
+
+</Tip>
+
+Let's test out the mT5 tokenizer on a small example:
+
+```python
+inputs = tokenizer("I loved reading the Hunger Games!")
+inputs
+```
+
+```python out
+{'input_ids': [336, 259, 28387, 11807, 287, 62893, 295, 12507, 1], 'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1]}
+```
+
+Here we can see the familiar `input_ids` and `attention_mask` that we encountered in our first fine-tuning experiments back in [Chapter 3](/course/chapter3). Let's decode these input IDs with the tokenizer's `convert_ids_to_tokens()` function to see what kind of tokenizer we're dealing with:
+
+```python
+tokenizer.convert_ids_to_tokens(inputs.input_ids)
+```
+
+```python out
+['▁I', '▁', 'loved', '▁reading', '▁the', '▁Hung', 'er', '▁Games', '</s>']
+```
+
+The special Unicode character `▁` and end-of-sequence token `</s>` indicate that we're dealing with the SentencePiece tokenizer, which is based on the Unigram segmentation algorithm discussed in [Chapter 6](/course/chapter6). Unigram is especially useful for multilingual corpora since it allows SentencePiece to be agnostic about accents, punctuation, and the fact that many languages, like Japanese, do not have whitespace characters.
+
+To tokenize our corpus, we have to deal with a subtlety associated with summarization: because our labels are also text, it is possible that they exceed the model's maximum context size. This means we need to apply truncation to both the reviews and their titles to ensure we don't pass excessively long inputs to our model. The tokenizers in 🤗 Transformers provide a nifty `text_target` argument that allows you to tokenize the labels in parallel to the inputs. Here is an example of how the inputs and targets are processed for mT5:
+
+```python
+max_input_length = 512
+max_target_length = 30
+
+
+def preprocess_function(examples):
+    model_inputs = tokenizer(
+        examples["review_body"],
+        max_length=max_input_length,
+        truncation=True,
+    )
+    labels = tokenizer(
+        examples["review_title"], max_length=max_target_length, truncation=True
+    )
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
+```
+
+Let's walk through this code to understand what's happening. The first thing we've done is define values for `max_input_length` and `max_target_length`, which set the upper limits for how long our reviews and titles can be. Since the review body is typically much larger than the title, we've scaled these values accordingly.
+
+With `preprocess_function()`, it is then a simple matter to tokenize the whole corpus using the handy `Dataset.map()` function we've used extensively throughout this course:
+
+```python
+tokenized_datasets = books_dataset.map(preprocess_function, batched=True)
+```
+
+Now that the corpus has been preprocessed, let's take a look at some metrics that are commonly used for summarization. As we'll see, there is no silver bullet when it comes to measuring the quality of machine-generated text.
+
+<Tip>
+
+💡 You may have noticed that we used `batched=True` in our `Dataset.map()` function above. This encodes the examples in batches of 1,000 (the default) and allows you to make use of the multithreading capabilities of the fast tokenizers in 🤗 Transformers. Where possible, try using `batched=True` to get the most out of your preprocessing!
+
+</Tip>
+
+
+## Metrics for text summarization[[metrics-for-text-summarization]]
+
+<Youtube id="TMshhnrEXlg"/>
+
+In comparison to most of the other tasks we've covered in this course, measuring the performance of text generation tasks like summarization or translation is not as straightforward. For example, given a review like "I loved reading the Hunger Games", there are multiple valid summaries, like "I loved the Hunger Games" or "Hunger Games is a great read". Clearly, applying some sort of exact match between the generated summary and the label is not a good solution -- even humans would fare poorly under such a metric, because we all have our own writing style.
+
+For summarization, one of the most commonly used metrics is the [ROUGE score](https://en.wikipedia.org/wiki/ROUGE_(metric)) (short for Recall-Oriented Understudy for Gisting Evaluation). The basic idea behind this metric is to compare a generated summary against a set of reference summaries that are typically created by humans. To make this more precise, suppose we want to compare the following two summaries:
+
+```python
+generated_summary = "I absolutely loved reading the Hunger Games"
+reference_summary = "I loved reading the Hunger Games"
+```
+
+One way to compare them could be to count the number of overlapping words, which in this case would be 6. However, this is a bit crude, so instead ROUGE is based on computing the _precision_ and _recall_ scores for the overlap.
+
+<Tip>
+
+🙋 Don't worry if this is the first time you've heard of precision and recall -- we'll go through some explicit examples together to make it all clear. These metrics are usually encountered in classification tasks, so if you want to understand how precision and recall are defined in that context, we recommend checking out the `scikit-learn` [guides](https://scikit-learn.org/stable/auto_examples/model_selection/plot_precision_recall.html).
+
+</Tip>
+
+For ROUGE, recall measures how much of the reference summary is captured by the generated one. If we are just comparing words, recall can be calculated according to the following formula:
+
+$$ \mathrm{Recall} = \frac{\mathrm{Number\,of\,overlapping\, words}}{\mathrm{Total\, number\, of\, words\, in\, reference\, summary}} $$
+
+For our simple example above, this formula gives a perfect recall of 6/6 = 1; i.e., all the words in the reference summary have been produced by the model. This may sound great, but imagine if our generated summary had been "I really really loved reading the Hunger Games all night". This would also have perfect recall, but is arguably a worse summary since it is verbose. To deal with these scenarios we also compute the precision, which in the ROUGE context measures how much of the generated summary was relevant:
+
+$$ \mathrm{Precision} = \frac{\mathrm{Number\,of\,overlapping\, words}}{\mathrm{Total\, number\, of\, words\, in\, generated\, summary}} $$
+
+Applying this to our verbose summary gives a precision of 6/10  = 0.6, which is considerably worse than the precision of 6/7 = 0.86 obtained by our shorter one. In practice, both precision and recall are usually computed, and then the F1-score (the harmonic mean of precision and recall) is reported. We can do this easily in 🤗 Datasets by first installing the `rouge_score` package:
+
+```py
+!pip install rouge_score
+```
+
+and then loading the ROUGE metric as follows:
+
+```python
+import evaluate
+
+rouge_score = evaluate.load("rouge")
+```
+
+Then we can use the `rouge_score.compute()` function to calculate all the metrics at once:
+
+```python
+scores = rouge_score.compute(
+    predictions=[generated_summary], references=[reference_summary]
+)
+scores
+```
+
+```python out
+{'rouge1': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92)),
+ 'rouge2': AggregateScore(low=Score(precision=0.67, recall=0.8, fmeasure=0.73), mid=Score(precision=0.67, recall=0.8, fmeasure=0.73), high=Score(precision=0.67, recall=0.8, fmeasure=0.73)),
+ 'rougeL': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92)),
+ 'rougeLsum': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92))}
+```
+
+Whoa, there's a lot of information in that output -- what does it all mean? First, 🤗 Datasets actually computes confidence intervals for precision, recall, and F1-score; these are the `low`, `mid`, and `high` attributes you can see here. Moreover, 🤗 Datasets computes a variety of ROUGE scores which are based on different types of text granularity when comparing the generated and reference summaries. The `rouge1` variant is the overlap of unigrams -- this is just a fancy way of saying the overlap of words and is exactly the metric we've discussed above. To verify this, let's pull out the `mid` value of our scores:
+
+```python
+scores["rouge1"].mid
+```
+
+```python out
+Score(precision=0.86, recall=1.0, fmeasure=0.92)
+```
+
+Great, the precision and recall numbers match up! Now what about those other ROUGE scores? `rouge2` measures the overlap between bigrams (think the overlap of pairs of words), while `rougeL` and `rougeLsum` measure the longest matching sequences of words by looking for the longest common substrings in the generated and reference summaries. The "sum" in `rougeLsum` refers to the fact that this metric is computed over a whole summary, while `rougeL` is computed as the average over individual sentences.
+
+<Tip>
+
+✏️ **Try it out!** Create your own example of a generated and reference summary and see if the resulting ROUGE scores agree with a manual calculation based on the formulas for precision and recall. For bonus points, split the text into bigrams and compare the precision and recall for the `rouge2` metric.
+
+</Tip>
+
+We'll use these ROUGE scores to track the performance of our model, but before doing that let's do something every good NLP practitioner should do: create a strong, yet simple baseline!
+
+### Creating a strong baseline[[creating-a-strong-baseline]]
+
+A common baseline for text summarization is to simply take the first three sentences of an article, often called the _lead-3_ baseline. We could use full stops to track the sentence boundaries, but this will fail on acronyms like "U.S." or "U.N." -- so instead we'll use the `nltk` library, which includes a better algorithm to handle these cases. You can install the package using `pip` as follows:
+
+```python
+!pip install nltk
+```
+
+and then download the punctuation rules:
+
+```python
+import nltk
+
+nltk.download("punkt")
+```
+
+Next, we import the sentence tokenizer from `nltk` and create a simple function to extract the first three sentences in a review. The convention in text summarization is to separate each summary with a newline, so let's also include this and test it on a training example:
+
+```python
+from nltk.tokenize import sent_tokenize
+
+
+def three_sentence_summary(text):
+    return "\n".join(sent_tokenize(text)[:3])
+
+
+print(three_sentence_summary(books_dataset["train"][1]["review_body"]))
+```
+
+```python out
+'I grew up reading Koontz, and years ago, I stopped,convinced i had "outgrown" him.'
+'Still,when a friend was looking for something suspenseful too read, I suggested Koontz.'
+'She found Strangers.'
+```
+
+This seems to work, so let's now implement a function that extracts these "summaries" from a dataset and computes the ROUGE scores for the baseline:
+
+```python
+def evaluate_baseline(dataset, metric):
+    summaries = [three_sentence_summary(text) for text in dataset["review_body"]]
+    return metric.compute(predictions=summaries, references=dataset["review_title"])
+```
+
+We can then use this function to compute the ROUGE scores over the validation set and prettify them a bit using Pandas:
+
+```python
+import pandas as pd
+
+score = evaluate_baseline(books_dataset["validation"], rouge_score)
+rouge_names = ["rouge1", "rouge2", "rougeL", "rougeLsum"]
+rouge_dict = dict((rn, round(score[rn].mid.fmeasure * 100, 2)) for rn in rouge_names)
+rouge_dict
+```
+
+```python out
+{'rouge1': 16.74, 'rouge2': 8.83, 'rougeL': 15.6, 'rougeLsum': 15.96}
+```
+
+We can see that the `rouge2` score is significantly lower than the rest; this likely reflects the fact that review titles are typically concise and so the lead-3 baseline is too verbose. Now that we have a good baseline to work from, let's turn our attention toward fine-tuning mT5!
+
+{#if fw === 'pt'}
+
+## Fine-tuning mT5 with the `Trainer` API[[fine-tuning-mt5-with-the-trainer-api]]
+
+Fine-tuning a model for summarization is very similar to the other tasks we've covered in this chapter. The first thing we need to do is load the pretrained model from the `mt5-small` checkpoint. Since summarization is a sequence-to-sequence task, we can load the model with the `AutoModelForSeq2SeqLM` class, which will automatically download and cache the weights:
+
+```python
+from transformers import AutoModelForSeq2SeqLM
+
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+## Fine-tuning mT5 with Keras[[fine-tuning-mt5-with-keras]]
+
+Fine-tuning a model for summarization is very similar to the other tasks we've covered in this chapter. The first thing we need to do is load the pretrained model from the `mt5-small` checkpoint. Since summarization is a sequence-to-sequence task, we can load the model with the `TFAutoModelForSeq2SeqLM` class, which will automatically download and cache the weights:
+
+```python
+from transformers import TFAutoModelForSeq2SeqLM
+
+model = TFAutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+{/if}
+
+<Tip>
+
+💡 If you're wondering why you don't see any warnings about fine-tuning the model on a downstream task, that's because for sequence-to-sequence tasks we keep all the weights of the network. Compare this to our text classification model in [Chapter 3](/course/chapter3), where the head of the pretrained model was replaced with a randomly initialized network.
+
+</Tip>
+
+The next thing we need to do is log in to the Hugging Face Hub. If you're running this code in a notebook, you can do so with the following utility function:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+which will display a widget where you can enter your credentials. Alternatively, you can run this command in your terminal and log in there:
+
+```
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+We'll need to generate summaries in order to compute ROUGE scores during training. Fortunately, 🤗 Transformers provides dedicated `Seq2SeqTrainingArguments` and `Seq2SeqTrainer` classes that can do this for us automatically! To see how this works, let's first define the hyperparameters and other arguments for our experiments:
+
+```python
+from transformers import Seq2SeqTrainingArguments
+
+batch_size = 8
+num_train_epochs = 8
+# Show the training loss with every epoch
+logging_steps = len(tokenized_datasets["train"]) // batch_size
+model_name = model_checkpoint.split("/")[-1]
+
+args = Seq2SeqTrainingArguments(
+    output_dir=f"{model_name}-finetuned-amazon-en-es",
+    evaluation_strategy="epoch",
+    learning_rate=5.6e-5,
+    per_device_train_batch_size=batch_size,
+    per_device_eval_batch_size=batch_size,
+    weight_decay=0.01,
+    save_total_limit=3,
+    num_train_epochs=num_train_epochs,
+    predict_with_generate=True,
+    logging_steps=logging_steps,
+    push_to_hub=True,
+)
+```
+
+Here, the `predict_with_generate` argument has been set to indicate that we should generate summaries during evaluation so that we can compute ROUGE scores for each epoch. As discussed in [Chapter 1](/course/chapter1), the decoder performs inference by predicting tokens one by one, and this is implemented by the model's `generate()` method. Setting `predict_with_generate=True` tells the `Seq2SeqTrainer` to use that method for evaluation. We've also adjusted some of the default hyperparameters, like the learning rate, number of epochs, and weight decay, and we've set the `save_total_limit` option to only save up to 3 checkpoints during training -- this is because even the "small" version of mT5 uses around a GB of hard drive space, and we can save a bit of room by limiting the number of copies we save.
+
+The `push_to_hub=True` argument will allow us to push the model to the Hub after training; you'll find the repository under your user profile in the location defined by `output_dir`. Note that you can specify the name of the repository you want to push to with the `hub_model_id` argument (in particular, you will have to use this argument to push to an organization). For instance, when we pushed the model to the [`huggingface-course` organization](https://huggingface.co/huggingface-course), we added `hub_model_id="huggingface-course/mt5-finetuned-amazon-en-es"` to `Seq2SeqTrainingArguments`.
+
+The next thing we need to do is provide the trainer with a `compute_metrics()` function so that we can evaluate our model during training. For summarization this is a bit more involved than simply calling `rouge_score.compute()` on the model's predictions, since we need to _decode_ the outputs and labels into text before we can compute the ROUGE scores. The following function does exactly that, and also makes use of the `sent_tokenize()` function from `nltk` to separate the summary sentences with newlines:
+
+```python
+import numpy as np
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    # Decode generated summaries into text
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    # Replace -100 in the labels as we can't decode them
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    # Decode reference summaries into text
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    # ROUGE expects a newline after each sentence
+    decoded_preds = ["\n".join(sent_tokenize(pred.strip())) for pred in decoded_preds]
+    decoded_labels = ["\n".join(sent_tokenize(label.strip())) for label in decoded_labels]
+    # Compute ROUGE scores
+    result = rouge_score.compute(
+        predictions=decoded_preds, references=decoded_labels, use_stemmer=True
+    )
+    # Extract the median scores
+    result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+    return {k: round(v, 4) for k, v in result.items()}
+```
+
+{/if}
+
+Next, we need to define a data collator for our sequence-to-sequence task. Since mT5 is an encoder-decoder Transformer model, one subtlety with preparing our batches is that during decoding we need to shift the labels to the right by one. This is required to ensure that the decoder only sees the previous ground truth labels and not the current or future ones, which would be easy for the model to memorize. This is similar to how masked self-attention is applied to the inputs in a task like [causal language modeling](/course/chapter7/6).
+
+Luckily, 🤗 Transformers provides a `DataCollatorForSeq2Seq` collator that will dynamically pad the inputs and the labels for us. To instantiate this collator, we simply need to provide the `tokenizer` and `model`:
+
+{#if fw === 'pt'}
+
+```python
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+```
+
+{:else}
+
+```python
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model, return_tensors="tf")
+```
+
+{/if}
+
+Let's see what this collator produces when fed a small batch of examples. First, we need to remove the columns with strings because the collator won't know how to pad these elements:
+
+```python
+tokenized_datasets = tokenized_datasets.remove_columns(
+    books_dataset["train"].column_names
+)
+```
+
+Since the collator expects a list of `dict`s, where each `dict` represents a single example in the dataset, we also need to wrangle the data into the expected format before passing it to the data collator:
+
+```python
+features = [tokenized_datasets["train"][i] for i in range(2)]
+data_collator(features)
+```
+
+```python out
+{'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]), 'input_ids': tensor([[  1494,    259,   8622,    390,    259,    262,   2316,   3435,    955,
+            772,    281,    772,   1617,    263,    305,  14701,    260,   1385,
+           3031,    259,  24146,    332,   1037,    259,  43906,    305,    336,
+            260,      1,      0,      0,      0,      0,      0,      0],
+        [   259,  27531,  13483,    259,   7505,    260, 112240,  15192,    305,
+          53198,    276,    259,  74060,    263,    260,    459,  25640,    776,
+           2119,    336,    259,   2220,    259,  18896,    288,   4906,    288,
+           1037,   3931,    260,   7083, 101476,   1143,    260,      1]]), 'labels': tensor([[ 7483,   259,  2364, 15695,     1,  -100],
+        [  259, 27531, 13483,   259,  7505,     1]]), 'decoder_input_ids': tensor([[    0,  7483,   259,  2364, 15695,     1],
+        [    0,   259, 27531, 13483,   259,  7505]])}
+```
+
+The main thing to notice here is that the first example is longer than the second one, so the `input_ids` and `attention_mask` of the second example have been padded on the right with a `[PAD]` token (whose ID is `0`). Similarly, we can see that the `labels` have been padded with `-100`s, to make sure the padding tokens are ignored by the loss function. And finally, we can see a new `decoder_input_ids` which has shifted the labels to the right by inserting a `[PAD]` token in the first entry.
+
+{#if fw === 'pt'}
+
+We finally have all the ingredients we need to train with! We now simply need to instantiate the trainer with the standard arguments:
+
+```python
+from transformers import Seq2SeqTrainer
+
+trainer = Seq2SeqTrainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+and launch our training run:
+
+```python
+trainer.train()
+```
+
+During training, you should see the training loss decrease and the ROUGE scores increase with each epoch. Once the training is complete, you can see the final ROUGE scores by running `Trainer.evaluate()`:
+
+```python
+trainer.evaluate()
+```
+
+```python out
+{'eval_loss': 3.028524398803711,
+ 'eval_rouge1': 16.9728,
+ 'eval_rouge2': 8.2969,
+ 'eval_rougeL': 16.8366,
+ 'eval_rougeLsum': 16.851,
+ 'eval_gen_len': 10.1597,
+ 'eval_runtime': 6.1054,
+ 'eval_samples_per_second': 38.982,
+ 'eval_steps_per_second': 4.914}
+```
+
+From the scores we can see that our model has handily outperformed our lead-3 baseline -- nice! The final thing to do is push the model weights to the Hub, as follows:
+
+```
+trainer.push_to_hub(commit_message="Training complete", tags="summarization")
+```
+
+```python out
+'https://huggingface.co/huggingface-course/mt5-finetuned-amazon-en-es/commit/aa0536b829b28e73e1e4b94b8a5aacec420d40e0'
+```
+
+This will save the checkpoint and configuration files to `output_dir`, before uploading all the files to the Hub. By specifying the `tags` argument, we also ensure that the widget on the Hub will be one for a summarization pipeline instead of the default text generation one associated with the mT5 architecture (for more information about model tags, see the [🤗 Hub documentation](https://huggingface.co/docs/hub/main#how-is-a-models-type-of-inference-api-and-widget-determined)). The output from `trainer.push_to_hub()` is a URL to the Git commit hash, so you can easily see the changes that were made to the model repository!
+
+To wrap up this section, let's take a look at how we can also fine-tune mT5 using the low-level features provided by 🤗 Accelerate.
+
+{:else}
+
+We're almost ready to train! We just need to convert our datasets to `tf.data.Dataset`s using the data collator we defined above, and then `compile()` and `fit()` the model. First, the datasets:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["train"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=8,
+)
+tf_eval_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=8,
+)
+```
+
+Now, we define our training hyperparameters and compile:
+
+```python
+from transformers import create_optimizer
+import tensorflow as tf
+
+# The number of training steps is the number of samples in the dataset, divided by the batch size then multiplied
+# by the total number of epochs. Note that the tf_train_dataset here is a batched tf.data.Dataset,
+# not the original Hugging Face Dataset, so its len() is already num_samples // batch_size.
+num_train_epochs = 8
+num_train_steps = len(tf_train_dataset) * num_train_epochs
+model_name = model_checkpoint.split("/")[-1]
+
+optimizer, schedule = create_optimizer(
+    init_lr=5.6e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+
+model.compile(optimizer=optimizer)
+
+# Train in mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+And finally, we fit the model. We use a `PushToHubCallback` to save the model to the Hub after each epoch, which will allow us to use it for inference later:
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(
+    output_dir=f"{model_name}-finetuned-amazon-en-es", tokenizer=tokenizer
+)
+
+model.fit(
+    tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback], epochs=8
+)
+```
+
+We got some loss values during training, but really we'd like to see the ROUGE metrics we computed earlier. To get those metrics, we'll need to generate outputs from the model and convert them to strings. Let's build some lists of labels and predictions for the ROUGE metric to compare (note that if you get import errors for this section, you may need to`!pip install tqdm`). We're also going to use a trick that dramatically increases performance - compiling our generation code with [XLA](https://www.tensorflow.org/xla), TensorFlow's accelerated linear algebra compiler. XLA applies various optimizations to the model's computation graph, and results in significant improvements to speed and memory usage. As described in the Hugging Face [blog](https://huggingface.co/blog/tf-xla-generate), XLA works best when our input shapes don't vary too much. To handle this, we'll pad our inputs to multiples of 128, and make a new dataset with the padding collator, and then we'll apply the `@tf.function(jit_compile=True)` decorator to our generation function, which marks the whole function for compilation with XLA. 
+
+```python
+from tqdm import tqdm
+import numpy as np
+
+generation_data_collator = DataCollatorForSeq2Seq(
+    tokenizer, model=model, return_tensors="tf", pad_to_multiple_of=320
+)
+
+tf_generate_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
+    collate_fn=generation_data_collator,
+    shuffle=False,
+    batch_size=8,
+    drop_remainder=True,
+)
+
+
+@tf.function(jit_compile=True)
+def generate_with_xla(batch):
+    return model.generate(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        max_new_tokens=32,
+    )
+
+
+all_preds = []
+all_labels = []
+for batch, labels in tqdm(tf_generate_dataset):
+    predictions = generate_with_xla(batch)
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    labels = labels.numpy()
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    decoded_preds = ["\n".join(sent_tokenize(pred.strip())) for pred in decoded_preds]
+    decoded_labels = ["\n".join(sent_tokenize(label.strip())) for label in decoded_labels]
+    all_preds.extend(decoded_preds)
+    all_labels.extend(decoded_labels)
+```
+
+Once we have our lists of label and prediction strings, computing the ROUGE score is easy:
+
+```python
+result = rouge_score.compute(
+    predictions=decoded_preds, references=decoded_labels, use_stemmer=True
+)
+result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+{k: round(v, 4) for k, v in result.items()}
+```
+
+```
+{'rouge1': 31.4815, 'rouge2': 25.4386, 'rougeL': 31.4815, 'rougeLsum': 31.4815}
+```
+
+
+{/if}
+
+{#if fw === 'pt'}
+
+## Fine-tuning mT5 with 🤗 Accelerate[[fine-tuning-mt5-with-accelerate]]
+
+Fine-tuning our model with 🤗 Accelerate is very similar to the text classification example we encountered in [Chapter 3](/course/chapter3). The main differences will be the need to explicitly generate our summaries during training and define how we compute the ROUGE scores (recall that the `Seq2SeqTrainer` took care of the generation for us). Let's take a look how we can implement these two requirements within 🤗 Accelerate!
+
+### Preparing everything for training[[preparing-everything-for-training]]
+
+The first thing we need to do is create a `DataLoader` for each of our splits. Since the PyTorch dataloaders expect batches of tensors, we need to set the format to `"torch"` in our datasets:
+
+```python
+tokenized_datasets.set_format("torch")
+```
+
+Now that we've got datasets consisting of just tensors, the next thing to do is instantiate the `DataCollatorForSeq2Seq` again. For this we need to provide a fresh version of the model, so let's load it again from our cache:
+
+```python
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+We can then instantiate the data collator and use this to define our dataloaders:
+
+```python
+from torch.utils.data import DataLoader
+
+batch_size = 8
+train_dataloader = DataLoader(
+    tokenized_datasets["train"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=batch_size,
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], collate_fn=data_collator, batch_size=batch_size
+)
+```
+
+The next thing to do is define the optimizer we want to use. As in our other examples, we'll use `AdamW`, which works well for most problems:
+
+```python
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+Finally, we feed our model, optimizer, and dataloaders to the `accelerator.prepare()` method:
+
+```python
+from accelerate import Accelerator
+
+accelerator = Accelerator()
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+<Tip>
+
+🚨 If you're training on a TPU, you'll need to move all the code above into a dedicated training function. See [Chapter 3](/course/chapter3) for more details.
+
+</Tip>
+
+Now that we've prepared our objects, there are three remaining things to do:
+
+* Define the learning rate schedule.
+* Implement a function to post-process the summaries for evaluation.
+* Create a repository on the Hub that we can push our model to.
+
+For the learning rate schedule, we'll use the standard linear one from previous sections:
+
+```python
+from transformers import get_scheduler
+
+num_train_epochs = 10
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+For post-processing, we need a function that splits the generated summaries into sentences that are separated by newlines. This is the format the ROUGE metric expects, and we can achieve this with the following snippet of code:
+
+```python
+def postprocess_text(preds, labels):
+    preds = [pred.strip() for pred in preds]
+    labels = [label.strip() for label in labels]
+
+    # ROUGE expects a newline after each sentence
+    preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
+    labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
+
+    return preds, labels
+```
+
+This should look familiar to you if you recall how we defined the `compute_metrics()` function of the `Seq2SeqTrainer`. 
+
+Finally, we need to create a model repository on the Hugging Face Hub. For this, we can use the appropriately titled 🤗 Hub library. We just need to define a name for our repository, and the library has a utility function to combine the repository ID with the user profile:
+
+```python
+from huggingface_hub import get_full_repo_name
+
+model_name = "test-bert-finetuned-squad-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'lewtun/mt5-finetuned-amazon-en-es-accelerate'
+```
+
+Now we can use this repository name to clone a local version to our results directory that will store the training artifacts:
+
+```python
+from huggingface_hub import Repository
+
+output_dir = "results-mt5-finetuned-squad-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+This will allow us to push the artifacts back to the Hub by calling the `repo.push_to_hub()` method during training! Let's now wrap up our analysis by writing out the training loop.
+
+### Training loop[[training-loop]]
+
+The training loop for summarization is quite similar to the other 🤗 Accelerate examples that we've encountered and is roughly split into four main steps:
+
+1. Train the model by iterating over all the examples in `train_dataloader` for each epoch.
+2. Generate model summaries at the end of each epoch, by first generating the tokens and then decoding them (and the reference summaries) into text.
+3. Compute the ROUGE scores using the same techniques we saw earlier.
+4. Save the checkpoints and push everything to the Hub. Here we rely on the nifty `blocking=False` argument of the `Repository` object so that we can push the checkpoints per epoch _asynchronously_. This allows us to continue training without having to wait for the somewhat slow upload associated with a GB-sized model!
+
+These steps can be seen in the following block of code:
+
+```python
+from tqdm.auto import tqdm
+import torch
+import numpy as np
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Training
+    model.train()
+    for step, batch in enumerate(train_dataloader):
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluation
+    model.eval()
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            generated_tokens = accelerator.unwrap_model(model).generate(
+                batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+            )
+
+            generated_tokens = accelerator.pad_across_processes(
+                generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
+            )
+            labels = batch["labels"]
+
+            # If we did not pad to max length, we need to pad the labels too
+            labels = accelerator.pad_across_processes(
+                batch["labels"], dim=1, pad_index=tokenizer.pad_token_id
+            )
+
+            generated_tokens = accelerator.gather(generated_tokens).cpu().numpy()
+            labels = accelerator.gather(labels).cpu().numpy()
+
+            # Replace -100 in the labels as we can't decode them
+            labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+            if isinstance(generated_tokens, tuple):
+                generated_tokens = generated_tokens[0]
+            decoded_preds = tokenizer.batch_decode(
+                generated_tokens, skip_special_tokens=True
+            )
+            decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+            decoded_preds, decoded_labels = postprocess_text(
+                decoded_preds, decoded_labels
+            )
+
+            rouge_score.add_batch(predictions=decoded_preds, references=decoded_labels)
+
+    # Compute metrics
+    result = rouge_score.compute()
+    # Extract the median ROUGE scores
+    result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+    result = {k: round(v, 4) for k, v in result.items()}
+    print(f"Epoch {epoch}:", result)
+
+    # Save and upload
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+```python out
+Epoch 0: {'rouge1': 5.6351, 'rouge2': 1.1625, 'rougeL': 5.4866, 'rougeLsum': 5.5005}
+Epoch 1: {'rouge1': 9.8646, 'rouge2': 3.4106, 'rougeL': 9.9439, 'rougeLsum': 9.9306}
+Epoch 2: {'rouge1': 11.0872, 'rouge2': 3.3273, 'rougeL': 11.0508, 'rougeLsum': 10.9468}
+Epoch 3: {'rouge1': 11.8587, 'rouge2': 4.8167, 'rougeL': 11.7986, 'rougeLsum': 11.7518}
+Epoch 4: {'rouge1': 12.9842, 'rouge2': 5.5887, 'rougeL': 12.7546, 'rougeLsum': 12.7029}
+Epoch 5: {'rouge1': 13.4628, 'rouge2': 6.4598, 'rougeL': 13.312, 'rougeLsum': 13.2913}
+Epoch 6: {'rouge1': 12.9131, 'rouge2': 5.8914, 'rougeL': 12.6896, 'rougeLsum': 12.5701}
+Epoch 7: {'rouge1': 13.3079, 'rouge2': 6.2994, 'rougeL': 13.1536, 'rougeLsum': 13.1194}
+Epoch 8: {'rouge1': 13.96, 'rouge2': 6.5998, 'rougeL': 13.9123, 'rougeLsum': 13.7744}
+Epoch 9: {'rouge1': 14.1192, 'rouge2': 7.0059, 'rougeL': 14.1172, 'rougeLsum': 13.9509}
+```
+
+And that's it! Once you run this, you'll have a model and results that are pretty similar to the ones we obtained with the `Trainer`.
+
+{/if}
+
+## Using your fine-tuned model[[using-your-fine-tuned-model]]
+
+Once you've pushed the model to the Hub, you can play with it either via the inference widget or with a `pipeline` object, as follows:
+
+```python
+from transformers import pipeline
+
+hub_model_id = "huggingface-course/mt5-small-finetuned-amazon-en-es"
+summarizer = pipeline("summarization", model=hub_model_id)
+```
+
+We can feed some examples from the test set (which the model has not seen) to our pipeline to get a feel for the quality of the summaries. First let's implement a simple function to show the review, title, and generated summary together:
+
+```python
+def print_summary(idx):
+    review = books_dataset["test"][idx]["review_body"]
+    title = books_dataset["test"][idx]["review_title"]
+    summary = summarizer(books_dataset["test"][idx]["review_body"])[0]["summary_text"]
+    print(f"'>>> Review: {review}'")
+    print(f"\n'>>> Title: {title}'")
+    print(f"\n'>>> Summary: {summary}'")
+```
+
+Let's take a look at one of the English examples we get:
+
+```python
+print_summary(100)
+```
+
+```python out
+'>>> Review: Nothing special at all about this product... the book is too small and stiff and hard to write in. The huge sticker on the back doesn’t come off and looks super tacky. I would not purchase this again. I could have just bought a journal from the dollar store and it would be basically the same thing. It’s also really expensive for what it is.'
+
+'>>> Title: Not impressed at all... buy something else'
+
+'>>> Summary: Nothing special at all about this product'
+```
+
+This is not too bad! We can see that our model has actually been able to perform _abstractive_ summarization by augmenting parts of the review with new words. And perhaps the coolest aspect of our model is that it is bilingual, so we can also generate summaries of Spanish reviews:
+
+```python
+print_summary(0)
+```
+
+```python out
+'>>> Review: Es una trilogia que se hace muy facil de leer. Me ha gustado, no me esperaba el final para nada'
+
+'>>> Title: Buena literatura para adolescentes'
+
+'>>> Summary: Muy facil de leer'
+```
+
+The summary translates into "Very easy to read" in English, which we can see in this case was extracted directly from the review. Nevertheless, this shows the versatility of the mT5 model and has given you a taste of what it's like to deal with a multilingual corpus!
+
+Next, we'll turn our attention to a slightly more complex task: training a language model from scratch.
