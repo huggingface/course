@@ -1,0 +1,258 @@
+<!-- DISABLE-FRONTMATTER-SECTIONS -->
+
+# End-of-chapter quiz[[end-of-chapter-quiz]]
+
+<CourseFloatingBanner
+    chapter={1}
+    classNames="absolute z-10 right-0 top-0"
+/>
+
+This chapter covered a lot of ground! Don't worry if you didn't grasp all the details; the next chapters will help you understand how things work under the hood.
+
+First, though, let's test what you learned in this chapter!
+
+
+### 1. Explore the Hub and look for the `roberta-large-mnli` checkpoint. What task does it perform?
+
+
+<Question
+	choices={[
+		{
+			text: "Summarization",
+			explain: "Look again on the <a href=\"https://huggingface.co/roberta-large-mnli\">roberta-large-mnli page</a>."
+		},
+		{
+			text: "Text classification",
+			explain: "More precisely, it classifies if two sentences are logically linked across three labels (contradiction, neutral, entailment) — a task also called <em>natural language inference</em>.",
+			correct: true
+		},
+		{
+			text: "Text generation",
+			explain: "Look again on the <a href=\"https://huggingface.co/roberta-large-mnli\">roberta-large-mnli page</a>."
+		}
+	]}
+/>
+
+### 2. What will the following code return?
+
+```py
+from transformers import pipeline
+
+ner = pipeline("ner", grouped_entities=True)
+ner("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+```
+
+<Question
+	choices={[
+		{
+			text: "It will return classification scores for this sentence, with labels \"positive\" or \"negative\".",
+			explain: "This is incorrect — this would be a <code>sentiment-analysis</code> pipeline."
+		},
+		{
+			text: "It will return a generated text completing this sentence.",
+			explain: "This is incorrect — it would be a <code>text-generation</code> pipeline.",
+		},
+		{
+			text: "It will return the words representing persons, organizations or locations.",
+			explain: "Furthermore, with <code>grouped_entities=True</code>, it will group together the words belonging to the same entity, like \"Hugging Face\".",
+			correct: true
+		}
+	]}
+/>
+
+### 3. What should replace ... in this code sample?
+
+```py
+from transformers import pipeline
+
+filler = pipeline("fill-mask", model="bert-base-cased")
+result = filler("...")
+```
+
+<Question
+	choices={[
+		{
+			text: "This &#60;mask> has been waiting for you.",
+			explain: "This is incorrect. Check out the <code>bert-base-cased</code> model card and try to spot your mistake."
+		},
+		{
+			text: "This [MASK] has been waiting for you.",
+			explain: "Correct! This model's mask token is [MASK].",
+			correct: true
+		},
+		{
+			text: "This man has been waiting for you.",
+			explain: "This is incorrect. This pipeline fills in masked words, so it needs a mask token somewhere."
+		}
+	]}
+/>
+
+### 4. Why will this code fail?
+
+```py
+from transformers import pipeline
+
+classifier = pipeline("zero-shot-classification")
+result = classifier("This is a course about the Transformers library")
+```
+
+<Question
+	choices={[
+		{
+			text: "This pipeline requires that labels be given to classify this text.",
+			explain: "Right — the correct code needs to include <code>candidate_labels=[...]</code>.",
+			correct: true
+		},
+		{
+			text: "This pipeline requires several sentences, not just one.",
+			explain: "This is incorrect, though when properly used, this pipeline can take a list of sentences to process (like all other pipelines)."
+		},
+		{
+			text: "The 🤗 Transformers library is broken, as usual.",
+			explain: "We won't dignify this answer with a comment!"
+		},
+		{
+			text: "This pipeline requires longer inputs; this one is too short.",
+			explain: "This is incorrect. Note that a very long text will be truncated when processed by this pipeline."
+		}
+	]}
+/>
+
+### 5. What does "transfer learning" mean?
+
+<Question
+	choices={[
+		{
+			text: "Transferring the knowledge of a pretrained model to a new model by training it on the same dataset.",
+			explain: "No, that would be two versions of the same model."
+		},
+		{
+			text: "Transferring the knowledge of a pretrained model to a new model by initializing the second model with the first model's weights.",
+			explain: "Correct: when the second model is trained on a new task, it *transfers* the knowledge of the first model.",
+			correct: true
+		},
+		{
+			text: "Transferring the knowledge of a pretrained model to a new model by building the second model with the same architecture as the first model.",
+			explain: "The architecture is just the way the model is built; there is no knowledge shared or transferred in this case."
+		}
+	]}
+/>
+
+### 6. True or false? A language model usually does not need labels for its pretraining.
+
+<Question
+	choices={[
+		{
+			text: "True",
+			explain: "The pretraining is usually <em>self-supervised</em>, which means the labels are created automatically from the inputs (like predicting the next word or filling in some masked words).",
+			correct: true
+		},
+		{
+			text: "False",
+			explain: "This is not the correct answer."
+		}
+	]}
+/>
+
+### 7. Select the sentence that best describes the terms "model", "architecture", and "weights".
+
+<Question
+	choices={[
+		{
+			text: "If a model is a building, its architecture is the blueprint and the weights are the people living inside.",
+			explain: "Following this metaphor, the weights would be the bricks and other materials used to construct the building."
+		},
+		{
+			text: "An architecture is a map to build a model and its weights are the cities represented on the map.",
+			explain: "The problem with this metaphor is that a map usually represents one existing reality (there is only one city in France named Paris). For a given architecture, multiple weights are possible."
+		},
+		{
+			text: "An architecture is a succession of mathematical functions to build a model and its weights are those functions parameters.",
+			explain: "The same set of mathematical functions (architecture) can be used to build different models by using different parameters (weights).",
+			correct: true
+		}
+	]}
+/>
+
+
+### 8. Which of these types of models would you use for completing prompts with generated text?
+
+<Question
+	choices={[
+		{
+			text: "An encoder model",
+			explain: "An encoder model generates a representation of the whole sentence that is better suited for tasks like classification."
+		},
+		{
+			text: "A decoder model",
+			explain: "Decoder models are perfectly suited for text generation from a prompt.",
+			correct: true
+		},
+		{
+			text: "A sequence-to-sequence model",
+			explain: "Sequence-to-sequence models are better suited for tasks where you want to generate sentences in relation to the input sentences, not a given prompt."
+		}
+	]}
+/>
+
+### 9. Which of those types of models would you use for summarizing texts?
+
+<Question
+	choices={[
+		{
+			text: "An encoder model",
+			explain: "An encoder model generates a representation of the whole sentence that is better suited for tasks like classification."
+		},
+		{
+			text: "A decoder model",
+			explain: "Decoder models are good for generating output text (like summaries), but they don't have the ability to exploit a context like the whole text to summarize."
+		},
+		{
+			text: "A sequence-to-sequence model",
+			explain: "Sequence-to-sequence models are perfectly suited for a summarization task.",
+			correct: true
+		}
+	]}
+/>
+
+### 10. Which of these types of models would you use for classifying text inputs according to certain labels?
+
+<Question
+	choices={[
+		{
+			text: "An encoder model",
+			explain: "An encoder model generates a representation of the whole sentence which is perfectly suited for a task like classification.",
+			correct: true
+		},
+		{
+			text: "A decoder model",
+			explain: "Decoder models are good for generating output texts, not extracting a label out of a sentence."
+		},
+		{
+			text: "A sequence-to-sequence model",
+			explain: "Sequence-to-sequence models are better suited for tasks where you want to generate text based on an input sentence, not a label.",
+		}
+	]}
+/>
+
+### 11. What possible source can the bias observed in a model have?
+
+<Question
+	choices={[
+		{
+			text: "The model is a fine-tuned version of a pretrained model and it picked up its bias from it.",
+			explain: "When applying Transfer Learning, the bias in the pretrained model used persists in the fine-tuned model.",
+			correct: true
+		},
+		{
+			text: "The data the model was trained on is biased.",
+			explain: "This is the most obvious source of bias, but not the only one.",
+			correct: true
+		},
+		{
+			text: "The metric the model was optimizing for is biased.",
+			explain: "A less obvious source of bias is the way the model is trained. Your model will blindly optimize for whatever metric you chose, without any second thoughts.",
+			correct: true
+		}
+	]}
+/>

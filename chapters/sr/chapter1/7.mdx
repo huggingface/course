@@ -1,0 +1,21 @@
+# Sequence-to-sequence models[sequence-to-sequence-models]
+
+<CourseFloatingBanner
+    chapter={1}
+    classNames="absolute z-10 right-0 top-0"
+/>
+
+<Youtube id="0_4KEb08xrE" />
+
+Encoder-decoder models (also called *sequence-to-sequence models*) use both parts of the Transformer architecture. At each stage, the attention layers of the encoder can access all the words in the initial sentence, whereas the attention layers of the decoder can only access the words positioned before a given word in the input.
+
+The pretraining of these models can be done using the objectives of encoder or decoder models, but usually involves something a bit more complex. For instance, [T5](https://huggingface.co/t5-base) is pretrained by replacing random spans of text (that can contain several words) with a single mask special word, and the objective is then to predict the text that this mask word replaces.
+
+Sequence-to-sequence models are best suited for tasks revolving around generating new sentences depending on a given input, such as summarization, translation, or generative question answering.
+
+Representatives of this family of models include:
+
+- [BART](https://huggingface.co/transformers/model_doc/bart)
+- [mBART](https://huggingface.co/transformers/model_doc/mbart)
+- [Marian](https://huggingface.co/transformers/model_doc/marian)
+- [T5](https://huggingface.co/transformers/model_doc/t5)

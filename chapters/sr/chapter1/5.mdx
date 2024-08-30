@@ -1,0 +1,22 @@
+# Encoder models[[encoder-models]]
+
+<CourseFloatingBanner
+    chapter={1}
+    classNames="absolute z-10 right-0 top-0"
+/>
+
+<Youtube id="MUqNwgPjJvQ" />
+
+Encoder models use only the encoder of a Transformer model. At each stage, the attention layers can access all the words in the initial sentence. These models are often characterized as having "bi-directional" attention, and are often called *auto-encoding models*.
+
+The pretraining of these models usually revolves around somehow corrupting a given sentence (for instance, by masking random words in it) and tasking the model with finding or reconstructing the initial sentence.
+
+Encoder models are best suited for tasks requiring an understanding of the full sentence, such as sentence classification, named entity recognition (and more generally word classification), and extractive question answering.
+
+Representatives of this family of models include:
+
+- [ALBERT](https://huggingface.co/docs/transformers/model_doc/albert)
+- [BERT](https://huggingface.co/docs/transformers/model_doc/bert)
+- [DistilBERT](https://huggingface.co/docs/transformers/model_doc/distilbert)
+- [ELECTRA](https://huggingface.co/docs/transformers/model_doc/electra)
+- [RoBERTa](https://huggingface.co/docs/transformers/model_doc/roberta)
