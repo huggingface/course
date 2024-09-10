@@ -1,0 +1,360 @@
+#  Tokenización por Codificación Byte-Pair[[byte-pair-encoding-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section5.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section5.ipynb"},
+]} />
+
+La codificación por pares de byte (Byte-Pair Encoding (BPE)) fue inicialmente desarrollado como un algoritmo para comprimir textos, y luego fue usado por OpenAI para la tokenización al momento de pre-entrenar el modelo GPT. Es usado por un montón de modelos Transformers, incluyendo GPT, GPT-2, RoBERTa, BART, y DeBERTa.
+
+<Youtube id="HEikzVL-lZU"/>
+
+<Tip>
+
+💡 Esta sección cubre BPE en produndidad, yendo tan lejos como para mostrar una implementación completa. Puedes saltarte hasta el final si sólo quieres una descripción general del algoritmo de tokenización. 
+
+</Tip>
+
+## Algoritmo de Entrenamiento[[training-algorithm]]
+
+El entrenamiento de BPE comienza calculando el conjunto de palabras únicas usada en el corpus (después de completar las etapas de normalización y pre-tokenización), para luego contruir el vocabulario tomando todos los símbolos usados para escribir esas palabras. Como un ejemplo muy simple, digamos que nuestros corpus usa estas cinco palabras:
+
+
+```
+"hug", "pug", "pun", "bun", "hugs"
+```
+
+El vocabulario vase entonces será `["b", "g", "h", "n", "p", "s", "u"]`. Para casos reales, el vocabulario base contendrá todos los caracteres ASCII, al menos, y probablemente algunos caracteres Unicode también. Si un ejemplo que estás tokenizando usa un caracter que no está en el corpus de entrenamiento, ese caracter será convertido al token "desconocido". Esa es una razón por la cual muchos modelos de NLP son muy malos analizando contenido con emojis.
+
+<Tip>
+
+Los tokenizadores de GPT-2 y RoBERTa (que son bastante similares) tienen una manera bien inteligente de lidiar con esto: ellos no miran a las palabras como si estuvieran escritas con caracteres Unicode, sino con bytes. De esa manera el vocabulario base tiene un tamaño pequeño (256), pero cada caracter que te puedas imaginar estará incluido y no terminará convertido en el token "desconocido". Este truco se llama *byte-level BPE*.
+
+</Tip>
+
+Luego de obtener el vocabulario base, agregamos nuevos tokens hasta que el tamaño deseado del vocabulario se alcance por medio de aprender *fusiones* (merges), las cuales son reglas para fusionar dos elementos del vocabulario existente en uno nuevo. Por lo que al inicio de estas fusiones crearemos tokens con dos caracteres, y luego, a medida que el entrenamiento avance, subpalabras más largas.
+
+En cualquier etapa durante el entrenamiento del tokenizador, el algoritmo BPE buscará pos los pares más frecuentes de los tokens existentes (por "par", acá nos referimos a dos tokens consecutivos en una palabra). El par más frecuente es el que será fusionado, y enjuagamos y repetimos para la siguiente etapa. 
+
+Volviedo a nuestro ejemplo previo, asumamos que las palabras tenían las siguientes frecuencias:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+lo que significa que `"hug"` estuvo presente 10 veces en el corpus, `"pug"` 5 veces, `"pun"` 12 veces, `"bun"` 4 veces, and `"hugs"` 5 veces. Empezamos el entrenamiento separando cada palabra en caracteres (los que formaron nuestro vocabulario inicial) para que podamos ver cada palabra como una lista de tokens:
+
+```
+("h" "u" "g", 10), ("p" "u" "g", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "u" "g" "s", 5)
+```
+
+Luego miramos los pares. El par `("h", "u")` está presente en las palabras `"hug"` y `"hugs"`, 15 veces en el total del corpus. No es el par más frecuente: ese honor le corresponde a `("u", "g")`, el cual está presente en `"hug"`, `"pug"`, y `"hugs"`, para un gran total de 20 veces en el vocabulario. 
+
+Por lo tanto, la primera regla de fusión aprendida por el tokenizador es `("u", "g") -> "ug"`, lo que significa que `"ug"` será agregado al vocabulario, y el par debería ser fusionado en todas las palabras del corpus. Al final de esta etapa, el vocabulario se ve así:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug"]
+Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "ug" "s", 5)
+```
+
+Ahora tenemos algunos pares que resultan en un token más largo de dos caracteres: por ejemplo el par `("h", "ug")` (presente 15 veces en el corpus). Sin embargo, el par más frecuente en este punto is `("u", "n")`, presente 16 veces en el corpus, por lo que la segunda regla de fusión aprendida es `("u", "n") -> "un"`. Agregando esto y fusionando todas las ocurrencias existentes nos lleva a:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un"]
+Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("h" "ug" "s", 5)
+```
+
+Ahora el par más frecuente es `("h", "ug")`, por lo que aprendemos que la regla de fusión es `("h", "ug") -> "hug"`, lo cual nos da tuestro primer token de tres letras. Luego de la fusión el corpus se ve así:
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un", "hug"]
+Corpus: ("hug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("hug" "s", 5)
+```
+
+Y continuamos así hasta que alcancemos el tamaño deseado del vocabulario.
+
+<Tip>
+
+✏️ **Ahora es tu turno!** Cuál crees que será la siguiente regla de fusión?
+
+</Tip>
+
+## Algoritmo de Tokenización[[tokenization-algorithm]]
+
+La tokenización sigue el proceso de entrenamiento de cerca, en el sentido que nuevos inputs son tokenizados aplicando los siguientes pasos:
+
+1. Normalización
+2. Pre-tokenización
+3. Separar las palabras en caracteres individuales
+4. Aplicar las reglas de fusión aprendidas en orden en dichas separaciones.
+
+Tomemos el ejemplo que usamos durante el entrenamiento, con las tres reglas de fusión aprendidas:
+
+```
+("u", "g") -> "ug"
+("u", "n") -> "un"
+("h", "ug") -> "hug"
+```
+La palabra `"bug"` será tokenizada como `["b", "ug"]`. En cambio, `"mug"`, será tokenizado como `["[UNK]", "ug"]` dado que la letra `"m"` no fue parte del vocabulario base. De la misma manera, la palabra `"thug"` será tokenizada como `["[UNK]", "hug"]`: la letra `"t"` no está en el vocabulario base, y aplicando las reglas de fusión resulta primero la fusión de `"u"` y `"g"` y luego de `"hu"` and `"g"`.
+
+<Tip>
+
+✏️ **Ahora es tu turno!** ¿Cómo crees será tokenizada la palabra `"unhug"`?
+
+</Tip>
+
+## Implementando BPE[[implementing-bpe]]
+
+Ahora echemos un vistazo a una implementación el algoritmo BPE. Esta no será una versión optimizada que puedes usar en corpus grande; sólo queremos mostrar el código para que puedas entender el algoritmo un poquito mejor. 
+
+Primero necesitamos un corpus, así que creemos uno simple con algunas oraciones:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+A continuación, necesitamos pre-tokenizar el corpus en palabras. Dado que estamos replicando un tokenizador BPE (como GPT-2), usaremos el tokenizdor `gpt2` para la pre-tokenización:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+Luego calculamos las frecuencias de cada palabra en el corpues mientras hacemos la pre-tokenización:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+print(word_freqs)
+```
+
+```python out
+defaultdict(int, {'This': 3, 'Ġis': 2, 'Ġthe': 1, 'ĠHugging': 1, 'ĠFace': 1, 'ĠCourse': 1, '.': 4, 'Ġchapter': 1,
+    'Ġabout': 1, 'Ġtokenization': 1, 'Ġsection': 1, 'Ġshows': 1, 'Ġseveral': 1, 'Ġtokenizer': 1, 'Ġalgorithms': 1,
+    'Hopefully': 1, ',': 1, 'Ġyou': 1, 'Ġwill': 1, 'Ġbe': 1, 'Ġable': 1, 'Ġto': 1, 'Ġunderstand': 1, 'Ġhow': 1,
+    'Ġthey': 1, 'Ġare': 1, 'Ġtrained': 1, 'Ġand': 1, 'Ġgenerate': 1, 'Ġtokens': 1})
+```
+
+El siguiente paso es calcualar el vocabulario base, formado por todos los caracteres usados en el corpus:
+
+```python
+alphabet = []
+
+for word in word_freqs.keys():
+    for letter in word:
+        if letter not in alphabet:
+            alphabet.append(letter)
+alphabet.sort()
+
+print(alphabet)
+```
+
+```python out
+[ ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's',
+  't', 'u', 'v', 'w', 'y', 'z', 'Ġ']
+```
+
+También agregamos el token especial usado por el modelo al inicio de ese vocabulario. En el caso de GPT-2, el único token especial es `"<|endoftext|>"`:
+
+```python
+vocab = ["<|endoftext|>"] + alphabet.copy()
+```
+
+Ahora necesitamos separar cada palabra en caracteres individuales, para poder comenzar el entrenamiento:
+
+```python
+splits = {word: [c for c in word] for word in word_freqs.keys()}
+```
+
+Ahora estamos listos para el entrenamiento, escribamos una función que calcule la frecuencia de cada par. Necesitaremos usar esto en cada paso del entrenamiento:
+
+```python
+def compute_pair_freqs(splits):
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            pair_freqs[pair] += freq
+    return pair_freqs
+```
+
+Ahora miremos una parte de ese diccionario después de las separaciones iniciales:
+
+```python
+pair_freqs = compute_pair_freqs(splits)
+
+for i, key in enumerate(pair_freqs.keys()):
+    print(f"{key}: {pair_freqs[key]}")
+    if i >= 5:
+        break
+```
+
+```python out
+('T', 'h'): 3
+('h', 'i'): 3
+('i', 's'): 5
+('Ġ', 'i'): 2
+('Ġ', 't'): 7
+('t', 'h'): 3
+```
+
+Ahora, encontrar el par más frecuenta sólo toma un rápido ciclo:
+
+```python
+best_pair = ""
+max_freq = None
+
+for pair, freq in pair_freqs.items():
+    if max_freq is None or max_freq < freq:
+        best_pair = pair
+        max_freq = freq
+
+print(best_pair, max_freq)
+```
+
+```python out
+('Ġ', 't') 7
+```
+
+Por lo que la primera fusión a aprender es `('Ġ', 't') -> 'Ġt'`, y luego agregamos `'Ġt'` al vocabulario:
+
+```python
+merges = {("Ġ", "t"): "Ġt"}
+vocab.append("Ġt")
+```
+
+Para continuar, necesitamos aplicar la fusión en nuestro diccionario de divisiones (`splits` dictionary). Escribamos otra función para esto:
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                split = split[:i] + [a + b] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+Y podemos echar un vistazo al resultado de nuestra primera fusión:
+
+```py
+splits = merge_pair("Ġ", "t", splits)
+print(splits["Ġtrained"])
+```
+
+```python out
+['Ġt', 'r', 'a', 'i', 'n', 'e', 'd']
+```
+
+Ahora tenemos todo lo que necesitamos para iterar hasta que aprendamos todas las fusiones que queramos. Apuntemos a un tamaño de vocabulario de 50:
+
+```python
+vocab_size = 50
+
+while len(vocab) < vocab_size:
+    pair_freqs = compute_pair_freqs(splits)
+    best_pair = ""
+    max_freq = None
+    for pair, freq in pair_freqs.items():
+        if max_freq is None or max_freq < freq:
+            best_pair = pair
+            max_freq = freq
+    splits = merge_pair(*best_pair, splits)
+    merges[best_pair] = best_pair[0] + best_pair[1]
+    vocab.append(best_pair[0] + best_pair[1])
+```
+
+Como resultado, hemos aprendido 19 reglas de fusión (el vocabulario inicial tenía un tamaño de 31 -- 30 caracteres del alfabeto, más el token especial):
+
+```py
+print(merges)
+```
+
+```python out
+{('Ġ', 't'): 'Ġt', ('i', 's'): 'is', ('e', 'r'): 'er', ('Ġ', 'a'): 'Ġa', ('Ġt', 'o'): 'Ġto', ('e', 'n'): 'en',
+ ('T', 'h'): 'Th', ('Th', 'is'): 'This', ('o', 'u'): 'ou', ('s', 'e'): 'se', ('Ġto', 'k'): 'Ġtok',
+ ('Ġtok', 'en'): 'Ġtoken', ('n', 'd'): 'nd', ('Ġ', 'is'): 'Ġis', ('Ġt', 'h'): 'Ġth', ('Ġth', 'e'): 'Ġthe',
+ ('i', 'n'): 'in', ('Ġa', 'b'): 'Ġab', ('Ġtoken', 'i'): 'Ġtokeni'}
+```
+
+And the vocabulary is composed of the special token, the initial alphabet, and all the results of the merges:
+
+```py
+print(vocab)
+```
+
+```python out
+['<|endoftext|>', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o',
+ 'p', 'r', 's', 't', 'u', 'v', 'w', 'y', 'z', 'Ġ', 'Ġt', 'is', 'er', 'Ġa', 'Ġto', 'en', 'Th', 'This', 'ou', 'se',
+ 'Ġtok', 'Ġtoken', 'nd', 'Ġis', 'Ġth', 'Ġthe', 'in', 'Ġab', 'Ġtokeni']
+```
+
+<Tip>
+
+💡 Usar `train_new_from_iterator()` en el mismo corpus no resultará en exactament el mismo vocabulario. Esto es porque cuando hay una elección del par más frecuente, seleccionamos el primero encontrado, mientras que la librería 🤗 Tokenizers selecciona el primero basado en sus IDs internos. 
+
+</Tip>
+
+Para tokenizar un nuevo texto lo pre-tokenizamos, lo separamos, luego aplicamos todas las reglas de fusión aprendidas:
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    splits = [[l for l in word] for word in pre_tokenized_text]
+    for pair, merge in merges.items():
+        for idx, split in enumerate(splits):
+            i = 0
+            while i < len(split) - 1:
+                if split[i] == pair[0] and split[i + 1] == pair[1]:
+                    split = split[:i] + [merge] + split[i + 2 :]
+                else:
+                    i += 1
+            splits[idx] = split
+
+    return sum(splits, [])
+```
+
+Podemos intentar esto con cualquier texto compuesto de de caracteres del alfabeto:
+
+```py
+tokenize("This is not a token.")
+```
+
+```python out
+['This', 'Ġis', 'Ġ', 'n', 'o', 't', 'Ġa', 'Ġtoken', '.']
+```
+
+<Tip warning={true}>
+
+⚠️ Nuestra implementación arrojará un error si hay un caracter desconocido dado que no hicimos nada para manejarlos. GPT-2 en realidad no tiene un token desconocido (es imposible obtener un caracter desconocido cuando se usa byte-level BPE), pero esto podría ocurrir acá porque no incluímos todos los posibles bytes en el vocabulario inicial. Este aspectode BPE va más allá del alcance de está sección, por lo que dejaremos los detalles fuera. 
+
+</Tip>
+
+Eso es todo para el algoritmo BPE! A continuación echaremos un vistazo a WordPiece.
