@@ -1,0 +1,373 @@
+# Tokenización WordPiece[[wordpiece-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section6.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section6.ipynb"},
+]} />
+
+WordPiece es el algoritmo de tokenización que Google desarrolló para pre-entrenar BERT. Ha sido reutilizado un varios modelos Transformers basados en BERT, tales como DistilBERT, MobileBERT, Funnel Transformers, y MPNET. Es muy similar a BPE en términos del entrenamiento, pero la tokenización se hace de distinta manera. 
+
+<Youtube id="qpv6ms_t_1A"/>
+
+<Tip>
+
+💡 Esta sección cubre WordPiece en profundidad, yendo tan lejos como para mostrar una implementación completa. Puedes saltarte hasta el final si sólo quieres una descripción general del algoritmo de tokenización. 
+
+</Tip>
+
+## Algoritmo de Entrenamiento[[training-algorithm]]
+
+<Tip warning={true}>
+
+⚠️ Google nunca liberó el código (open-sourced) su implementación del algoritmo de entrenamiento de WordPiece, por tanto lo que sigue es nuestra mejor suposición badado en la literatura publicada. Puede no ser 100% preciso.
+
+</Tip>
+
+Al igual que BPE, WordPiece comienza a partir de un pequeño vocabulario incluyendo los tokens especiales utilizados por el modelo y el alfabeto inicial. Dado que identifica subpalabras (subwords) agregando un prefijo (como `##` para el caso de BERT), cada palabra está inicialmente separada agregando dicho prefijo a todos los caracteres dentro de la palabra. Por lo que por ejemplo la palabra `"word"` queda separada así:
+
+```
+w ##o ##r ##d
+```
+Por lo tanto, el alfabeto inicial contiene todos los caracteres presentes al comienzo de una palabra y los caracteres presente dentro de una palabra precedida por el prefijo de WordPiece. 
+
+Luego, de nuevo al igual que BPE, WordPiece aprende reglas de fusión. La principal diferencia es la forma que el par fusionado es seleccionado. Envex de seleccionar el par más frecuente, WordPiece calcula un puntaje para cada par, utilizando la siguiente formula:
+
+$$\mathrm{score} = (\mathrm{freq\_of\_pair}) / (\mathrm{freq\_of\_first\_element} \times \mathrm{freq\_of\_second\_element})$$
+
+Dividiendo por la frecuencia del par por el producto de las frecuencias de cada una de sus partes, el algoritmo prioriza la fusión de pares donde las partes individuales son menos frecuentes en el vocabulario. Por ejemplo, no fusionará necesariamente `("un", "##able")` incluso si ese par ocurre de manera muy frecuente en el vocabulario, porque los dos pares `"un"` y `"##able"` muy probablemente aparecerán en un montón de otras palabras y tendrán una alta frecuencia. En contraste con un par como `("hu", "##gging")` los cuales son probablemente menos frecuentes individualmente. 
+
+Miremos el mismo vocabulario que usamos en el ejemplo de entrenamiento de BPE:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+Las separaciones acá serán:
+
+```
+("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##g" "##s", 5)
+```
+
+por lo que el vocabulario inicial será `["b", "h", "p", "##g", "##n", "##s", "##u"]` (si nos olvidamos de los tokens especiales por ahora). El par más frecuente es `("##u", "##g")` (presente 20 veces), pero la frecuencia individual de `"##u"` es muy alta, por lo que el puntaje no es el más alto (es 1 / 36). Todos los pares con `"##u"` en realidad tienen el mismo puntaje (1 / 36), por lo que el mejor puntaje va para el par `("##g", "##s")` -- el único sin `"##u"` -- 1 / 20, y la primera fusión aprendida es `("##g", "##s") -> ("##gs")`.
+
+Notar que cuando fusionamos, removemos el `##` entre los dos tokens, por que agregamos `"##gs"` al vocabulario y aplicamos la fusión en las palabras del corpus:
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs"]
+Corpus: ("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##gs", 5)
+```
+
+En este punto, `"##u"` está en todos los posibles pares, por lo que todos terminan con el mismo puntaje. Digamos que en este caso, el primer par se fusiona, `("h", "##u") -> "hu"`. Esto nos lleva a:
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu"]
+Corpus: ("hu" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+Luego el siguiente mejor puntaje está compartido por `("hu", "##g")` y `("hu", "##gs")` (con 1/15, comparado con 1/21 para todos los otros pares), por lo que el primer par con el puntaje más alto se fusiona:
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu", "hug"]
+Corpus: ("hug", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+y continuamos como esto hasta que alcancemos el tamaño de vocabulario deseado.
+
+<Tip>
+
+✏️ **Ahora es tu turno!** Cuál será la siguiente regla de fusioń?
+
+</Tip>
+
+## Algoritmo de Tokenización[[tokenization-algorithm]]
+
+La tokenización difiere en WordPiece y BPE en que WordPiece sólo guarda el vocabulario final, no las reglas de fusión aprendidas. Comenzando a partir de la palabra a tokenizar, WordPiece encuentra la subpalabra más larga que está en el vocabulario, luego la separa. Por ejemplo, su usamos el vocabulario aprendido en el ejemplo anterior, para la palabra `"hugs"` la subpalabra más larga comenzando desde el inicio que está dentro del vocabulario es `"hug"`, por lo que separamos ahí y obtenemos `["hug", "##s"]`. Luego continuamos con `"##s"`, el cuál está en el vocabulario, por lo que la tokenización de `"hugs"` es `["hug", "##s"]`.
+
+Con BPE, habríamos aplicado las fusiones aprendidas en orden y tokenizado esto como `["hu", "##gs"]`, por lo que la codificación es diferente. 
+
+Como otro ejemplo, veamos como la palabra `"bugs"` sería tokenizado. `"b"` es la subpalabra más larga comenzando del inicio de la palabra que está en el vocabulario, por lo que separamos ahí y obtenemos `["b", "##ugs"]`. Luego `"##u"` es la subpalabra más larga somenzando desde el inicio de `"##ugs"` que está en el vocabulario, por lo que separamos ahí y obtenemos `["b", "##u, "##gs"]`. Finalmente, `"##gs"` está en el vocabulario, por lo que esta última lista es la tokenización de `"bugs"`.
+
+Cuando la tokenización llega a la etapa donde ya no es posible encontrar una subpalabra en el vocabulario, la palabra entera es tokenizada como desconocida -- Por ejemplo, `"mug"` sería tokenizada como `["[UNK]"]`, al igual que `"bum"` (incluso si podemos comenzar con `"b"` y `"##u"`, `"##m"` no está en el vocabulario, y la tokenización resultante será sólo `["[UNK]"]`, y no `["b", "##u", "[UNK]"]`). Este es otra diferencia con respecto a BPE, el cual sólo clasificaría los caracteres individuales que no están en el vocabulario como desconocido.
+
+<Tip>
+
+✏️ **Ahora es tu turno!** ¿Cómo se tokenizaría la palabra `"pugs"`?
+
+</Tip>
+
+## Implementando WordPiece[[implementing-wordpiece]]
+
+Ahora echemos un vistazo a una implementación del algoritmo WordPiece. Al igual que BPE, este es sólo pedagócico y no podrás aplicar esto en corpus grande. 
+
+Usaremos el mismo corpus que en el ejemplo de BPE:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+Primero, necesitamos pre-tokenizar el corpus en palabras. Dado que estamos replicando el tokenizador WordPiece (como BERT), usaremos el tokenizador `bert-base-cased` para la pre-tokenización:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+```
+
+Luego calculamos las frecuencias de cada palabra en el corpus mientras hacemos la pre-tokenización:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+```python out
+defaultdict(
+    int, {'This': 3, 'is': 2, 'the': 1, 'Hugging': 1, 'Face': 1, 'Course': 1, '.': 4, 'chapter': 1, 'about': 1,
+    'tokenization': 1, 'section': 1, 'shows': 1, 'several': 1, 'tokenizer': 1, 'algorithms': 1, 'Hopefully': 1,
+    ',': 1, 'you': 1, 'will': 1, 'be': 1, 'able': 1, 'to': 1, 'understand': 1, 'how': 1, 'they': 1, 'are': 1,
+    'trained': 1, 'and': 1, 'generate': 1, 'tokens': 1})
+```
+
+Como vimos antes, el alfabeto es el único conjunto compuesto de todas las primeras letras de las palabras, y todas las otras letras que aparecen con el prefijo `##`:
+
+```python
+alphabet = []
+for word in word_freqs.keys():
+    if word[0] not in alphabet:
+        alphabet.append(word[0])
+    for letter in word[1:]:
+        if f"##{letter}" not in alphabet:
+            alphabet.append(f"##{letter}")
+
+alphabet.sort()
+alphabet
+
+print(alphabet)
+```
+
+```python out
+['##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k', '##l', '##m', '##n', '##o', '##p', '##r', '##s',
+ '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u',
+ 'w', 'y']
+```
+
+También agregamos los tokens especiales usados por el modelo al inicio de ese vocabulario. En el caso de BERT, es la lista `["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]`:
+
+```python
+vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + alphabet.copy()
+```
+
+A continuación necesitamos separar cada palabra, con todas las letras que no tienen el prefijo `##`:
+
+```python
+splits = {
+    word: [c if i == 0 else f"##{c}" for i, c in enumerate(word)]
+    for word in word_freqs.keys()
+}
+```
+
+Ahora que estamos listos para el entrenamiento, escribamos una función que calcule el puntaje para cada par. Usaremos esto en cada etapa del entrenamiento:
+
+```python
+def compute_pair_scores(splits):
+    letter_freqs = defaultdict(int)
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            letter_freqs[split[0]] += freq
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            letter_freqs[split[i]] += freq
+            pair_freqs[pair] += freq
+        letter_freqs[split[-1]] += freq
+
+    scores = {
+        pair: freq / (letter_freqs[pair[0]] * letter_freqs[pair[1]])
+        for pair, freq in pair_freqs.items()
+    }
+    return scores
+```
+
+Echemos un vistazo a parte de este diccionario luego de las separaciones iniciales:
+
+```python
+pair_scores = compute_pair_scores(splits)
+for i, key in enumerate(pair_scores.keys()):
+    print(f"{key}: {pair_scores[key]}")
+    if i >= 5:
+        break
+```
+
+```python out
+('T', '##h'): 0.125
+('##h', '##i'): 0.03409090909090909
+('##i', '##s'): 0.02727272727272727
+('i', '##s'): 0.1
+('t', '##h'): 0.03571428571428571
+('##h', '##e'): 0.011904761904761904
+```
+
+Ahora, encontrar el par con el mejor puntaje sólo toma un rápido ciclo:
+
+```python
+best_pair = ""
+max_score = None
+for pair, score in pair_scores.items():
+    if max_score is None or max_score < score:
+        best_pair = pair
+        max_score = score
+
+print(best_pair, max_score)
+```
+
+```python out
+('a', '##b') 0.2
+```
+
+Por lo que la primera fusión a aprender es `('a', '##b') -> 'ab'`, y agregamos `'ab'` al vocabulario:
+
+```python
+vocab.append("ab")
+```
+
+Para continuar, necesitamos aplicar esa fusión en nuestro diccionario de separaciones (`splits` dictionary). Escribamos otra función para esto: 
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                merge = a + b[2:] if b.startswith("##") else a + b
+                split = split[:i] + [merge] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+Y podemos mirar el resultado de la primera fusión:
+
+```py
+splits = merge_pair("a", "##b", splits)
+splits["about"]
+```
+
+```python out
+['ab', '##o', '##u', '##t']
+```
+
+Ahora tenemos todos los que necesitamos para iterar hasta haber aprendido todas las fusiones que queramos. Apuntemos a un tamaño de vocabulario de 70:
+
+```python
+vocab_size = 70
+while len(vocab) < vocab_size:
+    scores = compute_pair_scores(splits)
+    best_pair, max_score = "", None
+    for pair, score in scores.items():
+        if max_score is None or max_score < score:
+            best_pair = pair
+            max_score = score
+    splits = merge_pair(*best_pair, splits)
+    new_token = (
+        best_pair[0] + best_pair[1][2:]
+        if best_pair[1].startswith("##")
+        else best_pair[0] + best_pair[1]
+    )
+    vocab.append(new_token)
+```
+
+Luego podemos ver el vocabulario generado:
+
+```py
+print(vocab)
+```
+
+```python out
+['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k',
+ '##l', '##m', '##n', '##o', '##p', '##r', '##s', '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H',
+ 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u', 'w', 'y', 'ab', '##fu', 'Fa', 'Fac', '##ct', '##ful', '##full', '##fully',
+ 'Th', 'ch', '##hm', 'cha', 'chap', 'chapt', '##thm', 'Hu', 'Hug', 'Hugg', 'sh', 'th', 'is', '##thms', '##za', '##zat',
+ '##ut']
+```
+
+Como podemos ver, comparado con BPE, este tokenizador aprende partes de palabras como tokens un poco más rápido.
+
+<Tip>
+
+💡 Usar `train_new_from_iterator()` en el mismo corpus no resultará en exactamente el mismo vocabulario. Esto porque la librería 🤗 Tokenizers no implementa WordPiece para el entrenamiento (dado que no estamos completamente seguros de su funcionamiento interno), en vez de eso utiliza BPE.
+
+</Tip>
+
+Para tokenizar un nuevo texto, lo pre-tokenizamos, lo separamos, y luego aplicamos el algoritmo de tokenización para cada palabra. Es decir, miramos la subpalabra más grande comenzando al inicio de la primera palabra y la separamos, luego repetimos el proceso en la segunda parte, y así pará el resto de dicha palabra y de las siguientes palabras en el texto:
+
+```python
+def encode_word(word):
+    tokens = []
+    while len(word) > 0:
+        i = len(word)
+        while i > 0 and word[:i] not in vocab:
+            i -= 1
+        if i == 0:
+            return ["[UNK]"]
+        tokens.append(word[:i])
+        word = word[i:]
+        if len(word) > 0:
+            word = f"##{word}"
+    return tokens
+```
+
+Probémoslo en una palabra que esté en el vocabulario, y en otra que no esté:
+
+```python
+print(encode_word("Hugging"))
+print(encode_word("HOgging"))
+```
+
+```python out
+['Hugg', '##i', '##n', '##g']
+['[UNK]']
+```
+
+Ahora, escribamos una función que tokenize un texto:
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    encoded_words = [encode_word(word) for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+```
+
+Podemos probar en cualquier texto:
+
+```python
+tokenize("This is the Hugging Face course!")
+```
+
+```python out
+['Th', '##i', '##s', 'is', 'th', '##e', 'Hugg', '##i', '##n', '##g', 'Fac', '##e', 'c', '##o', '##u', '##r', '##s',
+ '##e', '[UNK]']
+```
+
+Eso es todo para el algoritmo WordPiece! Ahora echemos un visto a Unigram.
