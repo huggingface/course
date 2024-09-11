@@ -1,5 +1,8 @@
 # The Hugging Face Course
 
+> [!IMPORTANT] 
+> This project is no longer actively maintained. This means that we will no longer review/accept translations of the course content, although bug fixes are welcome! 
+
 This repo contains the content that's used to create the **[Hugging Face course](https://huggingface.co/course/chapter1/1)**. The course teaches you about applying Transformers to various tasks in natural language processing and beyond. Along the way, you'll learn how to use the [Hugging Face](https://huggingface.co/) ecosystem — [🤗 Transformers](https://github.com/huggingface/transformers), [🤗 Datasets](https://github.com/huggingface/datasets), [🤗 Tokenizers](https://github.com/huggingface/tokenizers), and [🤗 Accelerate](https://github.com/huggingface/accelerate) — as well as the [Hugging Face Hub](https://huggingface.co/models). It's completely free and open-source!
 
 ## 🌎 Languages and translations
