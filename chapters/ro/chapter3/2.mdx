@@ -1,0 +1,393 @@
+`<FrameworkSwitchCourse {fw} />`
+
+# Procesarea datelor [[processing-the-data]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={3}
+    classNames="absolute z-10 right-0 top-0"
+    notebooks={[
+        {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section2_pt.ipynb"},
+        {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section2_pt.ipynb"},
+]} />
+{:else}
+
+<CourseFloatingBanner chapter={3}
+
+classNames="absolute z-10 right-0 top-0"
+    notebooks={[
+        {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section2_tf.ipynb"},
+        {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section2_tf.ipynb"},
+]} />
+
+{/if}
+
+{#if fw === 'pt'}
+Continuând cu exemplul din [capitol anterior](/course/chapter2), mai jos vedeți cum putem să antrenăm un sequence classifier pe un singur batch în PyTorch:
+
+```python
+import torch
+from transformers import AdamW, AutoTokenizer, AutoModelForSequenceClassification
+
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequences = [
+    "Am așteptat toată viața mea pentru un curs HuggingFace.",
+    "Acest curs este fascinant!",
+]
+batch = tokenizer(sequences, padding=True, truncation=True, return_tensors="pt")
+
+# Acesta este nou
+batch["labels"] = torch.tensor([1, 1])
+
+optimizer = AdamW(model.parameters())
+loss = model(**batch).loss
+loss.backward()
+optimizer.step()
+```
+{:else}
+Continuând cu exemplul din [capitolul anterior](/course/chapter2), mai jos vedeți cum continuăm antrenarea unui sequence classifier pe un batch în TensorFlow:
+
+```python
+import tensorflow as tf
+import numpy as np
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
+
+# Același lucru ca dinainte
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+sequences = [
+    "Am așteptat toată viața mea pentru un curs HuggingFace.",
+    "Acest curs este fascinant!",
+]
+batch = dict(tokenizer(sequence, padding=True, truncate=True, return_tensors="tf"))
+
+
+# Aceasta este nou
+model.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
+etichete = tf.convert_to_tensor([1, 1])
+model.train_on_batch(batch, etichete)
+```
+
+De obicei, antrenarea modelului pe două propoziții nu va da rezultate foarte bune. Pentru a obține rezultate mai bune, veți avea nevoie să pregătiți un dataset mai mare.
+
+În această secțiune vom folosi ca exemplu datasetul MRPC (Microsoft Research Paraphrase Corpus), introdus într-un [articol](https://www.aclweb.org/anthology/I05-5002.pdf) de William B. Dolan și Chris Brockett. Datasetul constă din 5,801 perechi de propoziții, cu o etichetă care indică dacă sunt paraphraseuri sau nu (adică dacă ambele propoziții au același înțeles). Am selectat-o pentru acest capitoldeoare că este un dataset mic, așa încât să fie ușor de experimentat cu antrenarea pe el.
+
+### Încărcarea unui dataset din Hub[[loading-a-dataset-from-the-hub]]
+
+{#if fw === 'ro'}
+<Youtube id="_BZearw7f0w"/>
+{:else}
+<Youtube id="W_gMJF0xomE"/>
+{/if}
+
+Hub-ul nu conține doar modele; de asemenea, conține multiple dataseturi înm mai multe limbi. Puteți naviga prin seturile de date [aici](https://huggingface.co/datasets), și vă recomandăm să încercați să încărcați și procurați un nou dataset odată ce veți fi trecut prin această secțiune (vedeți documentația generală [aici](https://huggingface.co/docs/datasets/loading)). Dar pentru moment, să ne concentrăm pe datasetul MRPC! Este una dintre cele 10 seturi de date care compun benchmark-ul [GLUE](https://gluebenchmark.com/), care este un benchmark academic folosit pentru a măsura performanța modelelor ML în 10 diferite sarcini de clasificare a textului.
+
+Biblioteca 🤗 Datasets oferă o comandă foarte simplă pentru a descărca și a stoca un dataset din Hub. Putem să instalăm datasetul MRPC astfel:
+
+<Tip>
+⚠️ **Avertizare** Asigurați-vă că `datasets` este instalat prin rularea `pip install datasets`. Apoi, încărcați dataset-ul MRPC și printați-l pentru a vedea ce conține.
+</Tip>
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("glue", "mrpc")
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 3668
+    })
+    validation: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 408
+    })
+    test: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 1725
+    })
+})
+```
+
+Ai observat că am obținut un obiect `DatasetDict` care conține setul de antrenare, setul de validare și setul de testare. Fiecare dintre acestea conține câteva coloane (`sentence1`, `sentence2`, `label`, și `idx`) și o numpăr de rânduri variabil, care reprezintă numărul de elemente în fiecare set (astfel, există 3.668 perechi de fraze în setul de antrenare, 408 în setul de validare și 1.725 în setul de testare).
+
+Acest comandă descarcă și face cache datasetului, în *~/.cache/huggingface/datasets*(folderul implicit de salvare). În capitolul 2, am văzut cum putem personaliza folderul de cache stabilind variabila de mediu `HF_HOME`.
+
+Putem accesa fiecare pereche de fraze din obiectul `raw_datasets` prin indexare, asemenea unui dicționar:
+
+```py
+raw_train_dataset = raw_datasets["train"]
+raw_train_dataset[0]
+```
+
+```python
+{'idx': 0,
+ 'label': 1,
+ 'sentence1': 'Amrozi l-a acuzat pe fratele său, pe care l-a numit „martorul” , că distorsionează intenționat probele sale.',
+ 'sentence2': 'Referindu-se la el doar sub numele de " martorul ", Amrozi l-a acuzat pe fratele său că distorsionează intenționat probele sale.'}
+```
+
+Putem vedea că labels sunt numere întregi, așadar nu vom trebui să facem nicio procesare în acest sens. Pentru a ști care număr întreg corespunde cu care label, putem inspecta variabila `features` al 'raw_train_dataset'. Acest lucru ne va spune tipul fiecărui coloană.
+
+```py
+raw_train_dataset.features
+```
+
+```python out
+{'sentence1': Value(dtype='string', id=None),
+ 'sentence2': Value(dtype='string', id=None),
+ 'label': ClassLabel(num_classes=2, names=['not_equivalent', 'equivalent'], names_file=None, id=None),
+ 'idx': Value(dtype='int32', id=None)}
+```
+
+În spatele, `label` este obiect de tip `ClassLabel`, iar maparea numerelor întregi la numele label-ului este stocat în folderele *names*. Astfel, `0` corespunde cu `not_equivalent`, iar `1` corespunde cu `equivalent`.
+
+<Tip>
+
+✏️ **Încercați-o!** Arată elementul 15 din setul de antrenament și elementul 87 din setul de validare. Care sunt label-urile acesotra?
+
+</Tip>
+
+### Preprocessing un datset[[preprocessing-a-dataset]]
+
+{#if fw === 'pt'}
+<Youtube id="0u3ioSwev3s"/>
+{:else}
+<Youtube id="P-rZWqcB6CE"/>
+{/if}
+
+Pentru a prelucra datele, trebuie să convertim textul în numere pe care modelul le poate înțelege. Cum ai văzut în [capitol anterior](/course/chapter2), acest lucru se face cu ajutorul unui tokenizer. Putem să oferim tokenizerului o propoziție sau o listă de propoziții, așa că putem să tokenizăm direct toate primele propoziții și toate cele de-a doua propoziții ale fiecărei perechi în felul următor:
+
+```py
+from transformers import AutoTokenizer
+
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+tokenized_sentences_1 = tokenizer(raw_datasets["train"]["sentence1"])
+tokenized_sentences_2 = tokenizer(raw_datasets["train"]["sentence2"])
+```
+
+Însă nu putem să transmitem doar două propoziții către model și să obținem o predicție dacă cele două propoziții sunt parafraze sau nu. Trebuie să controlăm cele două secvențe ca o pereche, apoi să le aplicăm preprocesarea adecvată. Norocul este că tokenizer-ul poate lua o pereche de propoziții și le poate pregăti în felul în care modelul BERT îl așteaptă: 
+
+```py
+inputs = tokenizer("Aceasta este prima propoziție.", "Aceasta este a doua.")
+inputs
+
+```
+
+```python out
+{ 
+  'input_ids': [101, 2023, 2003, 1996, 2034, 6251, 1012, 102, 2023, 2003, 1996, 2117, 2028, 1012, 102],
+  'token_type_ids': [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+  'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+}
+```
+
+Am discutat despre `input_ids` și `attention_mask` cheii în [Capitolul 2](/course/chapter2), dar am întârziat cu abordarea cheii `token_type_ids`. În acest exemplu, această cheie este ceea ce spune modelului care parte a inputului este prima propoziție și care este a doua.
+
+<Tip>
+✏️ **Încercați!** Luați elementul 15 din setul de antrenare și tokenizați cele două propoziții separat și ca o pereche. Care este diferența dintre rezultatele celor două? 
+</Tip>
+
+Dacă facem decode ID-urilor din `input_ids` înapoi la cuvinte:
+
+```python
+tokenizer.convert_ids_to_tokens(inputs["input_ids"])
+```
+
+Noi vom obține următorul rezultat:
+
+```python
+['[CLS]', 'acesta', 'este', 'prima', 'propoziție', '.', '[SEP]', 'acesta', 'este', 'a', 'doua', '.', '[SEP]']
+```
+
+Prin urmare, modelul așteaptă ca inputul să fie în forma `[CLS] sentence1 [SEP] sentence2 [SEP]` atunci când există două propoziții. Aliniind această informație cu `token_type_ids`, obținem:
+
+```python
+['[CLS]', 'acesta', 'este', 'prima', 'propoziție', '.', '[SEP]', 'acesta', 'este', 'a', 'doua', '.', '[SEP]']
+[      0,      0,    0,     0,       0,          0,   0,       0,      1,    1,     1,        1,     1,   1,       1]
+```
+
+Observăm,că inputul corespunzător `[CLS] sentence1 [SEP]` au toate un token type ID de `0`, în timp ce celelalte părți, corespunzătoare `sentence2 [SEP]`, au toate un token type ID de `1`.
+
+Înțelegem că dacă selectăm alt checkpoint al modelului, nu vom avea neapărat `token_type_ids` în inputurile tokenizate (de exemplu, ele nu sunt returnate dacă folosim un model DistilBERT). Acestea sunt returnate doar atunci când modelul știe ce să facă cu ele, pentru că le-a văzut în timpul pretrainingului.
+
+În acest caz, BERT este antrenat cu token type IDs și pe lângă the masked language modeling objective despre care am vorbit în [Capitolul 1](/course/chapter1), are un objective suplimentar numit _next sentence prediction_. Objectiveul este destinat modelării relației între perechi de propoziții.
+
+Cu următoare predicție a propoziției, modelului i se prezintă perechi de propoziții (cu masked tokens aleatoriu) și i se cere să prezică dacă a doua propoziție urmează primei. Pentru a face sarcina non-trivial, în jumătate dintre cazuri propizițiie urmează una pe alta în documentul original din care au fost extrase și cealaltă jumătate ele vin de la două documente diferite.
+
+În general, nu trebuie să vă faceți griji dacă există sau nu `token_type_ids` în inputurile tokenizate: atât timp cât folosiți aceelași checkpoint al modelului și a tokenizer-ului, totul va fi bine, pentru că tokenizer-ul știe ce are de oferit modelului.
+
+Acum că am văzut cum poate prelucra tokenizer-ul o pereche de propoziții, îl putem folosi acest lucru pentru a tokeniza întregul nostru dataset: exact ca în [capitolul anterior](/course/chapter2), putem să oferim tokenizer-ului o listă de perechi de propoziții oferindu-i prima listă de propoziții și apoi lista a doua. Acest lucru este compatibil cu padding-ul și truncation-ul pe care le-am văzut în [Capitolul 2](/course/chapter2). În felul acesta putem prelucra datasetul de antrenare astfel:
+
+```py
+tokenized_dataset = tokenizer(
+    raw_datasets["train"]["sentence1"],
+    raw_datasets["train"]["sentence2"],
+    padding=True,
+    truncation=True,
+)
+```
+
+Această metodă funcționează bine, dar are dezavantajul că returnează un dicționar (cu key-urile noastre, `input_ids`, `attention_mask`, și `token_type_ids` și valori care sunt liste de liste). Va funcționa doar dacă aveți destul de RAM pentru a stoca întreg dataset în tokenizării acestuia (iar dataset-urile din biblioteca 🤗 Datasets sunt fișiere [Apache Arrow](https://arrow.apache.org/) stocate pe disc, deci tu stochezi numai sample-urile pe care le ceri să se păstreaze în memorie).
+
+Acum că am înțeles modul în care tokenizer-ul nostru poate gestiona o pereche de fraze, putem folosi el pentru a tokenize întregul nostru set de date: la fel cum am făcut în [capitolul anterior](/course/chapter2), putem alimenta tokenizer-ul cu lista de prime fraze și apoi lista de fraze secunde. Această metodă este compatibilă și cu opțiunile de umplere și tăiere pe care le-am văzut în [Capitolul 2](/course/chapter2). Astfel, una dintre modalitățile prin care putem preprocesa dataset-ul de antrenare este:
+
+```py
+tokenized_dataset = tokenizer(
+    raw_datasets["train"]["sentence1"],
+    raw_datasets["train"]["sentence2"],
+    padding=True,
+    truncation=True,
+)
+```
+
+Această metodă funcționează bine, dar are dezavantajul că returnează un dicționar (cu cheile noastre, `input_ids`, `attention_mask`, și `token_type_ids`, și valori care sunt liste de liste). Va fi disponibilă doar dacă aveți suficient spațiu de memorie pentru a stoarca întregul set de date în timpul tokenizării (în timp ce dataset-urile din biblioteca 🤗 Datasets se salvează sub forma [Apache Arrow](https://arrow.apache.org/), fișiere stocate pe disch, astfel încât doar acele fragmente ale datelor pe care le cerem să fie încărcate în memorie).
+
+Pentru a păstra datele în forma de dataset, vom folosi metoda [`Dataset.map()`](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.map). Aceasta ne permite puțin mai multă flexibilitate, dacă ne trebuie mai multă preprocesare pe lângă tokenization. Metoda `map()` aplică o funcție asupra fiecărui element al datasetului, astfel putem să definim o funcție care tokenizează input-urile noastre:
+
+```py
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+```
+
+Această funcție i-a un dicționar (ca și elementele datasetului) și returnează un nou dicționar cu key-urile `input_ids`, `attention_mask`, și `token_type_ids`. Acesta va lucra chiar și dacă dicționarul "example" conține câteva sample-uri(fiecare key ca o list de propoziții), întrucât "tokenizer"-ul lucrează și cu liste cu perechi de propoziții cum am văzut mai devreme. Aceasta va permite folosirea opțiunii `batched=True` în apelul funcției `map()`, ceea ce va accelera semnificativ tokenizarea. `Tokenizer`-ul nostru este susținut de un tokenizer scris în Rust din biblioteca [🤗 Tokenizers](https://github.com/huggingface/tokenizers). Acest tokenizer poate fi extrem de rapid, dar numai dacă îi dăm multe inputuri odată.
+
+*Atenție*:Am omis argumentul `padding` din funcția noastră de tokenizare pentru moment. Acest lucru este datorat faptului că aplicarea padding-ului tuturor elementelor cu lungimea maximă nu este eficientă: în schimb, este mai bine să faceți padding elementelor atunci când creați un batch, astfel încât să vă trebuiască doar să faceți padding până la lungimea maximă doar în acest batch și nu întregului dataset. Acest lucru poate salva mult timp și resurse atunci când input-urile au lungimi foarte variabile.
+
+Aici este modul în care aplicăm funcția de tokenizare asupra tuturor dataset-urilor noastre. Folosim `batched=True` în apelul funcției `map` astfel încât funcția să fie aplicată asupra mai multor elemente ale datasetului odată. Aceasta permite preprocesarea accelerată.
+
+```py
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+tokenized_datasets
+```
+
+Modul în care biblioteca 🤗 Datasets aplică această procesare este prin adăugarea de noi câmpuri la dataset-uri, unul pentru fiecare key din dicționarul returnat de funcția de preprocesare:
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 3668
+    })
+    validation: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 408
+    })
+    test: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 1725
+    })
+})
+```
+
+Puteți chiar și folosi multiprocessing când aplicați funcția de preprocesare cu `map()` prin folosirea unui argument `num_proc`. Nu am făcut acest lucru aici pentru că biblioteca 🤗 Tokenizers utilizează deja mai multe thread-uri pentru a tokeniza sample-urile mai rapid, dar dacă nu folosiți un tokenizer rapid cu această bibliotecă, acest lucru v-ar putea accelera preprocesarea.
+
+Funcția `tokenize_function` returnează un dicționar cu key-urile `input_ids`, `attention_mask`, și `token_type_ids`, astfel că aceste trei câmpuri sunt adăugate tuturor split-urilor în dataset-urile noastre. Notați-vă că am putea chiar schimba câmpurile existente dacă funcția de preprocesare ar returna o nouă valoare pentru un key din dataset-ul pe care aplicăm `map()`.
+
+Ultimul lucru pe care trebuie să îl facem este să facem padding tuturor exemplelor până la lungimea celui mai mare element atunci când facem batch elementelor împreună – o tehnică pe care o denumim *dinamic padding*.
+
+### Dinamic Padding[[dynamic-padding]]
+<Youtube id="7q5NyFT8REg"/>
+{#if fw === 'pt'}
+
+Funcția care este responsabilă de a pune împreună sample-urile într-un batch se numește *collate function*. Este un argument default pe care puteți să-l transmiteți când construiți un `DataLoader`, valoarea implicită fiind o funcție care va converti sample-urile în tensors PyTorch și le va concatena (recursiv dacă elementele dumneavoastră sunt liste, tuple-uri sau dicționare). Acest lucru nu este posibil în cazul nostru deoarece input-urile noastre nu vor avea toate aceeași dimensiune. Am amânat intenționat padding-ul pentru a o aplica numai atunci când e nevoie, pe fiecare batch și să evităm astfel exemplele cu lungimi prea mari cu multe padding-uri. Acest lucru va accelera antrenarea, dar notați-vă că dacă antrenați pe un TPU, acest lucru poate cauza probleme – TPU-urile preferă forme fixe, chiar dacă aceasta înseamnă padding suplimentar.
+
+{:else}
+
+Funcția care este responsabilă de a pune împreună sample-urile într-un batch se numește *collate function*. Collator-ul default este o funcție ce va transforma sample-urile în tf. Faceți Tensor și concatenațile (recursiv dacă elementele dumneavoastră sunt liste, tuple-uri sau dicționare). Acest lucru nu este posibil în cazul nostru deoarece input-urile noastre nu vor avea toate aceeași dimensiune. Am amânat intenționat padding-ul pentru a o aplica numai atunci când e nevoie, pe fiecare batch și să evităm astfel exemplele cu lungimi prea mari cu multe padding-uri. Acest lucru va accelera antrenarea, dar notați-vă că dacă antrenați pe un TPU, acest lucru poate cauza probleme – TPU-urile preferă forme fixe, chiar dacă aceasta înseamnă padding suplimentar.
+
+{/if}
+
+Pentru a face acest lucru, trebuie să definim o funcție collate care va aplica cantitatea corectă de padding pentru elementele din dataset-ul pe care vrem să-i facem batch. Norocul este că biblioteca 🤗 Transformers ne oferă o asemenea funcție prin `DataCollatorWithPadding`. Aceasta i-a un tokenizer atunci când o inițializați(pentru a ști care padding token să folosim și dacă modelul se așteaptă ca padding-ul să fie pe stânga sau dreapta inputu-lui) și va face tot ce este nevoie:
+{#if fw === 'pt'}
+```py
+from transformers import DataCollatorWithPadding
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+{:else}
+```py
+from transformers import DataCollatorWithPadding
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="tf")
+```
+{/if}
+
+Pentru a testa acest nou jucărie, să luăm câteva sample-uri din setul nostru de antrenare pe care am dori să le facem batch împreună. Aici, ștergem coloanele `idx`, `sentence1` și `sentence2` deoarece nu vor fi necesare și conțin stringuri (și nu putem crea tensore cu stringuri) și uitați-vă la lungimile fiecărui element din lotul nostru:
+
+```py
+samples = tokenized_datasets["train"][:8]
+samples = {k: v for k, v in samples.items() if k not in ["idx", "sentence1", "sentence2"]}
+[len(x) for x in samples["input_ids"]]
+```
+
+```python out
+[50, 59, 47, 67, 59, 50, 62, 32]
+```
+
+Nu e de mirare că obținem sample-uri de lungimi diferite, între 32 și 67. Dynamic padding înseamnă că sample-urilor din acest batch le-ar trebui aplicate padding cu o lungime de 67, lungimea cea mai mare din batch. Fără Dynamic padding, toate sample-urile ar fi avut padding cu maximul lungimii din întregul dataset sau maximul lungimii pe care modelul poate accepta. Să verificăm încă o dată dacă `data_collator`-ul nostru face dynamic padding pe batch:
+
+```py
+batch = data_collator(samples)
+{k: v.shape for k, v in batch.items()}
+```
+
+{#if fw === 'tf'}
+
+```python out
+{'attention_mask': TensorShape([8, 67]),
+ 'input_ids': TensorShape([8, 67]),
+ 'token_type_ids': TensorShape([8, 67]),
+ 'labels': TensorShape([8])}
+```
+
+{:else}
+
+```python out
+{'attention_mask': torch.Size([8, 67]),
+ 'input_ids': torch.Size([8, 67]),
+ 'token_type_ids': torch.Size([8, 67]),
+ 'labels': torch.Size([8])}
+```
+
+Looking good! Acum că am trecut de la textul raw la batch-uri pe care modelul nostru poate să le proceseze, suntem gata să îi facem fine-tune!
+
+{/if}
+
+<Tip>
+
+✏️ **Încearcă-ți norocul!** Implementează preprocesarea datelor pe dataset-ul GLUE SST-2. Acesta se diferență puțin deoarece nu conține perechi de propoziții, ci doar câte o propoziție, dar ceea ce am făcut ar trebui să rămână neschimbat. Pentru o provocare mai grea, încearcă să scrii o funcție de preprocesare care se aplică oricărui task GLUE.
+
+</Tip>
+
+{#if fw === 'tf'}
+
+Acum că avem dataset-ul nostru și un `data_collator`, este timpul să-i punem la lucru. În loc să încărcăm manual batch-urile și să le facem collate, asta însemnând prea mult lucru și, nu ar fi nici prea performantă. În schimb, există o metodă simplă care oferă o soluție performantă la acest problemă: `to_tf_dataset()`. Acest lucru va face wrap unui `tf.data.Dataset` în jurul datasetului nostru, cu o fucție opțională de collation. `tf.data.Dataset` este un format nativ TensorFlow pe care Keras-ul o poate folosi pentru `model.fit()`, astfel încât această metodă face convert unui 🤗 Dataset la un format gata să fie antrenat. Hai să-l vedem în acțiune cu datasetul nostru!
+
+```py
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+
+tf_validation_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=False,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+```
+
+Și asta e tot! Putem lua aceste dataset-uri pentru următoarea lecție, unde antrenamentul va fi ușor după toată munca depusă pentru prelucrarea datelor.
+
+{/if}

@@ -1,0 +1,206 @@
+<FrameworkSwitchCourse {fw} />
+
+# Aplicarea fine-tuningului asupra unui model cu Keras[[fine-tuning-a-model-with-keras]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[ 
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section3_tf.ipynb"},
+]} />
+
+Odată ce ai finalizat toate operațiile de preprocesare a datelor din ultima secțiune, ai doar câțiva pași rămași pentru a antrena modelul. Însă, observați că `model.fit()` va rula foarte lent pe un CPU. Dacă nu aveți un GPU configurat, puteți accesa GPU-uri sau TPUs pe gratis pe [Google Colab](https://colab.research.google.com/).
+
+Exemplele de cod de mai jos presupun că ați executat deja exemplele din secțiunea precedentă. Aici este o scurtă sumarizare care recapitulează ceea ce trebuie să faceți:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+import numpy as np
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="tf")
+
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+
+tf_validation_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=False,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+```
+
+
+### Antrenare[[antrenare]]
+
+
+Modelele TensorFlow importate din 🤗 Transformers sunt deja modele Keras. Aici este o scurtă introducere în Keras.
+
+<Youtube id="rnTGBy2ax1c"/>
+
+
+Astfel, odată ce avem datele noastre, putem începe antrenarea lor foarte ușor.
+
+
+<Youtube id="AUozVp78dhk"/>
+
+
+În același mod ca și în [capitolul anterior](/course/chapter2), vom folosi clasa `TFAutoModelForSequenceClassification`, cu două labeluri:
+
+```py
+from transformers import TFAutoModelForSequenceClassification
+
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+Veți observa că în comparație cu [Capitolul 2](/course/chapter2), veți primi o avertizare după ce inițializați acest model preantrenat. Acest lucru se datorează faptului că BERT nu a fost antrenat pentru clasificarea perechilor de propoziții, astfel încât începutul preantrenat al modelului a fost eliminat și un nou început potrivit pentru clasificarea secvențelor a fost adăugat în locul lui. Avertizările indică faptul că anumite weights nu au fost folosite (cele corespunzătoare începutului de preantrenare eliminat) și că altele au fost inițializate aleatoriu (cele pentru noul capăt). Avertizarea se încheie prin încurajarea antrenării modelului, ceea ce este exact ceea ce vom face acum.
+
+
+Pentru a face fine-tune modelului pe datasetul nostru, avem de făcut `compile()` modelului și apoi să trasnmitem datele noastre spre metoda `fit()`. Acest lucru va porni procesul de fine-tuning (care ar trebui să dureze câteva minute pe un GPU) și va raporta training loss, plus validation loss la sfârșitul fiecărei epoci.
+
+<Tip>
+
+Observați că modelele 🤗 Transformers au o abilitate specială care nu este disponibilă pentru cele mai multe modele Keras - ele pot folosi automat un appropriate loss pe care le calculează intern. Ele vor utiliza această pierdere implicit dacă nu veți specifica un argument de pierdere în `compile()`. Pentru a folosi internal loss, va trebui să transmiteți labelurile ca parte din input, și nu ca nu label separat, ceea ce este modul normal de utilizare a labelurilor cu modelele Keras. Veți vedea exemple de acest tip în Partea 2 a cursului, unde definirea funcției de loss corecte poate fi dificilă. În cazul sequence classification, însă, o funcție Keras standard pentru loss se va dovedi suficient, astfel o vom folosi în acest context.
+
+</Tip>
+
+
+```py
+from tensorflow.keras.losses import SparseCategoricalCrossentropy
+
+model.compile(
+    optimizer="adam",
+    loss=SparseCategoricalCrossentropy(from_logits=True),
+    metrics=["accuracy"],
+)
+model.fit(
+    tf_train_dataset,
+    validation_data=tf_validation_dataset,
+)
+```
+
+
+<Tip warning={true}>
+
+Observați un pericol comun aici — puteți transmite doar numele pierderii ca un string în Keras, dar implicit Keras va presupune că deja ați aplicat un softmax la outputurile voastre. Multe modele, însă, produc outputurile direct înainte de aplicarea softmaxului, cunoscute și sub numele de *logit*. Trebuie să spuneți funcției loss că asta este ceea ce produce modelul tău, iar singura modalitate de a face acest lucru este de a-o chema direct, în loc de a o specifica numai cu un string.
+
+</Tip>
+
+### Îmbunătățirea performanței de antrenare
+
+<Youtube id="cpzq6ESSM5c"/>
+
+Dacă încerci codul de mai sus, sigur o să ruleze, dar vei constata că lossul scade doar lent sau doar sporadic. Principala cauză
+este *learning rateul*. Așa cum și lossul, când trimitem către Keras numele unui omptimizer ca uin string, Keras inițiază
+acel optimizer cu valori default pentru toți parametrii, inclusiv learning rateul. Din experiență, însă, știm că
+modelele transformer se bucură de un learning rate mult mai mic decât cel default pentru Adam, care este 1e-3, scris și ca 
+10 la puterea -3 sau 0.001. 5e-5 (0.00005), care este aproximativ douăzeci de ori mai mică, reprezintă o bază mult mai bună.
+
+În plus față de reducerea learning rateului, avem un al doilea truc la dispoziție: putem reduce treptat learning rateul
+pe parcursul antrenării. În documentație, vei găsi uneori această practică denumită *decaying* sau *annealing*
+learning rateul. În Keras, cel mai bun mod de a face acest lucru este să folosim un *learning rate scheduler*. O opțiune bună este
+`PolynomialDecay` — deși numele ar putea sugera altceva, cu setările default, el doar face decay liniar learning rateului din valoarea inițială
+până la valoarea finală pe parcursul antrenării; exact ceea ce ne-am dori. Pentru a utiliza corect un scheduler,
+însă, trebuie să-i spunem cât timp va dura antrenarea. Calculăm acest lucru sub forma `num_train_steps` de mai jos.
+
+```py
+from tensorflow.keras.optimizers.schedules import PolynomialDecay
+
+batch_size = 8
+num_epochs = 3
+# Numărul de pași de antrenare este numărul de sampleuri din dataset, împărțit la dimensiunea batchului și apoi înmulțit
+# cu numărul total de epoci. Observăm că `tf_train_dataset` aici este un batched tf.data.Dataset`,
+# nu datasetul original Hugging Face, astfel încât len() să fie deja num_samples // batch_size.
+num_train_steps = len(tf_train_dataset) * num_epochs
+lr_scheduler = PolynomialDecay(
+    initial_learning_rate=5e-5, end_learning_rate=0.0, decay_steps=num_train_steps
+)
+from tensorflow.keras.optimizers import Adam
+
+opt = Adam(learning_rate=lr_scheduler)
+```
+
+<Tip>
+
+Biblioteca 🤗 Transformers are funcția `create_optimizer()` care va crea un optimizer `AdamW` cu learning rate decay. Aceasta este o metodă convenabilă pe care o veți vedea în detaliu în viitoarele sec'iuni ale cursului.
+
+</Tip>
+
+Acum, avem noul nostru optimizer și putem încerca să antrenăm cu el. Începem cu reloadul modelului pentru a reseta modificările pe weighturole de la ultima rundă de antrenare ;o apoi putem face compile cu noul optimizer:
+
+```py
+import tensorflow as tf
+
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+model.compile(optimizer=opt, loss=loss, metrics=["accuracy"])
+```
+
+Acum putem face fit din nou:
+
+```py
+model.fit(tf_train_dataset, validation_data=tf_validation_dataset, epochs=3)
+```
+
+<Tip>
+
+💡 Dacă doriți să încărcați automat modelul dumneavoastră pe Hub în timpul antrenării, puteți transmite `PushToHubCallback` în metoda `model.fit()`. Mai multe despre acest lucru veți învăța în [Capitol 4](/course/chapter4/3).
+
+</Tip>
+
+### Model prediction
+
+<Youtube id="nx10eh4CoOs"/>
+
+
+Încheierea antrenării și observarea lossului scăzând este foarte frumos, dar ce se întămplă dacă doriți să obțineți efectiv outputuruke din modelul antrenat, fie pentru a calcula câteva metrice, fie pentru utilizarea modelului în producție? Pentru asta putem folosi metoda `predict()`. Aceasta va returna *logits* de la începutul outputului modelului, câte unul pe clasă.
+
+```py
+preds = model.predict(tf_validation_dataset)["logits"]
+```
+
+Puteți converti aceste logituri în predicțiile clasei modelului prin utilizarea `argmax` pentru a găsi logit-ul cel mai mare, care corespunde clasei celei mai probabile:
+
+```py
+class_preds = np.argmax(preds, axis=1)
+print(preds.shape, class_preds.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+
+Acum, să folosim aceste `preds` pentru a calcula câteva metrici! Puteți încărca metricele asociate cu datasetul MRPC în același mod cum am încărcat și datasetul, dar de data aceasta cu ajutorul funcției `evaluate.load()`. Obiectul returnat are o metodă de calculare `compute()` pe care o putem utiliza pentru a face metric calculation:
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+metric.compute(predictions=class_preds, references=raw_datasets["validation"]["label"])
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+Rezultatele exacte pe care le veți obține pot varia, deoarece inițializarea aleatoare a începutului modelului care poate schimba metricele pe care le-a atins. Aici putem vedea că modelul nostru are o precizie de 85.78% în setul de validare și un scor F1 de 89.97. Acestea sunt exact aceleași metrice folosite pentru evaluarea rezultatelor pe datasetul MRPC pentru GLUE benchmark. Tabelul din [BERT Paper](https://arxiv.org/pdf/1810.04805.pdf) a raportat un scor F1 de 88.9 pentru modelul de bază. Acela a fost un `uncased` model, dar noi utilizăm acum un `cased` model, ceea ce explică rezultatul mai bun.
+
+Acesta este punctul unde vă prezentăm introducerea la folosirea fine-tuningului cu ajutorul APIului Keras. Un exemplu bun pentru majoritatea sarcinilor NLP va fi dat în [Capitol 7](/course/chapter7). Dacă doriți să dezvoltați abilitățile dumneavoastră pe API-ul Keras, încercați să faceți fine-tune unui model pe datasetul GLUE SST-2 folosind procesarea de date din secvența 2.
