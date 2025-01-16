@@ -144,6 +144,25 @@ If you get stuck, check out one of the existing chapters -- this will often show
 
 Once you are happy with the content, open a pull request and tag [@lewtun](https://github.com/lewtun) for a review. We recommend adding the first chapter draft as a single pull request -- the team will then provide feedback internally to iterate on the content 🤗!
 
+## Deploying to hf.co/course (for HF staff)
+
+The course content is deployed to [hf.co/course](https://huggingface.co/learn/nlp-course/chapter1/1) by triggering the [GitHub CI](.github/workflows/build_documentation.yml) from the `release` branch. To trigger the build, first create a new branch from `main` that will be used to update the current state on `release`:
+
+```shell
+git checkout main
+git checkout -b bump_release
+```
+
+Next, resolve any conflicts between the `release` and `bump_release` branches. Since this is tiresome to do manually, we can do the following to accept the latest changes:
+
+```shell
+git checkout bump_release
+git merge -s ours release
+```
+
+Next, push the `bump_release` branch and open a PR against `release` (not `main`!). Here is an example [PR](https://github.com/huggingface/course/pull/768). Once the CI is green, merge the PR and this will trigger the GitHub CI to build the new course content. This takes around 10-15 minutes, after which the latest changes will be visible on [hf.co/course](https://huggingface.co/learn/nlp-course/chapter1/1)!
+
+
 ## 🙌 Acknowledgements
 
 The structure of this repo and README are inspired by the wonderful [Advanced NLP with spaCy](https://github.com/ines/spacy-course) course.
