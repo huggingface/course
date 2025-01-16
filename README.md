@@ -110,7 +110,7 @@ pip install -r requirements.txt
 make style
 ```
 
-Once that's run, commit any changes, open a pull request, and tag [@lewtun](https://github.com/lewtun) for a review. Congratulations, you've now completed your first translation 🥳!
+Once that's run, commit any changes, open a pull request, and tag [@lewtun](https://github.com/lewtun) and [@stevhliu](https://github.com/stevhliu) for a review. If you also know other native-language speakers who are able to review the translation, tag them as well for help. Congratulations, you've now completed your first translation 🥳!
 
 > 🚨 To build the course on the website, double-check your language code exists in `languages` field of the `build_documentation.yml` and `build_pr_documentation.yml` files in the `.github` folder. If not, just add them in their alphabetical order.
 
