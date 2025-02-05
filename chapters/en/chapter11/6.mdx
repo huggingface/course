@@ -1,111 +1,245 @@
-# Supervised Fine-Tuning with SFTTrainer
+# Evaluation
 
-<CourseFloatingBanner chapter={2}
-  classNames="absolute z-10 right-0 top-0"
-  notebooks={[
-    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/smol-course/blob/main/1_instruction_tuning/notebooks/sft_finetuning_example.ipynb"},
-]} />
+With a finetuned model through either SFT or LoRA SFT, we should evaluate it on standard benchmarks.
 
-In this section we will unpack the `SFTTrainer` class and see how it works. We'll also see how to use it to fine-tune a model. We will demonstrate how to fine-tune the `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model.
+## Automatic Benchmarks
 
-## Load the base model
+Automatic benchmarks serve as standardized tools for evaluating language models across different tasks and capabilities. While they provide a useful starting point for understanding model performance, it's important to recognize that they represent only one piece of a comprehensive evaluation strategy.
 
-Here we'll load the base model and tokenizer. We'll also set up the chat format for the model.
+## Understanding Automatic Benchmarks
 
-```python
-# Import necessary libraries
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from datasets import load_dataset
-from trl import SFTConfig, SFTTrainer, setup_chat_format
-import torch
+Automatic benchmarks typically consist of curated datasets with predefined tasks and evaluation metrics. These benchmarks aim to assess various aspects of model capability, from basic language understanding to complex reasoning. The key advantage of using automatic benchmarks is their standardization - they allow for consistent comparison across different models and provide reproducible results.
 
-# Set the device to use for training
-device = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available() else "cpu"
-)
+However, it's crucial to understand that benchmark performance doesn't always translate directly to real-world effectiveness. A model that excels at academic benchmarks may still struggle with specific domain applications or practical use cases.
 
-# Load the model and tokenizer
-model = AutoModelForCausalLM.from_pretrained(
-    pretrained_model_name_or_path="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-).to(device)
-tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_name)
+## General Knowledge Benchmarks
 
-# Set up the chat format
-model, tokenizer = setup_chat_format(model=model, tokenizer=tokenizer)
+MMLU (Massive Multitask Language Understanding) tests knowledge across 57 subjects, from science to humanities. While comprehensive, it may not reflect the depth of expertise needed for specific domains. TruthfulQA evaluates a model's tendency to reproduce common misconceptions, though it can't capture all forms of misinformation.
+
+## Reasoning Benchmarks
+BBH (Big Bench Hard) and GSM8K focus on complex reasoning tasks. BBH tests logical thinking and planning, while GSM8K specifically targets mathematical problem-solving. These benchmarks help assess analytical capabilities but may not capture the nuanced reasoning required in real-world scenarios.
+
+## Language Understanding
+
+HELM provides a holistic evaluation framework, while WinoGrande tests common sense through pronoun disambiguation. These benchmarks offer insights into language processing capabilities but may not fully represent the complexity of natural conversation or domain-specific terminology.
+
+## Alternative Evaluation Approaches
+
+Many organizations have developed alternative evaluation methods to address the limitations of standard benchmarks:
+
+### LLM-as-Judge
+
+Using one language model to evaluate another's outputs has become increasingly popular. This approach can provide more nuanced feedback than traditional metrics, though it comes with its own biases and limitations.
+
+### Evaluation Arenas
+
+Platforms like Anthropic's Constitutional AI Arena allow models to interact and evaluate each other in controlled environments. This can reveal strengths and weaknesses that might not be apparent in traditional benchmarks.
+
+### Custom Benchmark Suites
+
+Organizations often develop internal benchmark suites tailored to their specific needs and use cases. These might include domain-specific knowledge tests or evaluation scenarios that mirror actual deployment conditions.
+
+## Creating Your Own Evaluation Strategy
+
+Remember that while LightEval makes it easy to run standard benchmarks, you should also invest time in developing evaluation methods specific to your use case.
+
+While standard benchmarks provide a useful baseline, they shouldn't be your only evaluation method. Here's how to develop a more comprehensive approach:
+
+1. Start with relevant standard benchmarks to establish a baseline and enable comparison with other models.
+
+2. Identify the specific requirements and challenges of your use case. What tasks will your model actually perform? What kinds of errors would be most problematic?
+
+3. Develop custom evaluation datasets that reflect your actual use case. This might include:
+   - Real user queries from your domain
+   - Common edge cases you've encountered
+   - Examples of particularly challenging scenarios
+
+4. Consider implementing a multi-layered evaluation strategy:
+   - Automated metrics for quick feedback
+   - Human evaluation for nuanced understanding
+   - Domain expert review for specialized applications
+   - A/B testing in controlled environments
+
+# Implementing Evaluation
+
+In this section, we will implement evaluation for our finetuned model. We can use `lighteval` to evaluate our finetuned model on standard benchmarks, which contains a wide range of tasks built into the library. We just need to define the tasks we want to evaluate and the parameters for the evaluation.
+
+LightEval tasks are defined using a specific format:
+
+```
+{suite}|{task}|{num_few_shot}|{auto_reduce}
 ```
 
-## Generate with the base model
+| Parameter | Description |
+|-----------|-------------|
+| `suite` | The benchmark suite (e.g., 'mmlu', 'truthfulqa') |
+| `task` | Specific task within the suite (e.g., 'abstract_algebra') |
+| `num_few_shot` | Number of examples to include in prompt (0 for zero-shot) |
+| `auto_reduce` | Whether to automatically reduce few-shot examples if prompt is too long (0 or 1) |
 
-First we will try out the base model which does not have a chat template. Later, we can compare the results of the base model with the fine-tuned model.
+Example: `"mmlu|abstract_algebra|0|0"` evaluates on MMLU's abstract algebra task with zero-shot inference.
 
-```python
-# Let's test the base model before training
-prompt = "Write a haiku about programming"
+## Example Evaluation Pipeline
 
-# Format with template
-messages = [{"role": "user", "content": prompt}]
-formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False)
+Let's set up an evaluation pipeline for our finetuned model. We will evaluate the model on  set of sub tasks that relate to the domain of medicine. 
 
-# Generate response
-inputs = tokenizer(formatted_prompt, return_tensors="pt").to(device)
-outputs = model.generate(**inputs, max_new_tokens=100)
+Here's a complete example of evaluating on automatic benchmarks relevant to one specific domain using Lighteval with the VLLM backend:
+
+```bash
+lighteval vllm \
+    "pretrained=your-model-name" \
+    "mmlu|anatomy|0|0" \
+    "mmlu|high_school_biology|0|0" \
+    "mmlu|high_school_chemistry|0|0" \
+    "mmlu|professional_medicine|0|0" \
+    --max_samples 40 \
+    --batch_size 1 \
+    --output_path "./results" \
+    --save_generations true
 ```
 
-## Dataset Preparation
+Results are displayed in a tabular format showing:
 
-We will load a sample dataset and format it for training. The dataset should be structured with input-output pairs, where each input is a prompt and the output is the expected response from the model.
-
-**TRL will format input messages based on the model's chat templates.** They need to be represented as a list of dictionaries with the keys: `role` and `content`,.
-
-```python
-dataset = load_dataset(path="HuggingFaceTB/smoltalk", name="everyday-conversations")
+```
+|                  Task                  |Version|Metric|Value |   |Stderr|
+|----------------------------------------|------:|------|-----:|---|-----:|
+|all                                     |       |acc   |0.3333|±  |0.1169|
+|leaderboard:mmlu:_average:5             |       |acc   |0.3400|±  |0.1121|
+|leaderboard:mmlu:anatomy:5              |      0|acc   |0.4500|±  |0.1141|
+|leaderboard:mmlu:high_school_biology:5  |      0|acc   |0.1500|±  |0.0819|
 ```
 
-## Configuring the SFTTrainer
+Lighteval also include a python API for more detailed evaluation tasks, which is useful for manipulating the results in a more flexible way. Check out the [Lighteval documentation](https://huggingface.co/docs/lighteval/using-the-python-api) for more information.
 
-The `SFTTrainer` is configured with various parameters that control the training process. These include the number of training steps, batch size, learning rate, and evaluation strategy. Adjust these parameters based on your specific requirements and computational resources.
+<Tip>
 
-```python
-# Configure the SFTTrainer
-sft_config = SFTConfig(
-    output_dir="./sft_output",
-    max_steps=1000,  # Adjust based on dataset size and desired training duration
-    per_device_train_batch_size=4,  # Set according to your GPU memory capacity
-    learning_rate=5e-5,  # Common starting point for fine-tuning
-    logging_steps=10,  # Frequency of logging training metrics
-    save_steps=100,  # Frequency of saving model checkpoints
-    evaluation_strategy="steps",  # Evaluate the model at regular intervals
-    eval_steps=50,  # Frequency of evaluation
-    use_mps_device=(
-        True if device == "mps" else False
-    ),  # Use MPS for mixed precision training
-    hub_model_id=finetune_name,  # Set a unique name for your model
-)
+✏️ **Try it out!** Evaluate your finetuned model on a specific task in lighteval.
 
-# Initialize the SFTTrainer
-trainer = SFTTrainer(
-    model=model,
-    args=sft_config,
-    train_dataset=ds["train"],
-    tokenizer=tokenizer,
-    eval_dataset=ds["test"],
-)
-```
+</Tip>
 
-## Training the model
+# End-of-chapter quiz[[end-of-chapter-quiz]]
 
-With the trainer configured, we can now proceed to train the model. The training process will involve iterating over the dataset, computing the loss, and updating the model's parameters to minimize this loss.
+<CourseFloatingBanner
+    chapter={11}
+    classNames="absolute z-10 right-0 top-0"
+/>
 
-```python
-trainer.train()
-```
+### 1. What are the main advantages of using automatic benchmarks for model evaluation?
 
-## 💐 Nice work!
+<Question
+	choices={[
+		{
+			text: "They provide perfect real-world performance metrics",
+			explain: "Incorrect! While automatic benchmarks are useful, they don't always translate directly to real-world performance."
+		},
+		{
+			text: "They allow for standardized comparison between models and provide reproducible results",
+			explain: "Correct! This is one of the key benefits of automatic benchmarks.",
+			correct: true
+		},
+		{
+			text: "They eliminate the need for any other form of evaluation",
+			explain: "Incorrect! Automatic benchmarks should be part of a comprehensive evaluation strategy, not the only method."
+		}
+	]}
+/>
 
-This page provided a step-by-step guide to fine-tuning the `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model using the `SFTTrainer`. By following these steps, you can adapt the model to perform specific tasks more effectively. If you want to carry on working on this course, here are steps you could try out:
+### 2. Which benchmark specifically tests knowledge across 57 different subjects?
 
-- Try this notebook on a harder difficulty
-- Review a colleagues PR
-- Improve the course material via an Issue or PR.
+<Question
+	choices={[
+		{
+			text: "BBH (Big Bench Hard)",
+			explain: "Incorrect! BBH focuses on complex reasoning tasks, not broad subject knowledge."
+		},
+		{
+			text: "GSM8K",
+			explain: "Incorrect! GSM8K specifically targets mathematical problem-solving."
+		},
+		{
+			text: "MMLU",
+			explain: "Correct! MMLU (Massive Multitask Language Understanding) tests knowledge across 57 subjects, from science to humanities.",
+			correct: true
+		}
+	]}
+/>
+
+### 3. What is LLM-as-Judge?
+
+<Question
+	choices={[
+		{
+			text: "Using one language model to evaluate another's outputs",
+			explain: "Correct! This is an alternative evaluation approach that can provide more nuanced feedback.",
+			correct: true
+		},
+		{
+			text: "A benchmark that tests judicial reasoning",
+			explain: "Incorrect! LLM-as-Judge refers to using one model to evaluate another, not testing judicial reasoning."
+		},
+		{
+			text: "A method for training models on legal datasets",
+			explain: "Incorrect! This isn't related to training on legal data, but rather using one model to evaluate another's outputs."
+		}
+	]}
+/>
+
+### 4. What should be included in a comprehensive evaluation strategy?
+
+<Question
+	choices={[
+		{
+			text: "Only standard benchmarks",
+			explain: "Incorrect! A comprehensive strategy should include multiple evaluation methods."
+		},
+		{
+			text: "Standard benchmarks, custom evaluation datasets, and domain-specific testing",
+			explain: "Correct! A comprehensive strategy should include multiple layers of evaluation.",
+			correct: true
+		},
+		{
+			text: "Only custom datasets specific to your use case",
+			explain: "Incorrect! While custom datasets are important, they shouldn't be the only evaluation method."
+		}
+	]}
+/>
+
+### 5. What is a limitation of automatic benchmarks?
+
+<Question
+	choices={[
+		{
+			text: "They are too expensive to run",
+			explain: "Incorrect! Cost isn't typically the main limitation of automatic benchmarks."
+		},
+		{
+			text: "Benchmark performance doesn't always translate directly to real-world effectiveness",
+			explain: "Correct! This is a key limitation to keep in mind when using automatic benchmarks.",
+			correct: true
+		},
+		{
+			text: "They can only evaluate small models",
+			explain: "Incorrect! Automatic benchmarks can be used to evaluate models of various sizes."
+		}
+	]}
+/>
+
+### 6. What is the purpose of creating custom evaluation datasets?
+
+<Question
+	choices={[
+		{
+			text: "To reflect your specific use case and include real user queries from your domain",
+			explain: "Correct! Custom datasets help ensure evaluation is relevant to your specific needs.",
+			correct: true
+		},
+		{
+			text: "To replace standard benchmarks entirely",
+			explain: "Incorrect! Custom datasets should complement, not replace, standard benchmarks."
+		},
+		{
+			text: "To make evaluation easier",
+			explain: "Incorrect! Creating custom datasets requires additional effort but provides more relevant evaluation."
+		}
+	]}
+/>
