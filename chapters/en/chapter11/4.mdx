@@ -1,254 +1,166 @@
-<CourseFloatingBanner chapter={2}
-  classNames="absolute z-10 right-0 top-0"
-  notebooks={[
-    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/smol-course/blob/main/1_instruction_tuning/notebooks/sft_finetuning_example.ipynb"},
-]} />
+# LoRA (Low-Rank Adaptation)
 
-# Fine-Tuning Process with SFTTrainer in Transformers Reinforcement Learning
+Fine-tuning large language models is a resource intensive process. LoRA is a technique that allows us to fine-tune large language models with a small number of parameters. It works by adding and optimizing smaller matrices to the attention weights, typically reducing trainable parameters by about 90%.
 
-In this section, we'll walk through the process of fine-tuning a model using the `SFTTrainer` class from the Transformers Reinforcement Learning (TRL) library, which is built on top of the `transformers` library.
+## Understanding LoRA
 
-## Dataset Preparation
+LoRA (Low-Rank Adaptation) is a parameter-efficient fine-tuning technique that freezes the pre-trained model weights and injects trainable rank decomposition matrices into the model's layers. Instead of training all model parameters during fine-tuning, LoRA decomposes the weight updates into smaller matrices through low-rank decomposition, significantly reducing the number of trainable parameters while maintaining model performance. For example, when applied to GPT-3 175B, LoRA reduced trainable parameters by 10,000x and GPU memory requirements by 3x compared to full fine-tuning. You can read more about LoRA in the [LoRA paper](https://arxiv.org/pdf/2106.09685).
 
-The supervised fine-tuning process involves adjusting a model's weights on a task-specific dataset. Your dataset should be structured with input-output pairs, where each input is a prompt and the output is the expected response from the model. The data format needs to be compatible with the model's chat template. Below is an example of a dataset that can be used for supervised fine-tuning.
+LoRA works by adding pairs of rank decomposition matrices to transformer layers, typically focusing on attention weights. During inference, these adapter weights can be merged with the base model, resulting in no additional latency overhead. LoRA is particularly useful for adapting large language models to specific tasks or domains while keeping resource requirements manageable.
 
-<iframe
-  src="https://huggingface.co/datasets/HuggingFaceTB/smoltalk/embed/viewer/all/train?row=0"
-  frameborder="0"
-  width="100%"
-  height="360px"
-></iframe>
+## Key advantages of LoRA
 
-## Understanding Training Dynamics
+1. **Memory Efficiency**: 
+   - Only adapter parameters are stored in GPU memory
+   - Base model weights remain frozen and can be loaded in lower precision
+   - Enables fine-tuning of large models on consumer GPUs
 
-When fine-tuning language models, understanding the training dynamics is crucial for monitoring progress and ensuring successful adaptation. Let's look at how to interpret the training process through loss curves.
+2. **Training Features**:
+   - Native PEFT/LoRA integration with minimal setup
+   - Support for QLoRA (Quantized LoRA) for even better memory efficiency
 
-### Loss Patterns
+3. **Adapter Management**:
+   - Adapter weight saving during checkpoints
+   - Features to merge adapters back into base model
 
-The training loss curve typically follows a characteristic pattern. Initially, you'll observe a sharp drop in loss as the model begins adapting to the new data distribution, task objectives, and chat template. This early phase is crucial as it indicates whether the model is successfully learning from the training data.
+## Loading LoRA Adapters with PEFT
 
-### The Path to Convergence
+PEFT is a library that provides a unified interface for loading and managing PEFT methods, including LoRA. It allows you to easily load and switch between different PEFT methods, making it easier to experiment with different fine-tuning techniques. 
 
-As training progresses, the loss curve should gradually stabilize. The key indicator of healthy training is a small gap between training and validation loss, suggesting the model is learning generalizable patterns rather than memorizing specific examples. The absolute loss values will vary depending on your task and dataset.
+Adapters can be loaded onto a pretrained model with load_adapter(), which is useful for trying out different adapters whose weights aren't merged. Set the active adapter weights with the set_adapter() function. To return the base model, you could use unload() to unload all of the LoRA modules. This makes it easy to switch between different task-specific weights.
 
-### Monitoring Training Progress
+```python
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
 
-<div class="flex justify-center">
-    <img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter11/loss_curve.png" alt="Training and validation loss curves showing healthy convergence" width="600"/>
-</div>
+base_model = AutoModelForCausalLM.from_pretrained("<base_model_name>")
+peft_model_id = "<peft_adapter_id>"
+model = PeftModel.from_pretrained(base_model, peft_model_id)
+```
 
-The graph above shows a typical training progression. Notice how both training and validation loss decrease sharply at first, then gradually level off. This pattern indicates the model is learning effectively while maintaining generalization ability.
+<!-- TODO: Add image -->
+![lora_load_adapter](https://github.com/huggingface/smol-course/raw/main/3_parameter_efficient_finetuning/images/lora_adapter.png)
 
-### Warning Signs to Watch For
+## Fine-tune LLM using `trl` and the `SFTTrainer` with LoRA
 
-Several patterns in the loss curves can indicate potential issues:
+The [SFTTrainer](https://huggingface.co/docs/trl/sft_trainer) from `trl` provides integration with LoRA adapters through the [PEFT](https://huggingface.co/docs/peft/en/index) library. This means that we can fine-tune a model in the same way as we did with SFT, but use LoRA to reduce the number of parameters we need to train.
 
-1. If the validation loss starts increasing while training loss continues to decrease, your model is likely overfitting to the training data. Consider:
-   - Reducing the model size or training time
-   - Adding regularization
-   - Increasing the dataset size
-   - Using techniques like early stopping
+We'll use LoRA in our example, which combines LoRA with 4-bit quantization to further reduce memory usage without sacrificing performance. The setup requires just a few configuration steps:
 
-2. If the loss doesn't show significant improvement, the model might be:
-   - Learning too slowly (try increasing the learning rate)
-   - Struggling with the task (check data quality and task complexity)
-   - Hitting architecture limitations (consider a different model)
+1. Define the LoRA configuration (rank, alpha, dropout)
+2. Create the SFTTrainer with PEFT config
+3. Train and save the adapter weights
 
-3. Extremely low loss values could suggest memorization rather than learning. This is particularly concerning if:
-   - The model performs poorly on new, similar examples
-   - The outputs lack diversity
-   - The responses are too similar to training examples
+## LoRA Configuration
 
-<Tip warning={true}>
-
-Monitor both the loss values and the model's actual outputs during training. Sometimes the loss can look good while the model develops unwanted behaviors. Regular qualitative evaluation of the model's responses helps catch issues that metrics alone might miss.
-
-</Tip>
-
-## Training Configuration
-
-We will configure SFT trainer with the following parameters:
+Let's walk through the LoRA configuration and key parameters.
 
 | Parameter | Description |
 |-----------|-------------|
-| num_train_epochs | The total number of training epochs to run (e.g., 1-3 epochs) |
-| per_device_train_batch_size | The number of training examples processed per GPU in one forward/backward pass (typically 2-8 for large models) |
-| gradient_accumulation_steps | Number of updates to accumulate before performing a backward pass, effectively increasing batch size |
-| learning_rate | The step size for model weight updates during training (typically 2e-4 for fine-tuning) |
-| gradient_checkpointing | Memory optimization technique that trades computation for memory by recomputing intermediate activations |
-| warmup_ratio | Portion of training steps used for learning rate warmup (e.g., 0.03 = 3% of steps) |
-| logging_steps | Frequency of logging training metrics and progress (e.g., every 10 steps) |
-| save_strategy | When to save model checkpoints (e.g., "epoch" saves after each epoch, "steps" saves every N steps) |
+| `r` (rank) | Dimension of the low-rank matrices used for weight updates. Typically between 4-32. Lower values provide more compression but potentially less expressiveness. |
+| `lora_alpha` | Scaling factor for LoRA layers, usually set to 2x the rank value. Higher values result in stronger adaptation effects. |
+| `lora_dropout` | Dropout probability for LoRA layers, typically 0.05-0.1. Higher values help prevent overfitting during training. |
+| `bias` | Controls training of bias terms. Options are "none", "all", or "lora_only". "none" is most common for memory efficiency. |
+| `target_modules` | Specifies which model modules to apply LoRA to. Can be "all-linear" or specific modules like "q_proj,v_proj". More modules enable greater adaptability but increase memory usage. |
 
-In general, start with a small number of epochs and data using the default parameters in `trl.SFTTrainer`. As you get more comfortable with the process, you can experiment with different configurations to see how they affect the model's performance.
+When implementing PEFT methods, start with small rank values (4-8) for LoRA and monitor training loss. Use validation sets to prevent overfitting and compare results with full fine-tuning baselines when possible. The effectiveness of different methods can vary by task, so experimentation is key.
 
-## Training and Evaluation
+## Using TRL with PEFT
 
-Fortunately, the `SFTTrainer` class handles the training and evaluation process for us. We just need to pass in the appropriate parameters and call the `train()` method. For the sake of education, let's break down what happens behind the scenes.
-
-- Iterating over the dataset
-- Computing the loss
-- Updating the model's parameters
-- Regular evaluation on a validation set
-
-Throughout the process, continuous evaluation is essential. You'll want to monitor the model's performance on a validation set to ensure it's learning the desired behaviors without losing its general capabilities. 
-
-## `SFTTrainer` from Transformer Reinforcement Learning
-
-Transformer Reinforcement Learning (TRL) is a toolkit used to train transformer language models using reinforcement learning (RL) and post-training techniques. Built on top of the Hugging Face Transformers library, TRL allows users to directly load pretrained language models and supports most decoder and encoder-decoder architectures. The library facilitates major processes of RL used in language modelling, including supervised fine-tuning (SFT), reward modeling (RM), proximal policy optimization (PPO), and Direct Preference Optimization (DPO). But we'll focus on SFT in this chapter.
-
-Here's a basic simplified example of how to use `SFTTrainer` to fine-tune a model. We'll expand on this example in the next few sections, but for now let's just focus on the basics.
+PEFT methods can be combined with TRL (Transformers Reinforcement Learning) for fine-tuning to reduce memory requirements. We can pass the  `LoraConfig` to the model when loading it.
 
 ```python
-from datasets import load_dataset
-from trl import SFTConfig, SFTTrainer
+from peft import LoraConfig
 
-dataset = load_dataset(path="HuggingFaceTB/smoltalk", name="everyday-conversations")
+# TODO: Configure LoRA parameters
+# r: rank dimension for LoRA update matrices (smaller = more compression)
+rank_dimension = 6
+# lora_alpha: scaling factor for LoRA layers (higher = stronger adaptation)
+lora_alpha = 8
+# lora_dropout: dropout probability for LoRA layers (helps prevent overfitting)
+lora_dropout = 0.05
 
-training_args = SFTConfig(
-    max_seq_length=512,
-    output_dir="/tmp",
+peft_config = LoraConfig(
+    r=rank_dimension,  # Rank dimension - typically between 4-32
+    lora_alpha=lora_alpha,  # LoRA scaling factor - typically 2x rank
+    lora_dropout=lora_dropout,  # Dropout probability for LoRA layers
+    bias="none",  # Bias type for LoRA. the corresponding biases will be updated during training.
+    target_modules="all-linear",  # Which modules to apply LoRA to
+    task_type="CAUSAL_LM",  # Task type for model architecture
 )
-
-trainer = SFTTrainer(
-    model_name="HuggingFaceTB/SmolLM2-135M",
-    train_dataset=dataset,
-    args=training_args,
-)
-trainer.train()
 ```
 
-Just like in `transformers`, we work through the following steps:
+Above, we used `device_map="auto"` to automatically assign the model to the correct device. You can also manually assign the model to a specific device using `device_map={"": device_index}`. 
 
-1. Load the dataset
-2. Configure the SFTTrainer with appropriate parameters
-3. Train the model and monitor its progress
-4. Save and evaluate the fine-tuned model
+We will also need to define the `SFTTrainer` with the LoRA configuration.
+
+```python
+# Create SFTTrainer with LoRA configuration
+trainer = SFTTrainer(
+    model=model,
+    args=args,
+    train_dataset=dataset["train"],
+    peft_config=lora_config,  # LoRA configuration
+    max_seq_length=max_seq_length,  # Maximum sequence length
+    tokenizer=tokenizer,
+)
+```
 
 <Tip>
 
-✏️ **Try it out!** Use the `HuggingFaceTB/smoltalk` dataset to fine-tune a `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model.
-
-For this exercise, you'll need to:
-1. Load and prepare your chosen dataset
-2. Configure the SFTTrainer with appropriate parameters
-3. Train the model and monitor its progress
-4. Save and evaluate the fine-tuned model
+✏️ **Try it out!** Build on your fine-tuned model from the previous section, but fine-tune it with LoRA. Use the `HuggingFaceTB/smoltalk` dataset to fine-tune a `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model, using the LoRA configuration we defined above.
 
 </Tip>
 
-# Supervised Fine-Tuning with SFTTrainer
+## Merging LoRA Adapters
 
-In this section we will unpack the `SFTTrainer` class and see how it works. We'll also see how to use it to fine-tune a model. We will demonstrate how to fine-tune the `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model.
+After training with LoRA, you might want to merge the adapter weights back into the base model for easier deployment. This creates a single model with the combined weights, eliminating the need to load adapters separately during inference.
 
-## Load the base model
+The merging process requires attention to memory management and precision. Since you'll need to load both the base model and adapter weights simultaneously, ensure sufficient GPU/CPU memory is available. Using `device_map="auto"` in `transformers` will find the correct device for the model based on your hardware. 
 
-Here we'll load the base model and tokenizer. We'll also set up the chat format for the model.
+Maintain consistent precision (e.g., float16) throughout the process, matching the precision used during training and saving the merged model in the same format for deployment. 
+
+## Merging Implementation
+
+After training a LoRA adapter, you can merge the adapter weights back into the base model. Here's how to do it:
 
 ```python
-# Import necessary libraries
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from datasets import load_dataset
-from trl import SFTConfig, SFTTrainer, setup_chat_format
 import torch
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
 
-# Set the device to use for training
-device = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available() else "cpu"
+# 1. Load the base model
+base_model = AutoModelForCausalLM.from_pretrained(
+    "base_model_name", torch_dtype=torch.float16, device_map="auto"
 )
 
-# Load the model and tokenizer
-model = AutoModelForCausalLM.from_pretrained(
-    pretrained_model_name_or_path="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-).to(device)
-tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_name)
-
-# Set up the chat format
-model, tokenizer = setup_chat_format(model=model, tokenizer=tokenizer)
-```
-
-## Generate with the base model
-
-First we will try out the base model which does not have a chat template. Later, we can compare the results of the base model with the fine-tuned model.
-
-```python
-# Let's test the base model before training
-prompt = "Write a haiku about programming"
-
-# Format with template
-messages = [{"role": "user", "content": prompt}]
-formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False)
-
-# Generate response
-inputs = tokenizer(formatted_prompt, return_tensors="pt").to(device)
-outputs = model.generate(**inputs, max_new_tokens=100)
-```
-
-## Dataset Preparation
-
-We will load a sample dataset and format it for training. The dataset should be structured with input-output pairs, where each input is a prompt and the output is the expected response from the model.
-
-**TRL will format input messages based on the model's chat templates.** They need to be represented as a list of dictionaries with the keys: `role` and `content`,.
-
-```python
-dataset = load_dataset(path="HuggingFaceTB/smoltalk", name="everyday-conversations")
-```
-
-## Configuring the SFTTrainer
-
-The `SFTTrainer` is configured with various parameters that control the training process. These include the number of training steps, batch size, learning rate, and evaluation strategy. Adjust these parameters based on your specific requirements and computational resources.
-
-```python
-# Configure the SFTTrainer
-sft_config = SFTConfig(
-    output_dir="./sft_output",
-    max_steps=1000,  # Adjust based on dataset size and desired training duration
-    per_device_train_batch_size=4,  # Set according to your GPU memory capacity
-    learning_rate=5e-5,  # Common starting point for fine-tuning
-    logging_steps=10,  # Frequency of logging training metrics
-    save_steps=100,  # Frequency of saving model checkpoints
-    evaluation_strategy="steps",  # Evaluate the model at regular intervals
-    eval_steps=50,  # Frequency of evaluation
-    use_mps_device=(
-        True if device == "mps" else False
-    ),  # Use MPS for mixed precision training
-    hub_model_id=finetune_name,  # Set a unique name for your model
+# 2. Load the PEFT model with adapter
+peft_model = PeftModel.from_pretrained(
+    base_model, "path/to/adapter", torch_dtype=torch.float16
 )
 
-# Initialize the SFTTrainer
-trainer = SFTTrainer(
-    model=model,
-    args=sft_config,
-    train_dataset=ds["train"],
-    tokenizer=tokenizer,
-    eval_dataset=ds["test"],
-)
+# 3. Merge adapter weights with base model
+merged_model = peft_model.merge_and_unload()
 ```
 
-## Training the model
-
-With the trainer configured, we can now proceed to train the model. The training process will involve iterating over the dataset, computing the loss, and updating the model's parameters to minimize this loss.
+If you encounter size discrepancies in the saved model, ensure you're also saving the tokenizer:
 
 ```python
-trainer.train()
+# Save both model and tokenizer
+tokenizer = AutoTokenizer.from_pretrained("base_model_name")
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
 ```
 
+<Tip>
+
+✏️ **Try it out!** Merge the adapter weights back into the base model. Use the `HuggingFaceTB/smoltalk` dataset to fine-tune a `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model, using the LoRA configuration we defined above.
+
+</Tip>
 
 
-<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/nlp_course_sft_loss_graphic.png" alt="SFTTrainer Training" />
+# Resources
 
-## 💐 Nice work!
-
-This page provided a step-by-step guide to fine-tuning the `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model using the `SFTTrainer`. By following these steps, you can adapt the model to perform specific tasks more effectively. If you want to carry on working on this course, here are steps you could try out:
-
-- Try this notebook on a harder difficulty
-- Review a colleagues PR
-- Improve the course material via an Issue or PR.
-
-
-## Resources
-
-- [TRL Documentation](https://huggingface.co/docs/trl)
-- [SFT Examples Repository](https://github.com/huggingface/trl/tree/main/examples/sft)
+- [LORA: LOW-RANK ADAPTATION OF LARGE LANGUAGE MODELS](https://arxiv.org/pdf/2106.09685)
+- [PEFT Documentation](https://huggingface.co/docs/peft)
+- [Hugging Face blog post on PEFT](https://huggingface.co/blog/peft)

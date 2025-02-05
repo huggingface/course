@@ -1,166 +1,245 @@
-# LoRA (Low-Rank Adaptation)
+# Evaluation
 
-Fine-tuning large language models is a resource intensive process. LoRA is a technique that allows us to fine-tune large language models with a small number of parameters. It works by adding and optimizing smaller matrices to the attention weights, typically reducing trainable parameters by about 90%.
+With a finetuned model through either SFT or LoRA SFT, we should evaluate it on standard benchmarks.
 
-## Understanding LoRA
+## Automatic Benchmarks
 
-LoRA (Low-Rank Adaptation) is a parameter-efficient fine-tuning technique that freezes the pre-trained model weights and injects trainable rank decomposition matrices into the model's layers. Instead of training all model parameters during fine-tuning, LoRA decomposes the weight updates into smaller matrices through low-rank decomposition, significantly reducing the number of trainable parameters while maintaining model performance. For example, when applied to GPT-3 175B, LoRA reduced trainable parameters by 10,000x and GPU memory requirements by 3x compared to full fine-tuning. You can read more about LoRA in the [LoRA paper](https://arxiv.org/pdf/2106.09685).
+Automatic benchmarks serve as standardized tools for evaluating language models across different tasks and capabilities. While they provide a useful starting point for understanding model performance, it's important to recognize that they represent only one piece of a comprehensive evaluation strategy.
 
-LoRA works by adding pairs of rank decomposition matrices to transformer layers, typically focusing on attention weights. During inference, these adapter weights can be merged with the base model, resulting in no additional latency overhead. LoRA is particularly useful for adapting large language models to specific tasks or domains while keeping resource requirements manageable.
+## Understanding Automatic Benchmarks
 
-## Key advantages of LoRA
+Automatic benchmarks typically consist of curated datasets with predefined tasks and evaluation metrics. These benchmarks aim to assess various aspects of model capability, from basic language understanding to complex reasoning. The key advantage of using automatic benchmarks is their standardization - they allow for consistent comparison across different models and provide reproducible results.
 
-1. **Memory Efficiency**: 
-   - Only adapter parameters are stored in GPU memory
-   - Base model weights remain frozen and can be loaded in lower precision
-   - Enables fine-tuning of large models on consumer GPUs
+However, it's crucial to understand that benchmark performance doesn't always translate directly to real-world effectiveness. A model that excels at academic benchmarks may still struggle with specific domain applications or practical use cases.
 
-2. **Training Features**:
-   - Native PEFT/LoRA integration with minimal setup
-   - Support for QLoRA (Quantized LoRA) for even better memory efficiency
+## General Knowledge Benchmarks
 
-3. **Adapter Management**:
-   - Adapter weight saving during checkpoints
-   - Features to merge adapters back into base model
+MMLU (Massive Multitask Language Understanding) tests knowledge across 57 subjects, from science to humanities. While comprehensive, it may not reflect the depth of expertise needed for specific domains. TruthfulQA evaluates a model's tendency to reproduce common misconceptions, though it can't capture all forms of misinformation.
 
-## Loading LoRA Adapters with PEFT
+## Reasoning Benchmarks
+BBH (Big Bench Hard) and GSM8K focus on complex reasoning tasks. BBH tests logical thinking and planning, while GSM8K specifically targets mathematical problem-solving. These benchmarks help assess analytical capabilities but may not capture the nuanced reasoning required in real-world scenarios.
 
-PEFT is a library that provides a unified interface for loading and managing PEFT methods, including LoRA. It allows you to easily load and switch between different PEFT methods, making it easier to experiment with different fine-tuning techniques. 
+## Language Understanding
 
-Adapters can be loaded onto a pretrained model with load_adapter(), which is useful for trying out different adapters whose weights aren't merged. Set the active adapter weights with the set_adapter() function. To return the base model, you could use unload() to unload all of the LoRA modules. This makes it easy to switch between different task-specific weights.
+HELM provides a holistic evaluation framework, while WinoGrande tests common sense through pronoun disambiguation. These benchmarks offer insights into language processing capabilities but may not fully represent the complexity of natural conversation or domain-specific terminology.
 
-```python
-from transformers import AutoModelForCausalLM
-from peft import PeftModel
+## Alternative Evaluation Approaches
 
-base_model = AutoModelForCausalLM.from_pretrained("<base_model_name>")
-peft_model_id = "<peft_adapter_id>"
-model = PeftModel.from_pretrained(base_model, peft_model_id)
+Many organizations have developed alternative evaluation methods to address the limitations of standard benchmarks:
+
+### LLM-as-Judge
+
+Using one language model to evaluate another's outputs has become increasingly popular. This approach can provide more nuanced feedback than traditional metrics, though it comes with its own biases and limitations.
+
+### Evaluation Arenas
+
+Platforms like Anthropic's Constitutional AI Arena allow models to interact and evaluate each other in controlled environments. This can reveal strengths and weaknesses that might not be apparent in traditional benchmarks.
+
+### Custom Benchmark Suites
+
+Organizations often develop internal benchmark suites tailored to their specific needs and use cases. These might include domain-specific knowledge tests or evaluation scenarios that mirror actual deployment conditions.
+
+## Creating Your Own Evaluation Strategy
+
+Remember that while LightEval makes it easy to run standard benchmarks, you should also invest time in developing evaluation methods specific to your use case.
+
+While standard benchmarks provide a useful baseline, they shouldn't be your only evaluation method. Here's how to develop a more comprehensive approach:
+
+1. Start with relevant standard benchmarks to establish a baseline and enable comparison with other models.
+
+2. Identify the specific requirements and challenges of your use case. What tasks will your model actually perform? What kinds of errors would be most problematic?
+
+3. Develop custom evaluation datasets that reflect your actual use case. This might include:
+   - Real user queries from your domain
+   - Common edge cases you've encountered
+   - Examples of particularly challenging scenarios
+
+4. Consider implementing a multi-layered evaluation strategy:
+   - Automated metrics for quick feedback
+   - Human evaluation for nuanced understanding
+   - Domain expert review for specialized applications
+   - A/B testing in controlled environments
+
+# Implementing Evaluation
+
+In this section, we will implement evaluation for our finetuned model. We can use `lighteval` to evaluate our finetuned model on standard benchmarks, which contains a wide range of tasks built into the library. We just need to define the tasks we want to evaluate and the parameters for the evaluation.
+
+LightEval tasks are defined using a specific format:
+
 ```
-
-<!-- TODO: Add image -->
-![lora_load_adapter](https://github.com/huggingface/smol-course/raw/main/3_parameter_efficient_finetuning/images/lora_adapter.png)
-
-## Fine-tune LLM using `trl` and the `SFTTrainer` with LoRA
-
-The [SFTTrainer](https://huggingface.co/docs/trl/sft_trainer) from `trl` provides integration with LoRA adapters through the [PEFT](https://huggingface.co/docs/peft/en/index) library. This means that we can fine-tune a model in the same way as we did with SFT, but use LoRA to reduce the number of parameters we need to train.
-
-We'll use LoRA in our example, which combines LoRA with 4-bit quantization to further reduce memory usage without sacrificing performance. The setup requires just a few configuration steps:
-
-1. Define the LoRA configuration (rank, alpha, dropout)
-2. Create the SFTTrainer with PEFT config
-3. Train and save the adapter weights
-
-## LoRA Configuration
-
-Let's walk through the LoRA configuration and key parameters.
+{suite}|{task}|{num_few_shot}|{auto_reduce}
+```
 
 | Parameter | Description |
 |-----------|-------------|
-| `r` (rank) | Dimension of the low-rank matrices used for weight updates. Typically between 4-32. Lower values provide more compression but potentially less expressiveness. |
-| `lora_alpha` | Scaling factor for LoRA layers, usually set to 2x the rank value. Higher values result in stronger adaptation effects. |
-| `lora_dropout` | Dropout probability for LoRA layers, typically 0.05-0.1. Higher values help prevent overfitting during training. |
-| `bias` | Controls training of bias terms. Options are "none", "all", or "lora_only". "none" is most common for memory efficiency. |
-| `target_modules` | Specifies which model modules to apply LoRA to. Can be "all-linear" or specific modules like "q_proj,v_proj". More modules enable greater adaptability but increase memory usage. |
+| `suite` | The benchmark suite (e.g., 'mmlu', 'truthfulqa') |
+| `task` | Specific task within the suite (e.g., 'abstract_algebra') |
+| `num_few_shot` | Number of examples to include in prompt (0 for zero-shot) |
+| `auto_reduce` | Whether to automatically reduce few-shot examples if prompt is too long (0 or 1) |
 
-When implementing PEFT methods, start with small rank values (4-8) for LoRA and monitor training loss. Use validation sets to prevent overfitting and compare results with full fine-tuning baselines when possible. The effectiveness of different methods can vary by task, so experimentation is key.
+Example: `"mmlu|abstract_algebra|0|0"` evaluates on MMLU's abstract algebra task with zero-shot inference.
 
-## Using TRL with PEFT
+## Example Evaluation Pipeline
 
-PEFT methods can be combined with TRL (Transformers Reinforcement Learning) for fine-tuning to reduce memory requirements. We can pass the  `LoraConfig` to the model when loading it.
+Let's set up an evaluation pipeline for our finetuned model. We will evaluate the model on  set of sub tasks that relate to the domain of medicine. 
 
-```python
-from peft import LoraConfig
+Here's a complete example of evaluating on automatic benchmarks relevant to one specific domain using Lighteval with the VLLM backend:
 
-# TODO: Configure LoRA parameters
-# r: rank dimension for LoRA update matrices (smaller = more compression)
-rank_dimension = 6
-# lora_alpha: scaling factor for LoRA layers (higher = stronger adaptation)
-lora_alpha = 8
-# lora_dropout: dropout probability for LoRA layers (helps prevent overfitting)
-lora_dropout = 0.05
-
-peft_config = LoraConfig(
-    r=rank_dimension,  # Rank dimension - typically between 4-32
-    lora_alpha=lora_alpha,  # LoRA scaling factor - typically 2x rank
-    lora_dropout=lora_dropout,  # Dropout probability for LoRA layers
-    bias="none",  # Bias type for LoRA. the corresponding biases will be updated during training.
-    target_modules="all-linear",  # Which modules to apply LoRA to
-    task_type="CAUSAL_LM",  # Task type for model architecture
-)
+```bash
+lighteval vllm \
+    "pretrained=your-model-name" \
+    "mmlu|anatomy|0|0" \
+    "mmlu|high_school_biology|0|0" \
+    "mmlu|high_school_chemistry|0|0" \
+    "mmlu|professional_medicine|0|0" \
+    --max_samples 40 \
+    --batch_size 1 \
+    --output_path "./results" \
+    --save_generations true
 ```
 
-Above, we used `device_map="auto"` to automatically assign the model to the correct device. You can also manually assign the model to a specific device using `device_map={"": device_index}`. 
+Results are displayed in a tabular format showing:
 
-We will also need to define the `SFTTrainer` with the LoRA configuration.
-
-```python
-# Create SFTTrainer with LoRA configuration
-trainer = SFTTrainer(
-    model=model,
-    args=args,
-    train_dataset=dataset["train"],
-    peft_config=lora_config,  # LoRA configuration
-    max_seq_length=max_seq_length,  # Maximum sequence length
-    tokenizer=tokenizer,
-)
 ```
+|                  Task                  |Version|Metric|Value |   |Stderr|
+|----------------------------------------|------:|------|-----:|---|-----:|
+|all                                     |       |acc   |0.3333|±  |0.1169|
+|leaderboard:mmlu:_average:5             |       |acc   |0.3400|±  |0.1121|
+|leaderboard:mmlu:anatomy:5              |      0|acc   |0.4500|±  |0.1141|
+|leaderboard:mmlu:high_school_biology:5  |      0|acc   |0.1500|±  |0.0819|
+```
+
+Lighteval also include a python API for more detailed evaluation tasks, which is useful for manipulating the results in a more flexible way. Check out the [Lighteval documentation](https://huggingface.co/docs/lighteval/using-the-python-api) for more information.
 
 <Tip>
 
-✏️ **Try it out!** Build on your fine-tuned model from the previous section, but fine-tune it with LoRA. Use the `HuggingFaceTB/smoltalk` dataset to fine-tune a `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model, using the LoRA configuration we defined above.
+✏️ **Try it out!** Evaluate your finetuned model on a specific task in lighteval.
 
 </Tip>
 
-## Merging LoRA Adapters
+# End-of-chapter quiz[[end-of-chapter-quiz]]
 
-After training with LoRA, you might want to merge the adapter weights back into the base model for easier deployment. This creates a single model with the combined weights, eliminating the need to load adapters separately during inference.
+<CourseFloatingBanner
+    chapter={11}
+    classNames="absolute z-10 right-0 top-0"
+/>
 
-The merging process requires attention to memory management and precision. Since you'll need to load both the base model and adapter weights simultaneously, ensure sufficient GPU/CPU memory is available. Using `device_map="auto"` in `transformers` will find the correct device for the model based on your hardware. 
+### 1. What are the main advantages of using automatic benchmarks for model evaluation?
 
-Maintain consistent precision (e.g., float16) throughout the process, matching the precision used during training and saving the merged model in the same format for deployment. 
+<Question
+	choices={[
+		{
+			text: "They provide perfect real-world performance metrics",
+			explain: "Incorrect! While automatic benchmarks are useful, they don't always translate directly to real-world performance."
+		},
+		{
+			text: "They allow for standardized comparison between models and provide reproducible results",
+			explain: "Correct! This is one of the key benefits of automatic benchmarks.",
+			correct: true
+		},
+		{
+			text: "They eliminate the need for any other form of evaluation",
+			explain: "Incorrect! Automatic benchmarks should be part of a comprehensive evaluation strategy, not the only method."
+		}
+	]}
+/>
 
-## Merging Implementation
+### 2. Which benchmark specifically tests knowledge across 57 different subjects?
 
-After training a LoRA adapter, you can merge the adapter weights back into the base model. Here's how to do it:
+<Question
+	choices={[
+		{
+			text: "BBH (Big Bench Hard)",
+			explain: "Incorrect! BBH focuses on complex reasoning tasks, not broad subject knowledge."
+		},
+		{
+			text: "GSM8K",
+			explain: "Incorrect! GSM8K specifically targets mathematical problem-solving."
+		},
+		{
+			text: "MMLU",
+			explain: "Correct! MMLU (Massive Multitask Language Understanding) tests knowledge across 57 subjects, from science to humanities.",
+			correct: true
+		}
+	]}
+/>
 
-```python
-import torch
-from transformers import AutoModelForCausalLM
-from peft import PeftModel
+### 3. What is LLM-as-Judge?
 
-# 1. Load the base model
-base_model = AutoModelForCausalLM.from_pretrained(
-    "base_model_name", torch_dtype=torch.float16, device_map="auto"
-)
+<Question
+	choices={[
+		{
+			text: "Using one language model to evaluate another's outputs",
+			explain: "Correct! This is an alternative evaluation approach that can provide more nuanced feedback.",
+			correct: true
+		},
+		{
+			text: "A benchmark that tests judicial reasoning",
+			explain: "Incorrect! LLM-as-Judge refers to using one model to evaluate another, not testing judicial reasoning."
+		},
+		{
+			text: "A method for training models on legal datasets",
+			explain: "Incorrect! This isn't related to training on legal data, but rather using one model to evaluate another's outputs."
+		}
+	]}
+/>
 
-# 2. Load the PEFT model with adapter
-peft_model = PeftModel.from_pretrained(
-    base_model, "path/to/adapter", torch_dtype=torch.float16
-)
+### 4. What should be included in a comprehensive evaluation strategy?
 
-# 3. Merge adapter weights with base model
-merged_model = peft_model.merge_and_unload()
-```
+<Question
+	choices={[
+		{
+			text: "Only standard benchmarks",
+			explain: "Incorrect! A comprehensive strategy should include multiple evaluation methods."
+		},
+		{
+			text: "Standard benchmarks, custom evaluation datasets, and domain-specific testing",
+			explain: "Correct! A comprehensive strategy should include multiple layers of evaluation.",
+			correct: true
+		},
+		{
+			text: "Only custom datasets specific to your use case",
+			explain: "Incorrect! While custom datasets are important, they shouldn't be the only evaluation method."
+		}
+	]}
+/>
 
-If you encounter size discrepancies in the saved model, ensure you're also saving the tokenizer:
+### 5. What is a limitation of automatic benchmarks?
 
-```python
-# Save both model and tokenizer
-tokenizer = AutoTokenizer.from_pretrained("base_model_name")
-merged_model.save_pretrained("path/to/save/merged_model")
-tokenizer.save_pretrained("path/to/save/merged_model")
-```
+<Question
+	choices={[
+		{
+			text: "They are too expensive to run",
+			explain: "Incorrect! Cost isn't typically the main limitation of automatic benchmarks."
+		},
+		{
+			text: "Benchmark performance doesn't always translate directly to real-world effectiveness",
+			explain: "Correct! This is a key limitation to keep in mind when using automatic benchmarks.",
+			correct: true
+		},
+		{
+			text: "They can only evaluate small models",
+			explain: "Incorrect! Automatic benchmarks can be used to evaluate models of various sizes."
+		}
+	]}
+/>
 
-<Tip>
+### 6. What is the purpose of creating custom evaluation datasets?
 
-✏️ **Try it out!** Merge the adapter weights back into the base model. Use the `HuggingFaceTB/smoltalk` dataset to fine-tune a `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model, using the LoRA configuration we defined above.
-
-</Tip>
-
-
-# Resources
-
-- [LORA: LOW-RANK ADAPTATION OF LARGE LANGUAGE MODELS](https://arxiv.org/pdf/2106.09685)
-- [PEFT Documentation](https://huggingface.co/docs/peft)
-- [Hugging Face blog post on PEFT](https://huggingface.co/blog/peft)
+<Question
+	choices={[
+		{
+			text: "To reflect your specific use case and include real user queries from your domain",
+			explain: "Correct! Custom datasets help ensure evaluation is relevant to your specific needs.",
+			correct: true
+		},
+		{
+			text: "To replace standard benchmarks entirely",
+			explain: "Incorrect! Custom datasets should complement, not replace, standard benchmarks."
+		},
+		{
+			text: "To make evaluation easier",
+			explain: "Incorrect! Creating custom datasets requires additional effort but provides more relevant evaluation."
+		}
+	]}
+/>
