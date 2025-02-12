@@ -1,6 +1,6 @@
 # Fundamentals of Inference for LLMs 
 
-Large Language Models (LLMs) have revolutionized how we interact with and generate text. They transform static knowledge into dynamic text generation through a process known as inference. 
+Large Language Models (LLMs) have revolutionized how we interact with and produce text. They transform static knowledge into dynamic text generation through a process known as inference. 
 
 In this chapter, we will explore the fundamental concepts and techniques behind LLM inference, providing a comprehensive understanding of how these models generate text.
 
@@ -31,51 +31,87 @@ The input sequence you provide an LLM is called _a prompt_. Careful design of th
 
 The inference process can be broadly divided into two main phases. LLMs operate in an autoregressive manner—each output token is appended to the sequence and used as part of the input for predicting subsequent tokens.
 
-**Prefill Phase:**
-- **Tokenization:** Break the input prompt into tokens.
-- **Embedding:** Convert tokens into numerical representations that capture meaning and context.
-- **Contextualization:** Process these embeddings with attention and feed-forward layers to form a rich internal representation.
+### Prefill Phase
 
-**Decode Phase:**
-- **Generation:** Produce one token at a time in an autoregressive manner.
-- **Probability Computation:** At each step, calculate scores for each token.
-- **Token Selection:** Apply decoding strategies (e.g., greedy, beam search, temperature scaling, top-k, nucleus sampling) to choose the next token.
-- **Termination:** Continue until an end-of-sequence (EOS) token is generated.
+This is where the input prompt is processed. It involves tokenization, embedding, and a single forward pass through the model. Prefill is computationally intensive and often compute-bound, meaning its speed is limited by the processing power of the GPU. During this phase, the input prompt is first broken into tokens, which are then converted into numerical representations that capture meaning and context. Finally, these embeddings are processed through attention and feed-forward layers to form a rich internal representation.
+
+<!-- TODO: add diagram of the prefill phase -->
+
+### Decode Phase
+
+This is the autoregressive part, where the model generates text token by token. Each token generation requires loading the model again, making it memory-bound. This repeated loading is a major bottleneck. The decode phase consists of several key steps: the model first generates one token at a time in an autoregressive manner, then calculates probability scores for each possible next token. Following this, it applies various decoding strategies to choose the next token, and continues this process until an end-of-sequence (EOS) token is generated.
+
+<!-- TODO: add diagram of the decode phase -->
+
+These decoding strategies play a crucial role in determining how the next token is chosen based on computed probabilities. The simplest approach is greedy decoding, which directly selects the token with the highest probability. A more sophisticated method is beam search, which evaluates multiple candidate sequences to optimize overall sentence probability. Additionally, techniques such as temperature scaling, top-k, and nucleus sampling (top-p) provide different ways to balance between deterministic outputs and creative generation.
 
 ## Considerations in LLM Inference
 
 Highlight how and why inference is challenging.
 
-### Pre-filling
+### Important Metrics
 
-### Attention Mechanism
+When we talk about performance, we consider several key metrics:
 
-Attention is the engine behind how an LLM dynamically weighs the importance of different tokens in the input. By computing attention scores, the model identifies which parts of the input are most relevant at each decoding step. For instance, in the phrase "The capital of France is...", words like "France" and "capital" receive higher focus to accurately predict the next token.
+- **TTFT** (Time To First Token): How long does it take to generate the very first token? This is primarily affected by the prefill stage.
+- **TPOT** (Time Per Output Token): How long does it take to generate each subsequent token? This is where the decode stage and optimizations like KV caching are critical.
+- **Throughput**: How many requests or tokens can we process per second? This is heavily influenced by available VRAM and the batch size we can use.
+- **VRAM Usage**: The amount of GPU memory used. This is a crucial constraint, as it limits the size of the model, the batch size, and the sequence length we can handle.
 
-### Decoding Strategies
+We should consider these metrics when we design our inference pipeline, and adapt them based on our use case.
 
-Decoding strategies determine how the next token is chosen based on computed probabilities. Common strategies include:
+### Context Length
 
-- **Greedy Decoding**: Directly selecting the token with the highest probability.
-- **Beam Search**: Evaluating multiple candidate sequences to optimize overall sentence probability.
-- Techniques like **temperature scaling**, **top-k**, and **nucleus sampling (top-p)** also offer a balance between determinism and creativity.
+The context length is the maximum number of tokens the LLM can process. It affects both:
 
-## Chat Templates
+- **Input Processing**: How much text the model can consider at once
+- **Memory Usage**: Longer contexts require more VRAM, scaling quadratically with length
+- **Processing Speed**: Affects both prefill and decode phases
 
-- LLMs don't just use language
-- chat templates are the interface to language
-- 
+<!-- TODO: add diagram of the context length -->
 
-### Special Tokens
+Recent advances have pushed context lengths from thousands to millions of tokens, but this comes with computational trade-offs. Models like Claude 2.1 (200K tokens) and Anthropic's Constitutional AI (100K tokens) demonstrate the ongoing evolution in this space.
 
-Special tokens are essential directives within an LLM's output. They not only signal the beginning or end of a sequence but also help delineate structured information within the text.
+### Chat Templates
 
-For example:
-- GPT-4 uses `<|endoftext|>` to denote the end of text.
-- LLaMA3 employs `<|eot_id|>` as an end-of-sequence signal.
-- Gemma uses `<end_of_turn>` to indicate the conclusion of a conversation turn.
+Chat templates are standardized formats that structure conversations with LLMs. They're crucial because:
 
-### Hardware usage
+- They provide consistent formatting across different models
+- They help models distinguish between different speakers/roles
+- They can include system prompts and metadata
+
+Here's a simple example of a chat template:
+
+```sh
+<|system|>You are a helpful AI assistant.<|endoftext|>
+<|user|>What is the capital of France?<|endoftext|>
+<|assistant|>The capital of France is Paris.<|endoftext|>
+```
+
+We won't go into the details of how to create a chat template, but it's good to know that they exist and that they can be very different. If you're interested in learning more, you can check out this [Chat Templates](https://huggingface.co/docs/transformers/en/chat_templating#how-do-i-use-chat-templates) guide.
+
+### Inference Hardware Usage
+
+Let's break down the hardware requirements for LLM inference into compute and memory requirements.
+
+| Resource Type | Component | Description |
+|--------------|-----------|-------------|
+| Memory | Model Weights | Model size (e.g., 7 billion parameter model ≈ 14GB of memory) |
+| Memory | Working Memory | Computations and system overhead (~2-3GB) |
+| Compute | Prefill Phase | Heavy parallel computation for initial prompt |
+| Compute | Decode Phase | Sequential generation of new tokens |
+| Compute | Attention | Memory usage grows quadratically with sequence length |
+
+The memory usage for LLM inference is dominated by the model weights and the working memory for computations and system overhead. Whilst the compute requirements are dominated by the prefill phase.
+
+We can optimize the memory usage by using quantization, which reduces the precision of the model weights, and by using attention optimizations, which reduce the memory usage of the attention mechanism. Some common optimizations are:
+
+- **Quantization**: Reduce model size (4-bit, 8-bit)
+- **Attention Optimizations**: Flash Attention, Paged Attention
+- **KV Caching**: Cache previous tokens to avoid recomputing them
+
+We will cover inference optimizations in more detail in the next chapter.
+
 
 ## Conclusion
 
