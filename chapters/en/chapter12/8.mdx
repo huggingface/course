@@ -1,142 +1,257 @@
-# Production Inference with TGI 
+# Optimizing Local Inference
 
-# Text Generation Inference (TGI)
+In this chapter, we'll explore various techniques and strategies for optimizing local inference with Large Language Models. We'll cover topics like quantization, caching, attention optimizations, and hardware utilization.
 
-Text Generation Inference (TGI) is a toolkit developed by Hugging Face for deploying and serving Large Language Models (LLMs). It's designed to enable high-performance text generation for popular open-source LLMs. TGI is used in production by Hugging Chat - An open-source interface for open-access models.
+## Model Optimization Techniques
 
-## Why Use Text Generation Inference?
+### 1. Quantization
 
-Text Generation Inference addresses the key challenges of deploying large language models in production. While many frameworks excel at model development, TGI specifically optimizes for production deployment and scaling. Some key features include:
+Quantization reduces model size and memory usage by converting weights to lower precision formats.
 
-- **Tensor Parallelism**: TGI's can split models across multiple GPUs through tensor parallelism, essential for serving larger models efficiently.
-- **Continuous Batching**: The continuous batching system maximizes GPU utilization by dynamically processing requests, while optimizations like Flash Attention and Paged Attention significantly reduce memory usage and increase speed.
-- **Token Streaming**: Real-time applications benefit from token streaming via Server-Sent Events, delivering responses with minimal latency.
-
-## How to Use Text Generation Inference
-
-### Basic Python Usage
-
-TGI uses a simple yet powerful REST API integration which makes it easy to integrate with your applications. 
-
-### Using the REST API
-
-TGI exposes a RESTful API that accepts JSON payloads. This makes it accessible from any programming language or tool that can make HTTP requests. Here's a basic example using curl:
-
-```bash
-# Basic generation request
-curl localhost:8080/v1/chat/completions \
-    -X POST \
-    -d '{
-  "model": "tgi",
-  "messages": [
-    {
-      "role": "system",
-      "content": "You are a helpful assistant."
-    },
-    {
-      "role": "user",
-      "content": "What is deep learning?"
-    }
-  ],
-  "stream": true,
-  "max_tokens": 20
-}' \
-    -H 'Content-Type: application/json'
-```
-
-### Using the `huggingface_hub` Python Client
-
-The `huggingface_hub` python client client handles connection management, request formatting, and response parsing. Here's how to get started.
-
+#### 4-bit Quantization
 ```python
-from huggingface_hub import InferenceClient
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
-client = InferenceClient(
-    base_url="http://localhost:8080/v1/",
-)
-
-output = client.chat.completions.create(
-    model="tgi",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Count to 10"},
-    ],
-    stream=True,
-    max_tokens=1024,
-)
-
-for chunk in output:
-    print(chunk.choices[0].delta.content)
-```
-
-
-### Using OpenAI API
-
-Many libraries support the OpenAI API, so you can use the same client to interact with TGI.
-
-```python
-from openai import OpenAI
-
-# init the client but point it to TGI
-client = OpenAI(
-    base_url="http://localhost:8080/v1/",
-    api_key="-"
-)
-
-chat_completion = client.chat.completions.create(
-    model="tgi",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant." },
-        {"role": "user", "content": "What is deep learning?"}
-    ],
-    stream=True
-)
-
-# iterate and print stream
-for message in chat_completion:
-    print(message)
-```
-
-## Preparing Models for TGI
-
-To serve a model with TGI, ensure it meets these requirements:
-
-1. **Supported Architecture**: Verify your model architecture is supported (Llama, BLOOM, T5, etc.)
-
-2. **Model Format**: Convert weights to safetensors format for faster loading:
-
-```python
-from safetensors.torch import save_file
-from transformers import AutoModelForCausalLM
-
-model = AutoModelForCausalLM.from_pretrained("your-model")
-state_dict = model.state_dict()
-save_file(state_dict, "model.safetensors")
-```
-
-3. **Quantization** (optional): Quantize your model to reduce memory usage:
-
-```python
-from transformers import BitsAndBytesConfig
-
+# Configure 4-bit quantization
 quantization_config = BitsAndBytesConfig(
     load_in_4bit=True,
-    bnb_4bit_compute_dtype="float16"
+    bnb_4bit_compute_dtype="float16",
+    bnb_4bit_quant_type="nf4"
 )
 
+# Load quantized model
 model = AutoModelForCausalLM.from_pretrained(
-    "your-model",
-    quantization_config=quantization_config
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    quantization_config=quantization_config,
+    device_map="auto"
 )
 ```
 
-## References
+#### 8-bit Quantization
+```python
+from transformers import AutoModelForCausalLM
 
-- [Text Generation Inference Documentation](https://huggingface.co/docs/text-generation-inference)
-- [TGI GitHub Repository](https://github.com/huggingface/text-generation-inference)
-- [Hugging Face Model Hub](https://huggingface.co/models)
-- [TGI API Reference](https://huggingface.co/docs/text-generation-inference/api_reference)
+# Load model in 8-bit
+model = AutoModelForCausalLM.from_pretrained(
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    load_in_8bit=True,
+    device_map="auto"
+)
+```
 
-# Vision Inference
+### 2. Attention Optimizations
 
-In this chapter, we'll explore how to perform inference with multimodal models that combine vision and language capabilities. We'll cover various vision-language models and how to effectively use them for tasks like image understanding and visual question answering.
+#### Flash Attention
+Flash Attention reduces memory usage and increases speed by optimizing attention computation.
+
+```python
+from transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    use_flash_attention_2=True,
+    device_map="auto"
+)
+```
+
+#### Sliding Window Attention
+Reduces memory usage for long sequences by using local attention windows.
+
+```python
+config = AutoConfig.from_pretrained("HuggingFaceTB/SmolLM2-1.7B-Instruct")
+config.sliding_window = 4096  # Set window size
+model = AutoModelForCausalLM.from_pretrained(
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    config=config
+)
+```
+
+## Memory Management
+
+### 1. GPU Memory Optimization
+
+#### Memory Tracking
+```python
+import torch
+
+def print_gpu_memory():
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f}MB")
+    print(f"Cached: {torch.cuda.memory_reserved() / 1024**2:.2f}MB")
+    
+# Monitor memory usage
+print_gpu_memory()
+torch.cuda.empty_cache()  # Clear unused memory
+print_gpu_memory()
+```
+
+#### Gradient Checkpointing
+```python
+model.gradient_checkpointing_enable()  # Enable gradient checkpointing
+```
+
+### 2. CPU Offloading
+
+Offload parts of the model to CPU when GPU memory is limited.
+
+```python
+from transformers import AutoModelForCausalLM
+
+# Configure CPU offloading
+model = AutoModelForCausalLM.from_pretrained(
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    device_map="auto",
+    offload_folder="offload"
+)
+```
+
+## Inference Optimization
+
+### 1. Batching
+
+#### Static Batching
+```python
+def batch_inference(prompts, batch_size=4):
+    results = []
+    for i in range(0, len(prompts), batch_size):
+        batch = prompts[i:i + batch_size]
+        inputs = tokenizer(batch, padding=True, return_tensors="pt")
+        outputs = model.generate(**inputs)
+        decoded = tokenizer.batch_decode(outputs)
+        results.extend(decoded)
+    return results
+```
+
+#### Dynamic Batching
+```python
+class DynamicBatcher:
+    def __init__(self, model, tokenizer, max_batch_size=8):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.max_batch_size = max_batch_size
+        self.queue = []
+        
+    async def add_request(self, prompt):
+        self.queue.append(prompt)
+        if len(self.queue) >= self.max_batch_size:
+            return await self.process_batch()
+        return None
+```
+
+### 2. Caching
+
+#### KV Cache Management
+```python
+class KVCache:
+    def __init__(self, max_size=1000):
+        self.cache = {}
+        self.max_size = max_size
+        
+    def get(self, key_tokens):
+        key = tuple(key_tokens.tolist())
+        return self.cache.get(key)
+        
+    def put(self, key_tokens, value):
+        if len(self.cache) >= self.max_size:
+            self.cache.pop(next(iter(self.cache)))
+        key = tuple(key_tokens.tolist())
+        self.cache[key] = value
+```
+
+## Hardware Utilization
+
+### 1. Multi-GPU Support
+
+#### Model Parallelism
+```python
+from accelerate import dispatch_model
+
+# Distribute model across GPUs
+model = dispatch_model(model, device_map="balanced")
+```
+
+#### Data Parallelism
+```python
+import torch.nn as nn
+
+# Wrap model for data parallel processing
+if torch.cuda.device_count() > 1:
+    model = nn.DataParallel(model)
+```
+
+### 2. CPU Threading
+
+```python
+import torch
+
+# Set number of threads for CPU operations
+torch.set_num_threads(8)
+```
+
+## Performance Monitoring
+
+### 1. Latency Tracking
+
+```python
+import time
+
+class LatencyTracker:
+    def __init__(self):
+        self.times = []
+        
+    def __enter__(self):
+        self.start = time.perf_counter()
+        return self
+        
+    def __exit__(self, *args):
+        self.times.append(time.perf_counter() - self.start)
+        
+    @property
+    def average(self):
+        return sum(self.times) / len(self.times)
+```
+
+### 2. Throughput Monitoring
+
+```python
+class ThroughputMonitor:
+    def __init__(self, window_size=100):
+        self.window_size = window_size
+        self.timestamps = []
+        
+    def add_request(self):
+        self.timestamps.append(time.time())
+        if len(self.timestamps) > self.window_size:
+            self.timestamps.pop(0)
+            
+    @property
+    def requests_per_second(self):
+        if len(self.timestamps) < 2:
+            return 0
+        time_diff = self.timestamps[-1] - self.timestamps[0]
+        return len(self.timestamps) / time_diff
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Choose appropriate model size
+   - Consider hardware constraints
+   - Balance quality and speed
+
+2. **Memory Management**
+   - Monitor memory usage
+   - Use appropriate quantization
+   - Implement caching strategies
+
+3. **Performance Optimization**
+   - Enable hardware optimizations
+   - Use batching when possible
+   - Monitor and profile performance
+
+## Resources
+
+- [Hugging Face Performance Optimization Guide](https://huggingface.co/docs/transformers/perf_train_gpu_one)
+- [PyTorch Memory Management](https://pytorch.org/docs/stable/notes/cuda.html)
+- [Flash Attention Paper](https://arxiv.org/abs/2205.14135)
+- [Quantization Guide](https://huggingface.co/docs/transformers/main/en/perf_infer_gpu_one)
+- [Model Parallelism Tutorial](https://pytorch.org/tutorials/intermediate/model_parallel_tutorial.html)
