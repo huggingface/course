@@ -1,168 +1,196 @@
 # TGI and vLLM
 
-In this chapter, we'll explore two powerful frameworks for serving Large Language Models (LLMs) in production: Text Generation Inference (TGI) and vLLM.
+In this chapter, we'll explore two powerful frameworks for serving Large Language Models (LLMs) in production: Text Generation Inference (TGI) and vLLM. Both frameworks are designed to optimize LLM inference and make deployment easier and more efficient.
 
 ## Text Generation Inference (TGI)
 
-Text Generation Inference (TGI) is a toolkit developed by Hugging Face for deploying and serving Large Language Models (LLMs). It's designed to enable high-performance text generation for popular open-source LLMs. TGI is used in production by Hugging Chat - An open-source interface for open-access models.
+Text Generation Inference (TGI) is a production-ready serving stack developed by Hugging Face for deploying and serving Large Language Models. It's the backbone of Hugging Chat and is designed to provide optimal performance while maintaining ease of use.
 
-### Why Use Text Generation Inference?
+### Key Features of TGI
 
-Text Generation Inference addresses the key challenges of deploying large language models in production. While many frameworks excel at model development, TGI specifically optimizes for production deployment and scaling. Some key features include:
+1. **Advanced Memory Management**
+   - Implements Flash Attention 2 for efficient attention computation
+   - Uses Paged Attention for optimal memory usage
+   - Supports both CPU and GPU offloading for weights and past key values
 
-- **Tensor Parallelism**: TGI's can split models across multiple GPUs through tensor parallelism, essential for serving larger models efficiently.
-- **Continuous Batching**: The continuous batching system maximizes GPU utilization by dynamically processing requests, while optimizations like Flash Attention and Paged Attention significantly reduce memory usage and increase speed.
-- **Token Streaming**: Real-time applications benefit from token streaming via Server-Sent Events, delivering responses with minimal latency.
+2. **Performance Optimizations**
+   - Continuous batching for maximum throughput
+   - Token streaming via Server-Sent Events (SSE)
+   - Support for various quantization methods (bitsandbytes, GPT-Q)
 
-### How to Use Text Generation Inference
+3. **Deployment Features**
+   - Docker containers for easy deployment
+   - Kubernetes-ready with helm charts
+   - Built-in monitoring with Prometheus metrics
+   - Safety features like token limiting and content filtering
 
-#### Basic Python Usage
+### Deployment Options
 
-TGI uses a simple yet powerful REST API integration which makes it easy to integrate with your applications. 
+TGI offers several deployment methods:
 
-#### Using the REST API
-
-TGI exposes a RESTful API that accepts JSON payloads. This makes it accessible from any programming language or tool that can make HTTP requests. Here's a basic example using curl:
-
+1. **Docker (Recommended)**
 ```bash
-# Basic generation request
-curl localhost:8080/v1/chat/completions \
-    -X POST \
-    -d '{
-  "model": "tgi",
-  "messages": [
-    {
-      "role": "system",
-      "content": "You are a helpful assistant."
-    },
-    {
-      "role": "user",
-      "content": "What is deep learning?"
-    }
-  ],
-  "stream": true,
-  "max_tokens": 20
-}' \
-    -H 'Content-Type: application/json'
+docker run --gpus all -p 8080:80 \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct
 ```
 
-#### Using the `huggingface_hub` Python Client
+2. **Python Package**
+```bash
+pip install text-generation
+python -m text_generation_launcher --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct
+```
 
-The `huggingface_hub` python client handles connection management, request formatting, and response parsing:
+### Using TGI in Production
+
+#### REST API Integration
+
+The REST API supports both chat and completion endpoints:
 
 ```python
-from huggingface_hub import InferenceClient
+import requests
 
-client = InferenceClient(
-    base_url="http://localhost:8080/v1/",
-)
+def generate_text(prompt, api_url="http://localhost:8080"):
+    response = requests.post(
+        f"{api_url}/generate",
+        json={
+            "inputs": prompt,
+            "parameters": {
+                "max_new_tokens": 50,
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "repetition_penalty": 1.1
+            }
+        }
+    )
+    return response.json()
 
-output = client.chat.completions.create(
-    model="tgi",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Count to 10"},
-    ],
-    stream=True,
-    max_tokens=1024,
-)
+# Example usage
+result = generate_text("Explain quantum computing in simple terms")
+```
 
-for chunk in output:
-    print(chunk.choices[0].delta.content)
+#### Streaming Responses
+
+For real-time applications, TGI supports token streaming:
+
+```python
+from text_generation import Client
+
+client = Client("http://localhost:8080")
+text = ""
+
+# Stream tokens
+for response in client.generate_stream(
+    "What is artificial intelligence?",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_k=50,
+    top_p=0.95
+):
+    if not response.token.special:
+        text += response.token.text
+        print(text, end="", flush=True)
 ```
 
 ## vLLM
 
-vLLM is a high-performance library for LLM inference and serving. It's designed to maximize throughput while maintaining low latency, making it ideal for production deployments.
+vLLM is a high-throughput and memory-efficient inference engine for LLMs. It introduces PagedAttention, a novel attention algorithm that significantly improves memory efficiency and enables continuous batching.
 
-### Key Features of vLLM
+### PagedAttention Deep Dive
 
-1. **PagedAttention**
-   - Efficient memory management for KV cache
-   - Supports longer sequences
-   - Reduces memory fragmentation
+PagedAttention revolutionizes how KV-cache is managed:
 
-2. **Continuous Batching**
-   - Dynamic request handling
-   - Optimized GPU utilization
-   - Reduced latency
+1. **Memory Management**
+   - Divides KV-cache into fixed-size blocks (pages)
+   - Enables non-contiguous memory allocation
+   - Reduces memory fragmentation by up to 47%
 
-3. **Tensor Parallelism**
-   - Distributed inference across GPUs
-   - Efficient model parallelism
-   - Scalable deployment
+2. **Performance Benefits**
+   - Up to 24x higher throughput compared to traditional methods
+   - Supports dynamic sequence lengths
+   - Enables efficient memory sharing across requests
 
-### Using vLLM
+### Advanced Features
 
-#### Basic Python Usage
-
+1. **Distributed Inference**
 ```python
-from vllm import LLM, SamplingParams
+from vllm import LLM
+from vllm.engine.arg_utils import AsyncEngineArgs
 
-# Initialize the model
-llm = LLM(model="HuggingFaceTB/SmolLM2-1.7B-Instruct")
+# Initialize distributed setup
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    tensor_parallel_size=4,  # Use 4 GPUs
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192
+)
 
-# Set sampling parameters
-sampling_params = SamplingParams(
-    temperature=0.7,
+llm = LLM(engine_args=engine_args)
+```
+
+2. **Custom Sampling Strategies**
+```python
+from vllm import SamplingParams
+
+# Advanced sampling configuration
+params = SamplingParams(
+    temperature=0.8,
     top_p=0.95,
-    max_tokens=100
+    top_k=50,
+    presence_penalty=0.1,
+    frequency_penalty=0.1,
+    max_tokens=100,
+    stop=["###", "\n\n"]
 )
 
-# Generate text
-outputs = llm.generate(
-    ["Tell me a joke", "What is machine learning?"],
-    sampling_params
-)
-
-# Process outputs
-for output in outputs:
-    print(output.outputs[0].text)
+outputs = llm.generate(["Tell me a story"], sampling_params=params)
 ```
 
-#### OpenAI-Compatible Server
+### Performance Monitoring
 
-vLLM provides an OpenAI-compatible server that you can use with existing OpenAI clients:
-
-```python
-from vllm.entrypoints.openai.api_server import serve
-
-# Start the server
-serve(
-    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
-    host="localhost",
-    port=8000
-)
-```
-
-Then use it with any OpenAI client:
+vLLM provides built-in performance metrics:
 
 ```python
-from openai import OpenAI
+from vllm.core.metrics import measure_throughput
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy")
+@measure_throughput
+def batch_inference(prompts):
+    return llm.generate(prompts, sampling_params)
 
-completion = client.chat.completions.create(
-    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
-    messages=[
-        {"role": "user", "content": "Tell me a joke"}
-    ]
-)
-print(completion.choices[0].message.content)
+# Monitor performance
+metrics = batch_inference(["Prompt 1", "Prompt 2", "Prompt 3"])
+print(f"Throughput: {metrics['throughput']} tokens/sec")
 ```
 
 ## Comparing TGI and vLLM
 
-Here's a comparison of key aspects:
+Here's a detailed comparison of key aspects:
 
 | Feature | TGI | vLLM |
 |---------|-----|------|
 | Memory Efficiency | Good (Flash Attention) | Excellent (PagedAttention) |
 | Ease of Use | Very Easy | Moderate |
-| Deployment Options | Docker, Cloud | Python Package, Docker |
-| Model Support | Limited | Broader |
-| Integration | HF Ecosystem | OpenAI Compatible |
-| Community | Large (HF) | Growing |
+| Deployment Options | Docker, Cloud, K8s | Python Package, Docker |
+| Model Support | HuggingFace Models | HF, GPTQ, AWQ Models |
+| Integration | HF Ecosystem | OpenAI Compatible API |
+| Community | Large (HF Backed) | Growing Rapidly |
+| Monitoring | Prometheus, Grafana | Custom Metrics |
+| Quantization | bitsandbytes, GPTQ | AWQ, GPTQ, SqueezeLLM |
+| Scaling | Tensor Parallel | Tensor + Pipeline Parallel |
+
+### When to Choose Which?
+
+- Choose **TGI** when:
+  - You need seamless HuggingFace integration
+  - Deployment simplicity is a priority
+  - You want enterprise-grade monitoring
+  - You need robust safety features
+
+- Choose **vLLM** when:
+  - Maximum throughput is critical
+  - You need flexible memory management
+  - You want OpenAI API compatibility
+  - You require custom sampling strategies
 
 ## Resources
 
@@ -170,4 +198,7 @@ Here's a comparison of key aspects:
 - [TGI GitHub Repository](https://github.com/huggingface/text-generation-inference)
 - [vLLM Documentation](https://vllm.readthedocs.io/)
 - [vLLM GitHub Repository](https://github.com/vllm-project/vllm)
-- [PagedAttention Paper](https://arxiv.org/abs/2309.06180) 
+- [PagedAttention Paper](https://arxiv.org/abs/2309.06180)
+- [HuggingFace Blog: TGI in Production](https://huggingface.co/blog/tgi-serving)
+- [vLLM Performance Benchmarks](https://vllm.readthedocs.io/en/latest/performance.html) 
+
