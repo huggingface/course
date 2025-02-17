@@ -2,6 +2,85 @@
 
 In this chapter, we'll explore two powerful frameworks for serving Large Language Models (LLMs) in production: Text Generation Inference (TGI) and vLLM. Both frameworks are designed to optimize LLM inference and make deployment easier and more efficient.
 
+## vLLM
+
+vLLM is a high-performance inference and serving engine that has revolutionized how we deploy LLMs in production. Originally developed at UC Berkeley's Sky Computing Lab, it has evolved into a community-driven project that addresses key challenges in LLM deployment.
+
+### KV Cache
+
+The KV cache is a memory-efficient way to store the keys and values of the attention mechanism. It is a crucial component of the attention mechanism and is used to store the keys and values of the attention mechanism. This is nothing unique to any inference engine, but we'll remind you of it because it's a crucial concept to understand specific optimizations of vLLM.
+
+KV caching is an optimization technique that significantly improves the inference speed of autoregressive transformers by storing and reusing previously computed key (K) and value (V) states during text generation. In autoregressive generation, each new token depends on all previous tokens, which means the model would normally need to recompute attention for all tokens at each step. However, since the attention mechanism is causal (a token only attends to previous tokens), we can cache the K and V matrices from previous computations and reuse them for generating the next token. This optimization reduces the matrix multiplication operations from O(n²) to O(n), where n is the sequence length, resulting in dramatic speed improvements. For example, benchmarks show that KV caching can reduce generation time by up to 4-5x (from ~56 seconds to ~12 seconds for generating 1000 tokens) while using only marginally more GPU memory.
+
+### PagedAttention is the core innovation of vLLM
+
+PagedAttention revolutionizes memory management in LLM inference. While traditional KV cache implementations rely on contiguous memory blocks, PagedAttention takes a novel approach by dividing memory into fixed-size blocks called pages. This design mirrors the virtual memory systems used in modern operating systems, enabling non-contiguous memory allocation. This innovative approach has proven highly effective, demonstrating a remarkable reduction in memory fragmentation by up to 47% compared to conventional methods.
+
+The performance improvements achieved by PagedAttention are substantial. The system delivers up to 24x higher throughput compared to traditional methods, making it a game-changer for production deployments. It's particularly notable for its ability to handle dynamic sequence lengths efficiently, adapting to varying input sizes without performance degradation. Additionally, PagedAttention implements efficient memory sharing across requests, maximizing resource utilization in multi-user scenarios.
+
+1. **Memory Management**
+   - Traditional KV cache management uses contiguous memory blocks
+   - PagedAttention divides memory into fixed-size blocks (pages)
+   - Enables non-contiguous memory allocation, similar to virtual memory in operating systems
+   - Reduces memory fragmentation by up to 47%
+
+2. **Performance Benefits**
+   - Up to 24x higher throughput compared to traditional methods
+   - Supports dynamic sequence lengths
+   - Enables efficient memory sharing across requests
+
+### Distributed Inference
+
+```python
+from vllm import LLM
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+# Initialize distributed setup
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    tensor_parallel_size=4,  # Use 4 GPUs
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192
+)
+
+llm = LLM(engine_args=engine_args)
+```
+
+### Custom Sampling Strategies
+
+```python
+from vllm import SamplingParams
+
+# Advanced sampling configuration
+params = SamplingParams(
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    presence_penalty=0.1,
+    frequency_penalty=0.1,
+    max_tokens=100,
+    stop=["###", "\n\n"]
+)
+
+outputs = llm.generate(["Tell me a story"], sampling_params=params)
+```
+
+### Performance Monitoring
+
+vLLM provides built-in performance metrics:
+
+```python
+from vllm.core.metrics import measure_throughput
+
+@measure_throughput
+def batch_inference(prompts):
+    return llm.generate(prompts, sampling_params)
+
+# Monitor performance
+metrics = batch_inference(["Prompt 1", "Prompt 2", "Prompt 3"])
+print(f"Throughput: {metrics['throughput']} tokens/sec")
+```
+
 ## Text Generation Inference (TGI)
 
 Text Generation Inference (TGI) is a production-ready serving stack developed by Hugging Face for deploying and serving Large Language Models. It's the backbone of Hugging Chat and is designed to provide optimal performance while maintaining ease of use.
@@ -90,76 +169,6 @@ for response in client.generate_stream(
     if not response.token.special:
         text += response.token.text
         print(text, end="", flush=True)
-```
-
-## vLLM
-
-vLLM is a high-throughput and memory-efficient inference engine for LLMs. It introduces PagedAttention, a novel attention algorithm that significantly improves memory efficiency and enables continuous batching.
-
-### PagedAttention Deep Dive
-
-PagedAttention revolutionizes how KV-cache is managed:
-
-1. **Memory Management**
-   - Divides KV-cache into fixed-size blocks (pages)
-   - Enables non-contiguous memory allocation
-   - Reduces memory fragmentation by up to 47%
-
-2. **Performance Benefits**
-   - Up to 24x higher throughput compared to traditional methods
-   - Supports dynamic sequence lengths
-   - Enables efficient memory sharing across requests
-
-### Advanced Features
-
-1. **Distributed Inference**
-```python
-from vllm import LLM
-from vllm.engine.arg_utils import AsyncEngineArgs
-
-# Initialize distributed setup
-engine_args = AsyncEngineArgs(
-    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
-    tensor_parallel_size=4,  # Use 4 GPUs
-    gpu_memory_utilization=0.85,
-    max_num_batched_tokens=8192
-)
-
-llm = LLM(engine_args=engine_args)
-```
-
-2. **Custom Sampling Strategies**
-```python
-from vllm import SamplingParams
-
-# Advanced sampling configuration
-params = SamplingParams(
-    temperature=0.8,
-    top_p=0.95,
-    top_k=50,
-    presence_penalty=0.1,
-    frequency_penalty=0.1,
-    max_tokens=100,
-    stop=["###", "\n\n"]
-)
-
-outputs = llm.generate(["Tell me a story"], sampling_params=params)
-```
-
-### Performance Monitoring
-
-vLLM provides built-in performance metrics:
-
-```python
-from vllm.core.metrics import measure_throughput
-
-@measure_throughput
-def batch_inference(prompts):
-    return llm.generate(prompts, sampling_params)
-
-# Monitor performance
-metrics = batch_inference(["Prompt 1", "Prompt 2", "Prompt 3"])
-print(f"Throughput: {metrics['throughput']} tokens/sec")
 ```
 
 ## Comparing TGI and vLLM
