@@ -1,84 +1,336 @@
-# TGI and vLLM
+# Deploying LLMs with inference engines: TGI and vLLM
 
-In this chapter, we'll explore two powerful frameworks for serving Large Language Models (LLMs) in production: Text Generation Inference (TGI) and vLLM. Both frameworks are designed to optimize LLM inference and make deployment easier and more efficient.
+In this chapter, we'll explore two powerful frameworks for serving Large Language Models (LLMs) in production: Text Generation Inference (TGI) and vLLM. Both frameworks are designed to optimize LLM inference and make deployment easier and more efficient. 
 
-## vLLM
+For many projects, the two frameworks are interchangeable. However, there are some key differences that you should be aware of to make the right choice for your project.
 
-vLLM is a high-performance inference and serving engine that has revolutionized how we deploy LLMs in production. Originally developed at UC Berkeley's Sky Computing Lab, it has evolved into a community-driven project that addresses key challenges in LLM deployment.
+## vLLM is your daily driver
 
-### KV Cache
+[vLLM](https://github.com/vllm-project/vllm) is a high-performance inference and serving engine that is becoming the standard for how we deploy LLMs. Originally developed at UC Berkeley's Sky Computing Lab, it has evolved into a community-driven project that addresses key challenges in LLM deployment.
 
-The KV cache is a memory-efficient way to store the keys and values of the attention mechanism. It is a crucial component of the attention mechanism and is used to store the keys and values of the attention mechanism. This is nothing unique to any inference engine, but we'll remind you of it because it's a crucial concept to understand specific optimizations of vLLM.
+<Tip>
 
-KV caching is an optimization technique that significantly improves the inference speed of autoregressive transformers by storing and reusing previously computed key (K) and value (V) states during text generation. In autoregressive generation, each new token depends on all previous tokens, which means the model would normally need to recompute attention for all tokens at each step. However, since the attention mechanism is causal (a token only attends to previous tokens), we can cache the K and V matrices from previous computations and reuse them for generating the next token. This optimization reduces the matrix multiplication operations from O(n²) to O(n), where n is the sequence length, resulting in dramatic speed improvements. For example, benchmarks show that KV caching can reduce generation time by up to 4-5x (from ~56 seconds to ~12 seconds for generating 1000 tokens) while using only marginally more GPU memory.
+vLLM is easy to install and use. It has a OpenAI compatible API and is fully integrated with the Hugging Face hub. Also, all of the core optimizations are available out of the box.
 
-### PagedAttention is the core innovation of vLLM
+</Tip>
+
+Let's walk through the key features of vLLM.
+
+### Sampling Strategies
+
+In [section 2.1](./2.mdx#decode-phase), we discussed the decode phase of LLM inference and how the correct token is selected. There are several strategies for selecting the next token which fall under the umbrella of **sampling strategies**. vLLM provides a dedicated class for controlling the sampling process: `SamplingParams`. These parameters help balance between creativity and coherence in the generated text.
+
+#### Defining token sampling parameters
+
+Let's reminds ourselves of the process of token selection. The graphic below illustrates the process of token selection from the cores for each token in the models vocabulary, to the final selection of a token.
+
+<img src="/Users/ben/code/course/chapters/en/chapter12/diagrams/1.png" alt="Token Selection Process" />
+
+1. **Raw Logits** are the output of the last layer of the model. They represent the probability of each token in the vocabulary.
+2. **Temperature** is a parameter that controls the randomness of the token selection process. A higher temperature makes the output more creative but potentially less focused, while a lower temperature makes it more deterministic and conservative.
+3. **Top-p (Nucleus) Sampling** selects from the smallest set of tokens whose cumulative probability exceeds the specified top_p value. For example, a top_p of 0.95 means the model will only consider tokens that make up the top 95% of the probability mass.
+4. **Top-k Filtering** limits token selection to the k most likely next tokens. This helps prevent the selection of highly improbable tokens while maintaining diversity in the output.
+
+Now that we've reminded ourselves of the process of token selection, let's see how to configure the sampling parameters in vLLM.
+
+vLLM provides a dedicated class for controlling the sampling process: `SamplingParams` which is used to configure the sampling parameters for the `generate` method.
+
+```python
+from vllm import SamplingParams
+
+# Basic sampling configuration
+params = SamplingParams(
+    temperature=0.8,      # Higher value for more creative outputs
+    top_p=0.95,          # Consider tokens in the top 95% probability mass
+    top_k=50,            # Consider only the top 50 most likely tokens
+    max_tokens=100       # Generate up to 100 tokens
+)
+
+# Generate text with these parameters
+outputs = llm.generate(["Tell me a story"], sampling_params=params)
+```
+
+This basic configuration demonstrates the fundamental sampling parameters working together. The temperature of 0.8 provides a good balance between creativity and coherence. When the model generates each token, it first scales the logits (raw prediction scores) by 1/temperature, then applies top-k filtering to keep only the 50 most likely tokens, and finally uses top-p sampling to select from tokens that make up 95% of the probability mass.
+
+<Tip>
+
+The `SamplingParams` class and parameters temperature, top_p, top_k, and max_tokens will deal with most inference tasks and you will rarely need to go beyond these parameters.
+
+</Tip>
+
+
+#### Presence and Frequency Penalties
+
+In general, language models tend to repeat themselves which leads to less readable and less coherent text. To address this, we can use presence and frequency penalties. There are two types of penalties:
+
+1. **Presence Penalty** - Penalize tokens that appear in the text.
+2. **Frequency Penalty** - Penalize tokens based on their frequency.
+
+As the diagram below shows, the penalties are applied by modifying the logits before the temperature scaling step.
+
+<img src="/Users/ben/code/course/chapters/en/chapter12/diagrams/2.png" alt="Token Selection Process" />
+
+The penalties system helps prevent repetitive text generation. Presence penalty (0.1) adds a fixed penalty to tokens that have appeared in the text, regardless of how often they've appeared. Frequency penalty (0.1) scales the penalty based on how frequently each token has been used. These penalties are applied by modifying the logits before the temperature scaling step.
+
+We can implement these penalties by modifying the `SamplingParams` class in vLLM.
+
+```python
+# Advanced control with penalties
+params = SamplingParams(
+    presence_penalty=0.1,    # Penalize tokens that appear in the text
+    frequency_penalty=0.1,   # Penalize tokens based on their frequency
+    temperature=0.7,
+    top_p=0.95
+)
+```
+
+#### Stop Sequences and Length Control
+
+Language models are great at generating text, but they can also generate text that is too long or too short for the context in which they are used. For example, you might want to use a language model to generate sub titles for a blog post, or to generate the blog post itself. We can use stop sequences and length control to address this.
+
+We can define define stop sequences based on specific tokens or sequences. For example, we can stop the generation when we encounter the token "###" or the sequence "\n\n". These are common stop sequences in language models and will force the model to only generate a single section or line of the text.
+
+In the graphic below, we can see the process of stopping the generation when we encounter the stop sequence "\n\n". 
+
+<img src="/Users/ben/code/course/chapters/en/chapter12/diagrams/3.png" alt="Token Selection Process" />
+
+Length control parameters provide fine-grained control over the generation process. The model will generate at least 10 tokens (min_tokens) but no more than 100 tokens (max_tokens). It will stop immediately if it encounters either "###" or two consecutive newlines. Setting ignore_eos=False means it will also stop when it generates an end-of-sequence token. Special tokens (like padding or system tokens) are filtered from the output.
+
+We can implement this by modifying the `SamplingParams` class in vLLM.
+
+```python
+# Control generation length and stopping
+params = SamplingParams(
+    max_tokens=100,          # Maximum length of generated text
+    min_tokens=10,           # Minimum length before stopping
+    stop=["###", "\n\n"],   # Stop when these sequences are generated
+    ignore_eos=False,        # Whether to ignore the end-of-sequence token
+    skip_special_tokens=True # Skip special tokens in the output
+)
+```
+
+#### Beam Search
+
+The examples we've explored so far work on a token level. The model will generate a single token at a time and select the most likely next token. This relies entirely on the language model's logits to produce coherent text. 
+
+However, we can also use beam search to generate more coherent and structured output. It works by maintaining a set of candidate sequences and selecting the most promising ones at each step. 
+
+<img src="/Users/ben/code/course/chapters/en/chapter12/diagrams/4.png" alt="Beam Search" />
+
+Beam search maintains multiple candidate sequences (beams) during generation. With beam_width=5, it explores the top 5 most promising sequences at each step. The length_penalty affects how beam search scores longer sequences - a value of 1.0 means no penalty, while values greater than 1.0 favor shorter sequences and values less than 1.0 favor longer ones.
+
+We can implement this by modifying the `SamplingParams` class in vLLM.
+
+```python
+# Enable beam search for more structured output
+params = SamplingParams(
+    temperature=0.8,
+    top_p=0.95,
+    use_beam_search=True,
+    beam_width=5,            # Number of beams to maintain
+    length_penalty=1.0       # Penalty for longer sequences
+)
+```
+
+#### Best Practices
+
+<Tabs>
+<TabItem value="creative">1</TabItem>
+<TabItem value="factual">2</TabItem>
+<TabItem value="balanced">3</TabItem>
+</Tabs>
+
+
+
+1. **Creative Writing**
+   ```python
+   creative_params = SamplingParams(
+       temperature=0.9,
+       top_p=0.95,
+       top_k=50,
+       presence_penalty=0.2,    # Encourage diversity
+       frequency_penalty=0.2
+   )
+   ```
+2. **Factual Generation**
+   ```python
+   factual_params = SamplingParams(
+       temperature=0.3,         # More deterministic
+       top_p=0.85,
+       top_k=40,
+       presence_penalty=0.0,    # No penalties for repetition
+       frequency_penalty=0.0
+   )
+   ```
+3. **Balanced Generation**
+   ```python
+   balanced_params = SamplingParams(
+       temperature=0.7,
+       top_p=0.9,
+       top_k=50,
+       presence_penalty=0.1,
+       frequency_penalty=0.1,
+       max_tokens=100
+   )
+   ```
+
+<Tip>
+When fine-tuning sampling parameters, start with balanced settings and adjust based on your specific needs:
+- Increase temperature for more creative outputs
+- Decrease temperature for more focused, deterministic responses
+- Adjust penalties if you notice unwanted repetition
+- Use beam search for tasks requiring more structured output
+</Tip>
+
+### PagedAttention
 
 PagedAttention revolutionizes memory management in LLM inference. While traditional KV cache implementations rely on contiguous memory blocks, PagedAttention takes a novel approach by dividing memory into fixed-size blocks called pages. This design mirrors the virtual memory systems used in modern operating systems, enabling non-contiguous memory allocation. This innovative approach has proven highly effective, demonstrating a remarkable reduction in memory fragmentation by up to 47% compared to conventional methods.
 
+<Tip>
+
+We discussed KV caching earlier in section [KV Cache](#kv-cache). The KV cache is a memory-efficient way to store the keys and values of the attention mechanism. It is a crucial component of the attention mechanism and is used to store the keys and values of the attention mechanism.
+
+</Tip>
+
 The performance improvements achieved by PagedAttention are substantial. The system delivers up to 24x higher throughput compared to traditional methods, making it a game-changer for production deployments. It's particularly notable for its ability to handle dynamic sequence lengths efficiently, adapting to varying input sizes without performance degradation. Additionally, PagedAttention implements efficient memory sharing across requests, maximizing resource utilization in multi-user scenarios.
 
-1. **Memory Management**
-   - Traditional KV cache management uses contiguous memory blocks
-   - PagedAttention divides memory into fixed-size blocks (pages)
-   - Enables non-contiguous memory allocation, similar to virtual memory in operating systems
-   - Reduces memory fragmentation by up to 47%
-
-2. **Performance Benefits**
-   - Up to 24x higher throughput compared to traditional methods
-   - Supports dynamic sequence lengths
-   - Enables efficient memory sharing across requests
+| Category | Feature | Description |
+|----------|---------|-------------|
+| Memory Management | Traditional KV Cache | Uses contiguous memory blocks |
+| Memory Management | PagedAttention | Divides memory into fixed-size blocks (pages) |
+| Memory Management | Memory Allocation | Enables non-contiguous allocation, similar to OS virtual memory |
+| Memory Management | Fragmentation | Reduces memory fragmentation by up to 47% |
+| Performance | Throughput | Up to 24x higher compared to traditional methods |
+| Performance | Sequence Handling | Supports dynamic sequence lengths |
+| Performance | Resource Sharing | Enables efficient memory sharing across requests |
 
 ### Distributed Inference
+
+vLLM provides powerful distributed inference capabilities that allow you to scale your model deployment across multiple GPUs and nodes. The choice of distribution strategy depends primarily on your model size and available hardware resources. Let's explore each deployment strategy in detail.
+
+#### Single GPU Deployment
+
+Single GPU deployment represents the simplest and most straightforward way to serve an LLM. In this configuration, the entire model and its associated memory requirements are handled by a single GPU. This approach is ideal for smaller models, typically those with fewer than 7 billion parameters, such as GPT-2 (1.5B) or BLOOM-1b7.
+
+The key advantage of single GPU deployment lies in its simplicity. There's no need to manage complex distributed systems or handle inter-GPU communication overhead. The entire inference pipeline runs on one device, resulting in minimal latency and straightforward debugging. This setup is particularly well-suited for development environments and smaller production workloads where model size permits.
+
+
+**Diagram Suggestion: Single GPU Architecture**
+```
+[Input] → [GPU Memory]
+           ├─ Model Weights
+           ├─ KV Cache
+           └─ Intermediate Activations
+```
+This diagram should show how all components (model weights, KV cache, and activations) reside in a single GPU's memory space.
+
+
+Here's a basic implementation for single GPU deployment:
 
 ```python
 from vllm import LLM
 from vllm.engine.arg_utils import AsyncEngineArgs
 
-# Initialize distributed setup
+# Single GPU configuration
 engine_args = AsyncEngineArgs(
     model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
-    tensor_parallel_size=4,  # Use 4 GPUs
     gpu_memory_utilization=0.85,
-    max_num_batched_tokens=8192
+    max_num_batched_tokens=8192,
+    block_size=16
 )
 
 llm = LLM(engine_args=engine_args)
 ```
 
-### Custom Sampling Strategies
+#### Single-Node Multi-GPU (Tensor Parallelism)
+
+When models grow beyond the memory capacity of a single GPU, tensor parallelism offers a solution by distributing the model across multiple GPUs within the same machine. This approach is particularly effective for models ranging from 7B to 70B parameters, such as LLaMA-13B or Falcon-40B.
+
+Tensor parallelism works by splitting individual tensors (model weights and activations) across multiple GPUs. Each GPU holds a portion of each layer's parameters, and the GPUs work together to process inputs. This is different from data parallelism, where each GPU would hold a complete copy of the model. The key benefit is that it allows serving larger models that wouldn't fit in a single GPU's memory.
+
+
+**Diagram Suggestion: Tensor Parallelism**
+```
+[Input] → [GPU 0] ←→ [GPU 1] ←→ [GPU 2] ←→ [GPU 3]
+         ├─ Layer1A  ├─ Layer1B  ├─ Layer1C  └─ Layer1D
+         └─ Layer2A  └─ Layer2B  └─ Layer2C  └─ Layer2D
+
+Arrows indicate all-to-all communication between GPUs
+Each GPU holds a vertical slice of each layer
+```
+This diagram should illustrate how each layer is split across GPUs and how they communicate.
+
+
+Implementation example for tensor parallelism:
 
 ```python
-from vllm import SamplingParams
+from vllm import LLM
+from vllm.engine.arg_utils import AsyncEngineArgs
 
-# Advanced sampling configuration
-params = SamplingParams(
-    temperature=0.8,
-    top_p=0.95,
-    top_k=50,
-    presence_penalty=0.1,
-    frequency_penalty=0.1,
-    max_tokens=100,
-    stop=["###", "\n\n"]
+# Tensor parallel configuration
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-13B",
+    tensor_parallel_size=4,  # Split across 4 GPUs
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16
 )
 
-outputs = llm.generate(["Tell me a story"], sampling_params=params)
+llm = LLM(engine_args=engine_args)
 ```
 
-### Performance Monitoring
+#### Multi-Node Multi-GPU (Tensor + Pipeline Parallelism)
 
-vLLM provides built-in performance metrics:
+For the largest models (70B+ parameters) or when seeking maximum throughput, multi-node deployment combines tensor parallelism with pipeline parallelism. This sophisticated approach distributes the model both horizontally (across GPUs within a node) and vertically (across multiple nodes).
+
+Pipeline parallelism divides the model's layers across different nodes, while tensor parallelism splits individual layers across GPUs within each node. This hybrid approach enables serving massive models like GPT-3 (175B) or PaLM (540B) efficiently. The system processes multiple requests simultaneously, with different stages of the model running on different nodes, creating a processing pipeline.
+
+
+**Diagram Suggestion: Hybrid Parallelism**
+
+```
+Node 1:                 Node 2:
+[GPU 0] ←→ [GPU 1]     [GPU 2] ←→ [GPU 3]
+Layers 1-6 (split)     Layers 7-12 (split)
+   ↓          ↓           ↓          ↓
+[GPU 4] ←→ [GPU 5]     [GPU 6] ←→ [GPU 7]
+Layers 13-18 (split)   Layers 19-24 (split)
+
+Horizontal arrows: Tensor Parallelism
+Vertical arrows: Pipeline Parallelism
+```
+
+This diagram should show both the tensor parallel splits within nodes and the pipeline parallel splits between nodes.
+
+
+Implementation for multi-node deployment:
 
 ```python
-from vllm.core.metrics import measure_throughput
+# First, set up Ray cluster
+"""
+# On head node
+ray start --head
 
-@measure_throughput
-def batch_inference(prompts):
-    return llm.generate(prompts, sampling_params)
+# On worker nodes
+ray start --address=<head-node-address>
+"""
 
-# Monitor performance
-metrics = batch_inference(["Prompt 1", "Prompt 2", "Prompt 3"])
-print(f"Throughput: {metrics['throughput']} tokens/sec")
+from vllm import LLM
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+# Hybrid parallel configuration
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-70B",
+    tensor_parallel_size=4,     # GPUs per node
+    pipeline_parallel_size=2,   # Number of nodes
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16,
+    distributed_init_method="tcp://HEAD_NODE_IP:PORT",
+    distributed_backend="nccl"
+)
+
+llm = LLM(engine_args=engine_args)
 ```
 
 ## Text Generation Inference (TGI)
