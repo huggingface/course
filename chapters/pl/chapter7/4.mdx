@@ -1,0 +1,1002 @@
+<FrameworkSwitchCourse {fw} />
+
+# Translation[[translation]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section4_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section4_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section4_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section4_tf.ipynb"},
+]} />
+
+{/if}
+
+Let's now dive into translation. This is another [sequence-to-sequence task](/course/chapter1/7), which means it's a problem that can be formulated as going from one sequence to another. In that sense the problem is pretty close to [summarization](/course/chapter7/6), and you could adapt what we will see here to other sequence-to-sequence problems such as:
+
+- **Style transfer**: Creating a model that *translates* texts written in a certain style to another (e.g., formal to casual or Shakespearean English to modern English)
+- **Generative question answering**: Creating a model that generates answers to questions, given a context
+
+<Youtube id="1JvfrvZgi6c"/>
+
+If you have a big enough corpus of texts in two (or more) languages, you can train a new translation model from scratch like we will in the section on [causal language modeling](/course/chapter7/6). It will be faster, however, to fine-tune an existing translation model, be it a multilingual one like mT5 or mBART that you want to fine-tune to a specific language pair, or even a model specialized for translation from one language to another that you want to fine-tune to your specific corpus.
+
+In this section, we will fine-tune a Marian model pretrained to translate from English to French (since a lot of Hugging Face employees speak both those languages) on the [KDE4 dataset](https://huggingface.co/datasets/kde4), which is a dataset of localized files for the [KDE apps](https://apps.kde.org/). The model we will use has been pretrained on a large corpus of French and English texts taken from the [Opus dataset](https://opus.nlpl.eu/), which actually contains the KDE4 dataset. But even if the pretrained model we use has seen that data during its pretraining, we will see that we can get a better version of it after fine-tuning.
+
+Once we're finished, we will have a model able to make predictions like this one:
+
+<iframe src="https://course-demos-marian-finetuned-kde4-en-to-fr.hf.space" frameBorder="0" height="350" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+<a class="flex justify-center" href="/huggingface-course/marian-finetuned-kde4-en-to-fr">
+<img class="block dark:hidden lg:w-3/5" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/modeleval-marian-finetuned-kde4-en-to-fr.png" alt="One-hot encoded labels for question answering."/>
+<img class="hidden dark:block lg:w-3/5" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/modeleval-marian-finetuned-kde4-en-to-fr-dark.png" alt="One-hot encoded labels for question answering."/>
+</a>
+
+As in the previous sections, you can find the actual model that we'll train and upload to the Hub using the code below and double-check its predictions [here](https://huggingface.co/huggingface-course/marian-finetuned-kde4-en-to-fr?text=This+plugin+allows+you+to+automatically+translate+web+pages+between+several+languages.).
+
+## Preparing the data[[preparing-the-data]]
+
+To fine-tune or train a translation model from scratch, we will need a dataset suitable for the task. As mentioned previously, we'll use the [KDE4 dataset](https://huggingface.co/datasets/kde4) in this section, but you can adapt the code to use your own data quite easily, as long as you have pairs of sentences in the two languages you want to translate from and into. Refer back to [Chapter 5](/course/chapter5) if you need a reminder of how to load your custom data in a `Dataset`.
+
+### The KDE4 dataset[[the-kde4-dataset]]
+
+As usual, we download our dataset using the `load_dataset()` function:
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
+```
+
+If you want to work with a different pair of languages, you can specify them by their codes. A total of 92 languages are available for this dataset; you can see them all by expanding the language tags on its [dataset card](https://huggingface.co/datasets/kde4).
+
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/language_tags.png" alt="Language available for the KDE4 dataset." width="100%">
+
+Let's have a look at the dataset:
+
+```py
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'translation'],
+        num_rows: 210173
+    })
+})
+```
+
+We have 210,173 pairs of sentences, but in one single split, so we will need to create our own validation set. As we saw in [Chapter 5](/course/chapter5), a `Dataset` has a `train_test_split()` method that can help us. We'll provide a seed for reproducibility:
+
+```py
+split_datasets = raw_datasets["train"].train_test_split(train_size=0.9, seed=20)
+split_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'translation'],
+        num_rows: 189155
+    })
+    test: Dataset({
+        features: ['id', 'translation'],
+        num_rows: 21018
+    })
+})
+```
+
+We can rename the `"test"` key to `"validation"` like this:
+
+```py
+split_datasets["validation"] = split_datasets.pop("test")
+```
+
+Now let's take a look at one element of the dataset:
+
+```py
+split_datasets["train"][1]["translation"]
+```
+
+```python out
+{'en': 'Default to expanded threads',
+ 'fr': 'Par défaut, développer les fils de discussion'}
+```
+
+We get a dictionary with two sentences in the pair of languages we requested. One particularity of this dataset full of technical computer science terms is that they are all fully translated in French. However, French engineers leave most computer science-specific words in English when they talk. Here, for instance, the word "threads" might well appear in a French sentence, especially in a technical conversation; but in this dataset it has been translated into the more correct "fils de discussion." The pretrained model we use, which has been pretrained on a larger corpus of French and English sentences, takes the easier option of leaving the word as is:
+
+```py
+from transformers import pipeline
+
+model_checkpoint = "Helsinki-NLP/opus-mt-en-fr"
+translator = pipeline("translation", model=model_checkpoint)
+translator("Default to expanded threads")
+```
+
+```python out
+[{'translation_text': 'Par défaut pour les threads élargis'}]
+```
+
+Another example of this behavior can be seen with the word "plugin," which isn't officially a French word but which most native speakers will understand and not bother to translate.
+In the KDE4 dataset this word has been translated in French into the more official "module d'extension":
+
+```py
+split_datasets["train"][172]["translation"]
+```
+
+```python out
+{'en': 'Unable to import %1 using the OFX importer plugin. This file is not the correct format.',
+ 'fr': "Impossible d'importer %1 en utilisant le module d'extension d'importation OFX. Ce fichier n'a pas un format correct."}
+```
+
+Our pretrained model, however, sticks with the compact and familiar English word:
+
+```py
+translator(
+    "Unable to import %1 using the OFX importer plugin. This file is not the correct format."
+)
+```
+
+```python out
+[{'translation_text': "Impossible d'importer %1 en utilisant le plugin d'importateur OFX. Ce fichier n'est pas le bon format."}]
+```
+
+It will be interesting to see if our fine-tuned model picks up on those particularities of the dataset (spoiler alert: it will).
+
+<Youtube id="0Oxphw4Q9fo"/>
+
+<Tip>
+
+✏️ **Your turn!** Another English word that is often used in French is "email." Find the first sample in the training dataset that uses this word. How is it translated? How does the pretrained model translate the same English sentence?
+
+</Tip>
+
+### Processing the data[[processing-the-data]]
+
+<Youtube id="XAR8jnZZuUs"/>
+
+You should know the drill by now: the texts all need to be converted into sets of token IDs so the model can make sense of them. For this task, we'll need to tokenize both the inputs and the targets. Our first task is to create our `tokenizer` object. As noted earlier, we'll be using a Marian English to French pretrained model. If you are trying this code with another pair of languages, make sure to adapt the model checkpoint. The [Helsinki-NLP](https://huggingface.co/Helsinki-NLP) organization provides more than a thousand models in multiple languages.
+
+```python
+from transformers import AutoTokenizer
+
+model_checkpoint = "Helsinki-NLP/opus-mt-en-fr"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, return_tensors="pt")
+```
+
+You can also replace the `model_checkpoint` with any other model you prefer from the [Hub](https://huggingface.co/models), or a local folder where you've saved a pretrained model and a tokenizer.
+
+<Tip>
+
+💡 If you are using a multilingual tokenizer such as mBART, mBART-50, or M2M100, you will need to set the language codes of your inputs and targets in the tokenizer by setting `tokenizer.src_lang` and `tokenizer.tgt_lang` to the right values.
+
+</Tip>
+
+The preparation of our data is pretty straightforward. There's just one thing to remember; you need to ensure that the tokenizer processes the targets in the output language (here, French). You can do this by passing the targets to the `text_targets` argument of the tokenizer's `__call__` method.
+
+To see how this works, let's process one sample of each language in the training set:
+
+```python
+en_sentence = split_datasets["train"][1]["translation"]["en"]
+fr_sentence = split_datasets["train"][1]["translation"]["fr"]
+
+inputs = tokenizer(en_sentence, text_target=fr_sentence)
+inputs
+```
+
+```python out
+{'input_ids': [47591, 12, 9842, 19634, 9, 0], 'attention_mask': [1, 1, 1, 1, 1, 1], 'labels': [577, 5891, 2, 3184, 16, 2542, 5, 1710, 0]}
+```
+
+As we can see, the output contains the input IDs associated with the English sentence, while the IDs associated with the French one are stored in the `labels` field. If you forget to indicate that you are tokenizing labels, they will be tokenized by the input tokenizer, which in the case of a Marian model is not going to go well at all:
+
+```python
+wrong_targets = tokenizer(fr_sentence)
+print(tokenizer.convert_ids_to_tokens(wrong_targets["input_ids"]))
+print(tokenizer.convert_ids_to_tokens(inputs["labels"]))
+```
+
+```python out
+['▁Par', '▁dé', 'f', 'aut', ',', '▁dé', 've', 'lop', 'per', '▁les', '▁fil', 's', '▁de', '▁discussion', '</s>']
+['▁Par', '▁défaut', ',', '▁développer', '▁les', '▁fils', '▁de', '▁discussion', '</s>']
+```
+
+As we can see, using the English tokenizer to preprocess a French sentence results in a lot more tokens, since the tokenizer doesn't know any French words (except those that also appear in the English language, like "discussion").
+
+Since `inputs` is a dictionary with our usual keys (input IDs, attention mask, etc.), the last step is to define the preprocessing function we will apply on the datasets:
+
+```python
+max_length = 128
+
+
+def preprocess_function(examples):
+    inputs = [ex["en"] for ex in examples["translation"]]
+    targets = [ex["fr"] for ex in examples["translation"]]
+    model_inputs = tokenizer(
+        inputs, text_target=targets, max_length=max_length, truncation=True
+    )
+    return model_inputs
+```
+
+Note that we set the same maximum length for our inputs and outputs. Since the texts we're dealing with seem pretty short, we use 128.
+
+<Tip>
+
+💡 If you are using a T5 model (more specifically, one of the `t5-xxx` checkpoints), the model will expect the text inputs to have a prefix indicating the task at hand, such as `translate: English to French:`.
+
+</Tip>
+
+<Tip warning={true}>
+
+⚠️ We don't pay attention to the attention mask of the targets, as the model won't expect it. Instead, the labels corresponding to a padding token should be set to `-100` so they are ignored in the loss computation. This will be done by our data collator later on since we are applying dynamic padding, but if you use padding here, you should adapt the preprocessing function to set all labels that correspond to the padding token to `-100`.
+
+</Tip>
+
+We can now apply that preprocessing in one go on all the splits of our dataset:
+
+```py
+tokenized_datasets = split_datasets.map(
+    preprocess_function,
+    batched=True,
+    remove_columns=split_datasets["train"].column_names,
+)
+```
+
+Now that the data has been preprocessed, we are ready to fine-tune our pretrained model!
+
+{#if fw === 'pt'}
+
+## Fine-tuning the model with the `Trainer` API[[fine-tuning-the-model-with-the-trainer-api]]
+
+The actual code using the `Trainer` will be the same as before, with just one little change: we use a [`Seq2SeqTrainer`](https://huggingface.co/transformers/main_classes/trainer.html#seq2seqtrainer) here, which is a subclass of `Trainer` that will allow us to properly deal with the evaluation, using the `generate()` method to predict outputs from the inputs. We'll dive into that in more detail when we talk about the metric computation.
+
+First things first, we need an actual model to fine-tune. We'll use the usual `AutoModel` API:
+
+```py
+from transformers import AutoModelForSeq2SeqLM
+
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+## Fine-tuning the model with Keras[[fine-tuning-the-model-with-keras]]
+
+First things first, we need an actual model to fine-tune. We'll use the usual `AutoModel` API:
+
+```py
+from transformers import TFAutoModelForSeq2SeqLM
+
+model = TFAutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, from_pt=True)
+```
+
+<Tip warning={false}>
+
+💡 The `Helsinki-NLP/opus-mt-en-fr` checkpoint only has PyTorch weights, so
+you'll get an error if you try to load the model without using the
+`from_pt=True` argument in the `from_pretrained()` method. When you specify
+`from_pt=True`, the library will automatically download and convert the
+PyTorch weights for you. As you can see, it is very simple to switch between
+frameworks in 🤗 Transformers!
+
+</Tip>
+
+{/if}
+
+Note that this time we are using a model that was trained on a translation task and can actually be used already, so there is no warning about missing weights or newly initialized ones.
+
+### Data collation[[data-collation]]
+
+We'll need a data collator to deal with the padding for dynamic batching. We can't just use a `DataCollatorWithPadding` like in [Chapter 3](/course/chapter3) in this case, because that only pads the inputs (input IDs, attention mask, and token type IDs). Our labels should also be padded to the maximum length encountered in the labels. And, as mentioned previously, the padding value used to pad the labels should be `-100` and not the padding token of the tokenizer, to make sure those padded values are ignored in the loss computation.
+
+This is all done by a [`DataCollatorForSeq2Seq`](https://huggingface.co/transformers/main_classes/data_collator.html#datacollatorforseq2seq). Like the `DataCollatorWithPadding`, it takes the `tokenizer` used to preprocess the inputs, but it also takes the `model`. This is because this data collator will also be responsible for preparing the decoder input IDs, which are shifted versions of the labels with a special token at the beginning. Since this shift is done slightly differently for different architectures, the `DataCollatorForSeq2Seq` needs to know the `model` object:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model, return_tensors="tf")
+```
+
+{/if}
+
+To test this on a few samples, we just call it on a list of examples from our tokenized training set:
+
+```py
+batch = data_collator([tokenized_datasets["train"][i] for i in range(1, 3)])
+batch.keys()
+```
+
+```python out
+dict_keys(['attention_mask', 'input_ids', 'labels', 'decoder_input_ids'])
+```
+
+We can check our labels have been padded to the maximum length of the batch, using `-100`:
+
+```py
+batch["labels"]
+```
+
+```python out
+tensor([[  577,  5891,     2,  3184,    16,  2542,     5,  1710,     0,  -100,
+          -100,  -100,  -100,  -100,  -100,  -100],
+        [ 1211,     3,    49,  9409,  1211,     3, 29140,   817,  3124,   817,
+           550,  7032,  5821,  7907, 12649,     0]])
+```
+
+And we can also have a look at the decoder input IDs, to see that they are shifted versions of the labels:
+
+```py
+batch["decoder_input_ids"]
+```
+
+```python out
+tensor([[59513,   577,  5891,     2,  3184,    16,  2542,     5,  1710,     0,
+         59513, 59513, 59513, 59513, 59513, 59513],
+        [59513,  1211,     3,    49,  9409,  1211,     3, 29140,   817,  3124,
+           817,   550,  7032,  5821,  7907, 12649]])
+```
+
+Here are the labels for the first and second elements in our dataset:
+
+```py
+for i in range(1, 3):
+    print(tokenized_datasets["train"][i]["labels"])
+```
+
+```python out
+[577, 5891, 2, 3184, 16, 2542, 5, 1710, 0]
+[1211, 3, 49, 9409, 1211, 3, 29140, 817, 3124, 817, 550, 7032, 5821, 7907, 12649, 0]
+```
+
+{#if fw === 'pt'}
+
+We will pass this `data_collator` along to the `Seq2SeqTrainer`. Next, let's have a look at the metric.
+
+{:else}
+
+We can now use this `data_collator` to convert each of our datasets to a `tf.data.Dataset`, ready for training:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["train"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=32,
+)
+tf_eval_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=16,
+)
+```
+
+{/if}
+
+
+### Metrics[[metrics]]
+
+<Youtube id="M05L1DhFqcw"/>
+
+{#if fw === 'pt'}
+
+The feature that `Seq2SeqTrainer` adds to its superclass `Trainer` is the ability to use the `generate()` method during evaluation or prediction. During training, the model will use the `decoder_input_ids` with an attention mask ensuring it does not use the tokens after the token it's trying to predict, to speed up training. During inference we won't be able to use those since we won't have labels, so it's a good idea to evaluate our model with the same setup.
+
+As we saw in [Chapter 1](/course/chapter1/6), the decoder performs inference by predicting tokens one by one -- something that's implemented behind the scenes in 🤗 Transformers by the `generate()` method. The `Seq2SeqTrainer` will let us use that method for evaluation if we set `predict_with_generate=True`.
+
+{/if}
+
+The traditional metric used for translation is the [BLEU score](https://en.wikipedia.org/wiki/BLEU), introduced in [a 2002 article](https://aclanthology.org/P02-1040.pdf) by Kishore Papineni et al. The BLEU score evaluates how close the translations are to their labels. It does not measure the intelligibility or grammatical correctness of the model's generated outputs, but uses statistical rules to ensure that all the words in the generated outputs also appear in the targets. In addition, there are rules that penalize repetitions of the same words if they are not also repeated in the targets (to avoid the model outputting sentences like `"the the the the the"`) and output sentences that are shorter than those in the targets (to avoid the model outputting sentences like `"the"`).
+
+One weakness with BLEU is that it expects the text to already be tokenized, which makes it difficult to compare scores between models that use different tokenizers. So instead, the most commonly used metric for benchmarking translation models today is [SacreBLEU](https://github.com/mjpost/sacrebleu), which addresses this weakness (and others) by standardizing the tokenization step. To use this metric, we first need to install the SacreBLEU library:
+
+```py
+!pip install sacrebleu
+```
+
+We can then load it via `evaluate.load()` like we did in [Chapter 3](/course/chapter3):
+
+```py
+import evaluate
+
+metric = evaluate.load("sacrebleu")
+```
+
+This metric will take texts as inputs and targets. It is designed to accept several acceptable targets, as there are often multiple acceptable translations of the same sentence -- the dataset we're using only provides one, but it's not uncommon in NLP to find datasets that give several sentences as labels. So, the predictions should be a list of sentences, but the references should be a list of lists of sentences.
+
+Let's try an example:
+
+```py
+predictions = [
+    "This plugin lets you translate web pages between several languages automatically."
+]
+references = [
+    [
+        "This plugin allows you to automatically translate web pages between several languages."
+    ]
+]
+metric.compute(predictions=predictions, references=references)
+```
+
+```python out
+{'score': 46.750469682990165,
+ 'counts': [11, 6, 4, 3],
+ 'totals': [12, 11, 10, 9],
+ 'precisions': [91.67, 54.54, 40.0, 33.33],
+ 'bp': 0.9200444146293233,
+ 'sys_len': 12,
+ 'ref_len': 13}
+```
+
+This gets a BLEU score of 46.75, which is rather good -- for reference, the original Transformer model in the ["Attention Is All You Need" paper](https://arxiv.org/pdf/1706.03762.pdf) achieved a BLEU score of 41.8 on a similar translation task between English and French! (For more information about the individual metrics, like `counts` and `bp`, see the [SacreBLEU repository](https://github.com/mjpost/sacrebleu/blob/078c440168c6adc89ba75fe6d63f0d922d42bcfe/sacrebleu/metrics/bleu.py#L74).) On the other hand, if we try with the two bad types of predictions (lots of repetitions or too short) that often come out of translation models, we will get rather bad BLEU scores:
+
+```py
+predictions = ["This This This This"]
+references = [
+    [
+        "This plugin allows you to automatically translate web pages between several languages."
+    ]
+]
+metric.compute(predictions=predictions, references=references)
+```
+
+```python out
+{'score': 1.683602693167689,
+ 'counts': [1, 0, 0, 0],
+ 'totals': [4, 3, 2, 1],
+ 'precisions': [25.0, 16.67, 12.5, 12.5],
+ 'bp': 0.10539922456186433,
+ 'sys_len': 4,
+ 'ref_len': 13}
+```
+
+```py
+predictions = ["This plugin"]
+references = [
+    [
+        "This plugin allows you to automatically translate web pages between several languages."
+    ]
+]
+metric.compute(predictions=predictions, references=references)
+```
+
+```python out
+{'score': 0.0,
+ 'counts': [2, 1, 0, 0],
+ 'totals': [2, 1, 0, 0],
+ 'precisions': [100.0, 100.0, 0.0, 0.0],
+ 'bp': 0.004086771438464067,
+ 'sys_len': 2,
+ 'ref_len': 13}
+```
+
+The score can go from 0 to 100, and higher is better.
+
+{#if fw === 'tf'}
+
+To get from the model outputs to texts the metric can use, we will use the `tokenizer.batch_decode()` method. We just have to clean up all the `-100`s in the labels; the tokenizer will automatically do the same for the padding token. Let's define a function that takes our model and a dataset and computes metrics on it. We're also going to use a trick that dramatically increases performance - compiling our generation code with [XLA](https://www.tensorflow.org/xla), TensorFlow's accelerated linear algebra compiler. XLA applies various optimizations to the model's computation graph, and results in significant improvements to speed and memory usage. As described in the Hugging Face [blog](https://huggingface.co/blog/tf-xla-generate), XLA works best when our input shapes don't vary too much. To handle this, we'll pad our inputs to multiples of 128, and make a new dataset with the padding collator, and then we'll apply the `@tf.function(jit_compile=True)` decorator to our generation function, which marks the whole function for compilation with XLA. 
+
+```py
+import numpy as np
+import tensorflow as tf
+from tqdm import tqdm
+
+generation_data_collator = DataCollatorForSeq2Seq(
+    tokenizer, model=model, return_tensors="tf", pad_to_multiple_of=128
+)
+
+tf_generate_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
+    collate_fn=generation_data_collator,
+    shuffle=False,
+    batch_size=8,
+)
+
+
+@tf.function(jit_compile=True)
+def generate_with_xla(batch):
+    return model.generate(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        max_new_tokens=128,
+    )
+
+
+def compute_metrics():
+    all_preds = []
+    all_labels = []
+
+    for batch, labels in tqdm(tf_generate_dataset):
+        predictions = generate_with_xla(batch)
+        decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        labels = labels.numpy()
+        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+        decoded_preds = [pred.strip() for pred in decoded_preds]
+        decoded_labels = [[label.strip()] for label in decoded_labels]
+        all_preds.extend(decoded_preds)
+        all_labels.extend(decoded_labels)
+
+    result = metric.compute(predictions=all_preds, references=all_labels)
+    return {"bleu": result["score"]}
+```
+
+{:else}
+
+To get from the model outputs to texts the metric can use, we will use the `tokenizer.batch_decode()` method. We just have to clean up all the `-100`s in the labels (the tokenizer will automatically do the same for the padding token):
+
+```py
+import numpy as np
+
+
+def compute_metrics(eval_preds):
+    preds, labels = eval_preds
+    # In case the model returns more than the prediction logits
+    if isinstance(preds, tuple):
+        preds = preds[0]
+
+    decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+
+    # Replace -100s in the labels as we can't decode them
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+    # Some simple post-processing
+    decoded_preds = [pred.strip() for pred in decoded_preds]
+    decoded_labels = [[label.strip()] for label in decoded_labels]
+
+    result = metric.compute(predictions=decoded_preds, references=decoded_labels)
+    return {"bleu": result["score"]}
+```
+
+{/if}
+
+Now that this is done, we are ready to fine-tune our model!
+
+
+### Fine-tuning the model[[fine-tuning-the-model]]
+
+The first step is to log in to Hugging Face, so you're able to upload your results to the Model Hub. There's a convenience function to help you with this in a notebook:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+This will display a widget where you can enter your Hugging Face login credentials.
+
+If you aren't working in a notebook, just type the following line in your terminal:
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'tf'}
+
+Before we start, let's see what kind of results we get from our model without any training:
+
+```py
+print(compute_metrics())
+```
+
+```
+{'bleu': 33.26983701454733}
+```
+
+Once this is done, we can prepare everything we need to compile and train our model. Note the use of `tf.keras.mixed_precision.set_global_policy("mixed_float16")` -- this will tell Keras to train using float16, which can give a significant speedup on GPUs that support it (Nvidia 20xx/V100 or newer).
+
+```python
+from transformers import create_optimizer
+from transformers.keras_callbacks import PushToHubCallback
+import tensorflow as tf
+
+# The number of training steps is the number of samples in the dataset, divided by the batch size then multiplied
+# by the total number of epochs. Note that the tf_train_dataset here is a batched tf.data.Dataset,
+# not the original Hugging Face Dataset, so its len() is already num_samples // batch_size.
+num_epochs = 3
+num_train_steps = len(tf_train_dataset) * num_epochs
+
+optimizer, schedule = create_optimizer(
+    init_lr=5e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Train in mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+Next, we define a `PushToHubCallback` to upload our model to the Hub during training, as we saw in [section 2]((/course/chapter7/2)), and then we simply fit the model with that callback:
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(
+    output_dir="marian-finetuned-kde4-en-to-fr", tokenizer=tokenizer
+)
+
+model.fit(
+    tf_train_dataset,
+    validation_data=tf_eval_dataset,
+    callbacks=[callback],
+    epochs=num_epochs,
+)
+```
+
+Note that you can specify the name of the repository you want to push to with the `hub_model_id` argument (in particular, you will have to use this argument to push to an organization). For instance, when we pushed the model to the [`huggingface-course` organization](https://huggingface.co/huggingface-course), we added `hub_model_id="huggingface-course/marian-finetuned-kde4-en-to-fr"` to `Seq2SeqTrainingArguments`. By default, the repository used will be in your namespace and named after the output directory you set, so here it will be `"sgugger/marian-finetuned-kde4-en-to-fr"` (which is the model we linked to at the beginning of this section).
+
+<Tip>
+
+💡 If the output directory you are using already exists, it needs to be a local clone of the repository you want to push to. If it isn't, you'll get an error when calling `model.fit()` and will need to set a new name.
+
+</Tip>
+
+Finally, let's see what our metrics look like now that training has finished:
+
+```py
+print(compute_metrics())
+```
+
+```
+{'bleu': 57.334066271545865}
+```
+
+At this stage, you can use the inference widget on the Model Hub to test your model and share it with your friends. You have successfully fine-tuned a model on a translation task -- congratulations!
+
+{:else}
+
+Once this is done, we can define our `Seq2SeqTrainingArguments`. Like for the `Trainer`, we use a subclass of `TrainingArguments` that contains a few more fields:
+
+```python
+from transformers import Seq2SeqTrainingArguments
+
+args = Seq2SeqTrainingArguments(
+    f"marian-finetuned-kde4-en-to-fr",
+    evaluation_strategy="no",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=64,
+    weight_decay=0.01,
+    save_total_limit=3,
+    num_train_epochs=3,
+    predict_with_generate=True,
+    fp16=True,
+    push_to_hub=True,
+)
+```
+
+Apart from the usual hyperparameters (like learning rate, number of epochs, batch size, and some weight decay), here are a few changes compared to what we saw in the previous sections:
+
+- We don't set any regular evaluation, as evaluation takes a while; we will just evaluate our model once before training and after.
+- We set `fp16=True`, which speeds up training on modern GPUs.
+- We set `predict_with_generate=True`, as discussed above.
+- We use `push_to_hub=True` to upload the model to the Hub at the end of each epoch.
+
+Note that you can specify the full name of the repository you want to push to with the `hub_model_id` argument (in particular, you will have to use this argument to push to an organization). For instance, when we pushed the model to the [`huggingface-course` organization](https://huggingface.co/huggingface-course), we added `hub_model_id="huggingface-course/marian-finetuned-kde4-en-to-fr"` to `Seq2SeqTrainingArguments`. By default, the repository used will be in your namespace and named after the output directory you set, so in our case it will be `"sgugger/marian-finetuned-kde4-en-to-fr"` (which is the model we linked to at the beginning of this section).
+
+<Tip>
+
+💡 If the output directory you are using already exists, it needs to be a local clone of the repository you want to push to. If it isn't, you'll get an error when defining your `Seq2SeqTrainer` and will need to set a new name.
+
+</Tip>
+
+
+Finally, we just pass everything to the `Seq2SeqTrainer`:
+
+```python
+from transformers import Seq2SeqTrainer
+
+trainer = Seq2SeqTrainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+Before training, we'll first look at the score our model gets, to double-check that we're not making things worse with our fine-tuning. This command will take a bit of time, so you can grab a coffee while it executes:
+
+```python
+trainer.evaluate(max_length=max_length)
+```
+
+```python out
+{'eval_loss': 1.6964408159255981,
+ 'eval_bleu': 39.26865061007616,
+ 'eval_runtime': 965.8884,
+ 'eval_samples_per_second': 21.76,
+ 'eval_steps_per_second': 0.341}
+```
+
+A BLEU score of 39 is not too bad, which reflects the fact that our model is already good at translating English sentences to French ones.
+
+Next is the training, which will also take a bit of time:
+
+```python
+trainer.train()
+```
+
+Note that while the training happens, each time the model is saved (here, every epoch) it is uploaded to the Hub in the background. This way, you will be able to to resume your training on another machine if necessary.
+
+Once training is done, we evaluate our model again -- hopefully we will see some amelioration in the BLEU score!
+
+```py
+trainer.evaluate(max_length=max_length)
+```
+
+```python out
+{'eval_loss': 0.8558505773544312,
+ 'eval_bleu': 52.94161337775576,
+ 'eval_runtime': 714.2576,
+ 'eval_samples_per_second': 29.426,
+ 'eval_steps_per_second': 0.461,
+ 'epoch': 3.0}
+```
+
+That's a nearly 14-point improvement, which is great.
+
+Finally, we use the `push_to_hub()` method to make sure we upload the latest version of the model. The `Trainer` also drafts a model card with all the evaluation results and uploads it. This model card contains metadata that helps the Model Hub pick the widget for the inference demo. Usually, there is no need to say anything as it can infer the right widget from the model class, but in this case, the same model class can be used for all kinds of sequence-to-sequence problems, so we specify it's a translation model:
+
+```py
+trainer.push_to_hub(tags="translation", commit_message="Training complete")
+```
+
+This command returns the URL of the commit it just did, if you want to inspect it:
+
+```python out
+'https://huggingface.co/sgugger/marian-finetuned-kde4-en-to-fr/commit/3601d621e3baae2bc63d3311452535f8f58f6ef3'
+```
+
+At this stage, you can use the inference widget on the Model Hub to test your model and share it with your friends. You have successfully fine-tuned a model on a translation task -- congratulations!
+
+If you want to dive a bit more deeply into the training loop, we will now show you how to do the same thing using 🤗 Accelerate.
+
+{/if}
+
+{#if fw === 'pt'}
+
+## A custom training loop[[a-custom-training-loop]]
+
+Let's now take a look at the full training loop, so you can easily customize the parts you need. It will look a lot like what we did in [section 2](/course/chapter7/2) and [Chapter 3](/course/chapter3/4).
+
+### Preparing everything for training[[preparing-everything-for-training]]
+
+You've seen all of this a few times now, so we'll go through the code quite quickly. First we'll build the `DataLoader`s from our datasets, after setting the datasets to the `"torch"` format so we get PyTorch tensors:
+
+```py
+from torch.utils.data import DataLoader
+
+tokenized_datasets.set_format("torch")
+train_dataloader = DataLoader(
+    tokenized_datasets["train"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], collate_fn=data_collator, batch_size=8
+)
+```
+
+Next we reinstantiate our model, to make sure we're not continuing the fine-tuning from before but starting from the pretrained model again:
+
+```py
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+Then we will need an optimizer:
+
+```py
+from transformers import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+Once we have all those objects, we can send them to the `accelerator.prepare()` method. Remember that if you want to train on TPUs in a Colab notebook, you will need to move all of this code into a training function, and that shouldn't execute any cell that instantiates an `Accelerator`.
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator()
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+Now that we have sent our `train_dataloader` to `accelerator.prepare()`, we can use its length to compute the number of training steps. Remember we should always do this after preparing the dataloader, as that method will change the length of the `DataLoader`. We use a classic linear schedule from the learning rate to 0:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 3
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+Lastly, to push our model to the Hub, we will need to create a `Repository` object in a working folder. First log in to the Hugging Face Hub, if you're not logged in already. We'll determine the repository name from the model ID we want to give our model (feel free to replace the `repo_name` with your own choice; it just needs to contain your username, which is what the function `get_full_repo_name()` does):
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "marian-finetuned-kde4-en-to-fr-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/marian-finetuned-kde4-en-to-fr-accelerate'
+```
+
+Then we can clone that repository in a local folder. If it already exists, this local folder should be a clone of the repository we are working with:
+
+```py
+output_dir = "marian-finetuned-kde4-en-to-fr-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+We can now upload anything we save in `output_dir` by calling the `repo.push_to_hub()` method. This will help us upload the intermediate models at the end of each epoch.
+
+### Training loop[[training-loop]]
+
+We are now ready to write the full training loop. To simplify its evaluation part, we define this `postprocess()` function that takes predictions and labels and converts them to the lists of strings our `metric` object will expect:
+
+```py
+def postprocess(predictions, labels):
+    predictions = predictions.cpu().numpy()
+    labels = labels.cpu().numpy()
+
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+
+    # Replace -100 in the labels as we can't decode them.
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+    # Some simple post-processing
+    decoded_preds = [pred.strip() for pred in decoded_preds]
+    decoded_labels = [[label.strip()] for label in decoded_labels]
+    return decoded_preds, decoded_labels
+```
+
+The training loop looks a lot like the ones in [section 2](/course/chapter7/2) and [Chapter 3](/course/chapter3), with a few differences in the evaluation part -- so let's focus on that!
+
+The first thing to note is that we use the `generate()` method to compute predictions, but this is a method on our base model, not the wrapped model 🤗 Accelerate created in the `prepare()` method. That's why we unwrap the model first, then call this method.
+
+The second thing is that, like with [token classification](/course/chapter7/2), two processes may have padded the inputs and labels to different shapes, so we use `accelerator.pad_across_processes()` to make the predictions and labels the same shape before calling the `gather()` method. If we don't do this, the evaluation will either error out or hang forever.
+
+```py
+from tqdm.auto import tqdm
+import torch
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Training
+    model.train()
+    for batch in train_dataloader:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluation
+    model.eval()
+    for batch in tqdm(eval_dataloader):
+        with torch.no_grad():
+            generated_tokens = accelerator.unwrap_model(model).generate(
+                batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                max_length=128,
+            )
+        labels = batch["labels"]
+
+        # Necessary to pad predictions and labels for being gathered
+        generated_tokens = accelerator.pad_across_processes(
+            generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
+        )
+        labels = accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
+
+        predictions_gathered = accelerator.gather(generated_tokens)
+        labels_gathered = accelerator.gather(labels)
+
+        decoded_preds, decoded_labels = postprocess(predictions_gathered, labels_gathered)
+        metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+
+    results = metric.compute()
+    print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
+
+    # Save and upload
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+```python out
+epoch 0, BLEU score: 53.47
+epoch 1, BLEU score: 54.24
+epoch 2, BLEU score: 54.44
+```
+
+Once this is done, you should have a model that has results pretty similar to the one trained with the `Seq2SeqTrainer`. You can check the one we trained using this code at [*huggingface-course/marian-finetuned-kde4-en-to-fr-accelerate*](https://huggingface.co/huggingface-course/marian-finetuned-kde4-en-to-fr-accelerate). And if you want to test out any tweaks to the training loop, you can directly implement them by editing the code shown above!
+
+{/if}
+
+## Using the fine-tuned model[[using-the-fine-tuned-model]]
+
+We've already shown you how you can use the model we fine-tuned on the Model Hub with the inference widget. To use it locally in a `pipeline`, we just have to specify the proper model identifier:
+
+```py
+from transformers import pipeline
+
+# Replace this with your own checkpoint
+model_checkpoint = "huggingface-course/marian-finetuned-kde4-en-to-fr"
+translator = pipeline("translation", model=model_checkpoint)
+translator("Default to expanded threads")
+```
+
+```python out
+[{'translation_text': 'Par défaut, développer les fils de discussion'}]
+```
+
+As expected, our pretrained model adapted its knowledge to the corpus we fine-tuned it on, and instead of leaving the English word "threads" alone, it now translates it to the French official version. It's the same for "plugin":
+
+```py
+translator(
+    "Unable to import %1 using the OFX importer plugin. This file is not the correct format."
+)
+```
+
+```python out
+[{'translation_text': "Impossible d'importer %1 en utilisant le module externe d'importation OFX. Ce fichier n'est pas le bon format."}]
+```
+
+Another great example of domain adaptation!
+
+<Tip>
+
+✏️ **Your turn!** What does the model return on the sample with the word "email" you identified earlier?
+
+</Tip>
