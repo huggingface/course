@@ -8,17 +8,15 @@ app = marimo.App(width="medium")
 def _():
     import marimo as mo
 
+    mo.md(
+        "## Length based reward\nAdjust the slider to see how the reward changes for different completion lengths."
+    )
     return (mo,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        "## Length based reward\nAdjust the slider to see how the reward changes for different completion lengths."
-    )
-
     slider = mo.ui.slider(start=5, stop=50, step=5, label="Ideal Length (characters)")
-    slider
     return (slider,)
 
 
