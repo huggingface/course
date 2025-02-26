@@ -1,29 +1,27 @@
-import marimo as mo
+import marimo
 
-app = mo.app()
+__generated_with = "0.10.6"
+app = marimo.App(width="medium")
 
 
 @app.cell
-def cell_1():
+def _():
     import marimo as mo
 
-    return mo
+    return (mo,)
 
 
 @app.cell
-def cell_2(mo):
-    # Create a slider for the ideal length
-    ideal_length = mo.ui.slider(
-        min=5, max=50, value=20, step=1, label="Ideal Length (characters)"
-    )
-
-    mo.md("## Length Reward Function")
-
-    return ideal_length
+def _(mo):
+    slider = mo.ui.slider(start=5, stop=50, step=5, label="Ideal Length (characters)")
+    slider
+    return (slider,)
 
 
 @app.cell
-def cell_3(mo, ideal_length):
+def _(mo, slider):
+    import plotly.express as px
+
     # Toy dataset with 5 samples of different lengths
     completions = [
         "Short",  # 5 chars
@@ -33,7 +31,10 @@ def cell_3(mo, ideal_length):
         "This is a much longer completion with more words",  # 45 chars
     ]
 
-    def length_reward(completions, ideal_length=ideal_length.value):
+    maximum_length = max(len(completion) for completion in completions)
+    minimum_length = min(len(completion) for completion in completions)
+    
+    def length_reward(completions, ideal_length):
         """
         Calculate rewards based on the length of completions.
 
@@ -49,13 +50,15 @@ def cell_3(mo, ideal_length):
         for completion in completions:
             length = len(completion)
             # Simple reward function: negative absolute difference
-            reward = -abs(ideal_length - length)
+            reward = maximum_length - abs(length - ideal_length)
+            reward = max(0, reward)
+            reward = min(1, reward / (maximum_length - minimum_length))
             rewards.append(reward)
 
         return rewards
 
     # Calculate rewards for the examples
-    rewards = length_reward(completions)
+    rewards = length_reward(completions=completions, ideal_length=slider.value)
 
     # Display the examples and their rewards
     results = []
@@ -64,13 +67,9 @@ def cell_3(mo, ideal_length):
             {"Completion": completion, "Length": len(completion), "Reward": reward}
         )
 
-    mo.table(results)
+    fig = px.bar(results, x="Completion", y="Reward", color="Length")
+    mo.ui.plotly(fig)
 
-    mo.md(f"""
-    **How it works:**
-    - Reward = -|ideal_length - actual_length|
-    - Higher reward (closer to 0) is better
-    - Current ideal length: {ideal_length.value} characters
-    """)
 
-    return length_reward, completions
+if __name__ == "__main__":
+    app.run()
