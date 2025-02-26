@@ -4,21 +4,21 @@ __generated_with = "0.10.6"
 app = marimo.App(width="medium")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import marimo as mo
 
     return (mo,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     slider = mo.ui.slider(start=5, stop=50, step=5, label="Ideal Length (characters)")
     slider
     return (slider,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, slider):
     import plotly.express as px
 
@@ -33,7 +33,7 @@ def _(mo, slider):
 
     maximum_length = max(len(completion) for completion in completions)
     minimum_length = min(len(completion) for completion in completions)
-    
+
     def length_reward(completions, ideal_length):
         """
         Calculate rewards based on the length of completions.
