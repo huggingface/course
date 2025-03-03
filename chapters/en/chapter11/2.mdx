@@ -1,0 +1,254 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section2.ipynb"},
+]} />
+
+# Chat Templates
+
+## Introduction
+
+Chat templates are essential for structuring interactions between language models and users. Whether you're building a simple chatbot or a complex AI agent, understanding how to properly format your conversations is crucial for getting the best results from your model. In this guide, we'll explore what chat templates are, why they matter, and how to use them effectively.
+
+<Tip>
+Chat templates are crucial for:
+- Maintaining consistent conversation structure
+- Ensuring proper role identification
+- Managing context across multiple turns
+- Supporting advanced features like tool use
+</Tip>
+
+## Model Types and Templates
+
+### Base Models vs Instruct Models
+A base model is trained on raw text data to predict the next token, while an instruct model is fine-tuned specifically to follow instructions and engage in conversations. For example, [`SmolLM2-135M`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) is a base model, while [`SmolLM2-135M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct) is its instruction-tuned variant.  
+
+Instuction tuned models are trained to follow a specific conversational structure, making them more suitable for chatbot applications. Moreover, instruct models can handle complex interactions, including tool use, multimodal inputs, and function calling.
+
+To make a base model behave like an instruct model, we need to format our prompts in a consistent way that the model can understand. This is where chat templates come in. ChatML is one such template format that structures conversations with clear role indicators (system, user, assistant). Here's a guide on [ChatML](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/blob/e2c3f7557efbdec707ae3a336371d169783f1da1/tokenizer_config.json#L146).
+
+<Tip warning={true}>
+When using an instruct model, always verify you're using the correct chat template format. Using the wrong template can result in poor model performance or unexpected behavior. The easiest way to ensure this is to check the model tokenizer configuration on the Hub. For example, the `SmolLM2-135M-Instruct` model uses <a href="https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/blob/e2c3f7557efbdec707ae3a336371d169783f1da1/tokenizer_config.json#L146">this configuration</a>.  
+</Tip>
+
+### Common Template Formats
+
+Before diving into specific implementations, it's important to understand how different models expect their conversations to be formatted. Let's explore some common template formats using a simple example conversation:
+
+We'll use the following conversation structure for all examples:
+
+```python
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+    {"role": "assistant", "content": "Hi! How can I help you today?"},
+    {"role": "user", "content": "What's the weather?"},
+]
+```
+
+This is the ChatML template used in models like SmolLM2 and Qwen 2:
+
+```sh
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Hello!<|im_end|>
+<|im_start|>assistant
+Hi! How can I help you today?<|im_end|>
+<|im_start|>user
+What's the weather?<|im_start|>assistant
+```
+
+This is using the `mistral` template format:
+
+```sh
+<s>[INST] You are a helpful assistant. [/INST]
+Hi! How can I help you today?</s>
+[INST] Hello! [/INST]
+```
+
+Key differences between these formats include:
+1. **System Message Handling**: 
+   - Llama 2 wraps system messages in `<<SYS>>` tags
+   - Llama 3 uses `<|system|>` tags with `</s>` endings
+   - Mistral includes system message in the first instruction
+   - Qwen uses explicit `system` role with `<|im_start|>` tags
+   - ChatGPT uses `SYSTEM:` prefix
+
+2. **Message Boundaries**:
+   - Llama 2 uses `[INST]` and `[/INST]` tags
+   - Llama 3 uses role-specific tags (`<|system|>`, `<|user|>`, `<|assistant|>`) with `</s>` endings
+   - Mistral uses `[INST]` and `[/INST]` with `<s>` and `</s>`
+   - Qwen uses role-specific start/end tokens
+
+3. **Special Tokens**:
+   - Llama 2 uses `<s>` and `</s>` for conversation boundaries
+   - Llama 3 uses `</s>` to end each message
+   - Mistral uses `<s>` and `</s>` for turn boundaries
+   - Qwen uses role-specific start/end tokens
+
+Understanding these differences is key to working with various models. Let's look at how the transformers library helps us handle these variations automatically:
+
+```python
+from transformers import AutoTokenizer
+
+# These will use different templates automatically
+mistral_tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.1")
+qwen_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen-7B-Chat")
+smol_tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
+
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+]
+
+# Each will format according to its model's template
+mistral_chat = mistral_tokenizer.apply_chat_template(messages, tokenize=False)
+qwen_chat = qwen_tokenizer.apply_chat_template(messages, tokenize=False)
+smol_chat = smol_tokenizer.apply_chat_template(messages, tokenize=False)
+```
+
+<details>
+<summary>Click to see template examples</summary>
+
+Qwen 2 and SmolLM2 ChatML template:
+
+```sh
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Hello!<|im_end|>
+<|im_start|>assistant
+Hi! How can I help you today?<|im_end|>
+<|im_start|>user
+What's the weather?<|im_start|>assistant
+```
+
+Mistral template:
+
+```sh
+<s>[INST] You are a helpful assistant. [/INST]
+Hi! How can I help you today?</s>
+[INST] Hello! [/INST]
+```
+
+</details>
+
+
+### Advanced Features
+Chat templates can handle more complex scenarios beyond just conversational interactions, including:
+
+1. **Tool Use**: When models need to interact with external tools or APIs
+2. **Multimodal Inputs**: For handling images, audio, or other media types
+3. **Function Calling**: For structured function execution
+4. **Multi-turn Context**: For maintaining conversation history
+
+<Tip>
+When implementing advanced features:
+- Test thoroughly with your specific model. Vision and tool use template are particularly diverse.
+- Monitor token usage carefully between each feature and model.
+- Document the expected format for each feature
+</Tip>
+
+For multimodal conversations, chat templates can include image references or base64-encoded images:
+
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are a helpful vision assistant that can analyze images.",
+    },
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image", "image_url": "https://example.com/image.jpg"},
+        ],
+    },
+]
+```
+
+Here's an example of a chat template with tool use:
+
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are an AI assistant that can use tools. Available tools: calculator, weather_api",
+    },
+    {"role": "user", "content": "What's 123 * 456 and is it raining in Paris?"},
+    {
+        "role": "assistant",
+        "content": "Let me help you with that.",
+        "tool_calls": [
+            {
+                "tool": "calculator",
+                "parameters": {"operation": "multiply", "x": 123, "y": 456},
+            },
+            {"tool": "weather_api", "parameters": {"city": "Paris", "country": "France"}},
+        ],
+    },
+    {"role": "tool", "tool_name": "calculator", "content": "56088"},
+    {
+        "role": "tool",
+        "tool_name": "weather_api",
+        "content": "{'condition': 'rain', 'temperature': 15}",
+    },
+]
+```
+
+## Best Practices
+
+### General Guidelines
+When working with chat templates, follow these key practices:
+
+1. **Consistent Formatting**: Always use the same template format throughout your application
+2. **Clear Role Definition**: Clearly specify roles (system, user, assistant, tool) for each message
+3. **Context Management**: Be mindful of token limits when maintaining conversation history
+4. **Error Handling**: Include proper error handling for tool calls and multimodal inputs
+5. **Validation**: Validate message structure before sending to the model
+
+<Tip warning={true}>
+Common pitfalls to avoid:
+- Mixing different template formats in the same application
+- Exceeding token limits with long conversation histories
+- Not properly escaping special characters in messages
+- Forgetting to validate input message structure
+- Ignoring model-specific template requirements
+</Tip>
+
+## Hands-on Exercise
+
+Let's practice implementing chat templates with a real-world example.
+
+<Tip>
+Follow these steps to convert the `HuggingFaceTB/smoltalk` dataset into chatml format:
+
+1. Load the dataset:
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("HuggingFaceTB/smoltalk")
+```
+
+2. Create a processing function:
+```python
+def convert_to_chatml(example):
+    return {
+        "messages": [
+            {"role": "user", "content": example["input"]},
+            {"role": "assistant", "content": example["output"]},
+        ]
+    }
+```
+
+3. Apply the chat template using your chosen model's tokenizer
+
+Remember to validate your output format matches your target model's requirements!
+</Tip>
+
+## Additional Resources
+
+- [Hugging Face Chat Templating Guide](https://huggingface.co/docs/transformers/main/en/chat_templating)
+- [Transformers Documentation](https://huggingface.co/docs/transformers)
+- [Chat Templates Examples Repository](https://github.com/chujiezheng/chat_templates)

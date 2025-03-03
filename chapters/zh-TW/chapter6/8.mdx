@@ -1,0 +1,564 @@
+# 逐塊地構建標記器
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section8.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter6/section8.ipynb"},
+]} />
+
+正如我們在前幾節中看到的，標記化包括幾個步驟：
+
+- 規範化（任何認為必要的文本清理，例如刪除空格或重音符號、Unicode 規範化等） 
+- 預標記化（將輸入拆分為單詞） 
+- 通過模型處理輸入（使用預先拆分的詞來生成一系列標記） 
+- 後處理（添加標記器的特殊標記，生成注意力掩碼和標記類型 ID） 
+
+提醒一下，這裡再看一下整個過程
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="The tokenization pipeline.">
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="The tokenization pipeline.">
+</div>
+
+🤗 Tokenizers 庫旨在為每個步驟提供多個選項，您可以將它們混合和匹配在一起。在本節中，我們將看到如何從頭開始構建標記器，而不是像我們[第二節 2](/course/chapter6/2)那樣從舊的標記器訓練新的標記器.然後，您將能夠構建您能想到的任何類型的標記器！
+
+<Youtube id="MR8tZm5ViWU"/>
+
+更準確地說，該庫是圍繞一個中央「Tokenizer」類構建的，構建這個類的每一部分可以在子模塊的列表中重新組合：
+
+- `normalizers` 包含你可以使用的所有可能的Normalizer類型（完整列表[在這裡](https://huggingface.co/docs/tokenizers/api/normalizers)）。 
+- `pre_tokenizesr` 包含您可以使用的所有可能的PreTokenizer類型（完整列表[在這裡](https://huggingface.co/docs/tokenizers/api/pre-tokenizers)）。 
+- `models` 包含您可以使用的各種類型的Model，如BPE、WordPiece和Unigram（完整列表[在這裡](https://huggingface.co/docs/tokenizers/api/models)）。  
+- `trainers` 包含所有不同類型的 trainer，你可以使用一個語料庫訓練你的模型（每種模型一個；完整列表[在這裡](https://huggingface.co/docs/tokenizers/api/trainers)）。 
+- `post_processors` 包含你可以使用的各種類型的PostProcessor（完整列表[在這裡](https://huggingface.co/docs/tokenizers/api/post-processors)）。 
+- `decoders` 包含各種類型的Decoder，可以用來解碼標記化的輸出（完整列表[在這裡](https://huggingface.co/docs/tokenizers/components#decoders)）。 
+
+您可以[在這裡](https://huggingface.co/docs/tokenizers/components)找到完整的模塊列表。
+
+## 獲取語​​料庫
+
+為了訓練我們的新標記器，我們將使用一個小的文本語料庫（因此示例運行得很快）。獲取語​​料庫的步驟與我們在[在這章的開始]((/course/chapter6/2)那一小節，但這次我們將使用[WikiText-2](https://huggingface.co/datasets/wikitext)數據集：
+
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("wikitext", name="wikitext-2-raw-v1", split="train")
+
+
+def get_training_corpus():
+    for i in range(0, len(dataset), 1000):
+        yield dataset[i : i + 1000]["text"]
+```
+
+**get_training_corpus()** 函數是一個生成器，每次調用的時候將產生 1,000 個文本，我們將用它來訓練標記器。
+
+🤗 Tokenizers 也可以直接在文本文件上進行訓練。以下是我們如何生成一個文本文件，其中包含我們可以在本地使用的來自 WikiText-2 的所有文本/輸入：
+
+```python
+with open("wikitext-2.txt", "w", encoding="utf-8") as f:
+    for i in range(len(dataset)):
+        f.write(dataset[i]["text"] + "\n")
+```
+
+接下來，我們將向您展示如何逐塊構建您自己的 BERT、GPT-2 和 XLNet 標記器。這將為我們提供三個主要標記化算法的示例：WordPiece、BPE 和 Unigram。讓我們從 BERT 開始吧！
+
+## 從頭開始構建 WordPiece 標記器
+
+要使用 🤗 Tokenizers 庫構建標記器，我們首先使用 **model** 實例化一個 **Tokenizer** 對象，然後將 **normalizer** , **pre_tokenizer** , **post_processor** ， 和 **decoder** 屬性設置成我們想要的值。
+
+對於這個例子，我們將創建一個 **Tokenizer** 使用 WordPiece 模型：
+
+```python
+from tokenizers import (
+    decoders,
+    models,
+    normalizers,
+    pre_tokenizers,
+    processors,
+    trainers,
+    Tokenizer,
+)
+
+tokenizer = Tokenizer(models.WordPiece(unk_token="[UNK]"))
+```
+
+我們必須指定 **unk_token** 這樣模型才知道當它遇到以前沒有見過的字符時要返回什麼。我們可以在此處設置的其他參數包括我們模型的**vocab（字典）**（我們將訓練模型，所以我們不需要設置它）和 **max_input_chars_per_word** 即每個單詞的最大長度（比傳遞的值長的單詞將被拆分）
+
+標記化的第一步是規範化，所以讓我們從它開始。 由於 BERT 被廣泛使用，所以有一個可以使用的 `BertNormalizer`，我們可以為 BERT 設置經典的選項：`lowercase（小寫）` 和 `strip_accents（去除音調）`，不言自明； `clean_text` 刪除所有控制字符並將重複的空格替換為一個； 和 `handle_chinese_chars`，在漢字周圍放置空格。 要實現 `bert-base-uncased` ，我們可以這樣設置這個規範器：
+
+```python
+tokenizer.normalizer = normalizers.BertNormalizer(lowercase=True)
+```
+
+然而，一般來說，在構建新的標記器時，您可以使用已經在 🤗 Tokenizers庫中實現的非常方便的normalizer——所以讓我們看看如何手動創建 BERT normalizer。 該庫提供了一個“Lowercase（小寫）”的normalizer和一個“StripAccents”的normalizer，您可以使用“序列”組合多個normalizer：
+
+```python
+tokenizer.normalizer = normalizers.Sequence(
+    [normalizers.NFD(), normalizers.Lowercase(), normalizers.StripAccents()]
+)
+```
+
+我們也在使用 **NFD** Unicode normalizer，否則 **StripAccents** normalizer 無法正確識別帶重音的字符，因此沒辦法刪除它們。
+
+正如我們之前看到的，我們可以使用 **normalize** 的 **normalize_str()** 方法查看它對給定文本的影響：
+
+```python
+print(tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+```
+
+```python out
+hello how are u?
+```
+
+<Tip>
+
+**更進一步**如果您在包含 unicode 字符的字符串上測試先前normalizers的兩個版本，您肯定會注意到這兩個normalizers並不完全等效。
+為了不過度使用 `normalizers.Sequence` 使版本過於複雜，我們沒有包含當 `clean_text` 參數設置為 `True` 時 `BertNormalizer` 需要的正則表達式替換 - 這是默認行為。 但不要擔心：通過在normalizer序列中添加兩個 `normalizers.Replace` 可以在不使用方便的 `BertNormalizer` 的情況下獲得完全相同的規範化。
+
+</Tip>
+
+接下來是預標記步驟。 同樣，我們可以使用一個預構建的“BertPreTokenizer”：
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+```
+
+或者我們可以從頭開始構建它：
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+```
+
+請注意，`Whitespace` 預標記器會在空格和所有非字母、數字或下劃線字符的字符上進行拆分，因此在本次的例子中上會根據空格和標點符號進行拆分：
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+如果您只想在空白處進行拆分，則應使用 **WhitespaceSplit** 代替預標記器：
+
+```python
+pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[("Let's", (0, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre-tokenizer.', (14, 28))]
+```
+
+像normalizers一樣，您可以使用 **Sequence** 組成幾個預標記器：
+
+```python
+pre_tokenizer = pre_tokenizers.Sequence(
+    [pre_tokenizers.WhitespaceSplit(), pre_tokenizers.Punctuation()]
+)
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+標記化管道的下一步是輸入給模型。我們已經在初始化中指定了我們的模型，但我們仍然需要訓練它，這將需要一個 **WordPieceTrainer** .在 🤗 Tokenizers 中實例化訓練器時要記住的主要事情是，您需要將您打算使用的所有特殊標記傳遞給它 - 否則它不會將它們添加到詞彙表中，因為它們不在訓練語料庫中：
+
+```python
+special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
+trainer = trainers.WordPieceTrainer(vocab_size=25000, special_tokens=special_tokens)
+```
+
+以及指定 **vocab_size（詞典大小）** 和 **special_tokens（特殊的標記）** ，我們可以設置 **min_frequency** （記號必須出現在詞彙表中的次數）或更改 **continuing_subword_prefix** （如果我們想使用與 **##**指代存在與字詞相同的前綴 ）。
+
+要使用我們之前定義的迭代器訓練我們的模型，我們只需要執行以下命令：
+
+```python
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+我們還可以使用文本文件來訓練我們的標記器，它看起來像這樣（我們需要先初始化一個空的 **WordPiece** ）：
+
+```python
+tokenizer.model = models.WordPiece(unk_token="[UNK]")
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+在這兩種情況下，我們都可以通過調用文本來測試標記器 **encode()** 方法：
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.']
+```
+
+這個 **encoding** 獲得的是一個 **Encoding**對象 ，它的屬性中包含標記器的所有必要輸出： **ids** , **type_ids** , **tokens** , **offsets** , **attention_mask** , **special_tokens_mask** ， 和 **overflowing** .
+
+標記化管道的最後一步是後處理。我們需要添加 **[CLS]** 開頭的標記和 **[SEP]** 標記在末尾（或在每個句子之後，如果我們有一對句子）。我們將使用一個 **TemplateProcessor** 為此，但首先我們需要知道 **[CLS]** 和 **[SEP]** 在詞彙表中的ID：
+
+```python
+cls_token_id = tokenizer.token_to_id("[CLS]")
+sep_token_id = tokenizer.token_to_id("[SEP]")
+print(cls_token_id, sep_token_id)
+```
+
+```python out
+(2, 3)
+```
+
+為了給 **TemplateProcessor** 編寫模板，我們必須指定如何處理單個句子和一對句子。對於兩者，我們都編寫了我們想要使用的特殊標記；第一個（或單個）句子表示為 **$A** ，而第二個句子（如果對一對進行編碼）表示為 **$B** .對於這些特殊標記和句子，我們還需要使用在冒號後指定相應的標記類型 ID。
+
+因此經典的 BERT 模板定義如下：
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single=f"[CLS]:0 $A:0 [SEP]:0",
+    pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
+    special_tokens=[("[CLS]", cls_token_id), ("[SEP]", sep_token_id)],
+)
+```
+
+請注意，我們需要傳遞特殊標記的 ID，以便標記器可以正確地將特殊標記轉換為它們的 ID。
+
+添加後，我們之前的示例將輸出出：
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.', '[SEP]']
+```
+
+在一對句子中，我們得到了正確的結果：
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences.")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '...', '[SEP]', 'on', 'a', 'pair', 'of', 'sentences', '.', '[SEP]']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+```
+
+我們幾乎從頭開始構建了這個標記器——但是還有最後一步是指定一個解碼器：
+
+```python
+tokenizer.decoder = decoders.WordPiece(prefix="##")
+```
+
+讓我們測試一下我們之前的 **encoding** ：
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+```python out
+"let's test this tokenizer... on a pair of sentences."
+```
+
+很好！我們可以將標記器保存在一個 JSON 文件中，如下所示：
+
+```python
+tokenizer.save("tokenizer.json")
+```
+
+然後我們可以使用**from_file()** 方法從該文件裡重新加載 **Tokenizer** 對象：
+
+```python
+new_tokenizer = Tokenizer.from_file("tokenizer.json")
+```
+
+要在 🤗 Transformers 中使用這個標記器，我們必須將它包裹在一個 **PreTrainedTokenizerFast** 類中。我們可以使用泛型類，或者，如果我們的標記器對應於現有模型，則使用該類（例如這裡的 **BertTokenizerFast** ）。如果您應用本課來構建全新的標記器，則必須使用第一個選項。
+
+要將標記器包裝在 `PreTrainedTokenizerFast` 類中，我們可以將我們構建的標記器作為`tokenizer_object` 傳遞，或者將我們保存為`tokenizer_file` 的標記器文件傳遞。 要記住的關鍵是我們必須手動設置所有特殊標記，因為該類無法從 `tokenizer` 對象推斷出哪個標記是掩碼標記、`[CLS]` 標記等：
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    # tokenizer_file="tokenizer.json", # You can load from the tokenizer file, alternatively
+    unk_token="[UNK]",
+    pad_token="[PAD]",
+    cls_token="[CLS]",
+    sep_token="[SEP]",
+    mask_token="[MASK]",
+)
+```
+
+如果您使用特定的標記器類（例如 **BertTokenizerFast** )，您只需要指定與默認標記不同的特殊標記（此處沒有）：
+
+```python
+from transformers import BertTokenizerFast
+
+wrapped_tokenizer = BertTokenizerFast(tokenizer_object=tokenizer)
+```
+
+然後，您可以像使用任何其他 🤗 Transformers 標記器一樣使用此標記器。你可以用 **save_pretrained()** 方法，或使用 **push_to_hub()** 方法。
+
+現在我們已經瞭解瞭如何構建 WordPiece 標記器，讓我們對 BPE 標記器進行同樣的操作。因為您已經知道了所有步驟，所以我們會進行地更快一點，並且只突出展示兩者不一樣的地方。
+
+## 從頭開始構建 BPE 標記器
+
+現在讓我們構建一個 GPT-2 標記器。與 BERT 標記器一樣，我們首先使用 **Tokenizer** 初始化一個BPE 模型：
+
+```python
+tokenizer = Tokenizer(models.BPE())
+```
+
+和 BERT 一樣，如果我們有一個詞彙表，我們可以用一個詞彙表來初始化這個模型（在這種情況下，我們需要傳遞 `vocab` 和 `merges`），但是由於我們將從頭開始訓練，所以我們不需要這樣去做。 我們也不需要指定“unk_token”，因為 GPT-2 使用的字節級 BPE，不需要“unk_token”。
+
+GPT-2 不使用歸一化器，因此我們跳過該步驟並直接進入預標記化：
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+```
+
+我們在此處添加到 `ByteLevel` 的選項是不在句子開頭添加空格（默認為ture）。 我們可以看一下使用這個標記器對之前示例文本的預標記：
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test pre-tokenization!")
+```
+
+```python out
+[('Let', (0, 3)), ("'s", (3, 5)), ('Ġtest', (5, 10)), ('Ġpre', (10, 14)), ('-', (14, 15)),
+ ('tokenization', (15, 27)), ('!', (27, 28))]
+```
+
+接下來是需要訓練的模型。對於 GPT-2，唯一的特殊標記是文本結束標記：
+
+```python
+trainer = trainers.BpeTrainer(vocab_size=25000, special_tokens=["<|endoftext|>"])
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+與 `WordPieceTrainer` 以及 `vocab_size` 和 `special_tokens` 一樣，我們可以指定 `min_frequency` 如果我們願意，或者如果我們有一個詞尾後綴（如 `</w>` )，我們可以使用 `end_of_word_suffix` 設置它。
+
+這個標記器也可以在文本文件上訓練：
+
+```python
+tokenizer.model = models.BPE()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+讓我們看一下示例文本的標記化後的結果：
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['L', 'et', "'", 's', 'Ġtest', 'Ġthis', 'Ġto', 'ken', 'izer', '.']
+```
+
+我們對 GPT-2 標記器添加字節級後處理，如下所示：
+
+```python
+tokenizer.post_processor = processors.ByteLevel(trim_offsets=False)
+```
+
+`trim_offsets = False` 選項指示我們應該保留以 'Ġ' 開頭的標記的偏移量：這樣偏移量的開頭將指向單詞之前的空格，而不是第一個單詞的字符（因為空格在技術上是標記的一部分）。 讓我們看看我們剛剛編碼的文本的結果，其中 `'Ġtest'` 是索引第 4 處的標記：
+
+```python
+sentence = "Let's test this tokenizer."
+encoding = tokenizer.encode(sentence)
+start, end = encoding.offsets[4]
+sentence[start:end]
+```
+
+```python out
+' test'
+```
+
+最後，我們添加一個字節級解碼器：
+
+```python
+tokenizer.decoder = decoders.ByteLevel()
+```
+
+我們可以仔細檢查它是否正常工作：
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+```python out
+"Let's test this tokenizer."
+```
+
+很好！現在我們完成了，我們可以像以前一樣保存標記器，並將它包裝在一個 **PreTrainedTokenizerFast** 或者 **GPT2TokenizerFast** 如果我們想在 🤗 Transformers中使用它：
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<|endoftext|>",
+    eos_token="<|endoftext|>",
+)
+```
+
+或者：
+
+```python
+from transformers import GPT2TokenizerFast
+
+wrapped_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer)
+```
+
+作為最後一個示例，我們將向您展示如何從頭開始構建 Unigram 標記器。
+
+## 從頭開始構建 Unigram 標記器
+
+現在讓我們構建一個 XLNet 標記器。與之前的標記器一樣，我們首先使用 Unigram 模型初始化一個 **Tokenizer** ：
+
+```python
+tokenizer = Tokenizer(models.Unigram())
+```
+
+同樣，如果我們有詞彙表，我們可以用詞彙表初始化這個模型。
+
+對於標準化，XLNet 使用了一些替換的方法（來自 SentencePiece）：
+
+```python
+from tokenizers import Regex
+
+tokenizer.normalizer = normalizers.Sequence(
+    [
+        normalizers.Replace("``", '"'),
+        normalizers.Replace("''", '"'),
+        normalizers.NFKD(),
+        normalizers.StripAccents(),
+        normalizers.Replace(Regex(" {2,}"), " "),
+    ]
+)
+```
+
+這會取代 **“** 和 **”** 和 **”** 以及任何兩個或多個空格與單個空格的序列，以及刪除文本中的重音以進行標記。
+
+用於任何 SentencePiece 標記器的預標記器是 `Metaspace`：
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
+```
+
+我們可以像以前一樣查看示例文本的預標記化：
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test the pre-tokenizer!")
+```
+
+```python out
+[("▁Let's", (0, 5)), ('▁test', (5, 10)), ('▁the', (10, 14)), ('▁pre-tokenizer!', (14, 29))]
+```
+
+接下來是需要訓練的模型。 XLNet 有不少特殊的標記：
+
+```python
+special_tokens = ["<cls>", "<sep>", "<unk>", "<pad>", "<mask>", "<s>", "</s>"]
+trainer = trainers.UnigramTrainer(
+    vocab_size=25000, special_tokens=special_tokens, unk_token="<unk>"
+)
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+不要忘記`UnigramTrainer` 的一個非常重要的參數是`unk_token`。 我們還可以傳遞特定於 Unigram 算法的其他參數，例如刪除標記的每個步驟的“shrinking_factor（收縮因子）”（默認為 0.75）或指定給定標記的最大長度的“max_piece_length”（默認為 16） .
+
+這個標記器也可以在文本文件上訓練：
+
+```python
+tokenizer.model = models.Unigram()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+讓我們看一下示例文本的標記化後的結果：
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['▁Let', "'", 's', '▁test', '▁this', '▁to', 'ken', 'izer', '.']
+```
+
+A peculiarity of XLNet is that it puts the `<cls>` token at the end of the sentence, with a type ID of 2 (to distinguish it from the other tokens). It's padding on the left, as a result. We can deal with all the special tokens and token type IDs with a template, like for BERT, but first we have to get the IDs of the `<cls>` and `<sep>` tokens:
+XLNet 的一個特點是它將`<cls>` 標記放在句子的末尾，類型ID 為2（以將其與其他標記區分開來）。它會將結果填充在左側。 我們可以使用模板處理所有特殊標記和標記類型 ID，例如 BERT，但首先我們必須獲取 `<cls>` 和 `<sep>` 標記的 ID：
+
+```python
+cls_token_id = tokenizer.token_to_id("<cls>")
+sep_token_id = tokenizer.token_to_id("<sep>")
+print(cls_token_id, sep_token_id)
+```
+
+```python out
+0 1
+```
+
+模板如下所示：
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single="$A:0 <sep>:0 <cls>:2",
+    pair="$A:0 <sep>:0 $B:1 <sep>:1 <cls>:2",
+    special_tokens=[("<sep>", sep_token_id), ("<cls>", cls_token_id)],
+)
+```
+
+我們可以通過編碼一對句子來測試它的工作原理：
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences!")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+```python out
+['▁Let', "'", 's', '▁test', '▁this', '▁to', 'ken', 'izer', '.', '.', '.', '<sep>', '▁', 'on', '▁', 'a', '▁pair', 
+  '▁of', '▁sentence', 's', '!', '<sep>', '<cls>']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]
+```
+
+最後，我們添加一個 **Metaspace** 解碼器：
+
+```python
+tokenizer.decoder = decoders.Metaspace()
+```
+
+我們完成了這個標記器！ 我們可以像以前一樣保存標記器，如果我們想在 🤗 Transformers 中使用它，可以將它包裝在 `PreTrainedTokenizerFast` 或 `XLNetTokenizerFast` 中。 使用 `PreTrainedTokenizerFast` 時要注意的一件事是，我們需要告訴🤗 Transformers 庫應該在左側填充特殊標記：
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<s>",
+    eos_token="</s>",
+    unk_token="<unk>",
+    pad_token="<pad>",
+    cls_token="<cls>",
+    sep_token="<sep>",
+    mask_token="<mask>",
+    padding_side="left",
+)
+```
+
+或者：
+
+```python
+from transformers import XLNetTokenizerFast
+
+wrapped_tokenizer = XLNetTokenizerFast(tokenizer_object=tokenizer)
+```
+
+現在您已經瞭解瞭如何使用各種構建塊來構建現有的標記器，您應該能夠使用 🤗 tokenizer庫編寫您想要的任何標記器，並能夠在 🤗 Transformers中使用它。

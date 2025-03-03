@@ -22,13 +22,15 @@
 
 {/if}
 
-在[第五小节](/course/chapter5/5), 我们从 🤗 Datasets 存储库创建了一个包含 GitHub 问题和评论的数据集。在本节中，我们将使用这些信息来构建一个搜索引擎，它可以帮助我们找到这个库最紧迫问题的答案！
+在 [第5小节](/course/chapter5/5) ，我们创建了一个 🤗 Datasets 仓库的 GitHub issues 和评论组成的数据集。在本节，我们将使用这些信息构建一个搜索引擎，帮助我们找到关于该库的最相关的 issue 的答案！
 
 <Youtube id="OATCgQtNX2o"/>
 
-## 使用嵌入进行语义搜索 [[使用嵌入进行语义搜索]]
+## 使用文本嵌入进行语义搜索 [[使用文本嵌入进行语义搜索]]
 
-正如我们在[第一章](/course/chapter1),学习的, 基于 Transformer 的语言模型会将文本中的每个标记转换为嵌入向量.事实证明，可以“汇集”各个嵌入向量来创建整个句子、段落或文档（在某些情况下）的向量表示。然后，通过计算每个嵌入之间的点积相似度（或其他一些相似度度量）并返回相似度最大的文档，这些嵌入可用于在语料库中找到相似的文档。在本节中，我们将使用嵌入来开发语义搜索引擎。与基于将查询中的关键字的传统方法相比，这些搜索引擎具有多种优势。
+正如我们在 [第一章](/course/chapter1) ，学习的，基于 Transformer 的语言模型会将文本中的每个 token 转换为嵌入向量。事实证明，我们可以 “池化（pool）” 嵌入向量以创建整个句子、段落或（在某些情况下）文档的向量表示。然后，通过计算每个嵌入之间的点积相似度（或其他一些相似度度量）并返回相似度最大的文档，这些嵌入可用于在语料库中找到相似的文档。
+
+在本节中，我们将使用文本嵌入向量来开发语义搜索引擎。与基于将查询中的关键字的传统方法相比，这些搜索引擎具有多种优势。
 
 <div class="flex justify-center">
 <img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search.svg" alt="Semantic search."/>
@@ -37,7 +39,7 @@
 
 ## 加载和准备数据集 [[加载和准备数据集]]
 
-我们需要做的第一件事是下载我们的 GitHub issues 数据集，所以让我们像往常那样使用 `load_dataset()`函数：
+首先，我们需要下载我们的 GitHub issues 数据集，所以让我们像往常那样使用 `load_dataset()` 函数：
 
 ```py
 from datasets import load_dataset
@@ -54,7 +56,7 @@ Dataset({
 })
 ```
 
-这里我们在load_dataset()中使用了默认的训练集分割，所以它返回一个数据集而不是数据集字典。第一项任务是过滤掉pull请求，因为这些请求很少用于回答用户提出的问题，而且会给我们的搜索引擎带来噪声。现在应该很熟悉了，我们可以使用dataset.filter()函数来排除数据集中的这些行。同时，让我们也过滤掉没有注释的行，因为这些行不会是用户提问的答案:
+在此，我们在 `load_dataset()` 中指定了默认的 `train（训练集）` 部分，因此它返回一个 `Dataset` 而不是 `DatasetDict` 。首要任务是排除掉拉取请求（pull），因为这些请求往往很少用于回答提出的 issue，会为我们的搜索引擎引入干扰。正如我们现在熟悉的那样，我们可以使用 `Dataset.filter()` 函数来排除数据集中的这些行。与此同时，让我们也筛选掉没有评论的行，因为这些行没有为用户提问提供回答：
 
 ```py
 issues_dataset = issues_dataset.filter(
@@ -70,7 +72,7 @@ Dataset({
 })
 ```
 
-我们可以看到我们的数据集中有很多列，其中大部分我们不需要构建我们的搜索引擎。从搜索的角度来看，信息量最大的列是 **title** , **body** ， 和 **comments** ，而 **html_url** 为我们提供了一个回到源问题的链接。让我们使用 **Dataset.remove_columns()** 删除其余部分的功能：
+我们可以看到，我们的数据集中有很多列，其中大部分在构建我们的搜索引擎都不会使用。从搜索的角度来看，信息量最大的列是 `title` ， `body` ，和 `comments` ，而 `html_url` 为我们提供了一个回到原 issue 的链接。让我们使用 `Dataset.remove_columns()` 删除其余的列：
 
 ```py
 columns = issues_dataset.column_names
@@ -87,27 +89,27 @@ Dataset({
 })
 ```
 
-为了创建我们的嵌入，我们将用问题的标题和正文来扩充每条评论，因为这些字段通常包含有用的上下文信息。因为我们的 **comments** 列当前是每个问题的评论列表，我们需要“重新组合”列，以便每一条评论都包含一个 **(html_url, title, body, comment)** 元组。在 Pandas 中，我们可以使用 [DataFrame.explode() 函数](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html), 它为类似列表的列中的每个元素创建一个新行，同时复制所有其他列值。为了看到它的实际效果，让我们首先切换到 Pandas的**DataFrame** 格式：
+为了创建我们的文本嵌入数据集，我们将用 issue 的标题和正文来扩充每条评论，因为这些字段通常包含有用的上下文信息。因为我们的 `comments` 列当前是每个 issue 的评论列表，我们需要“重新组合”列，使得每一行都是由一个 `(html_url, title, body, comment)` 元组组成。在 Pandas 中，我们可以使用 [DataFrame.explode() 函数](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html) 完成这个操作 它为类似列表的列中的每个元素创建一个新行，同时复制所有其他列值。让我们首先切换到 Pandas 的 `DataFrame` 格式：
 
 ```py
 issues_dataset.set_format("pandas")
 df = issues_dataset[:]
 ```
 
-如果我们检查这里的第一行 **DataFrame** 我们可以看到有四个评论与这个问题相关：
+如果我们检查这个 `DataFrame` 的第一行，我们可以看到这个 issue 有四个相关评论：
 
 ```py
 df["comments"][0].tolist()
 ```
 
 ```python out
-['the bug code locate in ：\r\n    if data_args.task_name is not None:\r\n        # Downloading and loading a dataset from the hub.\r\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
+['the bug code locate in :\r\n    if data_args.task_name is not None:\r\n        # Downloading and loading a dataset from the hub.\r\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
  'Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com\r\n\r\nNormally, it should work if you wait a little and then retry.\r\n\r\nCould you please confirm if the problem persists?',
- 'cannot connect，even by Web browser，please check that  there is some  problems。',
+ 'cannot connect,even by Web browser,please check that  there is some  problems。',
  'I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...']
 ```
 
-我们希望这些评论中的每一条都得到一行。让我们检查是否是这种情况：
+我们希望使用 `explode()` 将这些评论中的每一条都展开成为一行。让我们看看是否可以做到：
 
 ```py
 comments_df = df.explode("comments", ignore_index=True)
@@ -156,7 +158,7 @@ comments_df.head(4)
   </tbody>
 </table>
 
-太好了，我们可以看到评论成功被扩充， **comments** 是包含个人评论的列！现在我们已经完成了 Pandas要完成的部分功能，我们可以快速切换回 **Dataset** 通过加载 **DataFrame** 在内存中：
+非常好，我们可以看到其他三列已经被复制了，并且 `comments` 列里存放着单独的评论！现在我们已经完成了 Pandas 要完成的部分功能，我们可以通过加载内存中的 `DataFrame` 快速切换回 `Dataset` ：
 
 ```py
 from datasets import Dataset
@@ -177,11 +179,11 @@ Dataset({
 
 <Tip>
 
-✏️ **Try it out!** 看看能不能不用pandas就可以完成列的扩充； 这有点棘手； 你可能会发现 🤗 Datasets 文档的 ["Batch mapping"](https://huggingface.co/docs/datasets/v1.12.1/about_map_batch.html?batch-mapping#batch-mapping) 对这个任务很有用。
+✏️ **试试看！** 看看你是否可以使用 `Dataset.map()` 展开 `issues_dataset` 的 `comments` 列，这有点棘手；你可能会发现 🤗 Datasets 文档的 ["批处理映射(Batch mapping)"](https://huggingface.co/docs/datasets/about_map_batch#batch-mapping) 对这个任务很有用。
 
 </Tip>
 
-现在我们每行有一个评论，让我们创建一个新的 **comments_length** 列来存放每条评论的字数：
+既然我们每行有一个评论，让我们创建一个新的 `comments_length` 列来存放每条评论的字数：
 
 ```py
 comments_dataset = comments_dataset.map(
@@ -189,7 +191,7 @@ comments_dataset = comments_dataset.map(
 )
 ```
 
-我们可以使用这个新列来过滤掉简短的评论，其中通常包括“cc @lewtun”或“谢谢！”之类与我们的搜索引擎无关的内容。虽然无法为过滤器选择的精确数字，但大约大于15 个单词似乎是一个不错的选择：
+我们可以使用这个新列来过滤掉简短的评论，其中通常包括“cc @lewtun”或“谢谢！”之类与我们的搜索引擎无关的内容。筛选的精确数字没有硬性规定，但大约大于 15 个单词似乎是一个不错的选择：
 
 ```py
 comments_dataset = comments_dataset.filter(lambda x: x["comment_length"] > 15)
@@ -203,7 +205,7 @@ Dataset({
 })
 ```
 
-稍微清理了我们的数据集后，让我们将问题标题、描述和评论连接到一个新的 **text** 列。像往常一样，我们可以编写一个简单的函数，并将其传递给 **Dataset.map()**来做到这些 ：
+稍微清理了我们的数据集后，让我们使用 issue 标题、描述和评论构建一个新的 `text` 列。像往常一样，我们可以编写一个简单的函数，并将其传递给 `Dataset.map()` 来完成这些操作 
 
 ```py
 def concatenate_text(examples):
@@ -219,11 +221,11 @@ def concatenate_text(examples):
 comments_dataset = comments_dataset.map(concatenate_text)
 ```
 
-我们终于准备好创建一些嵌入了！让我们来看看。
+我们终于准备好创建一些文本嵌入了！让我们继续。
 
 ## 创建文本嵌入 [[创建文本嵌入]]
 
-我们在[第二章](/course/chapter2) 学过，我们可以通过使用 **AutoModel** 类来完成词嵌入。我们需要做的就是选择一个合适的检查点来加载模型。幸运的是，有一个名为 **sentence-transformers** 专门用于创建词嵌入。如库中[文档](https://www.sbert.net/examples/applications/semantic-search/README.html#symmetric-vs-asymmetric-semantic-search), 所述的，我们这次要实现的是非对称语义搜索，因为我们有一个简短的查询，我们希望在比如问题评论等更长的文档中找到其答案。通过查看[模型概述表](https://www.sbert.net/docs/pretrained_models.html#model-overview) 我们可以发现 **multi-qa-mpnet-base-dot-v1** 检查点在语义搜索方面具有最佳性能，因此我们将在我们的应用程序中使用它。我们还将使用相同的检查点加载标记器：
+正如我们在 [第二章](/course/chapter2) 学过，我们可以通过使用 `AutoModel` 类来完成文本嵌入。首先需要做的就是选择一个合适的 checkpoint。幸运的是，有一个名为 `sentence-transformers` 的库专门用于创建文本嵌入。如库中的 [文档](https://www.sbert.net/examples/applications/semantic-search/README.html#symmetric-vs-asymmetric-semantic-search) 所述的，我们这次要实现的是非对称语义搜索（asymmetric semantic search），因为我们有一个简短的查询，我们希望在比如 issue 评论等更长的文档中找到其匹配的文本。通过查看 [模型概述表](https://www.sbert.net/docs/pretrained_models.html#model-overview) 我们可以发现 `multi-qa-mpnet-base-dot-v1` checkpoint 在语义搜索方面具有最佳性能，因此我们将使用它。我们还将使用这个 checkpoint 加载了对应的 tokenizer ：
 
 {#if fw === 'pt'}
 
@@ -235,7 +237,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 model = AutoModel.from_pretrained(model_ckpt)
 ```
 
-为了加快嵌入过程，将模型和输入放在 GPU 设备上，所以现在让我们这样做：
+将模型和输入的文本放到 GPU 上会加速嵌入过程，所以让我们现在就这么做：
 
 ```py
 import torch
@@ -254,19 +256,18 @@ tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 model = TFAutoModel.from_pretrained(model_ckpt, from_pt=True)
 ```
 
-请注意，我们已将 from_pt=True 设置为  from_pretrained（） 方法的参数。这是因为 multi-qa-mpnet-base-dot-v1 检查点只有PyTorch权重，因此设置 from_pt=True 会自动将它们转换为TensorFlow格式。如您所见，在Transformers中的🤗框架之间切换非常简单！
+请注意，我们在调用 `from_pretrained()` 方法的时候添加了 `from_pt=True` 参数。这是因为 `multi-qa-mpnet-base-dot-v1` checkpoint 只有 PyTorch 权重，因此设置 `from_pt=True` 会自动将它们转换为 TensorFlow 格式。如你所见，在🤗 Transformers 中切换框架非常简单！
 
 {/if}
 
-正如我们之前提到的，我们希望将 GitHub 问题语料库中的每个条目表示为单个向量，因此我们需要以某种方式“池化”或平均化我们的标记嵌入。一种流行的方法是在我们模型的输出上执行CLS 池化，我们只获取**[CLS]** 令牌的最后一个隐藏状态。以下函数为我们提供了这样的方法：
+根据我们之前的想法，我们希望将我们的 GitHub issue 中的每一条记录转化为一个单一的向量，所以我们需要以某种方式“池化（pool）”或平均每个词的嵌入向量。一种流行的方法是在我们模型的输出上进行 `CLS 池化` ，我们只需要收集 `[CLS]` token 的的最后一个隐藏状态。以下函数实现了这个功能：
 
 ```py
 def cls_pooling(model_output):
     return model_output.last_hidden_state[:, 0]
 ```
 
-接下来，我们将创建一个辅助函数，该函数将标记文档列表，将tensor放在 GPU 上，然后提供给模型，最后对输出使用CLS 池化：
-
+接下来，我们将创建一个辅助函数，它将对一组文档进行 tokenize，然后将张量放在 GPU 上，接着将它们喂给模型，最后对输出进行 CLS 池化：
 {#if fw === 'pt'}
 
 ```py
@@ -279,7 +280,7 @@ def get_embeddings(text_list):
     return cls_pooling(model_output)
 ```
 
-我们可以通过在我们的语料库中输入第一个文本条目并检查输出维度来测试该函数是否有效：
+我们可以将第一条数据喂给它并检查输出的形状来测试这个函数是否正常工作：
 
 ```py
 embedding = get_embeddings(comments_dataset["text"][0])
@@ -290,7 +291,7 @@ embedding.shape
 torch.Size([1, 768])
 ```
 
-太好了，我们已经将语料库中的第一个条目转换为 768 维向量！我们可以用 **Dataset.map()** 应用我们的 **get_embeddings()** 函数到我们语料库中的每一行，所以让我们创建一个新的 **embeddings** 列如下：
+太好了，我们已经将语料库中的第一个条目转换为了一个 768 维向量！我们可以用 `Dataset.map()` 将我们的 `get_embeddings()` 函数应用到我们语料库中的每一行，然后创建一个新的 `embeddings` 列：
 
 ```py
 embeddings_dataset = comments_dataset.map(
@@ -310,7 +311,7 @@ def get_embeddings(text_list):
     return cls_pooling(model_output)
 ```
 
-我们可以通过在我们的语料库中输入第一个文本条目并检查输出维度来测试该函数是否有效：
+我们可以将第一个文本条目喂给它并检查输出的形状来测试这个函数是否正常工作：
 
 ```py
 embedding = get_embeddings(comments_dataset["text"][0])
@@ -321,7 +322,7 @@ embedding.shape
 TensorShape([1, 768])
 ```
 
-太好了，我们已经将语料库中的第一个条目转换为 768 维向量！我们可以用 **Dataset.map()** 应用我们的 **get_embeddings()** 函数到我们语料库中的每一行，所以让我们创建一个新的 **embeddings** 列如下：
+太好了，我们已经将语料库中的第一个条目转换为了一个 768 维向量！我们可以用 `Dataset.map()` 将我们的 `get_embeddings()` 函数应用到我们语料库中的每一行，然后创建一个新的 `embeddings` 列：
 
 ```py
 embeddings_dataset = comments_dataset.map(
@@ -331,18 +332,20 @@ embeddings_dataset = comments_dataset.map(
 
 {/if}
 
-请注意，我们已经将嵌入转换为 NumPy 数组——这是因为当我们尝试使用 FAISS 索引它们时，🤗 Datasets需要这种格式，我们接下来会这样做。
+请注意，在上面的代码中我们已经将文本嵌入转换为 NumPy 数组——这是因为当我们尝试使用 FAISS 搜索它们时，🤗 Datasets 需要这种格式，让我们继续吧。
 
 
 ## 使用 FAISS 进行高效的相似性搜索 [[使用 FAISS 进行高效的相似性搜索]]
 
-现在我们有了一个词嵌入数据集，我们需要一些方法来搜索它们。为此，我们将在 🤗 Datasets中使用一种特殊的数据结构，称为 FAISS指数.[FAISS](https://faiss.ai/) (short for Facebook AI Similarity Search) （Facebook AI Similarity Search 的缩写）是一个提供高效算法来快速搜索和聚类嵌入向量的库。FAISS 背后的基本思想是创建一个特殊的数据结构，称为指数。这允许人们找到哪些嵌入词与输入的词嵌入相似。在 🤗 Datasets中创建一个 FAISS 索引很简单——我们使用 **Dataset.add_faiss_index()** 函数并指定我们要索引的数据集的哪一列：
+现在我们有了一个文本嵌入数据集，我们需要一些方法来搜索它们。为此，我们将使用🤗 Datasets 中一种特殊的数据结构，称为 FAISS 指数。 [FAISS](https://faiss.ai/) （Facebook AI Similarity Search 的缩写）是一个库，提供了用于快速搜索和聚类嵌入向量的高效算法。
+
+FAISS 背后的基本思想是创建一个特殊的数据结构，称为 `index（索引）` 它可以找到哪些嵌入与输入嵌入相似。在 🤗 Datasets 中创建一个 FAISS index（索引）很简单——我们使用 `Dataset.add_faiss_index()` 函数并指定我们要索引的数据集的哪一列：
 
 ```py
 embeddings_dataset.add_faiss_index(column="embeddings")
 ```
 
-现在，我们可以使用**Dataset.get_nearest_examples()**函数进行最近邻居查找。让我们通过首先嵌入一个问题来测试这一点，如下所示：
+现在，我们可以使用 `Dataset.get_nearest_examples()` 函数进行最近邻居查找。让我们通过首先嵌入一个 issue 来测试这一点，如下所示：
 
 {#if fw === 'pt'}
 
@@ -370,7 +373,7 @@ question_embedding.shape
 
 {/if}
 
-就像文档一样，我们现在有一个 768 维向量表示查询，我们可以将其与整个语料库进行比较以找到最相似的嵌入：
+就像对文档进行嵌入一样，我们现在有一个表示查询的 768 维向量，我们可以将其与整个语料库进行比较以找到最相似的嵌入：
 
 ```py
 scores, samples = embeddings_dataset.get_nearest_examples(
@@ -378,7 +381,7 @@ scores, samples = embeddings_dataset.get_nearest_examples(
 )
 ```
 
- **Dataset.get_nearest_examples()** 函数返回一个分数元组，对查询和文档之间的相似度进行排序，以及一组最佳匹配的结果（这里是 5 个）。让我们把这些收集到一个 **pandas.DataFrame** 以便我们可以轻松地对它们进行排序：
+`Dataset.get_nearest_examples()` 函数返回一个元组，包括评分（评价查询和文档之间的相似程度）和对应的样本（这里是 5 个最佳匹配）。让我们把这些收集到一个 `pandas.DataFrame` ，这样我们就可以轻松地对它们进行排序：
 
 ```py
 import pandas as pd
@@ -388,7 +391,7 @@ samples_df["scores"] = scores
 samples_df.sort_values("scores", ascending=False, inplace=True)
 ```
 
-现在我们可以遍历前几行来查看我们的查询与评论的匹配程度：
+现在我们可以遍历前几行来查看我们的查询与评论的匹配程度如何：
 
 ```py
 for _, row in samples_df.iterrows():
@@ -456,7 +459,7 @@ COMMENT: > here is my way to load a dataset offline, but it **requires** an onli
 >
 > import datasets
 >
-> data = datasets.load_dataset(...)
+> data = datasets.load_dataset(.)
 >
 > data.save_to_disk(/YOUR/DATASET/DIR)
 >
@@ -506,10 +509,10 @@ URL: https://github.com/huggingface/datasets/issues/824
 """
 ```
 
-我们的第二个搜索结果似乎与查询相符。
+不错！我们的输出的第 2 个结果似乎与查询匹配。
 
 <Tip>
 
-✏️  试试看！创建您自己的查询并查看您是否可以在检索到的文档中找到答案。您可能需要增加参数k以扩大搜索范围。
+✏️  试试看！创建你自己的查询并查看你是否可以在检索到的文档中找到答案。你可能需要在 `Dataset.get_nearest_examples()` 增加参数 `k` 以扩大搜索范围。
 
 </Tip>

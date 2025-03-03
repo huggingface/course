@@ -1,0 +1,359 @@
+<FrameworkSwitchCourse {fw} />
+
+# 管道的內部
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter2/section2_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter2/section2_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter2/section2_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter2/section2_tf.ipynb"},
+]} />
+
+{/if}
+
+<Tip>
+這是第一部分，根據您使用 PyTorch 或者 TensorFlow，內容略有不同。點擊標題上方的平臺，選一個您喜歡的吧！
+</Tip>
+
+{#if fw === 'pt'}
+<Youtube id="1pedAIvTWXk"/>
+{:else}
+<Youtube id="wVN12smEvqg"/>
+{/if}
+
+讓我們從一個完整的示例開始，看看在[Chapter 1](/course/chapter1)中執行以下代碼時在幕後發生了什麼
+
+```python
+from transformers import pipeline
+
+classifier = pipeline("sentiment-analysis")
+classifier(
+    [
+        "I've been waiting for a HuggingFace course my whole life.",
+        "I hate this so much!",
+    ]
+)
+```
+
+獲得:
+
+```python out
+[{'label': 'POSITIVE', 'score': 0.9598047137260437},
+ {'label': 'NEGATIVE', 'score': 0.9994558095932007}]
+```
+
+正如我們在[Chapter 1](/course/chapter1)中看到的，此管道將三個步驟組合在一起：預處理、通過模型傳遞輸入和後處理：
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/full_nlp_pipeline.svg" alt="The full NLP pipeline: tokenization of text, conversion to IDs, and inference through the Transformer model and the model head."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/full_nlp_pipeline-dark.svg" alt="The full NLP pipeline: tokenization of text, conversion to IDs, and inference through the Transformer model and the model head."/>
+</div>
+
+讓我們快速瀏覽一下這些內容。
+
+## 使用分詞器進行預處理
+
+與其他神經網絡一樣，Transformer 模型無法直接處理原始文本， 因此我們管道的第一步是將文本輸入轉換為模型能夠理解的數字。 為此，我們使用*tokenizer*(標記器)，負責：
+
+- 將輸入拆分為單詞、子單詞或符號（如標點符號），稱為標記(*token*)
+- 將每個標記(token)映射到一個整數
+- 添加可能對模型有用的其他輸入
+
+所有這些預處理都需要以與模型預訓練時完全相同的方式完成，因此我們首先需要從[Model Hub](https://huggingface.co/models)中下載這些信息。為此，我們使用`AutoTokenizer`類及其`from_pretrained()`方法。使用我們模型的檢查點名稱，它將自動獲取與模型的標記器相關聯的數據，並對其進行緩存（因此只有在您第一次運行下面的代碼時才會下載）。
+
+因為`sentiment-analysis`（情緒分析）管道的默認檢查點是`distilbert-base-uncased-finetuned-sst-2-english`（你可以看到它的模型卡[here](https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english))，我們運行以下程序：
+
+```python
+from transformers import AutoTokenizer
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+```
+
+一旦我們有了標記器，我們就可以直接將我們的句子傳遞給它，然後我們就會得到一本字典，它可以提供給我們的模型！剩下要做的唯一一件事就是將輸入ID列表轉換為張量。
+
+您可以使用🤗 Transformers，而不必擔心哪個 ML 框架被用作後端；它可能是 PyTorch 或 TensorFlow，或 Flax。但是，Transformers型號只接受*張量*作為輸入。如果這是你第一次聽說張量，你可以把它們想象成NumPy數組。NumPy數組可以是標量（0D）、向量（1D）、矩陣（2D）或具有更多維度。它實際上是張量；其他 ML 框架的張量行為類似，通常與 NumPy 數組一樣易於實例化。
+
+要指定要返回的張量類型（PyTorch、TensorFlow 或 plain NumPy），我們使用`return_tensors`參數：
+
+{#if fw === 'pt'}
+```python
+raw_inputs = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "I hate this so much!",
+]
+inputs = tokenizer(raw_inputs, padding=True, truncation=True, return_tensors="pt")
+print(inputs)
+```
+{:else}
+```python
+raw_inputs = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "I hate this so much!",
+]
+inputs = tokenizer(raw_inputs, padding=True, truncation=True, return_tensors="tf")
+print(inputs)
+```
+{/if}
+
+現在不要擔心填充和截斷；我們稍後會解釋這些。這裡要記住的主要事情是，您可以傳遞一個句子或一組句子，還可以指定要返回的張量類型（如果沒有傳遞類型，您將得到一組列表）。
+
+{#if fw === 'pt'}
+
+以下是PyTorch張量的結果：
+
+```python out
+{
+    'input_ids': tensor([
+        [  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172, 2607,  2026,  2878,  2166,  1012,   102],
+        [  101,  1045,  5223,  2023,  2061,  2172,   999,   102,     0,     0,     0,     0,     0,     0,     0,     0]
+    ]), 
+    'attention_mask': tensor([
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ])
+}
+```
+{:else}
+
+以下是 TensorFlow 張量的結果：
+
+```python out
+{
+    'input_ids': <tf.Tensor: shape=(2, 16), dtype=int32, numpy=
+        array([
+            [  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172,  2607,  2026,  2878,  2166,  1012,   102],
+            [  101,  1045,  5223,  2023,  2061,  2172,   999,   102,     0,     0,     0,     0,     0,     0,     0,     0]
+        ], dtype=int32)>, 
+    'attention_mask': <tf.Tensor: shape=(2, 16), dtype=int32, numpy=
+        array([
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        ], dtype=int32)>
+}
+```
+{/if}
+
+輸出本身是一個包含兩個鍵的字典，`input_ids`和`attention_mask`。`input_ids`包含兩行整數（每個句子一行），它們是每個句子中標記的唯一標記（token）。我們將在本章後面解釋什麼是`attention_mask`。
+
+## 瀏覽模型
+
+{#if fw === 'pt'}
+我們可以像使用標記器一樣下載預訓練模型。🤗 Transformers提供了一個`AutoModel`類，該類還具有`from_pretrained()`方法：
+
+```python
+from transformers import AutoModel
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = AutoModel.from_pretrained(checkpoint)
+```
+{:else}
+我們可以像使用標記器一樣下載預訓練模型。🤗 Transformers提供了一個`TFAutoModel`類，該類還具有`from_pretrained()`方法：
+
+```python
+from transformers import TFAutoModel
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = TFAutoModel.from_pretrained(checkpoint)
+```
+{/if}
+
+在這個代碼片段中，我們下載了之前在管道中使用的相同檢查點（它實際上應該已經被緩存），並用它實例化了一個模型。
+
+這個架構只包含基本轉換器模塊：給定一些輸入，它輸出我們將調用的內容*隱藏狀態（hidden states）*，亦稱*特徵（features）*。對於每個模型輸入，我們將檢索一個高維向量，表示**Transformer模型對該輸入的上下文理解**。 
+
+如果這不合理，不要擔心。我們以後再解釋。
+
+雖然這些隱藏狀態本身可能很有用，但它們通常是模型另一部分（稱為*頭部(head)*）的輸入。 在[Chapter 1](/course/chapter1)中，可以使用相同的體系結構執行不同的任務，但這些任務中的每個任務都有一個與之關聯的不同頭。
+
+### 高維向量？
+
+Transformers 模塊的向量輸出通常較大。它通常有三個維度：
+
+- **Batch size**: 一次處理的序列數（在我們的示例中為2）。
+- **Sequence length**: 序列的數值表示的長度（在我們的示例中為16）。
+- **Hidden size**: 每個模型輸入的向量維度。
+
+由於最後一個值，它被稱為「高維」。隱藏的大小可能非常大（768通常用於較小的型號，而在較大的型號中，這可能達到3072或更大）。
+
+如果我們將預處理的輸入輸入到模型中，我們可以看到這一點：
+
+{#if fw === 'pt'}
+```python
+outputs = model(**inputs)
+print(outputs.last_hidden_state.shape)
+```
+
+```python out
+torch.Size([2, 16, 768])
+```
+{:else}
+```py
+outputs = model(inputs)
+print(outputs.last_hidden_state.shape)
+```
+
+```python out
+(2, 16, 768)
+```
+{/if}
+
+注意🤗 Transformers 模型的輸出與`namedtuple`或詞典相似。您可以通過屬性（就像我們所做的那樣）或鍵（`輸出["last_hidden_state"]`）訪問元素，甚至可以通過索引訪問元素，前提是您確切知道要查找的內容在哪裡（`outputs[0]`）。
+
+### 模型頭：數字的意義
+
+模型頭將隱藏狀態的高維向量作為輸入，並將其投影到不同的維度。它們通常由一個或幾個線性層組成：
+
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/transformer_and_head.svg" alt="A Transformer network alongside its head."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/transformer_and_head-dark.svg" alt="A Transformer network alongside its head."/>
+</div>
+
+Transformers 模型的輸出直接發送到模型頭進行處理。
+
+在此圖中，模型由其嵌入層和後續層表示。嵌入層將標記化輸入中的每個輸入ID轉換為表示關聯標記(token)的向量。後續層使用注意機制操縱這些向量，以生成句子的最終表示。
+
+
+🤗 Transformers中有許多不同的體系結構，每種體系結構都是圍繞處理特定任務而設計的。以下是一個非詳盡的列表：
+
+- `*Model` (retrieve the hidden states)
+- `*ForCausalLM`
+- `*ForMaskedLM`
+- `*ForMultipleChoice`
+- `*ForQuestionAnswering`
+- `*ForSequenceClassification`
+- `*ForTokenClassification`
+- 以及其他 🤗
+
+{#if fw === 'pt'}
+對於我們的示例，我們需要一個帶有序列分類頭的模型（能夠將句子分類為肯定或否定）。因此，我們實際上不會使用`AutoModel`類，而是使用`AutoModelForSequenceClassification`：
+
+```python
+from transformers import AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+outputs = model(**inputs)
+```
+{:else}
+For our example, we will need a model with a sequence classification head (to be able to classify the sentences as positive or negative). So, we won't actually use the `TFAutoModel` class, but `TFAutoModelForSequenceClassification`:
+
+```python
+from transformers import TFAutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+outputs = model(inputs)
+```
+{/if}
+
+現在，如果我們觀察輸入的形狀，維度將低得多：模型頭將我們之前看到的高維向量作為輸入，並輸出包含兩個值的向量（每個標籤一個）：
+
+```python
+print(outputs.logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([2, 2])
+```
+
+{:else}
+
+```python out
+(2, 2)
+```
+
+{/if}
+
+因為我們只有兩個句子和兩個標籤，所以我們從模型中得到的結果是2 x 2的形狀。
+
+## 對輸出進行後處理
+
+我們從模型中得到的輸出值本身並不一定有意義。我們來看看,
+
+```python
+print(outputs.logits)
+```
+
+{#if fw === 'pt'}
+```python out
+tensor([[-1.5607,  1.6123],
+        [ 4.1692, -3.3464]], grad_fn=<AddmmBackward>)
+```
+{:else}
+```python out
+<tf.Tensor: shape=(2, 2), dtype=float32, numpy=
+    array([[-1.5606991,  1.6122842],
+           [ 4.169231 , -3.3464472]], dtype=float32)>
+```
+{/if}
+
+我們的模型預測第一句為`[-1.5607, 1.6123]`，第二句為`[ 4.1692, -3.3464]`。這些不是概率，而是*logits*，即模型最後一層輸出的原始非標準化分數。要轉換為概率，它們需要經過[SoftMax](https://en.wikipedia.org/wiki/Softmax_function)層（所有🤗Transformers模型輸出logits，因為用於訓練的損耗函數通常會將最後的激活函數（如SoftMax）與實際損耗函數（如交叉熵）融合）：
+
+{#if fw === 'pt'}
+```py
+import torch
+
+predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+print(predictions)
+```
+{:else}
+```py
+import tensorflow as tf
+
+predictions = tf.math.softmax(outputs.logits, axis=-1)
+print(predictions)
+```
+{/if}
+
+{#if fw === 'pt'}
+```python out
+tensor([[4.0195e-02, 9.5980e-01],
+        [9.9946e-01, 5.4418e-04]], grad_fn=<SoftmaxBackward>)
+```
+{:else}
+```python out
+tf.Tensor(
+[[4.01951671e-02 9.59804833e-01]
+ [9.9945587e-01 5.4418424e-04]], shape=(2, 2), dtype=float32)
+```
+{/if}
+
+現在我們可以看到，模型預測第一句為`[0.0402, 0.9598]`，第二句為`[0.9995,  0.0005]`。這些是可識別的概率分數。
+
+為了獲得每個位置對應的標籤，我們可以檢查模型配置的`id2label`屬性（下一節將對此進行詳細介紹）：
+
+```python
+model.config.id2label
+```
+
+```python out
+{0: 'NEGATIVE', 1: 'POSITIVE'}
+```
+
+現在我們可以得出結論，該模型預測了以下幾點：
+ 
+- 第一句：否定：0.0402，肯定：0.9598
+- 第二句：否定：0.9995，肯定：0.0005
+
+我們已經成功地複製了管道的三個步驟：使用標記化器進行預處理、通過模型傳遞輸入以及後處理！現在，讓我們花一些時間深入瞭解這些步驟中的每一步。
+
+<Tip>
+
+✏️ **試試看！** 選擇兩個（或更多）你自己的文本並在管道中運行它們。然後自己複製在這裡看到的步驟，並檢查是否獲得相同的結果！
+
+</Tip>
