@@ -131,7 +131,7 @@ outputs = model.generate(
     temperature=0.7,
     pad_token_id=tokenizer.eos_token_id,
     return_dict_in_generate=True,
-    output_scores=True
+    output_scores=True,
 )
 ```
 this initial Generation (Before Any Steps) will output sth like this:
@@ -159,7 +159,7 @@ next we get the group_wise mean and std of the rewards;
 
 ```python
 # Shape: (B * G,) = (8,) bc we have 2 groups of 4 generations that we flatten
-rewards = torch.tensor([1, 0, 0, 1, 0, 0, 1, 1], dtype=torch.float32) 
+rewards = torch.tensor([1, 0, 0, 1, 0, 0, 1, 1], dtype=torch.float32)
 num_generations = 4
 
 # Group rewards: Shape (B, G) = 2, 4)
@@ -203,8 +203,8 @@ For reward_2 = [0, 0, 1, 1]: Same pattern.
 ```
 however, the shape here is `(B*G,) = (8,)` but in practice, we need to have the shape of `(B, G) = (2, 4)` to match the logits shape, right? Therefore, we need to unsqueeze the advantages tensor to have the shape of `(B*G, 1) = (8, 1)` to match the logits shape.
 ```python
-#Shape (B * G, 1) = (8, 1) to match the logits shape
-advantages = advantages.unsqueeze(1)  
+# Shape (B * G, 1) = (8, 1) to match the logits shape
+advantages = advantages.unsqueeze(1)
 ```
 which will output:
 ```text
@@ -222,26 +222,34 @@ now we are good, let's move to the next step of updating the policy model based 
 ### Step 3) Policy Update
 ```python
 # Compute probability ratio between new and old policies
-ratio = torch.exp(new_per_token_logps - per_token_logps)  # Shape: (B*G, seq_len) seq_len is the length of the output i.e. the num of generated tokens so here for simplicity let's assume it is 1 # (8, 1)
+ratio = torch.exp(
+    new_per_token_logps - per_token_logps
+)  # Shape: (B*G, seq_len) seq_len is the length of the output i.e. the num of generated tokens so here for simplicity let's assume it is 1 # (8, 1)
 ```
 Note that the `per_token_logps` can be achieved by passing the generated outputs to the model and get the logits and then apply the softmax function to get the probabilities `F.softmax(logits, dim=-1)`.
 ```python
 # Clipping Function
-eps = self.cliprange  # e.g. 0.2 
+eps = self.cliprange  # e.g. 0.2
 pg_losses1 = -advantages * ratio  # Shape: (B*G, seq_len)  #(8, 1)
-pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - eps, 1.0 + eps)  # Shape: (B*G, seq_len) #(8, 1)
+pg_losses2 = -advantages * torch.clamp(
+    ratio, 1.0 - eps, 1.0 + eps
+)  # Shape: (B*G, seq_len) #(8, 1)
 pg_loss_max = torch.max(pg_losses1, pg_losses2)  # Shape: (B*G, seq_len) #(8, 1)
 
 
 # Now Combine with KL penalty # Shape: (B*G, seq_len) #(8, 1)
-per_token_loss = pg_loss_max + self.beta * per_token_kl  
+per_token_loss = pg_loss_max + self.beta * per_token_kl
 ```
 
 `per_token_kl` can also be calculated as follows:
 
 ```python
 # Shape: (B*G, seq_len) #(8, 1)
-per_token_kl = F.kl_div(F.log_softmax(new_per_token_logps, dim=-1), F.softmax(per_token_logps, dim=-1), reduction="none").sum(dim=-1, keepdim=True)  
+per_token_kl = F.kl_div(
+    F.log_softmax(new_per_token_logps, dim=-1),
+    F.softmax(per_token_logps, dim=-1),
+    reduction="none",
+).sum(dim=-1, keepdim=True)
 ```
 
 Complete example can be found [here](./basic_example.py). GRPO is also implemented by the excellent TRL team, you can check the implementation [TRL/GRPO_trainer](https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py) for more details.
