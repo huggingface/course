@@ -1,0 +1,768 @@
+# **ٹریننگ پائپ لائن کی ڈیبگنگ** [[debugging-the-training-pipeline]]  
+
+<CourseFloatingBanner chapter={8}  
+  classNames="absolute z-10 right-0 top-0"  
+  notebooks={[  
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter8/section4.ipynb"},  
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter8/section4.ipynb"},  
+]} />  
+
+آپ نے ایک خوبصورت اسکرپٹ لکھی ہے تاکہ کسی خاص کام پر ماڈل کی ٹریننگ یا فائن ٹیوننگ کی جا سکے، اور آپ نے مکمل طور پر [باب 7](/course/chapter7) کی ہدایات پر عمل کیا ہے۔ لیکن جب آپ `trainer.train()` کمانڈ چلاتے ہیں، تو کچھ خوفناک ہو جاتا ہے: آپ کو ایک ایرر ملتا ہے 😱! یا اس سے بھی بدتر، سب کچھ بظاہر ٹھیک چلتا ہے، مگر آخر میں ماڈل کا آؤٹ پٹ بے حد خراب ہوتا ہے۔  
+
+اس سیکشن میں، ہم آپ کو دکھائیں گے کہ ان مسائل کو کیسے ڈیبگ کیا جائے۔  
+
+## **ٹریننگ پائپ لائن کی ڈیبگنگ** [[debugging-the-training-pipeline]]  
+
+<Youtube id="L-WSwUWde1U"/>  
+
+جب `trainer.train()` میں ایرر آتا ہے، تو اس کی کئی وجوہات ہو سکتی ہیں کیونکہ `Trainer` مختلف کاموں کو یکجا کرتا ہے۔ یہ ڈیٹاسیٹس کو `dataloaders` میں تبدیل کرتا ہے، لہذا ممکن ہے کہ مسئلہ ڈیٹاسیٹ میں ہو یا بیچ بنانے کے دوران کوئی خرابی ہو۔ پھر یہ ماڈل کو ڈیٹا کا بیچ فراہم کرتا ہے، تو مسئلہ ماڈل کے کوڈ میں بھی ہو سکتا ہے۔ اس کے بعد، یہ گرادیئنٹس نکال کر آپٹیمائزیشن کرتا ہے، تو ہو سکتا ہے کہ ایرر `optimizer` کی وجہ سے ہو۔ اور یہاں تک کہ اگر ٹریننگ ٹھیک سے ہو جائے، تو ویلیڈیشن یا ٹیسٹنگ کے دوران بھی کوئی مسئلہ ہو سکتا ہے، مثلاً غلط میٹرک کے استعمال کی وجہ سے۔  
+
+`trainer.train()` کے ایرر کو ڈیبگ کرنے کا بہترین طریقہ یہ ہے کہ پورے ٹریننگ پائپ لائن کو قدم بہ قدم چیک کریں اور دیکھیں کہ خرابی کہاں آ رہی ہے۔ عام طور پر، ایرر تلاش کرنا پھر کافی آسان ہو جاتا ہے۔  
+
+اسے سمجھنے کے لیے، ہم درج ذیل اسکرپٹ استعمال کریں گے، جو کہ **DistilBERT** ماڈل کو **MNLI** ڈیٹاسیٹ پر فائن ٹیون کرنے کی کوشش کرتا ہے:  
+
+```python
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=raw_datasets["train"],
+    eval_dataset=raw_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+جب آپ اسے چلائیں گے، تو یہ ایک ایرر دے گا:  
+
+```python
+'ValueError: You have to specify either input_ids or inputs_embeds'
+```
+
+### **اپنے ڈیٹا کو چیک کریں** [[check-your-data]]  
+
+یہ تو واضح سی بات ہے، لیکن اگر آپ کا ڈیٹا خراب ہے، تو `Trainer` نہ تو بیچ بنا سکے گا، نہ ہی ماڈل کو ٹرین کر پائے گا۔ اس لیے، سب سے پہلا قدم یہ ہونا چاہیے کہ آپ اپنے ٹریننگ ڈیٹاسیٹ کا جائزہ لیں۔  
+
+چیک کرنے کے لیے، `trainer.train_dataset` کا استعمال کریں:  
+
+```python
+trainer.train_dataset[0]
+```
+
+یہ آؤٹ پٹ دے گا:  
+
+```python
+{'hypothesis': 'Product and geography are what make cream skimming work. ',
+ 'idx': 0,
+ 'label': 1,
+ 'premise': 'Conceptually cream skimming has two basic dimensions - product and geography.'}
+```
+
+کیا آپ کو یہاں کچھ غلط نظر آ رہا ہے؟  
+یہ دیکھ کر اور ایرر میسج کو سمجھ کر، ہمیں اندازہ ہو سکتا ہے کہ ڈیٹا درحقیقت **ٹیکسٹ** ہے، جبکہ ماڈل کو **نمبرز** درکار ہوتے ہیں۔ اصل میں، `Trainer` خودبخود ان کالمز کو ہٹا دیتا ہے جو ماڈل کو درکار نہیں ہوتے، اس لیے **صرف لیبل بچا رہ گیا تھا** اور ماڈل نے ایرر دے دیا کہ `input_ids` فراہم نہیں کیے گئے۔  
+
+یہ مسئلہ کیوں آیا؟  
+اگر آپ کوڈ کو غور سے دیکھیں، تو معلوم ہوگا کہ ہم نے `Dataset.map()` کا استعمال کیا تھا تاکہ ہر سیمپل پر ٹوکنائزر کا اطلاق ہو۔ لیکن `Trainer` میں ڈیٹاسیٹ دینے کے وقت، ہم نے غلطی سے `raw_datasets` استعمال کر لیا، جبکہ ہمیں `tokenized_datasets` دینا چاہیے تھا! 🤦  
+
+اب اسے ٹھیک کر لیتے ہیں:  
+
+```python
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+اب، کوڈ ایک نیا ایرر دے گا (جو کہ ترقی کی علامت ہے! 😆):  
+
+```python
+'ValueError: expected sequence of length 43 at dim 1 (got 37)'
+```
+
+### **ڈیٹا کو مزید چیک کریں**  
+
+یہ ایرر **ڈیٹا کولیٹ کرنے** کے مرحلے میں آیا ہے۔ اس لیے ہمیں ڈیٹا کو مزید گہرائی سے دیکھنا ہوگا۔  
+
+سب سے پہلے، ہمیں ماڈل میں دیے جانے والے ان پٹ کی پڑتال کرنی چاہیے۔  
+
+```python
+tokenizer.decode(trainer.train_dataset[0]["input_ids"])
+```
+
+یہ آؤٹ پٹ دے گا:  
+
+```python
+'[CLS] conceptually cream skimming has two basic dimensions - product and geography. [SEP] product and geography are what make cream skimming work. [SEP]'
+```
+
+یہ ٹھیک لگ رہا ہے۔ اب باقی ان پٹس کو بھی چیک کریں:  
+
+```python
+trainer.train_dataset[0].keys()
+```
+
+یہ آؤٹ پٹ دے گا:  
+
+```python
+dict_keys(['attention_mask', 'hypothesis', 'idx', 'input_ids', 'label', 'premise'])
+```
+
+یہاں ہم دیکھ سکتے ہیں کہ **`Trainer` خود بخود غیر ضروری کالمز کو ہٹا دیتا ہے**۔  
+اس کے بعد، `attention_mask` چیک کریں:  
+
+```python
+trainer.train_dataset[0]["attention_mask"]
+```
+
+یہ آؤٹ پٹ دے گا:  
+
+```python
+[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+اگر یہاں کچھ غلط ہو، تو ہوسکتا ہے کہ مسئلہ **پیڈنگ نہ ہونے** کی وجہ سے ہو۔  
+
+```py
+len(trainer.train_dataset[0]["attention_mask"]) == len(
+    trainer.train_dataset[0]["input_ids"]
+)
+```
+
+```python out
+True
+```
+
+**چلیں، آخر میں اپنے لیبل کو چیک کرتے ہیں**  
+
+```python
+trainer.train_dataset[0]["label"]
+```
+
+یہ آؤٹ پٹ دے گا:  
+
+```python
+1
+```
+
+جیسے کہ **input IDs** کی صورت میں تھا، یہاں بھی یہ ایک عدد ہے جس کا خود سے کوئی مطلب نہیں نکلتا۔  
+جیسے کہ ہم نے پہلے دیکھا، **اعداد اور لیبل کے ناموں کا تعلق** ڈیٹاسیٹ کے **feature** کے `names` ایٹریبیوٹ میں محفوظ ہوتا ہے:  
+
+```python
+trainer.train_dataset.features["label"].names
+```
+
+یہ آؤٹ پٹ دے گا:  
+
+```python
+['entailment', 'neutral', 'contradiction']
+```
+
+اس کا مطلب ہے کہ `1` **neutral** کو ظاہر کرتا ہے، یعنی جو دو جملے ہم نے اوپر دیکھے، وہ ایک دوسرے کی **تضاد** (contradiction) میں نہیں ہیں اور پہلا جملہ دوسرے کو **لازمی** (entail) نہیں کرتا۔ یہ بالکل ٹھیک لگ رہا ہے!  
+
+**نوٹ:**  
+چونکہ DistilBERT **token type IDs** استعمال نہیں کرتا، اس لیے ہمیں ان کے بارے میں فکر کرنے کی ضرورت نہیں۔ لیکن اگر آپ کے ماڈل میں یہ استعمال ہو رہے ہیں، تو یقینی بنائیں کہ یہ صحیح طریقے سے **پہلے اور دوسرے جملے کی جگہوں سے مطابقت رکھتے ہوں**۔  
+
+<Tip>  
+✏️ **اب آپ کی باری!** ٹریننگ ڈیٹاسیٹ کے دوسرے عنصر (element) کو چیک کریں کہ آیا سب کچھ درست لگ رہا ہے۔  
+</Tip>  
+
+ہم یہاں صرف **ٹریننگ ڈیٹاسیٹ** کی جانچ کر رہے ہیں، لیکن آپ کو **ویلیڈیشن اور ٹیسٹ سیٹس** کی بھی اسی طریقے سے جانچ کرنی چاہیے۔  
+
+اب جب کہ ہمیں یقین ہو گیا کہ ہمارا ڈیٹاسیٹ درست ہے، اب **ٹریننگ پائپ لائن کے اگلے مرحلے** کو چیک کرنے کا وقت آ گیا ہے۔  
+
+---
+
+## **ڈیٹاسیٹس سے ڈیٹالودر تک** [[from-datasets-to-dataloaders]]  
+
+ٹریننگ پائپ لائن میں اگلی ممکنہ خرابی اس وقت آ سکتی ہے جب `Trainer` **ٹریننگ یا ویلیڈیشن سیٹ** سے **بیچز** بنانے کی کوشش کرتا ہے۔  
+ایک بار جب آپ کو یقین ہو جائے کہ `Trainer` کے ڈیٹاسیٹس درست ہیں، تو آپ **خود ایک بیچ بنا کر** چیک کر سکتے ہیں کہ مسئلہ کہاں ہے۔  
+
+یہ کرنے کے لیے، درج ذیل کوڈ چلائیں (اگر آپ ویلیڈیشن ڈیٹالودر چیک کرنا چاہتے ہیں تو `train` کی جگہ `eval` لکھیں):  
+
+```python
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+یہ کوڈ **ٹریننگ ڈیٹالودر** بناتا ہے، پھر اس میں سے پہلا بیچ نکالتا ہے۔  
+اگر کوڈ بغیر کسی **ایرر** کے چل جائے، تو اس کا مطلب ہے کہ **پہلا بیچ درست طریقے سے بن گیا**۔  
+لیکن اگر کوڈ میں ایرر آ جائے، تو اس کا مطلب ہے کہ **مسئلہ ڈیٹالودر میں ہے**۔  
+
+یہاں یہی ہو رہا ہے:  
+
+```python
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+
+ValueError: expected sequence of length 45 at dim 1 (got 76)
+```
+
+اگر آپ **ٹرین بیک** (traceback) کے آخری حصے کو غور سے دیکھیں، تو آپ کو اندازہ ہو سکتا ہے کہ مسئلہ کیا ہے۔  
+لیکن چلیں، ہم مزید کھوج لگاتے ہیں۔  
+
+**زیادہ تر مسائل بیچ بنانے کے دوران غلط collation کی وجہ سے آتے ہیں**، اس لیے پہلا کام یہ کرنا ہے کہ چیک کریں کہ **ہمارا ڈیٹالودر کون سا `collate_fn` استعمال کر رہا ہے**:  
+
+```python
+data_collator = trainer.get_train_dataloader().collate_fn
+data_collator
+```
+
+یہ آؤٹ پٹ دے گا:  
+
+```python
+<function transformers.data.data_collator.default_data_collator(features: List[InputDataClass], return_tensors='pt') -> Dict[str, Any]>
+```
+
+یہاں ہم دیکھ سکتے ہیں کہ **`default_data_collator` استعمال ہو رہا ہے**،  
+لیکن یہ **ہمارے لیے درست انتخاب نہیں ہے**۔  
+
+ہم **ایسی پیڈنگ چاہتے ہیں جو بیچ کے سب سے لمبے جملے کے مطابق ہو**۔  
+یہ کام **`DataCollatorWithPadding`** کرتا ہے، جو کہ `Trainer` کو **بطور ڈیفالٹ** استعمال کرنا چاہیے تھا۔  
+لیکن یہاں ایسا کیوں نہیں ہوا؟  
+
+**اس کی وجہ یہ ہے کہ ہم نے `Trainer` کو `tokenizer` نہیں دیا!**  
+لہٰذا، `Trainer` خود سے **صحیح `DataCollatorWithPadding` بنانے میں ناکام ہو گیا۔**  
+
+### **اس کا درست حل:**  
+
+عملی طور پر، **ہمیشہ ڈیٹا کولیٹر (`data collator`) کو واضح طور پر پاس کریں** تاکہ اس قسم کی غلطیوں سے بچا جا سکے۔  
+اب ہم اپنے کوڈ کو درست طریقے سے اپڈیٹ کرتے ہیں تاکہ یہ مسئلہ حل ہو جائے۔
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+یہ خوشخبری ہے کہ ہمیں وہی پرانی خرابی نہیں ملی، جو کہ ایک مثبت پیشرفت ہے۔ لیکن بری خبر یہ ہے کہ اب ہمیں ایک مشہور CUDA خرابی کا سامنا ہے:  
+
+```python out
+RuntimeError: CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`
+```  
+
+یہ مسئلہ پیچیدہ ہے کیونکہ عام طور پر CUDA کی خرابیاں ڈیبگ کرنا بہت مشکل ہوتا ہے۔ ہم جلد ہی اس کا حل دیکھیں گے، لیکن پہلے آئیے بیچ (batch) بنانے کے عمل کا تجزیہ مکمل کرتے ہیں۔  
+
+اگر آپ کو یقین ہے کہ آپ کا `data collator` درست ہے، تو آپ اسے اپنے ڈیٹاسیٹ کے چند نمونوں پر لاگو کر کے چیک کر سکتے ہیں:  
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+batch = data_collator([trainer.train_dataset[i] for i in range(4)])
+```  
+
+یہ کوڈ اس لیے ناکام ہو جائے گا کیونکہ `train_dataset` میں `string` کالم موجود ہیں، جنہیں `Trainer` عام طور پر ہٹا دیتا ہے۔ آپ انہیں دستی طور پر ہٹا سکتے ہیں، یا اگر آپ بالکل وہی عمل دہرانا چاہتے ہیں جو `Trainer` اندرونی طور پر کرتا ہے، تو آپ `Trainer._remove_unused_columns()` کا استعمال کر سکتے ہیں:  
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+actual_train_set = trainer._remove_unused_columns(trainer.train_dataset)
+batch = data_collator([actual_train_set[i] for i in range(4)])
+```  
+
+اب آپ دستی طور پر ڈیبگ کر سکتے ہیں کہ `data collator` کے اندر کیا ہو رہا ہے، اگر خرابی برقرار رہے۔  
+
+اب جب کہ ہم نے بیچ بنانے کے عمل کو ڈیبگ کر لیا ہے، تو آئیے اسے ماڈل سے گزار کر دیکھتے ہیں!  
+
+### ماڈل کے ذریعے بیچ گزارنا [[going-through-the-model]]  
+
+آپ درج ذیل کوڈ چلا کر بیچ حاصل کر سکتے ہیں:  
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```  
+
+اگر آپ یہ کوڈ کسی نوٹ بُک میں چلا رہے ہیں، تو ممکن ہے کہ آپ کو وہی CUDA خرابی دوبارہ ملے، جس کا ہم نے پہلے ذکر کیا تھا۔ اس صورت میں، آپ کو اپنی نوٹ بُک کو دوبارہ شروع کر کے `trainer.train()` کے بغیر پچھلا کوڈ دوبارہ چلانا ہوگا۔ CUDA کی خرابیاں دو وجوہات کی بنا پر پریشان کن ہوتی ہیں:  
+1. وہ اکثر آپ کے `kernel` کو مکمل طور پر کریش کر دیتی ہیں۔  
+2. انہیں ڈیبگ کرنا بہت مشکل ہوتا ہے۔  
+
+یہ خرابی کیسے ہوتی ہے؟ اس کا تعلق GPUs کے کام کرنے کے طریقے سے ہے۔ GPUs بہت سے آپریشنز کو متوازی طور پر انجام دینے میں انتہائی مؤثر ہوتے ہیں، لیکن اس کا نقصان یہ ہے کہ اگر ان میں سے کسی ایک آپریشن میں خرابی ہو جائے، تو آپ کو فوری طور پر اس کا علم نہیں ہوتا۔ خرابی کا علم تب ہوتا ہے جب پروگرام GPU پر تمام پراسیسز کو ہم آہنگ کرنے کی کوشش کرتا ہے، اور اسی لمحے پتہ چلتا ہے کہ کچھ غلط ہوا ہے۔ اس کا مطلب ہے کہ جو جگہ خرابی دکھائی دیتی ہے، وہ اصل خرابی کی وجہ سے نہیں ہوتی بلکہ یہ کہیں اور پیدا ہوئی ہوتی ہے۔  
+
+تو ہم ان خرابیوں کو کیسے ڈیبگ کریں؟ اس کا آسان جواب ہے: ہم نہیں کرتے! اگر آپ کی CUDA خرابی `out-of-memory` نہیں ہے (یعنی آپ کے GPU میں میموری کم پڑ گئی ہے)، تو آپ کو ہمیشہ CPU پر واپس جا کر اسے ڈیبگ کرنا چاہیے۔  
+
+ہم اپنے ماڈل کو CPU پر واپس لا کر اور بیچ پر چلانے کی کوشش کر سکتے ہیں:  
+
+```python
+outputs = trainer.model.cpu()(**batch)
+```  
+
+یہ کوڈ ایک مختلف خرابی دے سکتا ہے، جیسے:  
+
+```python out
+IndexError: Target 2 is out of bounds.
+```  
+
+یہ خرابی درحقیقت CUDA سے متعلق نہیں، بلکہ یہ ظاہر کرتی ہے کہ `loss` کے حساب میں ایک مسئلہ ہے۔ خاص طور پر، مسئلہ یہ ہے کہ `target 2` ماڈل کے قبول کردہ لیبلز کی حد سے باہر ہے۔ ہم اس کی تصدیق کر سکتے ہیں:  
+
+```python
+trainer.model.config.num_labels
+```  
+
+```python out
+2
+```  
+
+یہاں مسئلہ یہ ہے کہ ہمارا ماڈل صرف دو لیبلز (0 اور 1) کی توقع کر رہا تھا، لیکن ہمارے ڈیٹاسیٹ میں تین لیبلز (0, 1, 2) موجود ہیں۔ اس کا حل یہ ہے کہ ماڈل کو صحیح تعداد میں لیبلز کے ساتھ لوڈ کیا جائے:  
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```  
+
+اب، ہم `trainer.train()` نہیں چلا رہے تاکہ پہلے چیک کر سکیں کہ سب کچھ صحیح طریقے سے کام کر رہا ہے۔  
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+outputs = trainer.model.cpu()(**batch)
+```  
+
+اب جب کہ سب کچھ صحیح کام کر رہا ہے، ہم GPU پر واپس جا سکتے ہیں:  
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+batch = {k: v.to(device) for k, v in batch.items()}
+
+outputs = trainer.model.to(device)(**batch)
+```  
+
+اگر اب بھی خرابی ہو، تو نوٹ بُک کو دوبارہ شروع کریں اور صرف تازہ ترین اسکرپٹ چلائیں۔  
+
+### ایک آپٹیمائزیشن مرحلہ انجام دینا [[performing-one-optimization-step]]  
+
+اب جب کہ ہم جان چکے ہیں کہ ہمارا بیچ ماڈل کے ذریعے کامیابی سے گزر سکتا ہے، ہم گریڈینٹ کا حساب لگا سکتے ہیں اور ایک آپٹیمائزیشن مرحلہ انجام دے سکتے ہیں:  
+
+```py
+loss = outputs.loss
+loss.backward()
+```  
+
+پھر، ہم `optimizer` بنا کر اس کا `step()` چلا سکتے ہیں:  
+
+```py
+trainer.create_optimizer()
+trainer.optimizer.step()
+```  
+
+### CUDA میموری ختم ہونے کی خرابی کا حل [[dealing-with-cuda-out-of-memory-errors]]  
+
+اگر آپ کو یہ خرابی ملتی ہے:  
+
+```python
+RuntimeError: CUDA out of memory
+```  
+
+تو اس کا مطلب ہے کہ GPU کی میموری بھر چکی ہے۔ اس کا حل یہ ہے کہ:  
+- یقینی بنائیں کہ آپ کے GPU پر بیک وقت ایک سے زیادہ ماڈلز نہیں چل رہے۔  
+- `batch size` کم کریں، کیونکہ یہ براہ راست ماڈل کے انٹرمیڈیٹ آؤٹ پٹس کے سائز کو متاثر کرتا ہے۔  
+- چھوٹے ماڈل کا استعمال کریں اگر مسئلہ برقرار رہے۔  
+
+### ماڈل کی تشخیص [[evaluating-the-model]]  
+
+اب جب کہ ہم نے تمام غلطیوں کو حل کر لیا ہے، کیا ہمارا ماڈل بغیر کسی رکاوٹ کے ٹرین ہو گا؟ شاید نہیں! اگر آپ `trainer.train()` کو چلائیں گے، تو ابتدا میں سب کچھ ٹھیک نظر آئے گا، لیکن کچھ دیر بعد نئی خرابی سامنے آ سکتی ہے...  
+
+```py
+# This will take a long time and error out, so you shouldn't run this cell
+trainer.train()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+Here is your translated text in MDX format, preserving all code and links:  
+
+```mdx
+آپ کو احساس ہوگا کہ یہ خرابی تشخیص کے مرحلے کے دوران ظاہر ہوتی ہے، لہذا یہ وہ آخری چیز ہے جسے ہمیں ڈیبگ کرنے کی ضرورت ہوگی۔
+
+آپ `Trainer` کے تشخیصی لوپ کو تربیت سے آزادانہ طور پر اس طرح چلا سکتے ہیں:
+
+```py
+trainer.evaluate()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+<Tip>
+
+💡 آپ کو ہمیشہ یہ یقینی بنانا چاہیے کہ آپ `trainer.evaluate()` چلا سکتے ہیں اس سے پہلے کہ `trainer.train()` لانچ کریں، تاکہ کسی خرابی سے ٹکرانے سے پہلے بے شمار کمپیوٹ وسائل ضائع ہونے سے بچا جا سکے۔
+
+</Tip>
+
+تشخیصی لوپ میں کسی مسئلے کو ڈیبگ کرنے کی کوشش کرنے سے پہلے، آپ کو سب سے پہلے یہ یقینی بنانا چاہیے کہ آپ نے ڈیٹا کو دیکھا ہے، بیچ کو صحیح طریقے سے تشکیل دے سکتے ہیں، اور اس پر اپنے ماڈل کو چلا سکتے ہیں۔ ہم نے یہ تمام اقدامات مکمل کر لیے ہیں، لہذا درج ذیل کوڈ بغیر کسی غلطی کے چلایا جا سکتا ہے:
+
+```py
+for batch in trainer.get_eval_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+```
+
+غلطی بعد میں، تشخیصی مرحلے کے اختتام پر آتی ہے، اور اگر ہم `traceback` دیکھیں تو ہمیں یہ ملتا ہے:
+
+```python trace
+~/git/datasets/src/datasets/metric.py in add_batch(self, predictions, references)
+    431         """
+    432         batch = {"predictions": predictions, "references": references}
+--> 433         batch = self.info.features.encode_batch(batch)
+    434         if self.writer is None:
+    435             self._init_writer()
+```
+
+یہ ہمیں بتاتا ہے کہ یہ خرابی `datasets/metric.py` ماڈیول میں پیدا ہو رہی ہے -- لہذا یہ ہمارے `compute_metrics()` فنکشن میں ایک مسئلہ ہے۔ یہ ایک جوڑے کو بطور `NumPy` arrays لیتا ہے، لہذا آئیے اس میں وہی داخل کرنے کی کوشش کرتے ہیں:
+
+```py
+predictions = outputs.logits.cpu().numpy()
+labels = batch["labels"].cpu().numpy()
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+ہمیں وہی خرابی ملتی ہے، لہذا مسئلہ یقینی طور پر اسی فنکشن میں ہے۔ اگر ہم اس کے کوڈ کو دیکھیں تو ہمیں معلوم ہوتا ہے کہ یہ صرف `predictions` اور `labels` کو `metric.compute()` میں بھیج رہا ہے۔ تو کیا اس طریقہ میں کوئی مسئلہ ہے؟ درحقیقت، نہیں۔ آئیے اس کی شکلوں پر ایک نظر ڈالیں:
+
+```py
+predictions.shape, labels.shape
+```
+
+```python out
+((8, 3), (8,))
+```
+
+ہمارے `predictions` اب بھی `logits` ہیں، اصل پیش گوئیاں نہیں، یہی وجہ ہے کہ `metric` یہ (کچھ حد تک مبہم) خرابی واپس کر رہا ہے۔ اس کا حل کافی آسان ہے؛ ہمیں صرف `compute_metrics()` فنکشن میں `argmax` شامل کرنا ہوگا:
+
+```py
+import numpy as np
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+{'accuracy': 0.625}
+```
+
+اب ہماری خرابی درست ہوگئی ہے! یہ آخری مسئلہ تھا، لہذا اب ہمارا اسکرپٹ ماڈل کو صحیح طریقے سے تربیت دے گا۔
+
+حوالے کے لیے، یہاں مکمل طور پر درست شدہ اسکرپٹ ہے:
+```
+
+یہ مکمل طور پر MDX فارمیٹ میں ترجمہ شدہ مواد ہے، جہاں کوڈ اور لنکس جوں کے توں رکھے گئے ہیں۔ 😊
+
+```py
+import numpy as np
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+اس مثال میں، اب مزید کوئی مسئلہ نہیں ہے، اور ہمارا اسکرپٹ ایک ماڈل کو فائن ٹون کرے گا جو معقول نتائج فراہم کرے گا۔ لیکن اگر تربیت کسی غلطی کے بغیر مکمل ہو جائے اور تربیت یافتہ ماڈل بالکل اچھا کام نہ کرے تو ہم کیا کر سکتے ہیں؟ یہ مشین لرننگ کا سب سے مشکل حصہ ہے، اور ہم آپ کو چند تکنیکیں دکھائیں گے جو مددگار ثابت ہو سکتی ہیں۔
+
+<Tip>
+
+💡 اگر آپ دستی تربیتی لوپ استعمال کر رہے ہیں، تو انہی مراحل کا اطلاق آپ کی تربیتی پائپ لائن کو ڈیبگ کرنے پر ہوتا ہے، لیکن انہیں الگ کرنا آسان ہوتا ہے۔ اس بات کو یقینی بنائیں کہ آپ نے `model.eval()` یا `model.train()` کو صحیح جگہوں پر استعمال کیا ہے، یا ہر مرحلے پر `zero_grad()` کو نہ بھولیں!
+
+</Tip>
+
+## تربیت کے دوران خاموش غلطیوں کو ڈیبگ کرنا[[debugging-silent-errors-during-training]]
+
+اگر تربیت کسی غلطی کے بغیر مکمل ہو جاتی ہے لیکن اچھے نتائج حاصل نہیں ہوتے تو ہم اسے ڈیبگ کرنے کے لیے کیا کر سکتے ہیں؟ ہم یہاں آپ کو کچھ نکات دیں گے، لیکن یاد رکھیں کہ اس قسم کی ڈیبگنگ مشین لرننگ کا سب سے مشکل حصہ ہے، اور اس کا کوئی جادوئی حل نہیں ہے۔
+
+### اپنے ڈیٹا کو دوبارہ چیک کریں![[check-your-data-again]]
+
+آپ کا ماڈل صرف تب کچھ سیکھے گا جب یہ حقیقت میں آپ کے ڈیٹا سے کچھ سیکھنے کے قابل ہوگا۔ اگر کوئی بگ ڈیٹا کو خراب کر رہا ہے یا لیبل بے ترتیب طریقے سے منسوب کیے گئے ہیں، تو امکان ہے کہ آپ کا ماڈل ڈیٹا سیٹ پر تربیت حاصل نہ کر سکے۔ اس لیے ہمیشہ اپنے ڈی کوڈ شدہ ان پٹ اور لیبلز کو دو بار چیک کریں، اور خود سے درج ذیل سوالات پوچھیں:
+
+- کیا ڈی کوڈ شدہ ڈیٹا قابل فہم ہے؟
+- کیا آپ لیبلز سے اتفاق کرتے ہیں؟
+- کیا کوئی ایسا لیبل ہے جو باقی تمام لیبلز سے زیادہ عام ہے؟
+- اگر ماڈل ایک بے ترتیب یا ہمیشہ ایک جیسا جواب پیش کرے تو نقصان/میٹرک کیا ہونا چاہیے؟
+
+<Tip warning={true}>
+
+⚠️ اگر آپ تقسیم شدہ تربیت (distributed training) کر رہے ہیں، تو اپنے ڈیٹا سیٹ کے نمونے ہر پروسیس میں پرنٹ کریں اور سہ گنا چیک کریں کہ آپ کو وہی ڈیٹا مل رہا ہے۔ ایک عام بگ یہ ہوتا ہے کہ ڈیٹا کی تخلیق میں کوئی بے ترتیبی شامل ہوتی ہے، جس کی وجہ سے ہر پروسیس کو مختلف ڈیٹا سیٹ ورژن ملتا ہے۔
+
+</Tip>
+
+اپنے ڈیٹا کو دیکھنے کے بعد، ماڈل کی کچھ پیش گوئیوں پر بھی نظر ڈالیں اور انہیں ڈی کوڈ کریں۔ اگر ماڈل ہمیشہ ایک ہی چیز کی پیش گوئی کر رہا ہے، تو ہو سکتا ہے کہ آپ کا ڈیٹا سیٹ کسی ایک زمرے کی طرف جھکاؤ رکھتا ہو (اگر آپ درجہ بندی کے مسائل پر کام کر رہے ہیں)؛ ایسی صورت میں نایاب کلاسز کو اوور سیمپلنگ کرنے جیسی تکنیکیں مدد کر سکتی ہیں۔
+
+اگر آپ کے ابتدائی ماڈل پر حاصل کردہ نقصان/میٹرک بے ترتیب پیش گوئیوں کی متوقع مقدار سے بہت مختلف ہے، تو اپنے نقصان یا میٹرک کے حساب کے طریقے کو دو بار چیک کریں، کیونکہ وہاں شاید کوئی بگ ہو۔ اگر آپ ایک سے زیادہ نقصانات (losses) استعمال کر رہے ہیں اور انہیں آخر میں جمع کر رہے ہیں، تو یقینی بنائیں کہ وہ سب ایک ہی پیمانے پر ہوں۔
+
+جب آپ اپنے ڈیٹا کے بالکل درست ہونے کے بارے میں پُراعتماد ہوں، تو آپ یہ دیکھ سکتے ہیں کہ آیا ماڈل اس پر تربیت حاصل کر سکتا ہے یا نہیں، اور اس کا ایک سادہ طریقہ یہ ہے۔
+
+### اپنے ماڈل کو ایک بیچ پر اوورفٹ کریں[[overfit-your-model-on-one-batch]]
+
+عام طور پر اوورفٹنگ وہ چیز ہے جس سے ہم تربیت کے دوران بچنے کی کوشش کرتے ہیں، کیونکہ اس کا مطلب ہوتا ہے کہ ماڈل عام خصوصیات سیکھنے کے بجائے تربیتی نمونوں کو صرف یاد کر رہا ہے۔ تاہم، ایک ہی بیچ پر بار بار اپنے ماڈل کو تربیت دینے کی کوشش ایک اچھا ٹیسٹ ہے کہ آیا آپ کا ماڈل اس مسئلے کو سیکھ سکتا ہے جسے آپ نے بیان کیا ہے۔ یہ آپ کو یہ بھی دکھائے گا کہ آیا آپ کی ابتدائی سیکھنے کی شرح (learning rate) بہت زیادہ ہے۔
+
+ایک بار جب آپ نے اپنا `Trainer` بیان کر لیا ہو، تو اس کو انجام دینا بہت آسان ہے؛ صرف تربیتی ڈیٹا کا ایک بیچ حاصل کریں، پھر صرف اسی بیچ کو استعمال کرتے ہوئے ایک چھوٹا سا دستی تربیتی لوپ چلائیں، تقریباً 20 مراحل کے لیے:
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+trainer.create_optimizer()
+
+for _ in range(20):
+    outputs = trainer.model(**batch)
+    loss = outputs.loss
+    loss.backward()
+    trainer.optimizer.step()
+    trainer.optimizer.zero_grad()
+```
+
+<Tip>
+
+💡 اگر آپ کے تربیتی ڈیٹا میں عدم توازن ہے، تو اس بات کو یقینی بنائیں کہ تربیتی ڈیٹا کے ایک بیچ میں تمام لیبلز شامل ہوں۔
+
+</Tip>
+
+نتیجے میں حاصل شدہ ماڈل کو اسی `batch` پر تقریباً مکمل نتائج دینے چاہئیں۔ آئیے پیش گوئیوں پر میٹرک کا حساب لگائیں:
+
+```py
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+preds = outputs.logits
+labels = batch["labels"]
+
+compute_metrics((preds.cpu().numpy(), labels.cpu().numpy()))
+```
+
+```python out
+{'accuracy': 1.0}
+```
+
+100% درستگی! یہ اوورفٹنگ کی ایک اچھی مثال ہے (جس کا مطلب ہے کہ اگر آپ اپنے ماڈل کو کسی اور جملے پر آزمائیں تو وہ شاید غلط جواب دے گا)۔
+
+اگر آپ کا ماڈل اس طرح کے کامل نتائج حاصل نہیں کر پاتا، تو اس کا مطلب ہے کہ مسئلہ کی تشکیل میں کچھ غلط ہے یا ڈیٹا میں کوئی مسئلہ ہے، لہذا آپ کو اسے درست کرنا ہوگا۔ صرف اس وقت جب آپ اوورفٹنگ ٹیسٹ پاس کر لیں، آپ یقین کر سکتے ہیں کہ آپ کا ماڈل حقیقت میں کچھ سیکھ سکتا ہے۔
+
+<Tip warning={true}>
+
+⚠️ اس ٹیسٹ کے بعد آپ کو اپنا ماڈل اور `Trainer` دوبارہ تخلیق کرنا ہوگا، کیونکہ حاصل شدہ ماڈل شاید آپ کے مکمل ڈیٹا سیٹ پر مفید سیکھنے کے قابل نہیں ہوگا۔
+
+</Tip>
+
+### جب تک ایک بنیادی ماڈل نہ ہو، کچھ متغیرات کو ٹیون نہ کریں[[dont-tune-anything-until-you-have-a-first-baseline]]
+
+ہائپر پیرامیٹر ٹیوننگ کو اکثر مشین لرننگ کا سب سے مشکل مرحلہ سمجھا جاتا ہے، لیکن یہ صرف ایک آخری قدم ہوتا ہے جو آپ کو میٹرک میں تھوڑا سا فائدہ دیتا ہے۔ زیادہ تر وقت، `Trainer` کے ڈیفالٹ ہائپر پیرامیٹرز کافی اچھے نتائج فراہم کریں گے، لہذا جب تک آپ کے پاس بنیادی ماڈل نہ ہو، مہنگی اور وقت طلب ہائپر پیرامیٹر تلاش کا آغاز نہ کریں۔
+
+ایک بار جب آپ کے پاس کافی اچھا ماڈل ہو، تب آپ اسے تھوڑا سا ایڈجسٹ کر سکتے ہیں۔ بے شمار مختلف ہائپر پیرامیٹرز کے ساتھ ایک ہزار تجربات چلانے کے بجائے، چند مختلف ویلیوز کے ساتھ چند تجربات چلائیں تاکہ آپ کو معلوم ہو کہ کون سا زیادہ اثر رکھتا ہے۔
+
+اگر آپ ماڈل میں تبدیلیاں کر رہے ہیں، تو اسے سادہ رکھیں اور ایسی کوئی چیز شامل نہ کریں جسے آپ معقول طریقے سے جواز نہ دے سکیں۔ ہمیشہ اوورفٹنگ ٹیسٹ پر واپس جا کر تصدیق کریں کہ آپ کی تبدیلیوں نے کسی غیر متوقع نتیجے کو جنم نہیں دیا۔
+
+### مدد طلب کریں[[ask-for-help]]
+
+امید ہے کہ اس سیکشن میں آپ کو ایسا مشورہ ملا ہوگا جو آپ کے مسئلے کو حل کرنے میں مدد دے، لیکن اگر ایسا نہیں ہوا، تو یاد رکھیں کہ آپ کمیونٹی سے [forums](https://discuss.huggingface.co/) پر مدد طلب کر سکتے ہیں۔
+
+یہاں کچھ اضافی وسائل ہیں جو مددگار ثابت ہو سکتے ہیں:
+
+- ["Reproducibility as a vehicle for engineering best practices"](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p) از جوئل گروس
+- ["Checklist for debugging neural networks"](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21) از سیسیلیا شاؤ
+- ["How to unit test machine learning code"](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765) از چیس رابرٹس
+- ["A Recipe for Training Neural Networks"](http://karpathy.github.io/2019/04/25/recipe/) از آندریج کرپاتھی
+
+یقین رکھیں کہ ہر مسئلہ آپ کی غلطی نہیں! 😊
