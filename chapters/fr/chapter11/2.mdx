@@ -1,0 +1,255 @@
+<CourseFloatingBanner chapter={11}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "English", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter11/section2.ipynb"},
+	{label: "Français", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter10/section2.ipynb"},
+    {label: "English", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/fr/chapter11/section2.ipynb"},
+    {label: "Français", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/fr/chapter11/section2.ipynb"},
+]} />
+# Gabarits de chat
+
+## Introduction
+
+Les gabarits de chat sont essentiels pour structurer les interactions entre les modèles de langage et les utilisateurs. Que vous construisiez un simple robot conversationnel ou un [agent complexe](https://huggingface.co/learn/agents-course/fr/unit0/introduction), il est essentiel de comprendre comment formater correctement vos conversations pour obtenir les meilleurs résultats en utilisant votre modèle. Dans ce guide, nous allons explorer ce que sont les gabarits de chat, pourquoi ils sont importants et comment les utiliser efficacement.
+
+<Tip>
+Les gabarits de chat sont essentiels pour :<br>
+- Maintenir une structure de conversation cohérente<br>
+- Assurer une identification correcte des rôles<br>
+- Gérer le contexte à travers plusieurs tours<br>
+- Prendre en charge des fonctions avancées telles que l'utilisation d'outils
+</Tip>
+
+## Types de modèles et gabarits
+
+### Modèles de base vs. modèles instruits
+Un modèle de base est entraîné sur des données textuelles brutes pour prédire le prochain *token*, tandis qu'un modèle instruit est finetuné spécifiquement pour suivre des instructions et converser. Par exemple, [`SmolLM2-135M`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) est un modèle de base, tandis que [`SmolLM2-135M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct) est sa variante finetunée sur des instructions.  
+
+Les modèles instruits sont entraînés à suivre une structure conversationnelle spécifique, ce qui les rend plus adaptés aux applications de chatbot. De plus, les modèles d'instruction peuvent gérer des interactions complexes (y compris l'utilisation d'outils), les entrées multimodales et l'appel de fonctions.
+
+Pour qu'un modèle de base se comporte comme un modèle instruit, nous devons formater nos instructions d'une manière cohérente que le modèle peut comprendre. C'est là qu'interviennent les gabarits de chat. ChatML (pour *Chat Markup Language*) est un de ces gabarits qui structure les conversations avec des indicateurs de rôle clairs (système, utilisateur, assistant). Vous pouvez trouver un guide sur ChatML [ici](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/blob/e2c3f7557efbdec707ae3a336371d169783f1da1/tokenizer_config.json#L146).
+
+<Tip warning={true}>
+Lorsque vous utilisez un modèle instruit, vérifiez toujours que vous utilisez le bon format de gabarits de chat. L'utilisation d'un mauvais gabarit peut conduire à de mauvaises performances du modèle ou à un comportement inattendu. La façon la plus simple de s'en assurer est de vérifier la configuration du *tokenizer* du modèle sur le *Hub*. Par exemple, le modèle `SmolLM2-135M-Instruct` utilise <a href="https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/blob/e2c3f7557efbdec707ae3a336371d169783f1da1/tokenizer_config.json#L146">cette configuration</a>.  
+</Tip>
+
+### Formats de gabarits courants
+
+Avant de se plonger dans des implémentations spécifiques, il est important de comprendre le formatage des conversations attendu par différents modèles. Explorons quelques gabarits courants à l'aide d'un simple exemple de conversation.
+
+Nous utiliserons la structure de conversation suivante pour tous les exemples :
+
+```python
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+    {"role": "assistant", "content": "Hi! How can I help you today?"},
+    {"role": "user", "content": "What's the weather?"},
+]
+```
+
+Voici le gabarit ChatML utilisé dans des modèles tels que SmolLM2 et les Qwen 2 :
+
+```sh
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Hello!<|im_end|>
+<|im_start|>assistant
+Hi! How can I help you today?<|im_end|>
+<|im_start|>user
+What's the weather?<|im_start|>assistant
+```
+
+Voici le format de gabarits utilisé par Mistral :
+```sh
+<s>[INST] You are a helpful assistant. [/INST]
+Hi! How can I help you today?</s>
+[INST] Hello! [/INST]
+```
+
+Les principales différences entre ces formats sont les suivantes :
+1. **Gestion du message système** : 
+   - Llama 2 insère les messages du système dans des balises `<<SYS>>`
+   - Llama 3 utilise des balises `<|system|>` avec des fins `</s>`
+   - Mistral inclut un message système dans la première instruction
+   - Qwen utilise le rôle `system` explicite avec les balises `<|im_start|>`
+   - ChatGPT utilise le préfixe `SYSTEM:`
+
+2. **Délimitation des messages**:
+   - Llama 2 utilise les balises `[INST]` et `[/INST]`
+   - Llama 3 utilise des balises spécifiques pour chaque rôle (`<|system|>`, `<|user|>`, `<|assistant|>`) avec `</s>` comme fin
+   - Mistral utilise `[INST]` et `[/INST]` avec `<s>` utilise `</s>`
+   - Qwen utilise des *token* de début et de fin spécifiques pour chaque rôle
+
+3. **Tokens spéciaux**:
+   - Llama 2 utilise `<s>` et `</s>` pour les limites de la conversation
+   - Llama 3 utilise `</s>` pour terminer chaque message
+   - Mistral utilise `<s>` et `</s>` pour les limites des tours
+   - Qwen utilise des *token* de début et de fin spécifiques pour chaque rôle
+
+Comprendre ces différences est essentiel pour travailler avec différents modèles. Voyons comment la bibliothèque 🤗 *Transformers* nous aide à gérer ces variations automatiquement :
+
+```python
+from transformers import AutoTokenizer
+
+# Cela utilisera automatiquement des gabarits différents
+mistral_tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.1")
+qwen_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen-7B-Chat")
+smol_tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
+
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+]
+
+# Chaque modèle sera formaté en fonction de son gabarit
+mistral_chat = mistral_tokenizer.apply_chat_template(messages, tokenize=False)
+qwen_chat = qwen_tokenizer.apply_chat_template(messages, tokenize=False)
+smol_chat = smol_tokenizer.apply_chat_template(messages, tokenize=False)
+```
+
+<details>
+<summary>Cliquer pour voir des exemples de gabarits</summary>
+
+Gabarits ChatML de Qwen 2 et SmolLM2 :
+
+```sh
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Hello!<|im_end|>
+<|im_start|>assistant
+Hi! How can I help you today?<|im_end|>
+<|im_start|>user
+What's the weather?<|im_start|>assistant
+```
+
+Gabarit de Mistral :
+
+```sh
+<s>[INST] You are a helpful assistant. [/INST]
+Hi! How can I help you today?</s>
+[INST] Hello! [/INST]
+```
+
+</details>
+
+
+### Fonctionnalités avancées
+Les gabarits de chat peuvent gérer des scénarios plus complexes que les simples interactions conversationnelles, notamment :
+
+1. **Utilisation d'outils** : lorsque les modèles doivent interagir avec des outils externes ou des API.
+2. **Entrées multimodales** : pour gérer les images, le son ou d'autres types de médias
+3. **Appel de fonction** : pour l'exécution de fonctions structurées
+4. **Contexte multi-tour** : pour conserver l'historique des conversations
+
+<Tip>
+Lors de l'implémentation de fonctions avancées :
+- Testez minutieusement votre modèle. Les applications de vision et les outils utilisent des gabarits particulièrement variés.<br>
+- Surveillez attentivement l'utilisation des <i>tokens</i> entre chaque fonctionnalité et chaque modèle.<br>
+- Documenter le format attendu pour chaque fonctionnalité
+</Tip>
+
+Pour les conversations multimodales, les gabarits peuvent inclure des références d'images ou des images codées en base64 :
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are a helpful vision assistant that can analyze images.",
+    },
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image", "image_url": "https://example.com/image.jpg"},
+        ],
+    },
+]
+```
+
+Voici un exemple de gabarits de chat avec l'utilisation d'un outil :
+
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are an AI assistant that can use tools. Available tools: calculator, weather_api",
+    },
+    {"role": "user", "content": "What's 123 * 456 and is it raining in Paris?"},
+    {
+        "role": "assistant",
+        "content": "Let me help you with that.",
+        "tool_calls": [
+            {
+                "tool": "calculator",
+                "parameters": {"operation": "multiply", "x": 123, "y": 456},
+            },
+            {"tool": "weather_api", "parameters": {"city": "Paris", "country": "France"}},
+        ],
+    },
+    {"role": "tool", "tool_name": "calculator", "content": "56088"},
+    {
+        "role": "tool",
+        "tool_name": "weather_api",
+        "content": "{'condition': 'rain', 'temperature': 15}",
+    },
+]
+```
+
+## Bonnes pratiques
+
+### Principes généraux
+Lorsque vous travaillez avec des gabarits de chat, respectez les pratiques suivantes :
+
+1. **Formatage cohérent** : Utilisez toujours le même format de gabarits pour l'ensemble de votre application.
+2. **Définition claire des rôles** : Spécifiez clairement les rôles (système, utilisateur, assistant, outil) pour chaque message.
+3. **Gestion du contexte** : Tenir compte de la limite du nombre de *tokens* lors de la gestion de l'historique des conversations.
+4. **Gestion des erreurs** : Inclure une gestion appropriée des erreurs pour les appels d'outils et les entrées multimodales.
+5. **Validation** : Valider la structure du message avant de l'envoyer au modèle
+
+
+<Tip warning={true}>
+Les pièges à éviter :
+- Mélanger différents gabarits dans la même application<br>
+- Dépasser la limite du nombre de <i>token</i> avec de longs historiques de conversation<br>
+- Ne pas escamoter correctement les caractères spéciaux dans les messages<br>
+- Oublier de valider la structure des messages d'entrée<br>
+- Ignorer les exigences de gabarits spécifiques à un modèle
+</Tip>
+
+## Exercice pratique
+
+Entraînons-nous à mettre en œuvre des gabarits de chat à l'aide d'un exemple concret.
+
+<Tip>
+Suivez les étapes suivantes pour convertir le jeu de données `HuggingFaceTB/smoltalk` au format ChatML :
+
+1. Chargez le jeu de données :
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("HuggingFaceTB/smoltalk")
+```
+
+2. Créer une fonction de traitement :
+```python
+def convert_to_chatml(example):
+    return {
+        "messages": [
+            {"role": "user", "content": example["input"]},
+            {"role": "assistant", "content": example["output"]},
+        ]
+    }
+```
+
+3. Appliquer le gabarit de chat en utilisant le *tokenizer* du modèle choisi.
+
+N'oubliez pas de vérifier que le format de sortie correspond aux exigences du modèle choisi !
+</Tip>
+
+## Ressources complémentaires
+
+- [Guide sur les gabarits de chat dans la documentation d'Hugging Face](https://huggingface.co/docs/transformers/main/en/chat_templating)
+- [Documentation de 🤗 *Transformers*](https://huggingface.co/docs/transformers)
+- [Dépôt Github contenant des exemples de gabarits de chat](https://github.com/chujiezheng/chat_templates)

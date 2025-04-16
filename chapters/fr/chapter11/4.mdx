@@ -1,0 +1,173 @@
+<CourseFloatingBanner chapter={11}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "English", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter11/section4.ipynb"},
+	{label: "Français", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter10/section4.ipynb"},
+    {label: "English", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/fr/chapter11/section4.ipynb"},
+    {label: "Français", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/fr/chapter11/section4.ipynb"},
+]} />
+
+# LoRA (Low-Rank Adaptation)
+
+Le *finetuning* de LLM est un processus gourmand en ressources. LoRA est une technique qui nous permet de finetuner de tels modèles avec un petit nombre de paramètres. Elle fonctionne en ajoutant et en optimisant des matrices plus petites aux poids d'attention, ce qui réduit généralement les paramètres entraînables d'environ 90 %.
+
+## Comprendre la méthode LoRA
+
+LoRA (Low-Rank Adaptation) est une technique de *finetuning* efficace en termes de paramètres qui gèle les poids du modèle pré-entraîné et injecte des matrices de décomposition de rangs entraînables dans les couches du modèle. Au lieu d'entraîner tous les paramètres du modèle pendant le *finetuning*, LoRA décompose les mises à jour des poids en matrices plus petites par le biais d'une décomposition de rang inférieur, réduisaint ainsi considérablement le nombre de paramètres à entraîner tout en maintenant les performances du modèle. Par exemple, lorsqu'il est appliqué au GPT-3 175B, LoRA réduit de 10 000 fois le nombre de paramètres entraînables et de trois fois les besoins en mémoire du par rapport à un *finetuning* complet. Pour en savoir plus sur cette méthode, consultez ce [papier](https://arxiv.org/pdf/2106.09685).
+
+LoRA fonctionne en ajoutant, généralement sur les poids des couches dattention du *transformer*, des paires de matrices de décomposition des rangs. Pendant l'inférence, ces poids d'adaptateur peuvent être fusionnés avec le modèle de base, ce qui n'entraîne aucune latence supplémentaire. LoRA est particulièrement utile pour adapter de grands modèles de langage à des tâches ou domaines spécifiques tout en conservant des besoins en ressources gérables.
+
+## Principaux avantages du LoRA
+
+1. **Efficacité de la mémoire** : 
+   - Seuls les paramètres de l`adaptateur sont stockés dans la mémoire du GPU
+   - Les poids du modèle de base restent gelés et peuvent être chargés avec une précision inférieure.
+   - Permet un *finetuning* des grands modèles sur des GPU grand public.
+
+2. **Caractéristiques d'entraînement** :
+   - Intégration native des PEFT/LoRA avec une configuration minimale
+   - Prise en charge de QLoRA (Quantized LoRA) pour une meilleure efficacité de la mémoire.
+
+3. **Gestion des adaptateurs** :
+   - Réduction du poids de l'adaptateur lors des *checkpoints*
+   - Fonctionnalités permettant de fusionner les adaptateurs dans le modèle de base
+
+## Chargement des adaptateurs LoRA avec PEFT
+
+[*PEFT*](https://github.com/huggingface/peft) est une bibliothèque qui fournit une interface unifiée pour charger et gérer les méthodes PEFT (*Parameter-Efficient Fine-Tuning*), y compris LoRA. Elle permet de charger et de passer facilement d'une méthode PEFT à l'autre, ce qui facilite l'expérimentation de différentes techniques de *finetuning*. 
+
+Les adaptateurs peuvent être chargés sur un modèle pré-entraîné avec `load_adapter()`, ce qui est utile pour en essayer différents dont les poids ne sont pas fusionnés. Définissez les poids de l'adaptateur actif avec la fonction `set_adapter()`. Pour retourner le modèle de base, vous pouvez utiliser `unload()` pour décharger tous les modules LoRA. Cela facilite le basculement entre différents poids spécifiques à une tâche.
+
+```python
+from peft import PeftModel, PeftConfig
+
+config = PeftConfig.from_pretrained("ybelkada/opt-350m-lora")
+model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path)
+lora_model = PeftModel.from_pretrained(model, "ybelkada/opt-350m-lora")
+```
+
+![lora_load_adapter](https://github.com/huggingface/smol-course/raw/main/3_parameter_efficient_finetuning/images/lora_adapter.png)
+
+## Finetuner un LLM en utilisant `trl` et `SFTTrainer` avec LoRA
+
+[SFTTrainer](https://huggingface.co/docs/trl/sft_trainer) de `trl` fournit une intégration avec les adaptateurs LoRA à travers la bibliothèque [PEFT](https://huggingface.co/docs/peft/en/index). Cela signifie que nous pouvons finetuner un modèle de la même manière que nous l'avons fait avec le SFT, mais en utilisant LoRA pour réduire le nombre de paramètres que nous avons besoin d'entraîner.
+
+Nous utiliserons la classe `LoRAConfig` de PEFT dans notre exemple. L'installation ne nécessite que quelques étapes de configuration :
+
+1. Définir la configuration LoRA (rang, alpha, *dropout*).
+2. Créer le SFTTrainer avec la configuration PEFT
+3. Entraîner et sauvegarder les poids de l'adaptateur.
+
+## Configuration du LoRA
+
+Passons en revue la configuration et les paramètres clés du LoRA.
+*** Traduit avec www.DeepL.com/Translator (version gratuite) ***
+
+
+| Paramètres | Description |
+|-----------|-------------|
+| `r` (rank) | Dimension des matrices de rang inférieur utilisées pour la mise à jour des poids. Elle est généralement comprise entre 4 et 32. Des valeurs plus faibles permettent une plus grande compression mais potentiellement moins d'expressivité. |
+| `lora_alpha` | Facteur d'échelle pour les couches LoRA, généralement fixé à deux fois la valeur du rang. Des valeurs plus élevées se traduisent par des effets d'adaptation plus forts. |
+| `lora_dropout` | Probabilité de *dropout* pour les couches LoRA, généralement de 0,05 à 0,1. Des valeurs plus élevées permettent d'éviter un surentraînement pendant l'entraînement. |
+| `bias` | Contrôle l'entraînement des termes de biais. Les options sont « none », « all » ou « lora_only ». L'option « none » est la plus courante pour des raisons d'efficacité de mémoire. |
+| `target_modules` | Spécifie les modules du modèle auxquels appliquer la méthode LoRA. Il peut s'agir de « tous les modules linéaires » ou de modules spécifiques tels que « q_proj, v_proj ». Un plus grand nombre de modules permet une plus grande adaptabilité mais augmente l'utilisation de la mémoire. |
+
+<Tip>
+Lors de l'implémentation des méthodes PEFT, commencez par de petites valeurs de rang (4-8) pour LoRA et surveillez la perte d'entraînement. Utilisez des ensembles de validation pour éviter le surentraîneùent et comparez les résultats avec des <i>baselines</i> via <i>finetuning</i> complet lorsque cela est possible. L'efficacité des différentes méthodes peut varier en fonction de la tâche, c'est pourquoi l'expérimentation est essentielle.
+</Tip>
+
+## Utilisation de TRL avec PEFT
+
+Les méthodes PEFT peuvent être combinées avec TRL pour un *finetuning* permettant de réduire les besoins de mémoire. Nous pouvons passer `LoraConfig` au modèle lors de son chargement.  
+
+```python
+from peft import LoraConfig
+
+# TODO : Configurer les paramètres de LoRA
+# r : dimension du rang des matrices LoRA (plus petite = plus de compression)
+rank_dimension = 6
+# lora_alpha : facteur d'échelle pour les couches LoRA (plus élevé = adaptation plus forte)
+lora_alpha = 8
+# lora_dropout : probabilité de dropout pour les couches LoRA (aide à prévenir le surentraînement)
+lora_dropout = 0.05
+
+peft_config = LoraConfig(
+    r=rank_dimension,  # Dimension du rang, généralement entre 4 et 32
+    lora_alpha=lora_alpha,  # Facteur d'échelle LoRA, généralement 2x le rang
+    lora_dropout=lora_dropout,  # Probabilité de dropout probability pour les couches de LoRA
+    bias="none",  # Type de biais pour le LoRA. Les biais correspondants seront mis à jour pendant l'entraînement
+    target_modules="all-linear",  # Modules auxquels appliquer le LoRA
+    task_type="CAUSAL_LM",  # Type de tâche pour l'architecture du modèle
+)
+```
+
+Ci-dessus, nous avons utilisé `device_map="auto"` pour assigner automatiquement le modèle au bon appareil. Vous pouvez également assigner manuellement le modèle à un appareil spécifique en utilisant `device_map={"": device_index}`. 
+
+Nous aurons également besoin de définir le `SFTTrainer` avec la configuration du LoRA.
+
+```python
+# Créer un SFTTrainer avec la configuration LoRA
+trainer = SFTTrainer(
+    model=model,
+    args=args,
+    train_dataset=dataset["train"],
+    peft_config=peft_config,  # Configuration LoRA
+    max_seq_length=max_seq_length,  # Longueur maximale de la séquence
+    processing_class=tokenizer,
+)
+```
+
+<Tip>
+✏️ <b>Essayez !</b> Reprenez votre modèle de la section précédente, mais finetuné-le avec LoRA. Utilisez le jeu de données `HuggingFaceTB/smoltalk` pour finetuner un modèle `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`, en utilisant la configuration LoRA que nous avons définie ci-dessus.
+</Tip>
+
+## Fusion des adaptateurs LoRA
+
+Après l'entraînement avec LoRA, vous pouvez souhaiter fusionner les poids des adaptateurs dans le modèle de base pour faciliter le déploiement. Cela permet de créer un modèle unique avec les poids combinés, éliminant ainsi la nécessité de charger les adaptateurs séparément pendant l'inférence.
+
+Le processus de fusion nécessite une attention particulière de la gestion de la mémoire et de la précision. Comme vous devrez charger simultanément le modèle de base et les poids des adaptateurs, assurez-vous que la mémoire du GPU/CPU est suffisante. L'utilisation de `device_map="auto"` dans 🤗 *Transformers* trouvera le bon périphérique pour le modèle en fonction de votre matériel. 
+
+Maintenez une précision cohérente tout au long du processus, en utilisant la précision utilisée pendant l'entraînement et en sauvegardant le modèle fusionné dans le même format pour le déploiement. 
+
+## Mise en œuvre de la fusion
+
+Après l'entraînement d'un adaptateur LoRA, vous pouvez fusionner les poids de l'adaptateur dans le modèle de base. Voici comment procéder :
+
+```python
+import torch
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
+
+# 1. Charger le modèle de basel
+base_model = AutoModelForCausalLM.from_pretrained(
+    "base_model_name", torch_dtype=torch.float16, device_map="auto"
+)
+
+# 2. Charger le modèle PEFT avec l'adaptateur
+peft_model = PeftModel.from_pretrained(
+    base_model, "path/to/adapter", torch_dtype=torch.float16
+)
+
+# 3. Fusionner les poids de l'adaptateur avec le modèle de base
+merged_model = peft_model.merge_and_unload()
+```
+
+Si vous constatez des différences de taille dans le modèle sauvegardé, assurez-vous que vous sauvegardez également le *tokenizer* :
+
+```python
+# Sauvegarde du modèle et du tokenizer
+tokenizer = AutoTokenizer.from_pretrained("base_model_name")
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
+```
+
+<Tip>
+✏️ <b>Essayez !</b> Fusionner les poids de l'adaptateur dans le modèle de base. Utiliser le jeu de données `HuggingFaceTB/smoltalk` pour finetuner un modèle `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` grâce à l'approche LoRA que nous avons définie ci-dessus.
+</Tip>
+
+
+# Ressources
+
+- [Papier de la méthode LoRA (*Low-Rank Adaptation of Large Language Models*)](https://arxiv.org/pdf/2106.09685)
+- [Documentation de la bibliothèque *PEFT*](https://huggingface.co/docs/peft)
+- [Article de blog d'Hugging Face sur *PEFT-](https://huggingface.co/blog/peft)
