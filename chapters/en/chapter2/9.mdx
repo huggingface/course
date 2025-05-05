@@ -1,12 +1,12 @@
 # Optimized Inference Deployment
 
-In this section, we'll explore advanced frameworks for optimizing LLM deployments: Text Generation Inference (TGI) and vLLM. These application are primarily used in production environments to serve LLMs to users. So this section is more focused on how to deploy these frameworks in production rather than how to use them for inference on a single machine.
+In this section, we'll explore advanced frameworks for optimizing LLM deployments: Text Generation Inference (TGI), vLLM, and llama.cpp. These applications are primarily used in production environments to serve LLMs to users. This section focuses on how to deploy these frameworks in production rather than how to use them for inference on a single machine.
 
 We'll cover how these tools maximize inference efficiency and simplify production deployments of Large Language Models.
 
 ## Framework Selection Guide
 
-TGI and vLLM serve similar purposes but have distinct characteristics that make them better suited for different use cases. Let's look at the key differences between the two. We'll focus on two key areas: performance and integration.
+TGI, vLLM, and llama.cpp serve similar purposes but have distinct characteristics that make them better suited for different use cases. Let's look at the key differences between them, focusing on performance and integration.
 
 ### Memory Management and Performance
 
@@ -37,37 +37,33 @@ vLLM's key innovation lies in how it manages this cache:
 The PagedAttention approach can lead to up to 24x higher throughput compared to traditional methods, making it a game-changer for production LLM deployments. If you want to go really deep into how PagedAttention works, you can read the [the guide from the vLLM documentation](https://docs.vllm.ai/en/latest/design/kernel/paged_attention.html).
 </Tip>
 
-We can summarize the memory differences in the following table:
+**llama.cpp** is a highly optimized C/C++ implementation originally designed for running LLaMA models on consumer hardware. It focuses on CPU efficiency with optional GPU acceleration and is ideal for resource-constrained environments. llama.cpp uses quantization techniques to reduce model size and memory requirements while maintaining good performance. It implements optimized kernels for various CPU architectures and supports basic KV cache management for efficient token generation.
 
-| Feature | TGI | vLLM |
-|---------|-----|------|
-| Memory Efficiency | Good (Flash Attention) | Excellent (PagedAttention) |
-| Memory Management | HBM-SRAM optimization, single-load computation | Page-based KV cache, non-contiguous allocation |
-| Memory Bottleneck Addressed | Attention computation bandwidth | KV cache management |
-| Key Innovation | Minimizes HBM-SRAM transfers | Virtual memory-style paging for KV cache |
-| Memory Sharing | Limited | Efficient (shared KV cache pages) |
-| Throughput | High | Very High (up to 24x traditional) |
-| Memory Fragmentation | Standard | Reduced by up to 47% |
-| Sequence Length Handling | Fixed | Dynamic |
-| Best Use Case | Stable, predictable workloads | Variable length, concurrent requests |
+<Tip title="How llama.cpp Quantization Works">
+Quantization in llama.cpp reduces the precision of model weights from 32-bit or 16-bit floating point to lower precision formats like 8-bit integers (INT8), 4-bit, or even lower. This significantly reduces memory usage and improves inference speed with minimal quality loss.
+
+Key quantization features in llama.cpp include:
+1. **Multiple Quantization Levels**: Supports 8-bit, 4-bit, 3-bit, and even 2-bit quantization
+2. **GGML/GGUF Format**: Uses custom tensor formats optimized for quantized inference
+3. **Mixed Precision**: Can apply different quantization levels to different parts of the model
+4. **Hardware-Specific Optimizations**: Includes optimized code paths for various CPU architectures (AVX2, AVX-512, NEON)
+
+This approach enables running billion-parameter models on consumer hardware with limited memory, making it perfect for local deployments and edge devices.
+</Tip>
+
+
 
 ### Deployment and Integration
 
-Let's move on to the deployment and integration differences between the two frameworks.
+Let's move on to the deployment and integration differences between the frameworks.
 
 **TGI** excels in enterprise-level deployment with its production-ready features. It comes with built-in Kubernetes support and includes everything you need for running in production, like monitoring through Prometheus and Grafana, automatic scaling, and comprehensive safety features. The system also includes enterprise-grade logging and various protective measures like content filtering and rate limiting to keep your deployment secure and stable.
 
 **vLLM** takes a more flexible, developer-friendly approach to deployment. It's built with Python at its core and can easily replace OpenAI's API in your existing applications. The framework focuses on delivering raw performance and can be customized to fit your specific needs. It works particularly well with Ray for managing clusters, making it a great choice when you need high performance and adaptability.
 
-Here are the key deployment differences:
+**llama.cpp** prioritizes simplicity and portability. Its server implementation is lightweight and can run on a wide range of hardware, from powerful servers to consumer laptops and even some high-end mobile devices. With minimal dependencies and a simple C/C++ core, it's easy to deploy in environments where installing Python frameworks would be challenging. The server provides an OpenAI-compatible API while maintaining a much smaller resource footprint than other solutions.
 
-| Feature | TGI | vLLM |
-|---------|-----|------|
-| Deployment Options | Docker, Cloud, K8s | Python Package, Docker |
-| Primary Integration | HuggingFace Ecosystem | OpenAI API Compatible |
-| Monitoring | Built-in Prometheus/Grafana | Custom Metrics |
-| Safety Features | Comprehensive | Basic |
-| Scaling Strategies | Tensor Parallel | Tensor + Pipeline Parallel |
+
 
 ## Getting Started
 
@@ -90,7 +86,41 @@ docker run --gpus all \
     --model-id HuggingFaceTB/SmolLM2-360M-Instruct
 ```
 
-Then interact with it using the OpenAI client:
+Then interact with it using Hugging Face's InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to TGI endpoint
+client = InferenceClient(
+    model="http://localhost:8080",  # URL to the TGI server
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+    stop_sequences=[],
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Alternatively, you can use the OpenAI client:
 
 ```python
 from openai import OpenAI
@@ -114,6 +144,94 @@ response = client.chat.completions.create(
 )
 print(response.choices[0].message.content)
 ```
+{:else if framework === 'llama.cpp'}
+
+llama.cpp is easy to install and use, requiring minimal dependencies and supporting both CPU and GPU inference.
+
+First, install and build llama.cpp:
+
+```sh
+# Clone the repository
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Build the project
+make
+
+# Download the SmolLM2-1.7B-Instruct-GGUF model
+curl -L -O https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct.Q4_K_M.gguf
+```
+
+Then, launch the server (with OpenAI API compatibility):
+
+```sh
+# Start the server
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \
+    --n-gpu-layers 0  # Set to a higher number to use GPU
+```
+
+Interact with the server using Hugging Face's InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to llama.cpp server
+client = InferenceClient(
+    model="http://localhost:8080/v1",  # URL to the llama.cpp server
+    token="sk-no-key-required"  # llama.cpp server requires this placeholder
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Alternatively, you can use the OpenAI client:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to llama.cpp server
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-no-key-required"  # llama.cpp server requires this placeholder
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",  # Model identifier can be anything as server only loads one model
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
 {:else}
 
 vLLM is easy to install and use, with both OpenAI API compatibility and a native Python interface.
@@ -127,7 +245,40 @@ python -m vllm.entrypoints.openai.api_server \
     --port 8000
 ```
 
-Then interact with it using the OpenAI client:
+Then interact with it using Hugging Face's InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to vLLM endpoint
+client = InferenceClient(
+    model="http://localhost:8000/v1",  # URL to the vLLM server
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Alternatively, you can use the OpenAI client:
 
 ```python
 from openai import OpenAI
@@ -155,7 +306,7 @@ print(response.choices[0].message.content)
 
 ### Basic Text Generation
 
-Let's look at examples of text generation with both frameworks:
+Let's look at examples of text generation with the frameworks:
 
 {#if framework === 'tgi'}
 
@@ -173,7 +324,38 @@ docker run --gpus all \
     --waiting-served-ratio 1.2
 ```
 
-Then use the OpenAI client for generation:
+Use the InferenceClient for flexible text generation:
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Raw text generation 
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    do_sample=True,
+    details=True,
+)
+print(response.generated_text)
+```
+
+Or use the OpenAI client:
 ```python
 from openai import OpenAI
 
@@ -190,9 +372,172 @@ response = client.chat.completions.create(
 )
 print(response.choices[0].message.content)
 ```
+{:else if framework === 'llama.cpp'}
+
+For llama.cpp, you can set advanced parameters when launching the server:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \            # Context size
+    --threads 8 \        # CPU threads to use
+    --batch-size 512 \   # Batch size for prompt evaluation
+    --n-gpu-layers 0     # GPU layers (0 = CPU only)
+```
+
+Use the InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(
+    model="http://localhost:8080/v1",
+    token="sk-no-key-required"
+)
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# For direct text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    details=True,
+)
+print(response.generated_text)
+```
+
+Or use the OpenAI client for generation with control over the sampling parameters:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="sk-no-key-required")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,          # Higher for more creativity
+    top_p=0.95,               # Nucleus sampling probability
+    frequency_penalty=0.5,    # Reduce repetition of frequent tokens
+    presence_penalty=0.5,     # Reduce repetition by penalizing tokens already present
+    max_tokens=200,           # Maximum generation length
+)
+print(response.choices[0].message.content)
+```
+
+You can also use llama.cpp's native library for even more control:
+
+```python
+# Using llama-cpp-python package for direct model access
+from llama_cpp import Llama
+
+# Load the model
+llm = Llama(
+    model_path="smollm2-1.7b-instruct.Q4_K_M.gguf",
+    n_ctx=4096,            # Context window size
+    n_threads=8,           # CPU threads
+    n_gpu_layers=0         # GPU layers (0 = CPU only)
+)
+
+# Format prompt according to the model's expected format
+prompt = """<|im_start|>system
+You are a creative storyteller.
+<|im_end|>
+<|im_start|>user
+Write a creative story
+<|im_end|>
+<|im_start|>assistant
+"""
+
+# Generate response with precise parameter control
+output = llm(
+    prompt,
+    max_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    frequency_penalty=0.5,
+    presence_penalty=0.5,
+    stop=["<|im_end|>"]
+)
+
+print(output["choices"][0]["text"])
+```
 {:else}
 
-For advanced usage, vLLM provides a native Python interface with fine-grained control:
+For advanced usage with vLLM, you can use the InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8000/v1")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# For direct text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+```
+
+You can also use the OpenAI client:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed"
+)
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+```
+
+vLLM also provides a native Python interface with fine-grained control:
 
 ```python
 from vllm import LLM, SamplingParams
@@ -256,6 +601,29 @@ client.generate(
     repetition_penalty=1.1,  # Reduce repetition
 )
 ```
+{:else if framework === 'llama.cpp'}
+```python
+# Via OpenAI API compatibility
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",  # Model name (can be any string for llama.cpp server)
+    prompt="Write a creative story",
+    temperature=0.8,        # Higher for more creativity
+    top_p=0.95,             # Consider top 95% probability mass 
+    frequency_penalty=1.1,  # Reduce repetition
+    presence_penalty=0.1,   # Reduce repetition
+    max_tokens=100,         # Maximum length
+)
+
+# Via llama-cpp-python direct access
+output = llm(
+    "Write a creative story",
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=100,
+    repeat_penalty=1.1
+)
+```
 {:else}
 ```python
 params = SamplingParams(
@@ -281,6 +649,24 @@ client.generate(
     no_repeat_ngram_size=3,  # Prevent 3-gram repetition
 )
 ```
+{:else if framework === 'llama.cpp'}
+```python
+# Via OpenAI API
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Write a varied text",
+    frequency_penalty=1.1,   # Penalize frequent tokens
+    presence_penalty=0.8,    # Penalize tokens already present
+)
+
+# Via direct library
+output = llm(
+    "Write a varied text",
+    repeat_penalty=1.1,      # Penalize repeated tokens
+    frequency_penalty=0.5,   # Additional frequency penalty
+    presence_penalty=0.5     # Additional presence penalty
+)
+```
 {:else}
 ```python
 params = SamplingParams(
@@ -301,6 +687,23 @@ client.generate(
     max_new_tokens=100,
     min_new_tokens=10,
     stop_sequences=["\n\n", "###"],
+)
+```
+{:else if framework === 'llama.cpp'}
+```python
+# Via OpenAI API
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Generate a short paragraph",
+    max_tokens=100,
+    stop=["\n\n", "###"]
+)
+
+# Via direct library
+output = llm(
+    "Generate a short paragraph",
+    max_tokens=100,
+    stop=["\n\n", "###"]
 )
 ```
 {:else}
@@ -331,6 +734,30 @@ docker run --gpus all -p 8080:80 \
     --max-batch-total-tokens 8192 \
     --max-input-length 4096
 ```
+{:else if framework === 'llama.cpp'}
+llama.cpp uses quantization and optimized memory layout:
+
+```sh
+# Server with memory optimizations
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 2048 \               # Context size
+    --threads 4 \           # CPU threads
+    --n-gpu-layers 32 \     # Use more GPU layers for larger models
+    --mlock \               # Lock memory to prevent swapping
+    --cont-batching         # Enable continuous batching
+```
+
+For models too large for your GPU, you can use CPU offloading:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --n-gpu-layers 20 \     # Keep first 20 layers on GPU
+    --threads 8             # Use more CPU threads for CPU layers
+```
 {:else}
 vLLM uses PagedAttention for optimal memory management:
 
@@ -357,3 +784,6 @@ llm = LLM(engine_args=engine_args)
 - [PagedAttention Paper](https://arxiv.org/abs/2309.06180)
 - [HuggingFace Blog: TGI in Production](https://huggingface.co/blog/tgi-serving)
 - [vLLM Performance Benchmarks](https://vllm.readthedocs.io/en/latest/performance.html)
+- [llama.cpp GitHub Repository](https://github.com/ggerganov/llama.cpp)
+- [llama.cpp Server Documentation](https://github.com/ggerganov/llama.cpp/blob/master/examples/server/README.md)
+- [llama-cpp-python Repository](https://github.com/abetlen/llama-cpp-python)
