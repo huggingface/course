@@ -1,0 +1,359 @@
+# Optimized Inference Deployment
+
+In this section, we'll explore advanced frameworks for optimizing LLM deployments: Text Generation Inference (TGI) and vLLM. These application are primarily used in production environments to serve LLMs to users. So this section is more focused on how to deploy these frameworks in production rather than how to use them for inference on a single machine.
+
+We'll cover how these tools maximize inference efficiency and simplify production deployments of Large Language Models.
+
+## Framework Selection Guide
+
+TGI and vLLM serve similar purposes but have distinct characteristics that make them better suited for different use cases. Let's look at the key differences between the two. We'll focus on two key areas: performance and integration.
+
+### Memory Management and Performance
+
+**TGI** is designed to be stable and predictable in production, using fixed sequence lengths to keep memory usage consistent. TGI manages memory using Flash Attention 2 and continuous batching techniques. This means it can process attention calculations very efficiently and keep the GPU busy by constantly feeding it work. The system can move parts of the model between CPU and GPU when needed, which helps handle larger models. 
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/tgi/flash-attn.png" alt="Flash Attention" />
+
+<Tip title="How Flash Attention Works">
+Flash Attention is a technique that optimizes the attention mechanism in transformer models by addressing memory bandwidth bottlenecks. As discussed earlier in [section 12.3](2.mdx), the attention mechanism has quadratic complexity and memory usage, making it inefficient for long sequences.
+
+The key innovation is in how it manages memory transfers between High Bandwidth Memory (HBM) and faster SRAM cache. Traditional attention repeatedly transfers data between HBM and SRAM, creating bottlenecks by leaving the GPU idle. Flash Attention loads data once into SRAM and performs all calculations there, minimizing expensive memory transfers. 
+
+While the benefits are most significant during training, Flash Attention's reduced VRAM usage and improved efficiency make it valuable for inference as well, enabling faster and more scalable LLM serving.
+</Tip>
+
+**vLLM** takes a different approach by using PagedAttention. Just like how a computer manages its memory in pages, vLLM splits the model's memory into smaller blocks. This clever system means it can handle different-sized requests more flexibly and doesn't waste memory space. It's particularly good at sharing memory between different requests and reduces memory fragmentation, which makes the whole system more efficient.
+
+<Tip title="How Paged Attention Works">
+Paged Attention is a technique that addresses another critical bottleneck in LLM inference: KV cache memory management. As discussed in [section 12.3](2.mdx), during text generation, the model stores attention keys and values (KV cache) for each generated token to reduce redundant computations. The KV cache can become enormous, especially with long sequences or multiple concurrent requests.
+
+vLLM's key innovation lies in how it manages this cache:
+
+1. **Memory Paging**: Instead of treating the KV cache as one large block, it's divided into fixed-size "pages" (similar to virtual memory in operating systems).
+2. **Non-contiguous Storage**: Pages don't need to be stored contiguously in GPU memory, allowing for more flexible memory allocation.
+3. **Page Table Management**: A page table tracks which pages belong to which sequence, enabling efficient lookup and access.
+4. **Memory Sharing**: For operations like parallel sampling, pages storing the KV cache for the prompt can be shared across multiple sequences.
+
+The PagedAttention approach can lead to up to 24x higher throughput compared to traditional methods, making it a game-changer for production LLM deployments. If you want to go really deep into how PagedAttention works, you can read the [the guide from the vLLM documentation](https://docs.vllm.ai/en/latest/design/kernel/paged_attention.html).
+</Tip>
+
+We can summarize the memory differences in the following table:
+
+| Feature | TGI | vLLM |
+|---------|-----|------|
+| Memory Efficiency | Good (Flash Attention) | Excellent (PagedAttention) |
+| Memory Management | HBM-SRAM optimization, single-load computation | Page-based KV cache, non-contiguous allocation |
+| Memory Bottleneck Addressed | Attention computation bandwidth | KV cache management |
+| Key Innovation | Minimizes HBM-SRAM transfers | Virtual memory-style paging for KV cache |
+| Memory Sharing | Limited | Efficient (shared KV cache pages) |
+| Throughput | High | Very High (up to 24x traditional) |
+| Memory Fragmentation | Standard | Reduced by up to 47% |
+| Sequence Length Handling | Fixed | Dynamic |
+| Best Use Case | Stable, predictable workloads | Variable length, concurrent requests |
+
+### Deployment and Integration
+
+Let's move on to the deployment and integration differences between the two frameworks.
+
+**TGI** excels in enterprise-level deployment with its production-ready features. It comes with built-in Kubernetes support and includes everything you need for running in production, like monitoring through Prometheus and Grafana, automatic scaling, and comprehensive safety features. The system also includes enterprise-grade logging and various protective measures like content filtering and rate limiting to keep your deployment secure and stable.
+
+**vLLM** takes a more flexible, developer-friendly approach to deployment. It's built with Python at its core and can easily replace OpenAI's API in your existing applications. The framework focuses on delivering raw performance and can be customized to fit your specific needs. It works particularly well with Ray for managing clusters, making it a great choice when you need high performance and adaptability.
+
+Here are the key deployment differences:
+
+| Feature | TGI | vLLM |
+|---------|-----|------|
+| Deployment Options | Docker, Cloud, K8s | Python Package, Docker |
+| Primary Integration | HuggingFace Ecosystem | OpenAI API Compatible |
+| Monitoring | Built-in Prometheus/Grafana | Custom Metrics |
+| Safety Features | Comprehensive | Basic |
+| Scaling Strategies | Tensor Parallel | Tensor + Pipeline Parallel |
+
+## Getting Started
+
+Let's explore how to use these frameworks for deploying LLMs, starting with installation and basic setup.
+
+### Installation and Basic Setup
+
+{#if framework === 'tgi'}
+
+TGI is easy to install and use, with deep integration into the Hugging Face ecosystem.
+
+First, launch the TGI server using Docker:
+
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct
+```
+
+Then interact with it using the OpenAI client:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to TGI endpoint
+client = OpenAI(
+    base_url="http://localhost:8080/v1",  # Make sure to include /v1
+    api_key="not-needed",  # TGI doesn't require an API key by default
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+{:else}
+
+vLLM is easy to install and use, with both OpenAI API compatibility and a native Python interface.
+
+First, launch the vLLM OpenAI-compatible server:
+
+```sh
+python -m vllm.entrypoints.openai.api_server \
+    --model HuggingFaceTB/SmolLM2-360M-Instruct \
+    --host 0.0.0.0 \
+    --port 8000
+```
+
+Then interact with it using the OpenAI client:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to vLLM endpoint
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed",  # vLLM doesn't require an API key by default
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+{/if}
+
+### Basic Text Generation
+
+Let's look at examples of text generation with both frameworks:
+
+{#if framework === 'tgi'}
+
+First, deploy TGI with advanced parameters:
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --max-total-tokens 4096 \
+    --max-input-length 3072 \
+    --max-batch-total-tokens 8192 \
+    --waiting-served-ratio 1.2
+```
+
+Then use the OpenAI client for generation:
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # Higher for more creativity
+)
+print(response.choices[0].message.content)
+```
+{:else}
+
+For advanced usage, vLLM provides a native Python interface with fine-grained control:
+
+```python
+from vllm import LLM, SamplingParams
+
+# Initialize the model with advanced parameters
+llm = LLM(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    max_num_seqs=256,
+    block_size=16,
+)
+
+# Configure sampling parameters
+sampling_params = SamplingParams(
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    max_tokens=100,  # Maximum length
+    presence_penalty=1.1,  # Reduce repetition
+    frequency_penalty=1.1,  # Reduce repetition
+    stop=["\n\n", "###"],  # Stop sequences
+)
+
+# Generate text
+prompt = "Write a creative story"
+outputs = llm.generate(prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+
+# For chat-style interactions
+chat_prompt = [
+    {"role": "system", "content": "You are a creative storyteller."},
+    {"role": "user", "content": "Write a creative story"},
+]
+formatted_prompt = llm.get_chat_template()(chat_prompt)  # Uses model's chat template
+outputs = llm.generate(formatted_prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+```
+{/if}
+
+## Advanced Generation Control
+
+### Token Selection and Sampling
+
+The process of generating text involves selecting the next token at each step. This selection process can be controlled through various parameters:
+
+1. **Raw Logits**: The initial output probabilities for each token
+2. **Temperature**: Controls randomness in selection (higher = more creative)
+3. **Top-p (Nucleus) Sampling**: Filters to top tokens making up X% of probability mass
+4. **Top-k Filtering**: Limits selection to k most likely tokens
+
+Here's how to configure these parameters:
+
+{#if framework === 'tgi'}
+```python
+client.generate(
+    "Write a creative story",
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    top_k=50,  # Consider top 50 tokens
+    max_new_tokens=100,  # Maximum length
+    repetition_penalty=1.1,  # Reduce repetition
+)
+```
+{:else}
+```python
+params = SamplingParams(
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    top_k=50,  # Consider top 50 tokens
+    max_tokens=100,  # Maximum length
+    presence_penalty=0.1,  # Reduce repetition
+)
+llm.generate("Write a creative story", sampling_params=params)
+```
+{/if}
+
+### Controlling Repetition
+
+Both frameworks provide ways to prevent repetitive text generation:
+
+{#if framework === 'tgi'}
+```python
+client.generate(
+    "Write a varied text",
+    repetition_penalty=1.1,  # Penalize repeated tokens
+    no_repeat_ngram_size=3,  # Prevent 3-gram repetition
+)
+```
+{:else}
+```python
+params = SamplingParams(
+    presence_penalty=0.1,  # Penalize token presence
+    frequency_penalty=0.1,  # Penalize token frequency
+)
+```
+{/if}
+
+### Length Control and Stop Sequences
+
+You can control generation length and specify when to stop:
+
+{#if framework === 'tgi'}
+```python
+client.generate(
+    "Generate a short paragraph",
+    max_new_tokens=100,
+    min_new_tokens=10,
+    stop_sequences=["\n\n", "###"],
+)
+```
+{:else}
+```python
+params = SamplingParams(
+    max_tokens=100,
+    min_tokens=10,
+    stop=["###", "\n\n"],
+    ignore_eos=False,
+    skip_special_tokens=True,
+)
+```
+{/if}
+
+## Memory Management
+
+Both frameworks implement advanced memory management techniques for efficient inference.
+
+{#if framework === 'tgi'}
+TGI uses Flash Attention 2 and continuous batching:
+
+```sh
+# Docker deployment with memory optimization
+docker run --gpus all -p 8080:80 \
+    --shm-size 1g \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct \
+    --max-batch-total-tokens 8192 \
+    --max-input-length 4096
+```
+{:else}
+vLLM uses PagedAttention for optimal memory management:
+
+```python
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16,
+)
+
+llm = LLM(engine_args=engine_args)
+```
+{/if}
+
+## Resources
+
+- [Text Generation Inference Documentation](https://huggingface.co/docs/text-generation-inference)
+- [TGI GitHub Repository](https://github.com/huggingface/text-generation-inference)
+- [vLLM Documentation](https://vllm.readthedocs.io/)
+- [vLLM GitHub Repository](https://github.com/vllm-project/vllm)
+- [PagedAttention Paper](https://arxiv.org/abs/2309.06180)
+- [HuggingFace Blog: TGI in Production](https://huggingface.co/blog/tgi-serving)
+- [vLLM Performance Benchmarks](https://vllm.readthedocs.io/en/latest/performance.html)
