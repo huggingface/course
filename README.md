@@ -26,7 +26,7 @@ This repo contains the content that's used to create the **[Hugging Face course]
 | [Vietnamese](https://huggingface.co/course/vi/chapter1/1)               | [`chapters/vi`](https://github.com/huggingface/course/tree/main/chapters/vi)       | [@honghanhh](https://github.com/honghanhh)                                                                                                                                                                                                                                                                                                               |
 | [Chinese (simplified)](https://huggingface.co/course/zh-CN/chapter1/1)  | [`chapters/zh-CN`](https://github.com/huggingface/course/tree/main/chapters/zh-CN) | [@zhlhyx](https://github.com/zhlhyx), [petrichor1122](https://github.com/petrichor1122), [@1375626371](https://github.com/1375626371)                                                                                                                                                                                                                    |
 | [Chinese (traditional)](https://huggingface.co/course/zh-TW/chapter1/1) (WIP) | [`chapters/zh-TW`](https://github.com/huggingface/course/tree/main/chapters/zh-TW) | [@davidpeng86](https://github.com/davidpeng86)                                                                                                                                                                                                                                                                                                           |
-
+| [Romanian](https://huggingface.co/course/rum/chapter1/1) (WIP) | [`chapters/rum`](https://github.com/huggingface/course/tree/main/chapters/rum) | [@Sigmoid](https://github.com/SigmoidAI), [@eduard-balamatiuc](https://github.com/eduard-balamatiuc), [@FriptuLudmila](https://github.com/FriptuLudmila), [@tokyo-s](https://github.com/tokyo-s), [@hbkdesign](https://github.com/hbkdesign)                                                                                                                                                                                                                                                                                                             |
 
 ### Translating the course into your language
 
@@ -110,7 +110,7 @@ pip install -r requirements.txt
 make style
 ```
 
-Once that's run, commit any changes, open a pull request, and tag [@lewtun](https://github.com/lewtun) for a review. Congratulations, you've now completed your first translation 🥳!
+Once that's run, commit any changes, open a pull request, and tag [@lewtun](https://github.com/lewtun) and [@stevhliu](https://github.com/stevhliu) for a review. If you also know other native-language speakers who are able to review the translation, tag them as well for help. Congratulations, you've now completed your first translation 🥳!
 
 > 🚨 To build the course on the website, double-check your language code exists in `languages` field of the `build_documentation.yml` and `build_pr_documentation.yml` files in the `.github` folder. If not, just add them in their alphabetical order.
 
@@ -143,6 +143,25 @@ Adding a new chapter to the course is quite simple:
 If you get stuck, check out one of the existing chapters -- this will often show you the expected syntax.
 
 Once you are happy with the content, open a pull request and tag [@lewtun](https://github.com/lewtun) for a review. We recommend adding the first chapter draft as a single pull request -- the team will then provide feedback internally to iterate on the content 🤗!
+
+## Deploying to hf.co/course (for HF staff)
+
+The course content is deployed to [hf.co/course](https://huggingface.co/learn/nlp-course/chapter1/1) by triggering the [GitHub CI](.github/workflows/build_documentation.yml) from the `release` branch. To trigger the build, first create a new branch from `main` that will be used to update the current state on `release`:
+
+```shell
+git checkout main
+git checkout -b bump_release
+```
+
+Next, resolve any conflicts between the `release` and `bump_release` branches. Since this is tiresome to do manually, we can do the following to accept the latest changes:
+
+```shell
+git checkout bump_release
+git merge -s ours release
+```
+
+Next, push the `bump_release` branch and open a PR against `release` (not `main`!). Here is an example [PR](https://github.com/huggingface/course/pull/768). Once the CI is green, merge the PR and this will trigger the GitHub CI to build the new course content. This takes around 10-15 minutes, after which the latest changes will be visible on [hf.co/course](https://huggingface.co/learn/nlp-course/chapter1/1)!
+
 
 ## 🙌 Acknowledgements
 

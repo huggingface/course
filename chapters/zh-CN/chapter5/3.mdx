@@ -1,4 +1,4 @@
-# 是时候来学一下切片了 [[是时候来学一下切片了]]
+# 分割和整理数据 [[分割和整理数据]]
 
 <CourseFloatingBanner chapter={5}
   classNames="absolute z-10 right-0 top-0"
@@ -7,38 +7,38 @@
     {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter5/section3.ipynb"},
 ]} />
 
-大多数情况下，您使用的数据都需根据模型所要求的输入进行清洗。在本节中，我们将探索 🤗 Datasets 提供的用于数据集清洗的各种功能。
+大多数情况下，你处理的数据并不能直接用于训练模型。在本节中，我们将探索🤗 Datasets 提供的各种功能，用于清洗你的数据集。
 
 <Youtube id="tqfSFcPMgOI"/>
 
-## 切片与切分我们的数据 [[切片与切分我们的数据]]
+## 分割和整理我们的数据 [[分割和整理我们的数据]]
 
-与 Pandas 类似，🤗 Datasets 提供了几个函数来操作 **Dataset** 和 **DatasetDict** 对象。我们在[第三章](/course/chapter3)已经遇到了 **Dataset.map()** 方法，在本节中，我们将探索我们可以使用的其他功能。
+与 Pandas 类似，🤗 Datasets 提供了多个函数来操作 `Dataset` 和 `DatasetDict` 对象。我们在 [第三章](/course/chapter3) 已经遇到了 `Dataset.map()` 方法，在本节中，我们将探索一些其他可用的函数。
 
-对于这个例子，我们将使用托管在[加州大学欧文分校机器学习存储库](https://archive.ics.uci.edu/ml/index.php)的[药物审查数据集](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29)，其中包含患者对各种药物的评论，以及正在治疗的病情和患者满意度的 10 星评级。
+在本例中，我们将使用托管在 [加州大学欧文分校机器学习仓库](https://archive.ics.uci.edu/ml/index.php) 的 [药物审查数据集](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29) ，其中包含患者对各种药物的评论，以及正在治疗的病情和患者满意度的 10 星评价。
 
-首先我们需要下载并提取数据，这可以通过 **wget** 和 **unzip** 命令：
+首先我们需要下载并解压数据，可以通过 `wget` 和 `unzip` 命令：
 
 ```py
 !wget "https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip"
 !unzip drugsCom_raw.zip
 ```
 
-由于 TSV 只是使用制表符而不是逗号作为分隔符的 CSV 变体，我们可以使用加载**csv**文件的**load_dataset()**函数并指定分隔符 示例如下：
+由于 TSV 仅仅是 CSV 的一个变体，它使用制表符而不是逗号作为分隔符，我们可以使用加载 `csv` 文件的 `load_dataset()` 函数并指定分隔符，来加载这些文件：
 
 ```py
 from datasets import load_dataset
 
 data_files = {"train": "drugsComTrain_raw.tsv", "test": "drugsComTest_raw.tsv"}
-# \t is the tab character in Python
+# \t 在python中是制表符的意思
 drug_dataset = load_dataset("csv", data_files=data_files, delimiter="\t")
 ```
 
-在进行任何类型的数据分析时，一个好的做法是抽取一个小的随机样本，以快速了解您正在处理的数据类型。在🤗数据集中，我们可以通过链接 **Dataset.shuffle()** 和 **Dataset.select()** 共同来完成抽取：
+在进行数据分析时，获取一个小的随机样本以快速了解你正在处理数据的特点是一种好的实践。在🤗数据集中，我们可以通过链接 `Dataset.shuffle()` 和 `Dataset.select()` 函数创建一个随机的样本：
 
 ```py
 drug_sample = drug_dataset["train"].shuffle(seed=42).select(range(1000))
-# Peek at the first few examples
+# 细看前几个例子
 drug_sample[:3]
 ```
 
@@ -54,20 +54,21 @@ drug_sample[:3]
  'usefulCount': [36, 13, 128]}
 ```
 
-请注意，出于可以复现的目的，我们已将在**Dataset.shuffle()**选取了固定的随机数种子。 **Dataset.select()** 需要一个可迭代的索引，所以我们已经通过了 **range(1000)** 从随机打乱的数据集中选取前 1,000 个示例。从抽取的数据中，我们已经可以看到我们数据集的一些特点：
+请注意，出于可以复现的目的，我们已将在 `Dataset.shuffle()` 设定了固定的随机数种子。 `Dataset.select()` 需要一个可迭代的索引，所以我们传递了 `range(1000)` 从随机打乱的数据集中抽取前 1,000 个示例。从抽取的数据中，我们已经可以看到我们数据集中有一些特殊的地方：
 
-* **Unnamed: 0**这列看起来很像每个患者的匿名 ID。
-* **condition** 这列包含有描述健康状况的标签。
-* 评论长短不一，混合有 Python 行分隔符 (**\r\n**) 以及 HTML 字符代码，如** &\#039;**。
+* `Unnamed: 0` 这列看起来很像每个患者的匿名 ID。
+* `condition` 列包含了大小写混合的标签。
+* 评论长短不一，混合有 Python 行分隔符 （ `\r\n` ） 以及 HTML 字符代码，如 `&\#039;` 。
   
-让我们看看我们如何使用 🤗 Datasets 来处理这些问题。为了验证**Unnamed: 0** 列存储的是患者 ID的猜想，我们可以使用 **Dataset.unique()** 函数来验证匿名ID 的数量是否与拆分后每部分中的行数匹配：
+
+让我们看看我们如何使用 🤗 Datasets 来处理这些问题。为了验证 `Unnamed: 0` 列存储的是患者 ID 的猜想，我们可以使用 `Dataset.unique()` 函数来验证匿名 ID 的数量是否与分割后每个分组中的行数匹配：
 
 ```py
 for split in drug_dataset.keys():
     assert len(drug_dataset[split]) == len(drug_dataset[split].unique("Unnamed: 0"))
 ```
 
-这似乎证实了我们的假设，所以让我们把 **Unnamed: 0** 列重命名为患者的id。我们可以使用 **DatasetDict.rename_column()**函数一次性重命名DatasetDict中共有的列：
+这似乎证实了我们的假设，所以让我们把 `Unnamed: 0` 列重命名为患者的 id。我们可以使用 `DatasetDict.rename_column()` 函数来一次性重命名两个分组：
 
 ```py
 drug_dataset = drug_dataset.rename_column(
@@ -91,11 +92,11 @@ DatasetDict({
 
 <Tip>
 
-✏️ **试试看！** 使用 `Dataset.unique()` 函数查找训练和测试集中满足某个条件的药物经过去重之后的数量。
+✏️  **试试看！** 使用 `Dataset.unique()` 函数查找训练和测试集中的特定药物和病症的数量。
 
 </Tip>
 
-接下来，让我们使用 **Dataset.map()**标准化所有 **condition** 标签 .正如我们在[第三章](/course/chapter3)中所做的那样，我们可以定义一个简单的函数，可以将该函数应用于**drug_dataset** 拆分后每部分的所有行：
+接下来，让我们使用 `Dataset.map()` 来规范所有的 `condition` 标签。正如我们在 [第三章](/course/chapter3) 中处理 tokenizer 一样，我们可以定义一个简单的函数，可以使用该函数 `drug_dataset` 处理每个分组的所有行：
 
 ```py
 def lowercase_condition(example):
@@ -109,26 +110,26 @@ drug_dataset.map(lowercase_condition)
 AttributeError: 'NoneType' object has no attribute 'lower'
 ```
 
-哦不，我们的map功能遇到了问题！从错误中我们可以推断出 **condition** 列存在 **None** , 不能转换为小写，因为它们不是字符串。让我们使用 **Dataset.filter()** 删除这些行 ，其工作方式类似于 **Dataset.map()** 。例如：
+哦不，我们的 map 函数遇到了问题！从错误中我们可以推断出 `condition` 列存在 `None` ，不能转换为小写，因为它们不是字符串。让我们使用 `Dataset.filter()` 删除这些行 其工作方式类似于 `Dataset.map()` 。例如：
 
 ```py
 def filter_nones(x):
     return x["condition"] is not None
 ```
 
-然后运行 **drug_dataset.filter(filter_nones)** ，我们可以在一行中使用lambda 函数.在 Python 中，lambda 函数是您无需明确命名即可使用的微函数（匿名函数）。它们一般采用如下形式：
+然后运行 `drug_dataset.filter(filter_nones)` ，我们可以用 lambda 函数在一行代码完成这个任务。在 Pyhton 中，lambda 函数是你无需明确命名即可使用的微函数（匿名函数）。它们一般采用如下形式：
 
 ```
 lambda <arguments> : <expression>
 ```
 
-其中**lambda** 是 Python 的特殊[关键字](https://docs.python.org/3/reference/lexical_analysis.html#keywords), **arguments** 是以逗号进行分隔的函数输入的列表/集合， **expression** 代表您希望执行的操作。例如，我们可以定义一个简单的 lambda 函数来对一个数字进行平方，如下所示：
+其中 `lambda` 是 Python 的特殊 [关键字](https://docs.python.org/3/reference/lexical_analysis.html#keywords) 之一， `arguments` 是以逗号进行分隔的函数参数的列表/集合， `expression` 代表你希望执行的操作。例如，我们可以定义一个简单的 lambda 函数来对一个数字进行平方，如下所示：
 
 ```
 lambda x : x * x
 ```
 
-我们需要将要输入给这个函数值括在括号中：
+我们需要将要输入放在括号中：
 
 ```py
 (lambda x: x * x)(3)
@@ -138,7 +139,7 @@ lambda x : x * x
 9
 ```
 
-类似地，我们可以通过用逗号分隔多个参数来定义 lambda 函数。例如，我们可以按如下方式计算三角形的面积：
+同样，我们可以通过使用逗号分隔来定义带有多个参数的 lambda 函数。例如，我们可以按如下方式计算三角形的面积：
 
 ```py
 (lambda base, height: 0.5 * base * height)(4, 8)
@@ -148,17 +149,17 @@ lambda x : x * x
 16.0
 ```
 
-当您想定义小型、一次性使用的函数时，Lambda 函数非常方便（有关它们的更多信息，我们建议阅读安德烈·布尔高写的[真正的Python教程](https://realpython.com/python-lambda/)）。在🤗 Datasets 中，我们可以使用 lambda 函数来定义简单的映射和过滤操作，所以让我们使用这个技巧来消除我们数据集中的 **None** 条目：
+当你想定义小型、一次性使用的函数时，lambda 函数非常方便（有关它们的更多信息，我们建议阅读 Andre Burgaud 写的 [真正的Python教程](https://realpython.com/python-lambda/) ）。在🤗 Datasets 中，我们可以使用 lambda 函数来定义简单的映射和过滤操作，所以让我们使用这个技巧来删除我们数据集中的所有`condition` 为 `None`的记录：
 
 ```py
 drug_dataset = drug_dataset.filter(lambda x: x["condition"] is not None)
-```
+``` 
 
-当 **None** 条目已删除，我们可以标准化我们的 **condition** 列：
+含有`None`的积累删除之后,我们可以规范我们的 `condition` 列:
 
 ```py
 drug_dataset = drug_dataset.map(lowercase_condition)
-# Check that lowercasing worked
+# 检查一下转换后的结果
 drug_dataset["train"]["condition"][:3]
 ```
 
@@ -168,22 +169,22 @@ drug_dataset["train"]["condition"][:3]
 
 有用！现在我们已经清理了标签，让我们来看看清洗后的评论文本。
 
-## 创建新的数据列 [[创建新的数据列]]
+## 创建新的列 [[创建新的列]]
 
-每当您处理客户评论时，一个好的做法是检查每个评论中的字数。评论可能只是一个词，比如“太棒了！”或包含数千字的完整文章，根据实际的情况，您需要以不同的方式处理这些极端情况。为了计算每条评论中的单词数，我们将使用基于空格分割每个文本的粗略方法。
+每当我们处理客户评论时，一个好的习惯是检查评论的字数的分布。评论可能只是一个词，比如“太棒了！”或包含数千字的完整文章。在不同的使用场景，你需要以不同的方式处理这些极端情况。为了计算每条评论中的单词数，我们将使用空格分割每个文本进行粗略统计。
 
-让我们定义一个简单的函数来计算每条评论中的单词数：
+让我们定义一个简单的函数，计算每条评论的字数：
 
 ```py
 def compute_review_length(example):
     return {"review_length": len(example["review"].split())}
 ```
 
-与我们的 `lowercase_condition()` 函数不同，`compute_review_length()` 返回一个字典，其键与数据集中的列名之一不对应。 在这种情况下，当 `compute_review_length()` 传递给 `Dataset.map()` 时，它将应用于数据集中的所有行以创建新的 `review_length` 列：
+不同于我们的 `lowercase_condition()` 函数， `compute_review_length()` 返回一个字典，其键并不对应数据集中的某一列名称。在这种情况下，当 `compute_review_length()` 传递给 `Dataset.map()` 时，它将处理数据集中的所有行，最后返回值会创建一个新的 `review_length` 列：
 
 ```py
 drug_dataset = drug_dataset.map(compute_review_length)
-# Inspect the first training example
+# 检查第一个训练样例
 drug_dataset["train"][0]
 ```
 
@@ -198,7 +199,7 @@ drug_dataset["train"][0]
  'review_length': 17}
 ```
 
-正如预期的那样，我们可以看到一个 **review_length** 列已添加到我们的训练集中。我们可以使用 **Dataset.sort()**对这个新列进行排序，然后查看极端长度的评论的样子：
+正如预期的那样，我们可以看到一个 `review_length` 列已添加到我们的训练集中。我们可以使用 `Dataset.sort()` 对这个新列进行排序，然后查看一下极端长度的评论是什么样的：
 
 ```py
 drug_dataset["train"].sort("review_length")[:3]
@@ -215,15 +216,15 @@ drug_dataset["train"].sort("review_length")[:3]
  'review_length': [1, 1, 1]}
 ```
 
-正如我们所猜想的那样，一些评论只包含一个词，虽然这对于情感分析来说可能没问题，但如果我们想要预测病情，这些评论可能并不适合。
+正如我们所猜想的那样，有些评论只包含一个词，虽然这对于情感分析任务来说还可以接受，但如果我们想要预测病情，那么它所提供的信息就不够丰富了。
 
 <Tip>
 
-🙋向数据集添加新列的另一种方法是使用函数Dataset.add_column() 。这允许您输入Python 列表或 NumPy，在不适合使用Dataset.map()情况下可以很方便。
+🙋向数据集添加新列的另一种方法是使用函数 `Dataset.add_column()` ，在使用它时你可以通过 Python 列表或 NumPy 数组的方式提供数据，在不适合使用 `Dataset.map()` 情况下可以很方便。
 
 </Tip>
 
-让我们使用 **Dataset.filter()** 功能来删除包含少于 30 个单词的评论。与我们对 **condition** 列的处理相似，我们可以通过选取评论的长度高于此阈值来过滤掉非常短的评论：
+让我们使用 `Dataset.filter()` 功能来删除包含少于 30 个单词的评论。这与我们过滤 `condition` 列的处理方式相似，我们可以通过设定评论长度的最小阈值，筛选出过短的评论：
 
 ```py
 drug_dataset = drug_dataset.filter(lambda x: x["review_length"] > 30)
@@ -234,15 +235,15 @@ print(drug_dataset.num_rows)
 {'train': 138514, 'test': 46108}
 ```
 
-如您所见，这已经从我们的原始训练和测试集中删除了大约 15% 的评论。
+如你所见，这个操作从我们的原始训练和测试集中删除了大约 15％ 的评论。
 
 <Tip>
 
-✏️ 试试看！使用 Dataset.sort() 函数查看单词数最多的评论。请参阅文档以了解您需要使用哪个参数按长度降序对评论进行排序。
+✏️ **试试看！**使用 `Dataset.sort()` 函数查看单词数最多的评论。你可以参阅 [文档](https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.sort) 了解如何按照评论的长度降序排序。
 
 </Tip>
 
-我们需要处理的最后一件事是评论中是否存在 HTML 字符代码。我们可以使用 Python 的**html**模块取消这些字符的转义，如下所示：
+我们需要处理的最后一件事是处理评论中的 HTML 字符。我们可以使用 Python 的 `html` 模块来解码这些字符，如下所示：
 
 ```py
 import html
@@ -255,19 +256,19 @@ html.unescape(text)
 "I'm a transformer called BERT"
 ```
 
-我们将使用 **Dataset.map()** 对我们语料库中的所有 HTML 字符进行转义：
+我们将使用 `Dataset.map()` 对我们语料库中的所有 HTML 字符进行解码：
 
 ```python
 drug_dataset = drug_dataset.map(lambda x: {"review": html.unescape(x["review"])})
 ```
 
-如您所见， **Dataset.map()** 方法对于处理数据非常有用——在示例中仅仅是浅尝辄止就有很大的收获！
+如你所见， `Dataset.map()` 方法对于处理数据非常有用，即使我们还没有完全了解它的所有功能！
 
-## map() 方法的超级加速 [[map() 方法的超级加速]]
+## `map()` 方法的超级加速 [[`map()` 方法的超级加速]]
 
-**Dataset.map()** 方法有一个 **batched** 参数，如果设置为 **True** , map 函数将会分批执行所需要进行的操作（批量大小是可配置的，但默认为 1,000）。例如，之前对所有 HTML 进行转义的 map 函数运行需要一些时间（您可以从进度条中读取所用时间）。我们可以通过使用列表推导同时处理多个元素来加快速度。
+`Dataset.map()` 方法有一个 `batched` 参数，如果设置为 `True` ，map 函数将会分批执行所需要进行的操作（批量大小是可配置的，但默认为 1,000）。例如，之前对所有 HTML 进行解码的 map 函数运行需要一些时间（你可以从进度条中看到所需的时间）。我们可以通过使用列表推导同时处理多个元素来加速。
 
-当您在使用 **Dataset.map()**函数时指定 **batched=True**。该函数会接收一个包含数据集字段的字典，每个值都是一个列表，而不仅仅是单个值。**Dataset.map()** 的返回值应该是相同的：一个包含我们想要更新或添加到数据集中的字段的字典，字典的键是要添加的字段，字典的值是结果的列表。例如，这是使用 **batched=True**对所有 HTML 字符进行转义的方法 ：
+当你在使用 `Dataset.map()` 函数时设定 `batched=True` 。该函数需要接收一个包含数据集字段的字典，字典的值是一个列表。例如，这是使用 `batched=True` 对所有 HTML 字符进行解码的方法 
 
 ```python
 new_drug_dataset = drug_dataset.map(
@@ -275,9 +276,9 @@ new_drug_dataset = drug_dataset.map(
 )
 ```
 
-如果您在笔记本中运行此代码，您会看到此命令的执行速度比前一个命令快得多。这不是因为我们的评论已经是处理过的——如果你重新执行上一节的指令（没有 **batched=True** )，它将花费与以前相同的时间。这是因为列表推导式通常比在同一代码中用 **for** 循环执行相同的代码更快，并且我们还通过同时访问多个元素而不是一个一个来处理来提高处理的速度。
+如果你在笔记本中运行此代码，你会看到此命令的执行速度比前一个命令快得多。这不是因为我们的评论已经是处理过的——如果你重新执行上一节的指令（没有 `batched=True` ），它将花费与之前相同的时间。这是因为列表推导式通常比在同一代码中用 `for` 循环执行相同的代码更快，并且我们还通过同时访问多个元素而不是一个一个来处理来提高处理的速度。
 
-在[第六章](/course/chapter6)我们将遇到的“快速”标记器，它可以快速标记大文本列表。使用 **Dataset.map()** 和 **batched=True** 是加速的关键。例如，要使用快速标记器标记所有药物评论，我们可以使用这样的函数：
+在 [第六章](/course/chapter6) 我们将遇到的“快速” tokenizer 它可以快速对长文本列表进行 tokenize。使用 `Dataset.map()` 搭配 `batched=True` 参数是加速的关键。例如，要使用快速 tokenizer 对所有药物评论 tokenize，我们可以使用如下的函数：
 
 ```python
 from transformers import AutoTokenizer
@@ -289,32 +290,30 @@ def tokenize_function(examples):
     return tokenizer(examples["review"], truncation=True)
 ```
 
-正如你在[第三章](/course/chapter3)所看到的，我们原本就可以将一个或多个示例传递给分词器，因此在**batched=True**是一个非必须的选项.让我们借此机会比较不同选项的性能。在笔记本中，您可以在您要测量的代码行之前添加 **%time**来测试改行运行所消耗的时间：
+正如我们在 [第三章](/course/chapter3) 所看到的，我们原本就可以将一个或多个示例传递给 tokenizer，因此在 `batched=True` 是一个非必须的选项。让我们借此机会比较不同选项的性能。在 notebook 中，你可以在你要测量的代码行之前添加 `%time` 来记录该行运行所消耗的时间：
 
 ```python no-format
 %time tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
 ```
 
-您还可以通过将整个单元格计时 **%%time** 在单元格的开头。在我们执行此操作的硬件上，该指令显示 10.8 秒（这是写在“Wall time”之后的数字）。
+你也可以将 `%%time` 放置在单元格开头来统计整个单元格的执行时间。在我们的硬件上，该指令显示 10.8 秒（这就是真正（Wall time）的执行时间）。
 
 <Tip>
 
-✏️ **试试看！** 使用和不使用 `batched=True` 执行相同的指令，然后使用慢速标记器尝试（在 `AutoTokenizer.from_pretrained()` 方法中添加 `use_fast=False`），这样你就可以看看在你的电脑上它需要多长的时间。
+✏️ **试试看！** 在有和无 `batched=True` 的情况下执行相同的指令，然后试试慢速 tokenizer （在 `AutoTokenizer.from_pretrained()` 方法中添加 `use_fast=False` ），这样你就可以测试一下在你的电脑上它需要多长的时间。
 
 </Tip>
 
-以下是我们在使用和不使用批处理时使用快速和慢速分词器获得的结果：
+以下是我们在使用和不使用批处理时使用快速和慢速 tokenizer 获得的结果：
 
-Options         | Fast tokenizer | Slow tokenizer
+选项         | 快速 tokenizer | 慢速 tokenizer
 :--------------:|:--------------:|:-------------:
-`batched=True`  | 10.8s          | 4min41s
+`batched=True` | 10.8s          | 4min41s 
 `batched=False` | 59.2s          | 5min3s
 
-这意味着使用带有 **batched=True** 选项比没有批处理的慢选项快 30 倍——这真是太棒了！这就是为什么**AutoTokenizer** 的默认设置是**use_fast=True**的主要原因 （以及为什么它们被称为“快速”）。他们能够实现这样的加速，因为在底层的标记化代码是在 Rust 中执行的，Rust 是一种可以轻松并行化执行的语言。
+这意味着使用快速 tokenizer 配合 `batched=True` 选项比没有批处理的慢速版本快 30 倍——这真的太 Amazing 了！这就是为什么在使用 `AutoTokenizer` 时，将会默认使用 `use_fast=True` 的主要原因 （以及为什么它们被称为“快速”的原因）。他们能够实现这样的加速，因为在底层的 tokenize 代码是在 Rust 中执行的，Rust 是一种可以易于并行化执行的语言。
 
-并行化也是快速标记器通过批处理实现近 6 倍加速的原因：单个标记化操作是不能并行的，但是当您想同时标记大量文本时，您可以将执行拆分为多个进程，每个进程都对自己的文本负责。
-
-**Dataset.map()** 也有一些自己的并行化能力。由于它们不受 Rust 的支持，因此慢速分词器的速度赶不上快速分词器，但它们仍然会更快一些（尤其是当您使用没有快速版本的分词器时）。要启用多处理，请在**Dataset.map()**时使用 **num_proc** 参数并指定要在调用中使用的进程数 ：
+并行化也是快速 tokenizer 通过批处理实现近 6 倍加速的原因：单个 tokenize 操作是不能并行的，但是当你想同时对大量文本进行 tokenize 时，你可以将执行过程拆分为多个进程，每个进程负责处理自己的文本。 `Dataset.map()` 也有一些自己的并行化能力。尽管它们没有 Rust 提供支持，但它们仍然可以帮助慢速 tokenizer 加速（尤其是当你使用的 tokenizer 没有快速版本时）。要启用多进程处理，请在调用 `Dataset.map()` 时使用 `num_proc` 参数并指定要在调用中使用的进程数 
 
 ```py
 slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False)
@@ -327,32 +326,32 @@ def slow_tokenize_function(examples):
 tokenized_dataset = drug_dataset.map(slow_tokenize_function, batched=True, num_proc=8)
 ```
 
-您可以对处理的时间进行一些试验，以确定要使用的最佳进程数；在我们的例子中，8 似乎产生了最好的速度增益。以下是我们在使用和不使用多处理时所需要的时间：
+你可以对处理进行一些计时的试验，以确定最佳进程数；在我们的例子中，8 似乎产生了最好的速度增益。以下是我们在有无多进程处理的情况下，得到的结果：
 
-Options         | Fast tokenizer | Slow tokenizer
-:--------------:|:--------------:|:-------------:
-`batched=True`  | 10.8s          | 4min41s
-`batched=False` | 59.2s          | 5min3s
-`batched=True`, `num_proc=8`  | 6.52s          | 41.3s
-`batched=False`, `num_proc=8` | 9.49s          | 45.2s
+选项         | 快速 tokenizer  | 慢速 tokenizer 
+:--------------:|:--------------:|:-------------: 
+`batched=True` | 10.8s          | 4min41s
+`batched=False` | 59.2s          | 5min3s 
+`batched=True` , `num_proc=8` | 6.52s          | 41.3s
+`batched=False` , `num_proc=8` | 9.49s          | 45.2s
 
-对于慢速分词器来说，这些结果要合理得多，但快速分词器的性能也得到了显着提高。但是请注意，情况并非总是如此——除了 **num_proc=8**，我们的测试表明，使用**batched=True**而不带有**num_proc**参数的选项处理起来更快。通常，我们不建议将 Python 多线程处理用于具有**batched=True**功能的快速标记器  .
-
-<Tip>
-
-使用num_proc以加快处理速度通常是一个好主意，只要您使用的函数还没有自己带有的进行某种多进程处理的方法。
-
-</Tip>
-
-将所有这些功能浓缩到一个方法中已经非常了不起，但还有更多！使用 **Dataset.map()** 和 **batched=True** 您可以更改数据集中的元素数量。当你想从一个例子中创建几个训练特征时，这是非常有用的。我们将在[第七章](/course/chapter7).中进行的几个NLP任务的预处理中使用到这个功能，它非常便利。
+这个结果对于慢速分词器来说是更加友好了，但快速分词器的性能也得到了显著提升。但是请注意，情况并非总是如此—对于 `num_proc` 的其他值，在我们的测试中，使用 `batched=True` 而不带有 `num_proc` 参数的选项处理起来更快。总的来说，我们并不推荐在快速 tokenizer 和 `batched=True` 的情况下使用 Python 的多进程处理。
 
 <Tip>
 
-💡在机器学习中，一个例子通常可以为我们的模型提供一组特征。在某些情况下，这些特征会储存在数据集的几个列，但在其他情况下（例如此处的例子和用于问答的数据），可以从单个示例的一列中提取多个特征
+通常来说，使用 `num_proc` 以加快处理速度通常是一个好主意，只要你使用的函数本身没有进行某种类型的多进程处理。
 
 </Tip>
 
-让我们来看看它是如何工作的！在这里，我们将标记化我们的示例并将最大截断长度设置128，但我们将要求标记器返回全部文本块，而不仅仅是第一个。这可以用 **return_overflowing_tokens=True** ：
+将所有这些功能浓缩到一个方法中已经非常了不起，但是还有更多！使用 `Dataset.map()` 和 `batched=True` 你可以更改数据集中的元素数量。当你想从一个样本中创建几个训练特征时，这是非常有用的。我们将在 [第七章](/course/chapter7) 中几个 NLP 任务的预处理中使用到这个功能，它非常便捷。
+
+<Tip>
+
+💡在机器学习中，一个样本通常可以为我们的模型提供一组特征。在某些情况下，这组特征会储存在数据集的几个列，但在某些情况下（例如此处的例子和用于问答的数据），可以从单个样本的那一列中提取多个特征。
+
+</Tip>
+
+让我们来看看从一列中提取多个特征是如何实现的！在这里，我们将对我们的样本进行 tokenize 并将最大截断长度设置为 128，并且我们将要求 tokenizer 返回全部文本块，而不仅仅是第一个。这可以通过设置 `return_overflowing_tokens=True` 来实现：
 
 ```py
 def tokenize_and_split(examples):
@@ -364,7 +363,7 @@ def tokenize_and_split(examples):
     )
 ```
 
-在使用**Dataset.map()** 正式在整个数据集上开始处理之前让我们先在一个例子上测试一下：
+在使用 `Dataset.map()` 正式开始处理整个数据集之前，让我们先在一个样本上测试一下：
 
 ```py
 result = tokenize_and_split(drug_dataset["train"][0])
@@ -375,7 +374,7 @@ result = tokenize_and_split(drug_dataset["train"][0])
 [128, 49]
 ```
 
-瞧！我们在训练集中的第一个示例变成了两个特征，因为它被标记为超过我们指定的最大截断长度，因此结果被截成了两段：第一段长度为 128 ，第二段长度为 49 。现在让我们对所有元素执行此操作数据集！
+瞧！我们在训练集中的第一个样本变成了两个特征，因为它超过了我们指定的最大截断长度，因此被截成了两段：第一段长度为 128 第二段长度为 49 现在让我们对数据集的所有样本执行此操作！
 
 ```py
 tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
@@ -385,9 +384,9 @@ tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
 ArrowInvalid: Column 1 named condition expected length 1463 but got length 1000
 ```
 
-不好了！它没有起作用！为什么呢？查看错误消息会给我们一个线索：列的长度不匹配，一列长度为 1,463，另一列长度为 1,000。1,000行的"review"给出了 1,463 行的新特征，导致和原本的1000行数据不匹配。
+不好了！这并没有成功！为什么呢？查看错误消息会给我们一个线索：列的长度不匹配，一列长度为 1,463，另一列长度为 1,000。1,000 行的“重新”生成了 1,463 行的新特征，导致和原本的 1000 行的长度不匹配。
 
-问题出在我们试图混合两个不同大小的不同数据集： **drug_dataset** 列将有一定数量的元素（我们错误中的 1,000），但是我们正在构建**tokenized_dataset** 将有更多的元素（错误消息中的 1,463）。这不适用于 **Dataset** ，因此我们需要从旧数据集中删除列或使它们的大小与新数据集中的大小相同。我们可以用 **remove_columns** 参数：
+问题出在我们试图混合两个长度不同的数据集： `drug_dataset` 列将有 1000 个样本，但是我们正在构建 `tokenized_dataset` 列将有 1,463 个样本（因为我们使用 `return_overflowing_tokens=True` 将长评论分词成了多个样本）。这对 `Dataset` 来说不可行，所以我们需要要么删除旧数据集的列，要么使它们与新数据集中的尺寸相同。我们可以使用 `remove_columns` 参数来实现前者：
 
 ```py
 tokenized_dataset = drug_dataset.map(
@@ -395,7 +394,7 @@ tokenized_dataset = drug_dataset.map(
 )
 ```
 
-现在这个过程没有错误。我们可以通过比较长度来检查新数据集的元素是否比原始数据集多得多：
+现在这个过程没有错误。我们可以通过比较长度来检查我们的新数据集是否比原始数据集有更多的元素：
 
 ```py
 len(tokenized_dataset["train"]), len(drug_dataset["train"])
@@ -405,7 +404,7 @@ len(tokenized_dataset["train"]), len(drug_dataset["train"])
 (206772, 138514)
 ```
 
-我们提到我们还可以通过使旧列与新列的大小相同来处理长度不匹配的问题。为此，我们可以使用 **overflow_to_sample_mapping** 字段，当我们设置**return_overflowing_tokens=True** .它为我们提供了特征到它所产生的样本的映射。使用这个，我们可以将原始数据集中的每个键关联到一个合适大小的值列表中，通过遍历所有的数据来生成新特性:
+我们也可以通过使旧列与新列保持相同大小来处理不匹配长度的问题。为此，当我们设置 `return_overflowing_tokens=True` 时，可以使用 `overflow_to_sample_mapping` 字段。它给出了新特征索引到它源自的样本索引的映射。使用这个，我们可以将原始数据集中的每个键关联到一个合适大小的值列表中，通过遍历所有的数据来生成新特性：
 
 ```py
 def tokenize_and_split(examples):
@@ -415,14 +414,14 @@ def tokenize_and_split(examples):
         max_length=128,
         return_overflowing_tokens=True,
     )
-    # Extract mapping between new and old indices
+    # 提取新旧索引之间的映射
     sample_map = result.pop("overflow_to_sample_mapping")
     for key, values in examples.items():
         result[key] = [values[i] for i in sample_map]
     return result
 ```
 
-我们可以使用**Dataset.map()**来进行批处理，这样无需我们删除旧列：
+可以看到它可以与 `Dataset.map()` 一起协作，无需我们删除旧列：
 
 ```py
 tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
@@ -442,21 +441,21 @@ DatasetDict({
 })
 ```
 
-我们获得了与以前相同数量的训练特征，但在这里我们保留了所有旧字段。如果您在使用模型计算之后需要它们进行一些后处理，您可能需要使用这种方法。
+我们获得了与之前数量相同的训练特征，并且在这里我们保留了所有旧字段。如果你在使用模型计算之后需要它们进行一些后续处理，你可能需要使用这种方法。
 
-您现在已经了解了 🤗 Datasets如何以各种方式用于预处理数据集。虽然🤗 Datasets 的处理功能会覆盖你大部分的模型训练需求，有时您可能需要切换到 Pandas 以使用更强大的功能，例如 **DataFrame.groupby()** 或用于可视化的高级 API。幸运的是，🤗 Datasets旨在与 Pandas、NumPy、PyTorch、TensorFlow 和 JAX 等库可以相互转换。让我们来看看这是如何工作的。
+你现在已经了解了如何使用 🤗 Datasets 以各种方式用于预处理数据集。虽然🤗 Datasets 的处理功能会覆盖你大部分的模型训练需求，有时你可能需要切换到 Pandas 以使用更强大的功能，例如 `DataFrame.groupby()` 或用于可视化的高级 API。幸运的是，🤗 Datasets 设计宗旨就是与 Pandas、NumPy、PyTorch、TensorFlow 和 JAX 等库可以相互转换。让我们来看看这是如何实现的。
 
-## `🤗 Datasets 和 DataFrames 的相互转换 [[`🤗 Datasets 和 DataFrames 的相互转换]]
+## 🤗 Datasets 和 DataFrames 的相互转换 [[ 🤗 Datasets 和 DataFrames 的相互转换]]
 
 <Youtube id="tfcY1067A5Q"/>
 
-为了实现各种第三方库之间的转换，🤗 Datasets 提供了一个 **Dataset.set_format()** 功能。此功能可以通过仅更改输出格式的，轻松切换到另一种格式，而不会影响底层数据格式，即 Apache Arrow。格式化会在数据本身上进行。为了演示，让我们将数据集转换为 Pandas：
+为了实现各种第三方库之间的转换，🤗 Datasets 提供了一个 `Dataset.set_format()` 函数。此函数可以通过仅更改输出格式的，轻松切换到另一种格式，而不会影响底层数据格式（以 Apache Arrow 方式进行存储）。为了演示，让我们把数据集转换为 Pandas：
 
 ```py
 drug_dataset.set_format("pandas")
 ```
 
-现在，当我们访问数据集的元素时，我们会得到一个 **pandas.DataFrame** 而不是字典：
+现在，当我们访问数据集的元素时，我们会得到一个 `pandas.DataFrame` 而不是字典：
 
 ```py
 drug_dataset["train"][:3]
@@ -482,7 +481,7 @@ drug_dataset["train"][:3]
       <td>95260</td>
       <td>Guanfacine</td>
       <td>adhd</td>
-      <td>"My son is halfway through his fourth week of Intuniv..."</td>
+      <td>"My son is halfway through his fourth week of Intuniv."</td>
       <td>8.0</td>
       <td>April 27, 2010</td>
       <td>192</td>
@@ -493,7 +492,7 @@ drug_dataset["train"][:3]
       <td>92703</td>
       <td>Lybrel</td>
       <td>birth control</td>
-      <td>"I used to take another oral contraceptive, which had 21 pill cycle, and was very happy- very light periods, max 5 days, no other side effects..."</td>
+      <td>"I used to take another oral contraceptive, which had 21 pill cycle, and was very happy- very light periods, max 5 days, no other side effects."</td>
       <td>5.0</td>
       <td>December 14, 2009</td>
       <td>17</td>
@@ -504,7 +503,7 @@ drug_dataset["train"][:3]
       <td>138000</td>
       <td>Ortho Evra</td>
       <td>birth control</td>
-      <td>"This is my first time using any form of birth control..."</td>
+      <td>"This is my first time using any form of birth control."</td>
       <td>8.0</td>
       <td>November 3, 2015</td>
       <td>10</td>
@@ -513,7 +512,7 @@ drug_dataset["train"][:3]
   </tbody>
 </table>
 
-让我们创建一个 **pandas.DataFrame** 来选择 **drug_dataset[train]** 的所有元素：
+接下来我们从数据集中选择 `drug_dataset[train]` 的所有数据来得到训练集数据：
 
 ```py
 train_df = drug_dataset["train"][:]
@@ -521,12 +520,12 @@ train_df = drug_dataset["train"][:]
 
 <Tip>
 
-🚨 在底层，`Dataset.set_format()` 改变了数据集的 `__getitem__()` dunder 方法的返回格式。 这意味着当我们想从 `"pandas"` 格式的 `Dataset` 中创建像 `train_df` 这样的新对象时，我们需要对整个数据集进行切片以获得 `pandas.DataFrame`。 无论输出格式如何，您都可以自己验证 `drug_dataset["train"]` 的类型依然还是 `Dataset`。
+🚨 实际上， `Dataset.set_format()` 仅仅改变了数据集的 `__getitem__()` 方法的返回格式。这意味着当我们想从 `"pandas"` 格式的 `Dataset` 中创建像 `train_df` 这样的新对象时，我们需要对整个数据集进行切片（[:]）才可以获得 `pandas.DataFrame` 对象。无论输出格式如何，你都可以自己验证 `drug_dataset["train"]` 的类型依然还是 `Dataset` 。
 
 </Tip>
 
 
-从这里我们可以使用我们想要的所有 Pandas 功能。例如，我们可以通过花式链接来计算 **condition**类之间的分布 ：
+有了这个基础，我们可以使用我们想要的所有 Pandas 功能。例如，我们可以巧妙地链式操作，来计算 `condition` 列中不同类别的分布 
 
 ```py
 frequencies = (
@@ -577,7 +576,7 @@ frequencies.head()
 </table>
 
 
-一旦我们完成了 Pandas 分析，我们总是通过使用对象 **Dataset.from_pandas()**方法可以创建一个新的 **Dataset** 如下：
+当我们完成了 Pandas 分析之后，我们可以使用对象 `Dataset.from_pandas()` 方法可以创建一个新的 `Dataset` 对象，如下所示：
 
 
 ```py
@@ -596,11 +595,11 @@ Dataset({
 
 <Tip>
 
-✏️ **试试看！** 计算每种药物的平均评级并将结果存储在一个新的Dataset.
+✏️**试试看！**计算每种药物的平均评分并将结果存储在一个新的 Dataset 中。
 
 </Tip>
 
-我们对 🤗 Datasets中可用的各种预处理技术的介绍到此结束。在最后一部分，让我们创建一个验证集来准备用于训练分类器的数据集。在此之前，我们将输出格式 **drug_dataset** 从 **pandas**重置到 **arrow** ：
+到此为止，我们对🤗 Datasets 中可用的各种预处理技术的介绍就结束了。在本节的最后一部分，让我们为训练分类器创建一个验证集。在此之前，让我们将输出格式 `drug_dataset` 从 `pandas` 重置到 `arrow` ：
 
 ```python
 drug_dataset.reset_format()
@@ -608,15 +607,15 @@ drug_dataset.reset_format()
 
 ## 创建验证集 [[创建验证集]]
 
-尽管我们有一个可以用于评估的测试集，但在开发过程中保持测试集不变并创建一个单独的验证集是一个很好的做法。一旦您对模型在测试集上的表现感到满意，您就可以对验证集进行最终的检查。此过程有助于降低您过拟合测试集并部署在现实世界数据上失败的模型的风险。
+尽管我们有一个可以用于评估的测试集，但在开发过程中保持测试集不变并创建一个单独的验证集是一个很好的做法。一旦你对模型在测试集上的表现感到满意，你就可以使用验证集进行最终的检查。此过程有助于降低你过拟合测试集和部署在现实世界数据上失败的模型的风险。
 
-🤗 Datasets提供了一个基于**scikit-learn**的经典方法**Dataset.train_test_split()** .让我们用它把我们的训练集分成 **train** 和 **validation** （为了可以复现，我们将设置**seed**的值为一个常量）：
+🤗 Datasets 提供了一个基于 `scikit-learn` 的经典方法： `Dataset.train_test_split()` 。让我们用它把我们的训练集分成 `train` 和 `validation` （为了可以复现，我们将设置 `seed` 的值为一个常量）：
 
 ```py
 drug_dataset_clean = drug_dataset["train"].train_test_split(train_size=0.8, seed=42)
-# Rename the default "test" split to "validation"
+# 将默认的 "test" 部分重命名为 "validation"
 drug_dataset_clean["validation"] = drug_dataset_clean.pop("test")
-# Add the "test" set to our `DatasetDict`
+# 将 "test" 部分添加到我们的 `DatasetDict` 中
 drug_dataset_clean["test"] = drug_dataset["test"]
 drug_dataset_clean
 ```
@@ -638,19 +637,19 @@ DatasetDict({
 })
 ```
 
-太好了，我们现在已经准备好了一个数据集，可以用来训练一些模型了！在[第五节]](/course/chapter5/5)我们将向您展示如何将数据集上传到 Hugging Face Hub，但现在让我们查看在本地计算机上保存数据集的几种方法。
+太好了，我们现在已经准备好了一个适合训练模型的数据集了！在 [第五节](/course/chapter5/5) 我们将向你展示如何将数据集上传到 Hugging Face Hub，现在让我们先结束我们的分析，看一看在本地计算机上保存数据集的几种方法。
 
 ## 保存数据集 [[保存数据集]]
 
 <Youtube id="blF9uxYcKHo"/>
 
-虽然 🤗 Datasets 会缓存每个下载的数据集和对它执行的操作，但有时你会想要将数据集保存到磁盘（例如，以防缓存被删除）。如下表所示，🤗 Datasets 提供了三个主要功能来以不同的格式保存您的数据集：
+虽然 🤗 Datasets 会缓存每个下载的数据集和对它执行的操作，但有时你会想要将数据集保存到磁盘（比如，以防缓存被删除）。如下表所示，🤗 Datasets 提供了三个主要函数来以不同的格式保存你的数据集：
 
 | 数据格式    |        对应的方法        |
 | :---------: | :--------------------: |
 |    Arrow    | `Dataset.save_to_disk()` |
-|     CSV     |    `Dataset.to_csv()`    |
-|    JSON     |   `Dataset.to_json()`    |
+|     CSV     | `Dataset.to_csv()` |
+|    JSON     | `Dataset.to_json()` |
 
 例如，让我们以 Arrow 格式保存我们清洗过的数据集：
 
@@ -679,9 +678,9 @@ drug-reviews/
     └── state.json
 ```
 
-在那里我们可以看到每个部分.arrow表，以及一些元数据数据集信息.json和状态文件保存在一起.您可以将 Arrow 格式视为一个精美的列和行的表格，它针对构建处理和传输大型数据集的高性能应用程序进行了优化。
+其中，我们可以看到，每个部分都有 `dataset.arrow` 表，以及保存元数据的 `dataset_info.json` 和 `state.json` 。你可以将 Arrow 格式视为一个优化过的列和行的精美表格，它针对构建处理和传输大型数据集的高性能应用程序进行了优化。
 
-保存数据集后，我们可以使用 **load_from_disk()** 功能从磁盘读取数据如下：
+保存数据集后，我们可以使用 `load_from_disk()` 功能从磁盘读取数据：
 
 ```py
 from datasets import load_from_disk
@@ -707,14 +706,14 @@ DatasetDict({
 })
 ```
 
-对于 CSV 和 JSON 格式，我们必须将每个部分存储为单独的文件。一种方法是迭代**DatasetDict**中的键和值 ：
+对于 CSV 和 JSON 格式，我们必须将每个部分存储为单独的文件。一种方法是遍历 `DatasetDict` 中的键和值 
 
 ```py
 for split, dataset in drug_dataset_clean.items():
     dataset.to_json(f"drug-reviews-{split}.jsonl")
 ```
 
-这将保存每个拆分都是[JSON的标准格式](https://jsonlines.org)，其中数据集中的每一行都存储为一行 JSON。这是第一个示例：
+这将把每个部分保存为 [JSON Lines格式](https://jsonlines.org) ，其中数据集中的每一行都存储为一行 JSON。下面是第一个例子的样子：
 
 ```py
 !head -n 1 drug-reviews-train.jsonl
@@ -724,7 +723,7 @@ for split, dataset in drug_dataset_clean.items():
 {"patient_id":141780,"drugName":"Escitalopram","condition":"depression","review":"\"I seemed to experience the regular side effects of LEXAPRO, insomnia, low sex drive, sleepiness during the day. I am taking it at night because my doctor said if it made me tired to take it at night. I assumed it would and started out taking it at night. Strange dreams, some pleasant. I was diagnosed with fibromyalgia. Seems to be helping with the pain. Have had anxiety and depression in my family, and have tried quite a few other medications that haven't worked. Only have been on it for two weeks but feel more positive in my mind, want to accomplish more in my life. Hopefully the side effects will dwindle away, worth it to stick with it from hearing others responses. Great medication.\"","rating":9.0,"date":"May 29, 2011","usefulCount":10,"review_length":125}
 ```
 
-然后我们可以使用[第二节](/course/chapter5/2)学过的技术加载 JSON 文件如下：
+然后我们可以使用 [第二节](/course/chapter5/2) 中的技巧，按如下所示加载 JSON 文件
 
 ```py
 data_files = {
@@ -735,9 +734,9 @@ data_files = {
 drug_dataset_reloaded = load_dataset("json", data_files=data_files)
 ```
 
-这就是我们探索 🤗 Datasets 的旅程！现在我们有了一个清洗过的数据集，以下是您可以尝试的一些想法：
+至此，我们对使用🤗 Datasets 进行数据整理的探索就此结束！现在我们有了一个清洗过的数据集，以下是你可以尝试的一些想法：
 
-1. 使用[第3章](/course/chapter3)的技术来训练一个分类器，它可以根据药物评论预测病人的情况。
-2. 使用 [Chapter 1](/course/chapter1) 中的“summarization”管道生成评论摘要。
+1. 使用 [第三章](/course/chapter3) 的技术来训练一个分类器，它能够基于药品评价预测患者的病情。
+2. 使用 [第一章](/course/chapter1) 中的 `summarization` 管道生成评论的摘要。
 
-接下来，我们将看看 🤗 Datasets如何使您能够在不撑爆笔记本电脑内存的情况下处理庞大的数据集！
+接下来，我们将看看 🤗 Datasets 如何使你能够在不撑爆笔记本电脑内存的情况下处理庞大的数据集！
