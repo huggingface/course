@@ -22,22 +22,23 @@
 
 {/if}
 
-到目前为止，我们主要使用预训练模型，并通过重用预训练的权重来针对新用例对它们进行微调。正如我们在[第一章](/course/chapter1), 这通常称为迁移学习，这是将 Transformer 模型应用于大多数标记数据稀疏的现实世界用例的非常成功的策略。在本章中，我们将采用不同的方法并从头开始训练一个全新的模型。如果您有大量数据并且它与用于可用模型的预训练数据有很大不同，那么这是一个很好的方法。然而，它也需要更多的计算资源来预训练语言模型，而不仅仅是微调现有的模型。训练新模型有意义的示例包括由音符、分子序列（如 DNA）或编程语言组成的数据集。后者最近受到关注，这要归功于 TabNine 和 GitHub 的 Copilot 等工具，它们由 OpenAI 的 Codex 模型提供支持，可以生成长代码序列。这种文本生成任务最好使用自回归或因果语言模型（例如 GPT-2）来解决。
+到目前为止，我们主要使用预训练模型，并通过复用预训练的权重，然后使用新的数据对它们进行微调，以适应新的应用场景。正如我们在 [第一章](/course/chapter1) 中看到的，这通常称为 `迁移学习（transfer learning）` ，对于大多数标注数据稀缺的应用场景，它是一种将 Transformer 模型应用到大部分真实的应用场景中的一个非常成功的策略。在本章中，我们将采用不同的方法并从头开始训练一个全新的模型。如果你有大量数据而且这些数据与可用模型的预训练数据差异很大，那么这是一个很好的方法。然而，相比仅微调现有模型，预训练语言模型需要更多的计算资源。训练一个新模型可能是有意义的示例包括由音乐符号、DNA 等分子序列或编程语言组成的数据集。编程语言组成的数据集最近广泛地受到关注，这要归功于 TabNine 和 GitHub 的 Copilot 等工具的流行，它们由 OpenAI 的 Codex 模型提供支持，可以生成长代码序列。这种文本生成任务最适合使用自回归或因果语言模型（例如 GPT-2）。
 
-在本节中，我们将构建代码生成模型的缩小版本：我们将使用 Python 代码的子集专注于单行完成而不是完整的函数或类。在 Python 中处理数据时，您会经常接触 Python 数据科学堆栈，包括 `matplotlib` , `seaborn` , `pandas` ， 和 `scikit-learn` 库。在使用这些框架时，通常需要查找特定的命令，因此如果我们可以使用模型来为我们完成这些调用，那就太好了。
+在这一节，我们将构建一个精简版的代码生成模型：使用 Python 代码的一个数据集，来实现一行代码的补全，而不是直接生成完整的函数或类。当你使用 Python 处理数据时，你经常会接触到 Python 数据科学栈，包括 `matplotlib` ， `seaborn` ， `pandas` ，和 `scikit-learn` 这些库。当使用这些框架时，经常需要查找特定的命令，如果我们能够用模型来自动给出恰当的推荐命令就太好了！
 
 <Youtube id="Vpjb1lu0MDk"/>
 
-在[第六章](/course/chapter6) 我们创建了一个高效的分词器来处理 Python 源代码，但我们仍然需要一个大规模数据集来预训练模型。在这里，我们将我们的分词器应用到源自 GitHub 存储库的 Python 代码语料库。然后我们将使用 `Trainer` API 和 🤗 Accelerate 来训练模型。让我们开始吧！
+在 [第六章](/course/chapter6) 中，我们创建了一个高效的 tokenizer 来处理 Python 源代码，但我们还需要一个大规模的数据集来预训练模型。在这里，我们将使用 tokenizer 处理一个来自 GitHub 仓库的 Python 代码语料库。然后，我们将使用 Trainer API 和 🤗 Accelerate 来训练模型。让我们开始吧！
 
 <iframe src="https://course-demos-codeparrot-ds.hf.space" frameBorder="0" height="300" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
 
-这实际上展示了使用本节中训练并上传到 Hub 的模型。你可以在[这里](https://huggingface.co/huggingface-course/codeparrot-ds?text=plt.imshow%28)找到。请注意，由于在文本生成过程中发生了一些随机化，您可能会得到略有不同的结果。
+这里展示的是一个已经训练并上传到 Hub 的模型，它就是使用本节中的代码训练的。你可以在 [这里](https://huggingface.co/huggingface-course/codeparrot-ds?text=plt.imshow%28) 找到它。注意，由于文本生成过程中有一些随机性，你可能会得到稍微不同的结果。
+
 ## 收集数据 [[收集数据]]
 
-Python 代码可以从 GitHub 等代码存储库中获得，我们可以通过抓取每个 Python 存储库来使用它们来创建数据集。这是在[Transformers textbook](https://learning.oreilly.com/library/view/natural-language-processing/9781098136789/)预训练大型的GPT-2 模型。使用大约 180 GB 的 GitHub 转储，其中包含大约 2000 万个 Python 文件，称为 `codeparrot` ，作者构建了一个数据集，然后在[Hugging Face Hub](https://huggingface.co/datasets/transformersbook/codeparrot)上分享出来了.
+我们可以从诸如 GitHub 这样的代码仓库中获取丰富的 Python 代码，通过对每个 Python 仓库进行抓取，我们就可以创建一个数据集。这就是在 [Transformers textbook](https://learning.oreilly.com/library/view/natural-language-processing/9781098136789/) 中预训练一个大型 GPT-2 模型的方法。开发者整理了名为 `codeparrot` 的一个大约为 180GB 的 GitHub 数据集， 其中包含大约 2,000 万个的Python 文件。 开发者用这些文件构建了一个数据集，并在 [Hugging Face Hub](https://huggingface.co/datasets/transformersbook/codeparrot) 上分享了这个数据集。
 
-然而，对完整语料库的训练既耗时又费力，我们只需要与 Python 数据科学堆栈相关的数据集子集。所以，让我们开始过滤 `codeparrot` 包含此堆栈中任何库的所有文件的数据集。由于数据集的太大，我们希望避免下载它；因此反，我们将使用流功能来动态过滤它。为了使用前面提到的库过滤代码示例，我们将使用以下函数：
+然而，使用完整语料库的训练既耗时又费力，我们只需要找到 Python 数据科学栈相关的数据集子集。所以，让我们从 `codeparrot` 数据集中筛选出包含这个栈中所有相关库的所有文件。由于数据集的太大，我们希望避免直接把全部的数据集下载下来；因此，我们将使用流式传输的方法来动态过滤它。为了使用上述的库来筛选代码样本，我们将使用以下函数：
 
 ```py
 def any_keyword_in_string(string, keywords):
@@ -63,7 +64,7 @@ print(
 False True
 ```
 
-我们可以使用它来创建一个函数来流式传输数据集并过滤我们想要的元素：
+我们可以使用这个函数来创建一个新的函数，该函数将流式传输数据集并过滤我们想要的元素：
 
 ```py
 from collections import defaultdict
@@ -83,11 +84,10 @@ def filter_streaming_dataset(dataset, filters):
     return Dataset.from_dict(filtered_dict)
 ```
 
-然后我们可以简单地将此函数应用于流数据集：
+然后我们可以直接使用这里函数流式处理数据集：
 
 ```py
-# This cell will take a very long time to execute, so you should skip it and go to
-# the next one!
+# 执行这个代码块需要非常长的时间,因此你可以跳过它,继续执行下一个!
 from datasets import load_dataset
 
 split = "train"  # "valid"
@@ -101,7 +101,9 @@ filtered_data = filter_streaming_dataset(data, filters)
 3.26% of data after filtering.
 ```
 
-这给我们留下了大约 3% 的原始数据集，这个数据集仍然相当可观——结果数据集有 6 GB，包含 600,000 个 Python 脚本！过滤完整数据集可能需要 2-3 小时，具体取决于您的机器和带宽。如果您不想自己经历这个漫长的过程，我们在 Hub 上提供过滤后的数据集供您下载：
+完成这个操作后，我们过滤后的数据集只有原始数据集的大约 3％，但这仍然是相当可观的大小——最终的数据集是 6GB，由 600,000 个 Python 脚本组成！
+
+过滤完整的数据集可能需要 2-3 小时，这取决于你的机器性能和带宽。如果你不想亲自经历这个漫长的过程，我们在 Hub 上提供了过滤后的数据集供你下载：
 
 ```py
 from datasets import load_dataset, DatasetDict
@@ -132,12 +134,6 @@ DatasetDict({
 })
 ```
 
-<Tip>
-
-预训练语言模型需要一段时间。我们建议您首先通过取消注释以上两行的注释对数据样本运行训练循环，并确保训练成功完成并存储模型。没有什么比最后一步的训练失败更令人沮丧的了，因为你忘记创建一个文件夹或者因为保存路径在训练循环结束时有一个错字！
-
-</Tip>
-
 让我们看一个来自数据集的例子。我们将只显示每个字段的前 200 个字符：
 
 ```py
@@ -164,23 +160,22 @@ from .murmurhash import murm
 LICENSE: bsd-3-clause'''
 ```
 
-我们可以看到 `content` 字段包含我们希望我们的模型训练的代码。现在我们有了一个数据集，我们需要预处理文本，使其采用适合预训练的格式。
+我们可以看到， `content` 字段包含了我们希望模型训练的代码。有了这个数据集之后，我们需要对文本进行一些处理，以便它们适合于预训练。
 
 ## 准备数据集 [[准备数据集]]
 
 <Youtube id="ma1TrR7gE7I"/>
 
-第一步是对数据进行标记，以便我们可以将其用于训练。由于我们的目标主要是自动完成短函数调用，因此我们可以保持上下文大小相对较小。这样做的好处是我们可以更快地训练模型并且它需要的内存显着减少。如果您的应用程序拥有更多上下文很重要（例如，如果您希望模型基于具有函数定义的文件编写单元测试），请确保增加该数量，但请记住，这需要更大的 GPU 内存占用。现在，让我们将上下文大小固定为 128 个标记，而不是 GPT-2 或 GPT-3 中分别使用的 1,024 或 2,048 个标记。
+首先，我们需要将数据进行分词处理，这样才能进行训练。由于我们的主要目标是自动补全短的函数调用，因此我们可以将上下文大小设置得相对较小。这样做的好处是我们可以更快地训练模型，而且需要的内存也大大减少。如果你的应用需要更多的上下文（比如，你希望模型根据包含函数定义的文件编写单元测试），那么应该增大该数字，但是也要记住这会增加 GPU 显存的占用。现在，我们将上下文大小固定为 128 个 tokens 而不是在 GPT-2 或 GPT-3 中使用的 1,024 或 2,048 个 tokens 
 
-
-大多数文档包含超过 128 个标记，因此简单地将输入截断到最大长度将消除我们数据集的很大一部分。相反，我们将使用 `return_overflowing_tokens` 标记整个输入并将其分成几个块的选项，就像我们在[第六章](/course/chapter6/4). 我们还将使用 `return_length` 选项自动返回每个创建的块的长度。通常最后一个块会小于上下文大小，我们会去掉这些块以避免填充问题；因为无论如何我们都有大量数据。
+大多数文档都包含超过 128 个 tokens 因此简单地将输入截断到最大长度会删除我们数据集的很一大部分。因此，我们将使用 `return_overflowing_tokens` 选项将整个输入进行分词处理，并将其分割为几个块，正如我们在 [第六章](/course/chapter6/4) 中所做的那样。我们还将使用 `return_length` 选项自动返回创建的每个块的长度。通常，最后一个块的大小会小于上下文大小，我们将去掉最后一块以避免填充问题；因为我们已经有足够的数据，所以不需要它们。
 
 <div class="flex justify-center">
 <img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts.svg" alt="Chunking a large texts in several pieces."/>
 <img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts-dark.svg" alt="Chunking a large texts in several pieces."/>
 </div>
 
-让我们通过查看前两个示例来确切了解这是如何工作的：
+让我们通过查看前两个示例来具体了解结果怎么样：
 
 ```py
 from transformers import AutoTokenizer
@@ -207,9 +202,9 @@ Input chunk lengths: [128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128
 Chunk mapping: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 ```
 
-我们可以看 到，从这两个示例中我们总共得到了 34 个片段。查看块长度，我们可以看到两个文档末尾的块都少于 128 个标记（分别为 117 和 41）。这些仅代表我们拥有的数据集的一小部分，因此我们可以安全地将它们扔掉。通过 `overflow_to_sample_mapping` 字段，我们还可以重建哪些块属于哪些输入样本。
+我们可以看到，这两个例子总共得到了 34 个块。查看块长度，我们可以看到两个文档末端的块少于 128 个 tokens （分别为 117 和 41）。不过这些只占我们所拥有的总块数的一小部分，因此我们可以放心地丢掉它们。通过 `overflow_to_sample_mapping` 字段，我们还可以分辨出哪些块属于哪个样本。
 
-通过这个操作，我们使用了一个方便的🤗 Datasets 中的` Dataset.map()` 函数，就是不需要一对一的映射；正如我们在[第三节](/course/chapter7/3),我们可以创建具有比输入批次更多或更少元素的批次。这在执行更改元素数量的数据增强或数据过滤等操作时非常有用。在我们的例子中，当将每个元素标记为指定上下文大小的块时，我们从每个文档中创建了许多样本。我们只需要确保删除现有的列，因为它们的大小存在冲突。如果我们想保留它们，我们可以适当地重复它们，并在`Dataset.map()` 调用中返回它们:
+在这个操作中，我们使用了🤗 Datasets 中的 `Dataset.map()` 函数的一个便捷的特性，即它并不需要一对一地设置分块后和分块前的映射关系；正如我们在 [第三节](/course/chapter7/3) 中看到的，我们可以自由地将一个样本拆分或者删除部分样本来创建比输入的 `batch_size` 更多或更少元素的 batch。 `Dataset.map()` 函数会自动帮我们关联映射关系，当进行像数据增强或数据过滤这样改变元素数量的操作时非常有用。在我们的情况下，当将每个样本分词并分割成指定上下文大小的块时，我们从每个样本中创建了许多样本。我们需要删除原本的列，因为它们的大小和我们分割后的大小不一样。如果我们想保留它们，我们可以复制它们来填充，并在 `Dataset.map()` 调用中返回它们。
 
 ```py
 def tokenize(element):
@@ -246,21 +241,19 @@ DatasetDict({
 })
 ```
 
-我们现在有 1670 万个示例，每个示例有 128 个tokens ，总共相当于大约 21 亿个tokens 。作为参考，OpenAI 的 GPT-3 和 Codex 模型分别在 300 和 1000 亿个tokens 上训练，其中 Codex 模型从 GPT-3 检查点初始化。我们在本节中的目标不是与这些模型竞争，这些模型可以生成长而连贯的文本，而是创建一个缩小版本，为数据科学家提供快速自动完成功能。
+我们现在有 1670 万个样本，每个样本有 128 个 tokens 总共相当于大约 21 亿个 tokens。作为参考，OpenAI 的 GPT-3 和 Codex 模型分别在 300 和 1000 亿个 tokens 上进行了训练，其中 Codex 模型从 GPT-3 checkpoint 初始化。本节的目标不是与这些能生成长且连贯文本的模型竞争，而是创建一个能为数据科学家提供快速自动代码补全功能的精简版本。
 
-现在我们已经准备好了数据集，让我们设置模型！
-
+既然我们已经准备好了数据集，那就来设置模型吧！
 
 <Tip>
 
-✏️ **试试看！** 摆脱所有小于上下文大小的块在这里并不是什么大问题，因为我们使用的是小上下文窗口。随着上下文大小的增加（或者如果您有一个短文档语料库），被丢弃的块的比例也会增加。准备数据的更有效方法是将所有标记化的样本加入一个批次中，每个语料之间有一个`eos_token_id` 标记, 然后对连接的序列执行分块。作为练习，修改 `tokenize()`函数以使用该方法。请注意，您需要设置`truncation=False` 和删除标记生成器中的其他参数以获取完整的标记 ID 序列。
+✏️ **试一试！**这里我们删除了所有小于设定的上下文大小的块，并不会造成大问题，因为我们使用的是比较小的上下文窗口。随着增大上下文大小（或者语料库中的文档长度都很短），被抛弃的块的比例也会增加。更有效方法是将所有 tokenize 后的样本拼接起来加入一个 batch 中，每个样本之间有一个 `eos_token_id` token 作为分隔，然后对连接后的序列进行切块处理。作为练习，修改 `tokenize()` 函数以利用这种方法。请注意，为了获取完整的 token  ID 序列你需要设置 `truncation=False` ，并删除 tokenizer 中的其他参数。
 
 </Tip>
 
+## 初始化一个新模型 [[初始化一个新模型]]
 
-## 初始化新模型 [[初始化新模型]]
-
-我们的第一步是新初始化一个 GPT-2 模型。我们将对我们的模型使用与小型 GPT-2 模型相同的配置，因此我们加载预训练配置，确保分词器大小与模型词汇量大小匹配并设置 `bos` 和 `eos` （序列的开始和结束）令牌 ID：
+我们的第一步是初始化一个全新地 GPT-2 模型。我们可以通过加载预训练配置来初始化一个与 GPT-2 small 相同的配置的模型，并确保 tokenizer 大小与模型的词汇表大小匹配，以及设置 `bos` 和 `eos` （序列的开始和结束） token IDs：
 
 {#if fw === 'pt'}
 
@@ -276,7 +269,7 @@ config = AutoConfig.from_pretrained(
 )
 ```
 
-使用该配置，我们可以加载一个新模型。请注意，这是我们第一次不使用 `from_pretrained()` 函数，因为我们实际上是在自己初始化模型
+有了这个配置对象，我们就可以加载一个全新的 GPT-2 模型。注意，这是我们第一次不使用 `from_pretrained()` 函数，因为我们实际上是自己初始化一个全新的模型而不是从一个预训练的模型继续训练：
 
 ```py
 model = GPT2LMHeadModel(config)
@@ -302,11 +295,11 @@ config = AutoConfig.from_pretrained(
 )
 ```
 
-通过该配置，我们可以加载新模型。请注意，这是我们刚开始不使用`from_pretrained()`函数，因为我们实际上是在自己初始化模型：
+有了这个配置，，我们就可以加载一个全新的 GPT-2 模型。注意，这是我们第一次不使用 `from_pretrained()` 函数，因为我们实际上是自己初始化一个全新的模型而不是从一个预训练的模型继续训练：
 
 ```py
 model = TFGPT2LMHeadModel(config)
-model(model.dummy_inputs)  # Builds the model
+model(model.dummy_inputs)  # 构建模型
 model.summary()
 ```
 
@@ -314,7 +307,7 @@ model.summary()
 _________________________________________________________________
 Layer (type)                 Output Shape              Param #   
 =================================================================
-transformer (TFGPT2MainLayer multiple                  124242432 
+transformer (TFGPT2MainLayer multiple)                  124242432 
 =================================================================
 Total params: 124,242,432
 Trainable params: 124,242,432
@@ -324,9 +317,9 @@ _________________________________________________________________
 
 {/if}
 
-我们的模型有 1.24 亿个参数，我们必须对其进行调整。在开始训练之前，我们需要设置一个负责创建批次的数据整理器。我们可以使用 `DataCollatorForLanguageModeling` ，它是专为语言建模而设计（顾名思义）。除了堆叠和填充批次，它还负责创建语言模型标签——在因果语言建模中，输入也用作标签（只是移动了一个元素），并且这个数据整理器在训练期间即时创建它们，所以我们不需要复制 `input_ids`。 
+我们的新模型有 124M 个参数需要训练。在开始训练之前，我们需要设置一个数据整理器（DataCollator），它将负责创建 Batch。我们可以使用 `DataCollatorForLanguageModeling` ，顾名思义，它专门用于语言建模。除了堆叠和填充创建 Batch 之外，它还负责创建语言模型的待预测的标签 —— 在因果语言建模中，输入就是待预测的标签（只是偏移一个元素），而这个数据整理器（DataCollator）在训练过程中实时将输入偏移一个元素来创建它们，因此我们不需要复制 `input_ids` 。
 
-注意 `DataCollatorForLanguageModeling` 支持掩码语言建模 (MLM) 和因果语言建模 (CLM)。默认情况下它为 MLM 准备数据，但我们可以通过设置`mlm=False`参数切换到 CLM ：
+注意， `DataCollatorForLanguageModeling` 同时支持掩码语言建模 （MLM） 和因果语言建模 （CLM）。默认情况下它安装 MLM 需要的格式准备数据，但我们可以通过设置 `mlm=False` 参数切换到 CLM。
 
 {#if fw === 'pt'}
 
@@ -351,7 +344,7 @@ data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False, return_ten
 让我们看一个例子：
 
 ```py
-out = data_collator([tokenized_dataset["train"][i] for i in range(5)])
+out = data_collator([tokenized_datasets["train"][i] for i in range(5)])
 for key in out:
     print(f"{key} shape: {out[key].shape}")
 ```
@@ -374,21 +367,21 @@ labels shape: (5, 128)
 
 {/if}
 
-我们可以看到示例已经堆叠在一起，并且所有张量都具有相同的形状。
+我们可以看到示例的数据已经处理好了，并且所有 tensor 都具有相同的形状。
 
 {#if fw === 'tf'}
 
-现在，我们可以使用`prepare_tf_dataset()`方法，使用上面创建的数据整理器将数据集转换为TensorFlow数据集：
+现在，我们可以使用 `prepare_tf_dataset()` 方法，将上面创建的数据整理器（DataCollator）将数据集转换为 TensorFlow 数据集：
 
 ```python
 tf_train_dataset = model.prepare_tf_dataset(
-    tokenized_dataset["train"],
+    tokenized_datasets["train"],
     collate_fn=data_collator,
     shuffle=True,
     batch_size=32,
 )
 tf_eval_dataset = model.prepare_tf_dataset(
-    tokenized_dataset["valid"],
+    tokenized_datasets["valid"],
     collate_fn=data_collator,
     shuffle=False,
     batch_size=32,
@@ -399,12 +392,11 @@ tf_eval_dataset = model.prepare_tf_dataset(
 
 <Tip warning={true}>
 
-⚠️  移动输入和标签以对齐它们发生在模型内部，因此数据整理器只需复制输入以创建标签。
+⚠️ 输入序列和目标序列对齐将在模型内部自动进行，所以数据整理器只需复制输入序列来创建目标序列。
 
 </Tip>
 
-
-现在我们已经准备好实际训练我们的模型的一切了——毕竟这不是那么多工作！在我们开始训练之前，我们应该登录 Hugging Face。如果您在笔记本上工作，则可以使用以下实用程序功能：
+现在我们已经准备好了所有东西，可以开始训练我们的模型了——好像也不是那么困难！在我们开始训练之前，我们应该登录到 Hugging Face。如果你正在使用 Notebook 运行代码，你可以使用下面的实用函数进行登录：
 
 ```python
 from huggingface_hub import notebook_login
@@ -412,9 +404,9 @@ from huggingface_hub import notebook_login
 notebook_login()
 ```
 
-这将显示一个小部件，您可以在其中输入您的 Hugging Face 登录凭据。
+这将显示一个小部件，你可以在其中输入你的 Hugging Face 登录凭据。
 
-如果您不是在notebook上工作，只需在终端中输入以下行：
+如果你不是在 Notebook 上工作，只需在终端中输入以下行：
 
 ```bash
 huggingface-cli login
@@ -422,7 +414,7 @@ huggingface-cli login
 
 {#if fw === 'pt'}
 
-剩下要做的就是配置训练参数并启动 `Trainer` .我们将使用余弦学习率，并进行一些Warmup和有效批量大小为 256 ( `per_device_train_batch_size` * `gradient_accumulation_steps`）。当单个批次不适合内存时使用梯度累积，并通过多次向前/向后传递逐步建立梯度。当我们使用 🤗 Accelerate 创建训练循环时，我们将看到这一点。
+剩下要做的就是配置训练参数并启动 `Trainer` 。本次的训练中我们将使用余弦学习率调度，并进行一些 Warmup。训练的 batch size 是 256 （ `per_device_train_batch_size` * `gradient_accumulation_steps` ）。当单个 batch 无法放入内存时，可以使用梯度累积，并通过多次向前/向后传递逐步累积梯度。当我们在本节最后使用 🤗 Accelerate 创建训练循环时，我们将看到这一点。
 
 ```py
 from transformers import Trainer, TrainingArguments
@@ -455,13 +447,13 @@ trainer = Trainer(
 )
 ```
 
-现在我们可以开始 `Trainer`并等待训练完成。根据您是在整个训练集还是在训练集的一个子集上运行它，这将分别需要 20 或 2 个小时，因此请喝杯咖啡和一本好书来阅读！
+现在我们只需启动 `Trainer` 并等待训练完成。根据你是在整个训练集还是在训练集的一个子集上运行它，这将分别需要 20 或 2 个小时，因此请喝杯咖啡或者找一本好书来阅读！
 
 ```py
 trainer.train()
 ```
 
-训练完成后，我们可以将模型和标记器推送到 Hub：
+训练完成后，我们可以将模型和 tokenizer 推送到 Hub：
 
 ```py
 trainer.push_to_hub()
@@ -469,7 +461,7 @@ trainer.push_to_hub()
 
 {:else}
 
-剩下要做的就是配置训练超参数并调用 `compile()` 和 `fit()`。我们将使用带有一些预热的学习率调整策略来提高训练的稳定性：
+接下来我们需要做的就是配置训练超参数并调用 `compile()` 和 `fit()` 方法。然后使用带有一些预热的学习率调整策略来提高训练的稳定性：
 
 ```py
 from transformers import create_optimizer
@@ -484,11 +476,11 @@ optimizer, schedule = create_optimizer(
 )
 model.compile(optimizer=optimizer)
 
-# Train in mixed-precision float16
+# 使用 float16 混合精度进行训练
 tf.keras.mixed_precision.set_global_policy("mixed_float16")
 ```
 
-现在我们可以调用`model.fit()，`并等待训练完成。你是在完整的训练集还是他的子集上运行，这将分别需要20和2个小时，所以拿一些咖啡和一本好书来阅读！训练完成后，我们可以将模型和分词器推送到中心：
+现在我们只需调用 `model.fit()` ，并等待训练完成。根据你是否在完整的训练集或者训练集的子集上运行，这将分别需要 20 小时或者 2 小时，所以拿一些咖啡和一本好书来阅读！训练完成后，我们可以将模型和 tokenizer 推送到 Hub：
 
 ```py
 from transformers.keras_callbacks import PushToHubCallback
@@ -502,7 +494,7 @@ model.fit(tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback
 
 <Tip>
 
-✏️ **试试看!** 除了`TrainingArguments` 之外，我们只需要大约30行代码就可以从原始文本到训练GPT-2。 用你自己的数据集试试看，看看你能不能得到好的结果！
+✏️ **试试看！** 除了 `TrainingArguments` 之外，我们只需要大约 30 行代码就可以从原始文本到训练 GPT-2。用你自己的数据集试试看，看看你能不能得到好的结果！
 
 </Tip>
 
@@ -510,19 +502,19 @@ model.fit(tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback
 
 {#if fw === 'pt'}
 
-💡 如果您可以访问具有多个 GPU 的机器，请尝试在那里运行代码。 `Trainer`自动管理多台机器，这可以极大地加快训练速度。
+💡 如果你能使用多 GPU 的机器，尝试在那里运行代码。 `Trainer` 自动管理多台机器，这能极大地加快训练速度。
 
 {:else}
 
-💡 如果您正在使用具有多个 GPU 的计算机，则可以尝试使用 `MirroredStrategy` 上下文来大幅加快训练速度。您需要创建一个`tf.distribute.MirroredStrategy`对象，并确保所有的 `to_tf_dataset` 或 `prepare_tf_dataset()` 方法以及模型创建和对 `fit()`的调用都在其 `scope()` 上下文中运行。您可以查看有关此内容的文档[here](https://www.tensorflow.org/guide/distributed_training#use_tfdistributestrategy_with_keras_modelfit).
+💡 如果你正在使用具有多个 GPU 的计算机，则可以尝试使用 `MirroredStrategy` 上下文来大幅加快训练速度。你需要创建一个 `tf.distribute.MirroredStrategy` 对象，并确保所有的 `to_tf_dataset` 或 `prepare_tf_dataset()` 方法以及模型创建和对 `fit()` 的调用都在其 `scope()` 上下文中运行。你可以在 [这里](https://www.tensorflow.org/guide/distributed_training#use_tfdistributestrategy_with_keras_modelfit) 查看有关此内容的文档。
 
 {/if}
 
 </Tip>
 
-## 使用管道生成代码 [[使用管道生成代码]]
+## 使用 pipeline 进行代码生成 [[使用管道生成代码]]
 
-现在是关键的部分：让我们看看经过训练的模型的实际效果如何！我们可以在日志中看到损失稳步下降，但为了让模型进行测试，让我们看看它在某些测试上的表现如何。为此，我们将模型包装在文本生成中的`pipeline` ，如果有可用的，我们会将它放在 GPU 上进行快速生成：
+现在是见证奇迹的时刻：我们来看看训练好的模型到底表现如何！我们可以在日志中看到损失持续下降，但要测试模型的效果，我们就看看它对一些提示的反应如何。为此，我们将模型包装在一个文本生成的 `pipeline` 中，并如果有 GPU 可用，我们将把它放在 GPU 上加快生成速度：
 
 {#if fw === 'pt'}
 
@@ -550,93 +542,93 @@ pipe = pipeline(
 
 {/if}
 
-让我们从创建散点图的简单任务开始：
+让我们从简单的创建散点图任务开始：
 
 ```py
 txt = """\
-# create some data
+# 创建一些数据
 x = np.random.randn(100)
 y = np.random.randn(100)
 
-# create scatter plot with x, y
+# 使用 x,y 创建散点图
 """
 print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
 ```
 
 ```python out
-# create some data
+# 创建一些数据
 x = np.random.randn(100)
 y = np.random.randn(100)
 
-# create scatter plot with x, y
+# 使用 x,y 创建散点图
 plt.scatter(x, y)
 
-# create scatter
+# 创建散点
 ```
 
-结果看起来是正确的。它也适用于 `pandas` 类型？让我们看看我们是否使用两个数组可以创建一个 `DataFrame` ：
+结果看起来是正确的。那么对于 `pandas` 操作也可以吗？让我们看看是否能从两个数组创建一个 `DataFrame` ：
 
 ```py
 txt = """\
-# create some data
+# 创建一些数据
 x = np.random.randn(100)
 y = np.random.randn(100)
 
-# create dataframe from x and y
+# 从 x 和 y 创建 dataframe
 """
 print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
 ```
 
 ```python out
-# create some data
+# 创建一些数据
 x = np.random.randn(100)
 y = np.random.randn(100)
 
-# create dataframe from x and y
+# 从 x 和 y 创建 dataframe
 df = pd.DataFrame({'x': x, 'y': y})
 df.insert(0,'x', x)
 for
 ```
 
-很好，这是正确的答案——尽管它随后再次插入了列 `x` 。由于生成的token数量有限，以下 `for` 循环被切断。让我们看看我们是否可以做一些更复杂的事情并让模型帮助我们分组操作：
+很好，这是正确的答案——尽管它又把 `x` 重复插入了一次。而且由于生成的 token 数量有限，所以下面的 `for` 循环被切断了。让我们看看我们是否能做些更复杂的事情，让模型帮助我们使用 `groupby` 操作：
 
 ```py
 txt = """\
-# dataframe with profession, income and name
+# 有职业,收入和名字的 dataframe
 df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
 
-# calculate the mean income per profession
+# 计算每个职业的平均收入
 """
 print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
 ```
 
 ```python out
-# dataframe with profession, income and name
+# 有职业,收入和名字的 dataframe
 df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
 
-# calculate the mean income per profession
+# 计算每个职业的平均收入
 profession = df.groupby(['profession']).mean()
 
-# compute the
+# 计算
 ```
 
-不错;这是正确的做法。最后，让我们看看我们是否也可以将其用于 `scikit-learn` 并建立一个随机森林模型：
+不错；是正确的。最后，让我们看看是否能引导模型使用 `scikit-learn` 并建立一个随机森林模型：
 
 ```py
 txt = """
-# import random forest regressor from scikit-learn
+# 从 scikit-learn 导入随机森林回归器
 from sklearn.ensemble import RandomForestRegressor
 
-# fit random forest model with 300 estimators on X, y:
+# 用 X, y 拟合带有 300 个估算器的随机森林模型:
 """
 print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
 ```
 
 ```python out
-# import random forest regressor from scikit-learn
+# 从 scikit-learn 导入随机森林回归器
 from sklearn.ensemble import RandomForestRegressor
 
-# fit random forest model with 300 estimators on X, y:
+# 用 X, y 拟合带有 300 个估算器的随机森林模型:
 rf = RandomForestRegressor(n_estimators=300, random_state=random_state, max_depth=3)
 rf.fit(X, y)
 rf
@@ -644,23 +636,23 @@ rf
 
 {#if fw === 'tf'}
 
-看看这几个例子，似乎模型已经学习了Python数据科学堆栈的一些语法。当然，在将模型部署到现实世界之前，我们需要更彻底地评估模型，但这仍然是一个令人印象深刻的原型。
+从上述几个示例来看，似乎模型已经学习了 Python 数据科学栈的一些语法。当然，在将模型部署到现实世界之前，我们需要更彻底地评估模型，但这仍然是一个令人印象深刻的原型。
 
 {:else}
 
-从这几个例子来看，模型似乎已经学习了 Python 数据科学堆栈的一些语法（当然，在将模型部署到现实世界之前，我们需要对其进行更全面的评估）。然而，有时需要对模型训练进行更多定制才能实现给定用例的必要性能。例如，如果我们想动态更新批量大小或有一个条件训练循环来即时跳过坏示例怎么办？一种选择是将 `Trainer` 并添加必要的更改，但有时从头开始编写训练循环会更简单。这就是🤗 Accelerate 的用武之地。   
+从这几个例子来看，模型似乎已经学习了 Python 数据科学堆栈的一些语法（当然，在将模型部署到现实世界之前，我们需要对其进行更全面的评估）。然而，有时候它需要更多的模型训练定制来达到特定情境所需的性能。例如，如果我们想动态更新 `batch_size` 或添加一个条件训练循环来跳过坏示例怎么办？一种选择是修改 `Trainer` 添加新的功能，但有时从头开始编写训练循环会更简单。这就是🤗 Accelerate 的用武之地。
 
 {/if}
 
 {#if fw === 'pt'}
 
-## 用 🤗 Accelerate 训练 [[用 🤗 Accelerate 训练]]
+## 使用🤗 Accelerate 进行训练 [[使用🤗 Accelerate 进行训练]]
 
-我们已经看到了如何使用 `Trainer` ，这可以允许一些自定义。然而，有时我们想要完全控制训练循环，或者我们想要进行一些奇特的更改。在这种情况下 🤗 Accelerate 是一个不错的选择，在本节中，我们将逐步介绍使用它来训练我们的模型的步骤。为了让事情变得更有趣，我们还将在训练循环中添加一些修改。
+我们已经看到了如何使用 `Trainer` 训练模型，在 `Trainer` 中可以对训练过程可以通过修改一些参数进行一些定制。然而，有时我们想要完全控制训练循环，或者我们想要进行一些更自由的的更改。在这种情况下 🤗 Accelerate 是一个不错的选择，本节我们将介绍如何使用它来训练我们的模型。为了让事情变得更有趣，相比于上面的 `Trainer` 我们还将在训练循环中添加一些修改。
 
 <Youtube id="Hm8_PgVTFuc"/>
 
-由于我们主要对数据科学库的合理自动填充感兴趣，因此对更多使用这些库的训练样本给予更多权重是有意义的。我们可以通过使用关键字轻松识别这些示例，例如 `plt`、`pd`、`sk`、`fit`和`predict`等关键字，我们可以很容易地识别这些示例，这些关键字是matplotlib最常用的导入名称。`Pyplot`, `pandas`和`sklearn`以及后者的拟合/预测模式。如果这些都表示为单个标记，我们可以轻松检查它们是否出现在输入序列中。标记可能有一个空格前缀，因此我们还将在标记器词汇表中检查这些版本。为了验证它是否有效，我们将添加一个测试token ，该token 应拆分为多个tokens：
+由于我们主要关注的是为数据科学库提供合理的代码自动补充功能，因此对于更多使用这些库的训练样本赋予更高的权重是有意义的。我们可以通过使用 `plt` 、 `pd` 、 `sk` 、 `fit` 和 `predict` 等关键词来轻松地识别出这些例子，这些关键词是 `matplotlib.pyplot` 、 `pandas` 和 `sklearn` 导入后最常用重命名的名称，以及 `sklearn` 的 `fit/predict` 方法。如果这些在模型的内部是用单一的一个 `token` 表示的，我们可以通过 token 的 id 轻松地检查它们是否出现在输入序列中。然而，Tokens 有可能有空格前缀，所以我们也需要在 tokenizer 词汇表中检查这些关键词。为了验证这个策略的有效性，我们会在测试样本中添加一个应该被分割为多个 tokens 的测试 token：
 
 ```py
 keytoken_ids = []
@@ -688,7 +680,7 @@ for keyword in [
 'Keyword has not single token: testtest'
 ```
 
-太好了，这似乎很好用！我们现在可以编写一个自定义损失函数，它将输入序列、logits 和我们刚刚选择的关​​键标记作为输入。首先，我们需要对齐 logits 和输入：向右移动一个的输入序列形成标签，因为下一个标记是当前标记的标签。我们可以通过从输入序列的第二个标记开始标记来实现这一点，因为模型无论如何都不会对第一个标记进行预测。然后我们切断最后一个 logit，因为我们没有完整输入序列之后的标记的标签。有了这个，我们可以计算每个样本的损失并计算每个样本中所有关键字的出现次数。最后，我们使用出现次数作为权重计算所有样本的加权平均值。由于我们不想扔掉所有没有关键字的样本，我们将权重加1：
+太好了，这个方法似乎很有效！我们现在可以编写一个自定义的损失函数，它的输入有输入序列、logits 和我们刚刚选择的关键字。首先需要对齐 `logits` 和 `inputs` : 并将输入序列右移一个单位形成目标序列，因为下一个 `token` 就是当前 `token` 的预测的目标。我们可以通过从输入序列的第二个 `token` 开始设置标签，因为模型不会预测第一个 `token`。然后我们截断最后一个 `logit`，因为我们没有完整输入序列后面的标签。有了这些，我们就可以计算每个样本的损失，并计算每个样本中所有关键词的出现次数。最后，我们使用出现次数作为权重，计算所有样本的加权平均值。由于我们不想抛弃所有没有关键词的样本，我们将所有的权重都加 1：
 
 ```py
 from torch.nn import CrossEntropyLoss
@@ -696,41 +688,41 @@ import torch
 
 
 def keytoken_weighted_loss(inputs, logits, keytoken_ids, alpha=1.0):
-    # Shift so that tokens < n predict n
+    # 左移 tokens < n 预测 n
     shift_labels = inputs[..., 1:].contiguous()
     shift_logits = logits[..., :-1, :].contiguous()
-    # Calculate per-token loss
+    # 计算每一个token的loss
     loss_fct = CrossEntropyLoss(reduce=False)
     loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-    # Resize and average loss per sample
+    # 对于每个样本重新调整大小并平均
     loss_per_sample = loss.view(shift_logits.size(0), shift_logits.size(1)).mean(axis=1)
-    # Calculate and scale weighting
+    # 计算并缩放权重
     weights = torch.stack([(inputs == kt).float() for kt in keytoken_ids]).sum(
         axis=[0, 2]
     )
     weights = alpha * (1.0 + weights)
-    # Calculate weighted average
+    # 计算评价权重
     weighted_loss = (loss_per_sample * weights).mean()
     return weighted_loss
 ```
 
-在我们开始使用这个很棒的新损失函数进行训练之前，我们需要准备一些东西：
+在我们开始使用这个精妙的新损失函数进行训练之前，我们需要准备一些事情：
 
 - 我们需要数据加载器来批量加载数据。
 - 我们需要设置权重衰减参数。
-- 有时我们想要求值，因此将求值代码包装在一个函数中是有意义的。
+- 有时我们在调试模型的时候可能需要临时评估，所以将评估代码包装在一个函数中。
 
-让我们从数据加载器开始。我们只需要将数据集的格式设置为 `"torch"`，然后我们可以将它传递给 PyTorch `DataLoader` ,同时设置适当的批量大小：
+让我们从数据加载器开始。我们只需要将数据集的格式设置为 `"torch"` ，然后我们就可以将它传递给一个具有适当 `batch size` 的 PyTorch 的 `DataLoader` ：
 
 ```py
 from torch.utils.data.dataloader import DataLoader
 
-tokenized_dataset.set_format("torch")
-train_dataloader = DataLoader(tokenized_dataset["train"], batch_size=32, shuffle=True)
-eval_dataloader = DataLoader(tokenized_dataset["valid"], batch_size=32)
+tokenized_datasets.set_format("torch")
+train_dataloader = DataLoader(tokenized_datasets["train"], batch_size=32, shuffle=True)
+eval_dataloader = DataLoader(tokenized_datasets["valid"], batch_size=32)
 ```
 
-接下来，我们对参数进行分组，以便优化器知道哪些将获得额外的权重衰减。通常，所有偏差和 LayerNorm 权重项都不受此限制；以下我们如何做到这一点：
+接下来，我们将参数分组，以便优化器知道哪些参数需要进行额外的权重衰减。通常，所有的偏置和 LayerNorm 权重项都不需要进行权重衰减；因此我们可以这样做：
 
 ```py
 weight_decay = 0.1
@@ -749,7 +741,7 @@ def get_grouped_params(model, no_decay=["bias", "LayerNorm.weight"]):
     ]
 ```
 
-由于我们希望在训练期间定期在验证集上评估模型，因此我们也为此编写一个函数。它只是运行评估数据加载器并收集跨进程的所有损失：
+我们希望在训练过程中定期在验证集上评估模型，让我们为此编写一个函数。它只需遍历评估数据加载器，并收集所有进程中的损失值：
 
 ```py
 def evaluate():
@@ -768,7 +760,7 @@ def evaluate():
     return loss.item(), perplexity.item()
 ```
 
-通过 `evaluate()` 函数我们定期可以获取损失值和[perplexity](/course/chapter7/3)。接下来，我们重新定义我们的模型以确保我们再次从头开始训练：
+通过 `evaluate()` 函数我们定期可以获取损失值和 [困惑度（perplexity）](/course/chapter7/3) 。接下来，我们重新加载我们的模型以确保我们再次从头开始训练，而不是从上面的 `Trainer` 继续微调：
 
 ```py
 model = GPT2LMHeadModel(config)
@@ -782,7 +774,7 @@ from torch.optim import AdamW
 optimizer = AdamW(get_grouped_params(model), lr=5e-4)
 ```
 
-现在让我们准备模型、优化器和数据加载器，以便我们可以开始训练：
+现在让我们准备模型、优化器和数据加载器，然后我们可以开始训练：
 
 ```py
 from accelerate import Accelerator
@@ -796,11 +788,12 @@ model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
 
 <Tip>
 
-🚨 如果您在 TPU 上进行训练，则需要将从上面的单元格开始的所有代码移动到专用的训练函数中。有关详细信息，请参阅 [第 3 章](/course/chapter3) for more details.
+🚨 如果你在 TPU 上训练，你需要将上述单元格开始的所有代码移到一个专门的训练函数中。更多详情请参阅 [第三章](/course/chapter3) 。
 
 </Tip>
 
-现在我们已经发送了我们的 `train_dataloader`到 `accelerator.prepare()` ，我们可以使用它的长度来计算训练步骤的数量。请记住，我们应该始终在准备好dataloader后执行此操作，因为该方法会改变其长度。我们使用经典线性学习率调度：
+现在我们已经将我们的 `train_dataloader` 传递给了 `accelerator.prepare()` ，我们可以使用 `len()` 来计算训练步骤的数量。请记住，我们应该在准备好 `dataloader` 后再使用 `len()` ，因为改动 `dataloader` 会改变其长度。我们使用一个从学习率衰减到 0 的经典线性学习率调度：
+
 
 ```py
 num_train_epochs = 1
@@ -815,7 +808,7 @@ lr_scheduler = get_scheduler(
 )
 ```
 
-最后，要将我们的模型推送到 Hub，我们需要创建一个 `Repository` 工作文件夹中的对象。如果您尚未登录，请先登录 Hugging Face。我们将从我们想要为模型提供的模型 ID 中确定存储库名称（您可以自由地用自己的选择替换 `repo_name` ；它只需要包含您的用户名，可以使用`get_full_repo_name()`函数的查看目前的repo_name）：
+最后，为了将我们的模型推送到 Hub，我们需要在一个工作文件夹中创建一个 `Repository` 对象。如果你还没有登录的话，首先需要登录到 Hugging Face，我们将根据模型 ID 来确定仓库名称（你可以使用你喜欢的名字替换 `repo_name` ；它只需要包含你的用户名，可以使用 `get_full_repo_name()` 函数的查看目前的 `repo_name`）：
 
 ```py
 from huggingface_hub import Repository, get_full_repo_name
@@ -829,14 +822,13 @@ repo_name
 'sgugger/codeparrot-ds-accelerate'
 ```
 
-然后我们可以在本地文件夹中克隆该存储库。如果它已经存在，这个本地文件夹应该是我们正在使用的存储库的克隆：
-
+然后我们可以将该仓库克隆到本地文件夹中。如果本地已经存在一个同名的文件夹，这个本地文件夹应该是我们正在使用的仓库的克隆在本地的版本：
 ```py
 output_dir = "codeparrot-ds-accelerate"
 repo = Repository(output_dir, clone_from=repo_name)
 ```
 
-我们现在可以上传我们保存的任何内容 `output_dir` 通过调用 `repo.push_to_hub()` 方法。这将帮助我们在每个 epoch 结束时上传中间模型。在我们训练之前，让我们运行一个快速测试，看看评估函数是否正常工作：
+我们现在可以通过调用 `repo.push_to_hub()` 方法上传保存在 `output_dir` 中的所有内容。这将帮助我们在每个训练周期结束时上传中间模型。
 
 ```py
 evaluate()
@@ -846,7 +838,7 @@ evaluate()
 (10.934126853942871, 56057.14453125)
 ```
 
-这些损失和困惑度的值非常高，但这并不奇怪，因为我们还没有训练过模型。有了这个，我们已经准备好编写训练脚本的核心部分：训练循环。在训练循环中，我们遍历数据加载器并将批次传递给模型。有了 logits，我们就可以评估我们的自定义损失函数。我们通过梯度累积步骤的数量来缩放损失，以便在聚合更多步骤时不会产生更大的损失。在我们优化之前，我们还剪辑了梯度以获得更好的收敛性。最后，每隔几步，我们就会使用新的 `evaluate()` 函数评估模型：
+目前的损失和困惑度都是非常高的值，但这并不奇怪，因为我们还没有训练模型。到现在为止，我们已经为编写训练脚本的核心部分：训练循环已经做好了准备。在训练循环中，我们迭代遍历数据加载器并将成批量的数据传递给模型。有了模型输出的 logits，我们就可以使用自定义损失函数计算损伤。我们通过梯度累积步骤的数量来缩放损失，以避免在聚合更多步骤时产生更大的损失。在我们优化之前，我们也会剪裁梯度来更好的收敛。最后，每隔一段步数，我们用新的 `evaluate()` 函数在评估集上评估模型：
 
 ```py
 from tqdm.notebook import tqdm
@@ -865,7 +857,6 @@ for epoch in range(num_train_epochs):
         if step % 100 == 0:
             accelerator.print(
                 {
-                    "lr": get_lr(),
                     "samples": step * samples_per_step,
                     "steps": completed_steps,
                     "loss/train": loss.item() * gradient_accumulation_steps,
@@ -893,17 +884,17 @@ for epoch in range(num_train_epochs):
                 )
 ```
 
-就是这样 - 您现在拥有自己的因果语言模型（例如 GPT-2）的自定义训练循环，您可以根据自己的需要进一步自定义。
+就是这样 - 你现在拥有自己的因果语言模型（例如 GPT-2）的自定义训练循环，你可以根据自己的需要进一步定制。
 
 <Tip>
 
-✏️ **试试看!** 创建适合您的用例的自定义损失函数，或在训练循环中添加另一个自定义步骤。
+✏️ **试试看！** 创建适合你的用例的自定义损失函数，或在训练循环中添加另一个自定义步骤。
 
 </Tip>
 
 <Tip>
 
-✏️ **试试看!** 在运行长时间的训练实验时，最好使用 TensorBoard 或 Weights Biases 等工具记录重要指标。向训练循环添加适当的日志记录，以便您始终可以检查训练的进行情况。going.
+✏️ **试试看！**  当运行长时间的训练实验时，使用 TensorBoard 或 Weights & Biases 等工具记录重要指标是个好主意。向训练循环中添加适当的日志记录，这样你可以随时检查训练进度。
 
 </Tip>
 
