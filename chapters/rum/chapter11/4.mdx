@@ -1,0 +1,171 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section4.ipynb"},
+]} />
+
+# LoRA (Adaptarea de rang scăzut)
+
+Fine-tuningul modelelor mari de limbaj este un proces intensiv în resurse. LoRA este o tehnică care ne permite să facem fine-tuning la modele mari de limbaj cu un număr mic de parametri. Funcționează prin adăugarea și optimizarea unor matrice mai mici la greutățile atenției, reducând de obicei parametrii antrenabili cu aproximativ 90%.
+
+## Înțelegerea LoRA
+
+LoRA (Adaptarea de rang scăzut) este o tehnică de fine-tuning eficientă din punct de vedere al parametrilor care îngheață greutățile modelului pre-antrenat și injectează matrice de descompunere de rang antrenabile în straturile modelului. În loc să antreneze toți parametrii modelului în timpul fine-tuningului, LoRA descompune actualizările greutăților în matrice mai mici prin descompunere de rang scăzut, reducând semnificativ numărul de parametri antrenabili menținând în același timp performanța modelului. De exemplu, când este aplicat la GPT-3 175B, LoRA a redus parametrii antrenabili de 10.000 de ori și cerințele de memorie GPU de 3 ori comparativ cu fine-tuningul complet. Puteți citi mai multe despre LoRA în [lucrarea LoRA](https://arxiv.org/pdf/2106.09685).
+
+LoRA funcționează prin adăugarea de perechi de matrice de descompunere de rang la straturile transformer, concentrându-se de obicei pe greutățile atenției. În timpul inferenței, aceste greutăți ale adaptorului pot fi îmbinate cu modelul de bază, rezultând în nicio latență suplimentară. LoRA este deosebit de util pentru adaptarea modelelor mari de limbaj la sarcini sau domenii specifice menținând în același timp cerințele de resurse gestionabile.
+
+## Avantajele cheie ale LoRA
+
+1. **Eficiența memoriei**:
+   - Doar parametrii adaptorului sunt stocați în memoria GPU
+   - Greutățile modelului de bază rămân înghețate și pot fi încărcate la precizie mai mică
+   - Permite fine-tuningul modelelor mari pe GPU-uri de consum
+
+2. **Caracteristici de antrenare**:
+   - Integrare nativă PEFT/LoRA cu configurare minimă
+   - Suport pentru QLoRA (LoRA cuantificat) pentru eficiență de memorie și mai bună
+
+3. **Gestionarea adaptorului**:
+   - Salvarea greutăților adaptorului în timpul punctelor de verificare
+   - Funcționalități pentru îmbinarea adaptorilor înapoi în modelul de bază
+
+## Încărcarea adaptorilor LoRA cu PEFT
+
+[PEFT](https://github.com/huggingface/peft) este o bibliotecă care oferă o interfață unificată pentru încărcarea și gestionarea metodelor PEFT, inclusiv LoRA. Vă permite să încărcați și să comutați cu ușurință între diferite metode PEFT, făcând mai ușor să experimentați cu diferite tehnici de fine-tuning.
+
+Adaptorii pot fi încărcați pe un model pre-antrenat cu `load_adapter()`, care este util pentru a încerca adaptori diferiți ale căror greutăți nu sunt îmbinate. Setați greutățile adaptorului activ cu funcția `set_adapter()`. Pentru a reveni la modelul de bază, ați putea folosi unload() pentru a descărca toate modulele LoRA. Acest lucru face ușor să comutați între greutăți specifice sarcinilor diferite.
+
+```python
+from peft import PeftModel, PeftConfig
+
+config = PeftConfig.from_pretrained("ybelkada/opt-350m-lora")
+model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path)
+lora_model = PeftModel.from_pretrained(model, "ybelkada/opt-350m-lora")
+```
+
+![lora_load_adapter](https://github.com/huggingface/smol-course/raw/main/3_parameter_efficient_finetuning/images/lora_adapter.png)
+
+## Fine-tuning LLM folosind `trl` și `SFTTrainer` cu LoRA
+
+[SFTTrainer](https://huggingface.co/docs/trl/sft_trainer) din `trl` oferă integrare cu adaptorii LoRA prin biblioteca [PEFT](https://huggingface.co/docs/peft/en/index). Aceasta înseamnă că putem face fine-tuning la un model în același mod ca și cu SFT, dar folosim LoRA pentru a reduce numărul de parametri pe care trebuie să îi antrenăm.
+
+Vom folosi clasa `LoRAConfig` din PEFT în exemplul nostru. Configurarea necesită doar câțiva pași de configurare:
+
+1. Definiți configurația LoRA (rang, alfa, dropout)
+2. Creați SFTTrainer cu configurația PEFT
+3. Antrenați și salvați greutățile adaptorului
+
+## Configurația LoRA
+
+Să parcurgem configurația LoRA și parametrii cheie.
+
+| Parametru | Descriere |
+|-----------|-----------|
+| `r` (rang) | Dimensiunea matricelor de rang scăzut folosite pentru actualizările greutăților. De obicei între 4-32. Valori mai mici oferă mai multă compresie dar potențial mai puțină expresivitate. |
+| `lora_alpha` | Factor de scalare pentru straturile LoRA, de obicei setat la 2x valoarea rangului. Valori mai mari rezultă în efecte de adaptare mai puternice. |
+| `lora_dropout` | Probabilitatea dropout pentru straturile LoRA, de obicei 0.05-0.1. Valori mai mari ajută la prevenirea supraadaptării în timpul antrenamentului. |
+| `bias` | Controlează antrenarea termenilor de bias. Opțiunile sunt "none", "all" sau "lora_only". "none" este cel mai comun pentru eficiența memoriei. |
+| `target_modules` | Specifică la care module ale modelului să aplice LoRA. Poate fi "all-linear" sau module specifice precum "q_proj,v_proj". Mai multe module permit o adaptabilitate mai mare dar cresc utilizarea memoriei. |
+
+<Tip>
+Când implementați metode PEFT, începeți cu valori mici ale rangului (4-8) pentru LoRA și monitorizați pierderea antrenamentului. Folosiți seturi de validare pentru a preveni supraadaptarea și comparați rezultatele cu liniile de bază de fine-tuning complet când este posibil. Eficacitatea diferitelor metode poate varia în funcție de sarcină, așa că experimentarea este cheia.
+</Tip>
+
+## Folosirea TRL cu PEFT
+
+Metodele PEFT pot fi combinate cu TRL pentru fine-tuning pentru a reduce cerințele de memorie. Putem trece `LoraConfig` la model când îl încărcăm.
+
+```python
+from peft import LoraConfig
+
+# TODO: Configurați parametrii LoRA
+# r: dimensiunea rangului pentru matricele de actualizare LoRA (mai mică = mai multă compresie)
+rank_dimension = 6
+# lora_alpha: factor de scalare pentru straturile LoRA (mai mare = adaptare mai puternică)
+lora_alpha = 8
+# lora_dropout: probabilitatea dropout pentru straturile LoRA (ajută la prevenirea supraadaptării)
+lora_dropout = 0.05
+
+peft_config = LoraConfig(
+    r=rank_dimension,  # Dimensiunea rangului - de obicei între 4-32
+    lora_alpha=lora_alpha,  # Factor de scalare LoRA - de obicei 2x rangul
+    lora_dropout=lora_dropout,  # Probabilitatea dropout pentru straturile LoRA
+    bias="none",  # Tipul bias pentru LoRA. bias-urile corespunzătoare vor fi actualizate în timpul antrenamentului.
+    target_modules="all-linear",  # La care module să aplice LoRA
+    task_type="CAUSAL_LM",  # Tipul sarcinii pentru arhitectura modelului
+)
+```
+
+Mai sus, am folosit `device_map="auto"` pentru a atribui automat modelul la dispozitivul corect. De asemenea, puteți atribui manual modelul la un dispozitiv specific folosind `device_map={"": device_index}`.
+
+Vom avea nevoie, de asemenea, să definim `SFTTrainer` cu configurația LoRA.
+
+```python
+# Creați SFTTrainer cu configurația LoRA
+trainer = SFTTrainer(
+    model=model,
+    args=args,
+    train_dataset=dataset["train"],
+    peft_config=peft_config,  # Configurația LoRA
+    max_seq_length=max_seq_length,  # Lungimea maximă a secvenței
+    processing_class=tokenizer,
+)
+```
+
+<Tip>
+
+✏️ **Încercați!** Construiți pe modelul dumneavoastră ajustat fin din secțiunea anterioară, dar faceți fine-tuning cu LoRA. Folosiți setul de date `HuggingFaceTB/smoltalk` pentru a face fine-tuning la un model `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`, folosind configurația LoRA pe care am definit-o mai sus.
+
+</Tip>
+
+## Îmbinarea adaptorilor LoRA
+
+După antrenarea cu LoRA, s-ar putea să doriți să îmbinați greutățile adaptorului înapoi în modelul de bază pentru implementare mai ușoară. Aceasta creează un singur model cu greutățile combinate, eliminând necesitatea de a încărca adaptorii separat în timpul inferenței.
+
+Procesul de îmbinare necesită atenție la gestionarea memoriei și precizie. Deoarece va trebui să încărcați atât modelul de bază, cât și greutățile adaptorului simultan, asigurați-vă că există memorie GPU/CPU suficientă disponibilă. Folosirea `device_map="auto"` în `transformers` va găsi dispozitivul corect pentru model bazat pe hardware-ul dumneavoastră.
+
+Mențineți precizia consistentă (de ex. float16) pe tot parcursul procesului, potrivind precizia folosită în timpul antrenamentului și salvând modelul îmbinat în același format pentru implementare.
+
+## Implementarea îmbinării
+
+După antrenarea unui adaptor LoRA, puteți îmbina greutățile adaptorului înapoi în modelul de bază. Iată cum să faceți acest lucru:
+
+```python
+import torch
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
+
+# 1. Încărcați modelul de bază
+base_model = AutoModelForCausalLM.from_pretrained(
+    "base_model_name", torch_dtype=torch.float16, device_map="auto"
+)
+
+# 2. Încărcați modelul PEFT cu adaptorul
+peft_model = PeftModel.from_pretrained(
+    base_model, "path/to/adapter", torch_dtype=torch.float16
+)
+
+# 3. Îmbinați greutățile adaptorului cu modelul de bază
+merged_model = peft_model.merge_and_unload()
+```
+
+Dacă întâmpinați discrepanțe de dimensiune în modelul salvat, asigurați-vă că salvați și tokenizer-ul:
+
+```python
+# Salvați atât modelul, cât și tokenizer-ul
+tokenizer = AutoTokenizer.from_pretrained("base_model_name")
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
+```
+
+<Tip>
+
+✏️ **Încercați!** Îmbinați greutățile adaptorului înapoi în modelul de bază. Folosiți setul de date `HuggingFaceTB/smoltalk` pentru a face fine-tuning la un model `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`, folosind configurația LoRA pe care am definit-o mai sus.
+
+</Tip>
+
+# Resurse
+
+- [LoRA: Adaptarea de rang scăzut a modelelor mari de limbaj](https://arxiv.org/pdf/2106.09685)
+- [Documentația PEFT](https://huggingface.co/docs/peft)
+- [Articolul de blog Hugging Face despre PEFT](https://huggingface.co/blog/peft) 
