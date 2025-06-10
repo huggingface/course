@@ -1,0 +1,819 @@
+# Implementarea Optimizată a Inferenței
+
+În această secțiune, vom explora framework-uri avansate pentru optimizarea implementărilor LLM: Text Generation Inference (TGI), vLLM și llama.cpp. Aceste aplicații sunt utilizate în principal în medii de producție pentru a servi LLM-uri utilizatorilor. Această secțiune se concentrează pe modul de implementare a acestor framework-uri în producție, mai degrabă decât pe modul de utilizare pentru inferență pe o singură mașină.
+
+Vom acoperi modul în care aceste instrumente maximizează eficiența inferenței și simplifică implementările de producție ale Modelelor de Limbaj de Mari Dimensiuni.
+
+## Ghid de Selecție a Framework-ului
+
+TGI, vLLM și llama.cpp servesc scopuri similare, dar au caracteristici distincte care le fac mai potrivite pentru diferite cazuri de utilizare. Să ne uităm la diferențele cheie dintre ele, concentrându-ne pe performanță și integrare.
+
+### Gestionarea Memoriei și Performanța
+
+**TGI** este proiectat să fie stabil și previzibil în producție, folosind lungimi fixe de secvență pentru a menține utilizarea memoriei consistentă. TGI gestionează memoria folosind Flash Attention 2 și tehnici de procesare continuă în loturi. Aceasta înseamnă că poate procesa calculele de atenție foarte eficient și poate menține GPU-ul ocupat prin alimentarea constantă cu lucru. Sistemul poate muta părți ale modelului între CPU și GPU când este necesar, ceea ce ajută la gestionarea modelelor mai mari.
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/tgi/flash-attn.png" alt="Flash Attention" />
+
+<Tip title="Cum Funcționează Flash Attention">
+Flash Attention este o tehnică care optimizează mecanismul de atenție în modelele transformer prin abordarea blocajelor de lățime de bandă a memoriei. Așa cum s-a discutat mai devreme în [Capitolul 1.8](/course/chapter1/8), mecanismul de atenție are complexitate și utilizare de memorie pătratică, făcându-l ineficient pentru secvențe lungi.
+
+Inovația cheie constă în modul în care gestionează transferurile de memorie între High Bandwidth Memory (HBM) și cache-ul SRAM mai rapid. Atenția tradițională transferă în mod repetat date între HBM și SRAM, creând blocaje prin lăsarea GPU-ului inactiv. Flash Attention încarcă datele o dată în SRAM și efectuează toate calculele acolo, minimizând transferurile costisitoare de memorie.
+
+Deși beneficiile sunt cele mai semnificative în timpul antrenamentului, utilizarea redusă de VRAM și eficiența îmbunătățită a Flash Attention o fac valoroasă și pentru inferență, permițând servirea LLM mai rapidă și mai scalabilă.
+</Tip>
+
+**vLLM** adoptă o abordare diferită prin utilizarea PagedAttention. La fel cum un computer își gestionează memoria în pagini, vLLM împarte memoria modelului în blocuri mai mici. Acest sistem inteligent înseamnă că poate gestiona cereri de dimensiuni diferite mai flexibil și nu risipește spațiul de memorie. Este deosebit de bun la partajarea memoriei între diferite cereri și reduce fragmentarea memoriei, ceea ce face întregul sistem mai eficient.
+
+<Tip title="Cum Funcționează PagedAttention">
+PagedAttention este o tehnică care abordează un alt blocaj critic în inferența LLM: gestionarea memoriei cache KV. Așa cum s-a discutat în [Capitolul 1.8](/course/chapter1/8), în timpul generării de text, modelul stochează cheile și valorile de atenție (cache KV) pentru fiecare token generat pentru a reduce calculele redundante. Cache-ul KV poate deveni enorm, în special cu secvențe lungi sau multiple cereri concurente.
+
+Inovația cheie a vLLM constă în modul în care gestionează acest cache:
+
+1. **Paginarea Memoriei**: În loc să trateze cache-ul KV ca un bloc mare, este împărțit în "pagini" de dimensiune fixă (similar cu memoria virtuală în sistemele de operare).
+2. **Stocare Non-Contigua**: Paginile nu trebuie să fie stocate contiguu în memoria GPU, permițând o alocare mai flexibilă a memoriei.
+3. **Gestionarea Tabelului de Pagini**: Un tabel de pagini urmărește care pagini aparțin cărei secvențe, permițând căutare și acces eficient.
+4. **Partajarea Memoriei**: Pentru operații precum eșantionarea paralelă, paginile care stochează cache-ul KV pentru prompt pot fi partajate între multiple secvențe.
+
+Abordarea PagedAttention poate duce la un throughput de până la 24 de ori mai mare comparativ cu metodele tradiționale, făcând-o o schimbare de paradigmă pentru implementările LLM de producție. Dacă vrei să înțelegi cu adevărat în profunzime cum funcționează PagedAttention, poți citi [ghidul din documentația vLLM](https://docs.vllm.ai/en/latest/design/kernel/paged_attention.html).
+</Tip>
+
+**llama.cpp** este o implementare C/C++ extrem de optimizată proiectată inițial pentru rularea modelelor LLaMA pe hardware de consum. Se concentrează pe eficiența CPU cu accelerație GPU opțională și este ideal pentru medii cu resurse limitate. llama.cpp folosește tehnici de cuantificare pentru a reduce dimensiunea modelului și cerințele de memorie menținând în același timp performanță bună. Implementează kerneluri optimizate pentru diverse arhitecturi CPU și suportă gestionarea de bază a cache-ului KV pentru generarea eficientă de token-uri.
+
+<Tip title="Cum Funcționează Cuantificarea llama.cpp">
+Cuantificarea în llama.cpp reduce precizia ponderilor modelului de la puncte mobile pe 32-bit sau 16-bit la formate de precizie mai mică precum întregi pe 8-bit (INT8), 4-bit sau chiar mai mic. Aceasta reduce semnificativ utilizarea memoriei și îmbunătățește viteza de inferență cu pierderi minime de calitate.
+
+Caracteristicile cheie de cuantificare în llama.cpp includ:
+1. **Multiple Niveluri de Cuantificare**: Suportă cuantificare pe 8-bit, 4-bit, 3-bit și chiar 2-bit
+2. **Format GGML/GGUF**: Folosește formate tensoriale personalizate optimizate pentru inferența cuantificată
+3. **Precizie Mixtă**: Poate aplica diferite niveluri de cuantificare la diferite părți ale modelului
+4. **Optimizări Specifice Hardware**: Include căi de cod optimizate pentru diverse arhitecturi CPU (AVX2, AVX-512, NEON)
+
+Această abordare permite rularea modelelor cu miliarde de parametri pe hardware de consum cu memorie limitată, făcând-o perfectă pentru implementări locale și dispozitive de margine.
+</Tip>
+
+### Implementarea și Integrarea
+
+Să trecem la diferențele de implementare și integrare între framework-uri.
+
+**TGI** excelează în implementarea la nivel enterprise cu caracteristicile sale gata pentru producție. Vine cu suport Kubernetes integrat și include tot ce ai nevoie pentru rularea în producție, precum monitorizarea prin Prometheus și Grafana, scalarea automată și caracteristici cuprinzătoare de siguranță. Sistemul include, de asemenea, logare de nivel enterprise și diverse măsuri de protecție precum filtrarea conținutului și limitarea ratei pentru a menține implementarea sigură și stabilă.
+
+**vLLM** adoptă o abordare mai flexibilă, prietenoasă cu dezvoltatorii pentru implementare. Este construit cu Python în nucleu și poate înlocui cu ușurință API-ul OpenAI în aplicațiile tale existente. Framework-ul se concentrează pe livrarea performanței brute și poate fi personalizat pentru a se potrivi nevoilor tale specifice. Funcționează deosebit de bine cu Ray pentru gestionarea clusterelor, făcându-l o alegere excelentă când ai nevoie de performanță înaltă și adaptabilitate.
+
+**llama.cpp** prioritizează simplitatea și portabilitatea. Implementarea sa de server este ușoară și poate rula pe o gamă largă de hardware, de la servere puternice la laptopuri de consum și chiar unele dispozitive mobile de înaltă performanță. Cu dependențe minime și un nucleu C/C++ simplu, este ușor de implementat în medii unde instalarea framework-urilor Python ar fi provocatoare. Serverul oferă un API compatibil cu OpenAI menținând în același timp un amprentă de resurse mult mai mică decât alte soluții.
+
+## Începerea
+
+Să explorăm cum să folosim aceste framework-uri pentru implementarea LLM-urilor, începând cu instalarea și configurarea de bază.
+
+### Instalarea și Configurarea de Bază
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI este ușor de instalat și utilizat, cu integrare profundă în ecosistemul Hugging Face.
+
+Mai întâi, lansează serverul TGI folosind Docker:
+
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct
+```
+
+Apoi interacționează cu acesta folosind InferenceClient de la Hugging Face:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Inițializează clientul pointând către endpoint-ul TGI
+client = InferenceClient(
+    model="http://localhost:8080",  # URL către serverul TGI
+)
+
+# Generarea de text
+response = client.text_generation(
+    "Spune-mi o poveste",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+    stop_sequences=[],
+)
+print(response.generated_text)
+
+# Pentru format de chat
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Ești un asistent util."},
+        {"role": "user", "content": "Spune-mi o poveste"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Alternativ, poți folosi clientul OpenAI:
+
+```python
+from openai import OpenAI
+
+# Inițializează clientul pointând către endpoint-ul TGI
+client = OpenAI(
+    base_url="http://localhost:8080/v1",  # Asigură-te să incluzi /v1
+    api_key="not-needed",  # TGI nu necesită o cheie API în mod implicit
+)
+
+# Completarea de chat
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "Ești un asistent util."},
+        {"role": "user", "content": "Spune-mi o poveste"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+</hfoption>
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp este ușor de instalat și utilizat, necesitând dependențe minime și suportând atât inferența CPU cât și GPU.
+
+Mai întâi, instalează și construiește llama.cpp:
+
+```sh
+# Clonează depozitul
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Construiește proiectul
+make
+
+# Descarcă modelul SmolLM2-1.7B-Instruct-GGUF
+curl -L -O https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct.Q4_K_M.gguf
+```
+
+Apoi, lansează serverul (cu compatibilitate API OpenAI):
+
+```sh
+# Pornește serverul
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \
+    --n-gpu-layers 0  # Setează la un număr mai mare pentru a folosi GPU
+```
+
+Interacționează cu serverul folosind InferenceClient de la Hugging Face:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Inițializează clientul pointând către serverul llama.cpp
+client = InferenceClient(
+    model="http://localhost:8080/v1",  # URL către serverul llama.cpp
+    token="sk-no-key-required",  # serverul llama.cpp necesită acest placeholder
+)
+
+# Generarea de text
+response = client.text_generation(
+    "Spune-mi o poveste",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# Pentru format de chat
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Ești un asistent util."},
+        {"role": "user", "content": "Spune-mi o poveste"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Alternativ, poți folosi clientul OpenAI:
+
+```python
+from openai import OpenAI
+
+# Inițializează clientul pointând către serverul llama.cpp
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-no-key-required",  # serverul llama.cpp necesită acest placeholder
+)
+
+# Completarea de chat
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",  # Identificatorul modelului poate fi orice deoarece serverul încarcă doar un model
+    messages=[
+        {"role": "system", "content": "Ești un asistent util."},
+        {"role": "user", "content": "Spune-mi o poveste"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+</hfoption>
+<hfoption value="vllm" label="vLLM">
+
+vLLM este ușor de instalat și utilizat, cu atât compatibilitatea API OpenAI cât și o interfață Python nativă.
+
+Mai întâi, lansează serverul compatibil OpenAI vLLM:
+
+```sh
+python -m vllm.entrypoints.openai.api_server \
+    --model HuggingFaceTB/SmolLM2-360M-Instruct \
+    --host 0.0.0.0 \
+    --port 8000
+```
+
+Apoi interacționează cu acesta folosind InferenceClient de la Hugging Face:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Inițializează clientul pointând către endpoint-ul vLLM
+client = InferenceClient(
+    model="http://localhost:8000/v1",  # URL către serverul vLLM
+)
+
+# Generarea de text
+response = client.text_generation(
+    "Spune-mi o poveste",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# Pentru format de chat
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Ești un asistent util."},
+        {"role": "user", "content": "Spune-mi o poveste"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Alternativ, poți folosi clientul OpenAI:
+
+```python
+from openai import OpenAI
+
+# Inițializează clientul pointând către endpoint-ul vLLM
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed",  # vLLM nu necesită o cheie API în mod implicit
+)
+
+# Completarea de chat
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "Ești un asistent util."},
+        {"role": "user", "content": "Spune-mi o poveste"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+</hfoption>
+
+</hfoptions>
+
+### Generarea de Bază a Textului
+
+Să ne uităm la exemple de generare de text cu framework-urile:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+Mai întâi, implementează TGI cu parametri avansați:
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --max-total-tokens 4096 \
+    --max-input-length 3072 \
+    --max-batch-total-tokens 8192 \
+    --waiting-served-ratio 1.2
+```
+
+Folosește InferenceClient pentru generarea flexibilă de text:
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080")
+
+# Exemplu de parametri avansați
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Ești un povestitor creativ."},
+        {"role": "user", "content": "Scrie o poveste creativă"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Generarea brută de text
+response = client.text_generation(
+    "Scrie o poveste creativă despre explorarea spațiului",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    do_sample=True,
+    details=True,
+)
+print(response.generated_text)
+```
+
+Sau folosește clientul OpenAI:
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+
+# Exemplu de parametri avansați
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "Ești un povestitor creativ."},
+        {"role": "user", "content": "Scrie o poveste creativă"},
+    ],
+    temperature=0.8,  # Mai mare pentru mai multă creativitate
+)
+print(response.choices[0].message.content)
+```
+</hfoption>
+<hfoption value="llama.cpp" label="llama.cpp">
+
+Pentru llama.cpp, poți seta parametri avansați când lansezi serverul:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \            # Dimensiunea contextului
+    --threads 8 \        # Thread-uri CPU de folosit
+    --batch-size 512 \   # Dimensiunea lotului pentru evaluarea prompt-ului
+    --n-gpu-layers 0     # Straturi GPU (0 = doar CPU)
+```
+
+Folosește InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080/v1", token="sk-no-key-required")
+
+# Exemplu de parametri avansați
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Ești un povestitor creativ."},
+        {"role": "user", "content": "Scrie o poveste creativă"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Pentru generarea directă de text
+response = client.text_generation(
+    "Scrie o poveste creativă despre explorarea spațiului",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    details=True,
+)
+print(response.generated_text)
+```
+
+Sau folosește clientul OpenAI pentru generare cu control asupra parametrilor de eșantionare:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="sk-no-key-required")
+
+# Exemplu de parametri avansați
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",
+    messages=[
+        {"role": "system", "content": "Ești un povestitor creativ."},
+        {"role": "user", "content": "Scrie o poveste creativă"},
+    ],
+    temperature=0.8,  # Mai mare pentru mai multă creativitate
+    top_p=0.95,  # Probabilitatea eșantionării nucleus
+    frequency_penalty=0.5,  # Reduce repetarea token-urilor frecvente
+    presence_penalty=0.5,  # Reduce repetarea prin penalizarea token-urilor deja prezente
+    max_tokens=200,  # Lungimea maximă de generare
+)
+print(response.choices[0].message.content)
+```
+
+Poți folosi, de asemenea, biblioteca nativă llama.cpp pentru un control și mai mare:
+
+```python
+# Folosind pachetul llama-cpp-python pentru accesul direct la model
+from llama_cpp import Llama
+
+# Încarcă modelul
+llm = Llama(
+    model_path="smollm2-1.7b-instruct.Q4_K_M.gguf",
+    n_ctx=4096,  # Dimensiunea ferestrei de context
+    n_threads=8,  # Thread-uri CPU
+    n_gpu_layers=0,  # Straturi GPU (0 = doar CPU)
+)
+
+# Formatează prompt-ul conform formatului așteptat al modelului
+prompt = """<|im_start|>system
+Ești un povestitor creativ.
+<|im_end|>
+<|im_start|>user
+Scrie o poveste creativă
+<|im_end|>
+<|im_start|>assistant
+"""
+
+# Generează răspunsul cu control precis al parametrilor
+output = llm(
+    prompt,
+    max_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    frequency_penalty=0.5,
+    presence_penalty=0.5,
+    stop=["<|im_end|>"],
+)
+
+print(output["choices"][0]["text"])
+```
+</hfoption>
+<hfoption value="vllm" label="vLLM">
+
+Pentru utilizarea avansată cu vLLM, poți folosi InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8000/v1")
+
+# Exemplu de parametri avansați
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Ești un povestitor creativ."},
+        {"role": "user", "content": "Scrie o poveste creativă"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Pentru generarea directă de text
+response = client.text_generation(
+    "Scrie o poveste creativă despre explorarea spațiului",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+```
+
+Poți folosi, de asemenea, clientul OpenAI:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# Exemplu de parametri avansați
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "Ești un povestitor creativ."},
+        {"role": "user", "content": "Scrie o poveste creativă"},
+    ],
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+```
+
+vLLM oferă, de asemenea, o interfață Python nativă cu control fin:
+
+```python
+from vllm import LLM, SamplingParams
+
+# Inițializează modelul cu parametri avansați
+llm = LLM(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    max_num_seqs=256,
+    block_size=16,
+)
+
+# Configurează parametrii de eșantionare
+sampling_params = SamplingParams(
+    temperature=0.8,  # Mai mare pentru mai multă creativitate
+    top_p=0.95,  # Consideră masa de probabilitate de top 95%
+    max_tokens=100,  # Lungimea maximă
+    presence_penalty=1.1,  # Reduce repetarea
+    frequency_penalty=1.1,  # Reduce repetarea
+    stop=["\n\n", "###"],  # Secvențe de oprire
+)
+
+# Generează text
+prompt = "Scrie o poveste creativă"
+outputs = llm.generate(prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+
+# Pentru interacțiuni în stil chat
+chat_prompt = [
+    {"role": "system", "content": "Ești un povestitor creativ."},
+    {"role": "user", "content": "Scrie o poveste creativă"},
+]
+formatted_prompt = llm.get_chat_template()(
+    chat_prompt
+)  # Folosește șablonul de chat al modelului
+outputs = llm.generate(formatted_prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+```
+</hfoption>
+
+</hfoptions>
+
+## Controlul Avansat al Generării
+
+### Selecția Token-urilor și Eșantionarea
+
+Procesul de generare a textului implică selectarea următorului token la fiecare pas. Acest proces de selecție poate fi controlat prin diverși parametri:
+
+1. **Logit-uri Brute**: Probabilitățile inițiale de ieșire pentru fiecare token
+2. **Temperatura**: Controlează aleatoriul în selecție (mai mare = mai creativ)
+3. **Eșantionarea Top-p (Nucleus)**: Filtrează la token-urile de top care alcătuiesc X% din masa de probabilitate
+4. **Filtrarea Top-k**: Limitează selecția la k token-uri cele mai probabile
+
+Iată cum să configurezi acești parametri:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Scrie o poveste creativă",
+    temperature=0.8,  # Mai mare pentru mai multă creativitate
+    top_p=0.95,  # Consideră masa de probabilitate de top 95%
+    top_k=50,  # Consideră top 50 de token-uri
+    max_new_tokens=100,  # Lungimea maximă
+    repetition_penalty=1.1,  # Reduce repetarea
+)
+```
+</hfoption>
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Prin compatibilitatea API OpenAI
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",  # Numele modelului (poate fi orice string pentru serverul llama.cpp)
+    prompt="Scrie o poveste creativă",
+    temperature=0.8,  # Mai mare pentru mai multă creativitate
+    top_p=0.95,  # Consideră masa de probabilitate de top 95%
+    frequency_penalty=1.1,  # Reduce repetarea
+    presence_penalty=0.1,  # Reduce repetarea
+    max_tokens=100,  # Lungimea maximă
+)
+
+# Prin accesul direct llama-cpp-python
+output = llm(
+    "Scrie o poveste creativă",
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=100,
+    repeat_penalty=1.1,
+)
+```
+</hfoption>
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    temperature=0.8,  # Mai mare pentru mai multă creativitate
+    top_p=0.95,  # Consideră masa de probabilitate de top 95%
+    top_k=50,  # Consideră top 50 de token-uri
+    max_tokens=100,  # Lungimea maximă
+    presence_penalty=0.1,  # Reduce repetarea
+)
+llm.generate("Scrie o poveste creativă", sampling_params=params)
+```
+</hfoption>
+
+</hfoptions>
+
+### Controlul Repetării
+
+Ambele framework-uri oferă modalități de a preveni generarea repetitivă de text:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+```python
+client.generate(
+    "Scrie un text variat",
+    repetition_penalty=1.1,  # Penalizează token-urile repetate
+    no_repeat_ngram_size=3,  # Previne repetarea de 3-grame
+)
+```
+</hfoption>
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Prin API OpenAI
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Scrie un text variat",
+    frequency_penalty=1.1,  # Penalizează token-urile frecvente
+    presence_penalty=0.8,  # Penalizează token-urile deja prezente
+)
+
+# Prin biblioteca directă
+output = llm(
+    "Scrie un text variat",
+    repeat_penalty=1.1,  # Penalizează token-urile repetate
+    frequency_penalty=0.5,  # Penalitate de frecvență adițională
+    presence_penalty=0.5,  # Penalitate de prezență adițională
+)
+```
+</hfoption>
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    presence_penalty=0.1,  # Penalizează prezența token-urilor
+    frequency_penalty=0.1,  # Penalizează frecvența token-urilor
+)
+```
+</hfoption>
+
+</hfoptions>
+
+### Controlul Lungimii și Secvențele de Oprire
+
+Poți controla lungimea generării și specifica când să se oprească:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+```python
+client.generate(
+    "Generează un paragraf scurt",
+    max_new_tokens=100,
+    min_new_tokens=10,
+    stop_sequences=["\n\n", "###"],
+)
+```
+</hfoption>
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Prin API OpenAI
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Generează un paragraf scurt",
+    max_tokens=100,
+    stop=["\n\n", "###"],
+)
+
+# Prin biblioteca directă
+output = llm("Generează un paragraf scurt", max_tokens=100, stop=["\n\n", "###"])
+```
+</hfoption>
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    max_tokens=100,
+    min_tokens=10,
+    stop=["###", "\n\n"],
+    ignore_eos=False,
+    skip_special_tokens=True,
+)
+```
+</hfoption>
+
+</hfoptions>
+
+## Gestionarea Memoriei
+
+Ambele framework-uri implementează tehnici avansate de gestionare a memoriei pentru inferența eficientă.
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+TGI folosește Flash Attention 2 și procesarea continuă în loturi:
+
+```sh
+# Implementarea Docker cu optimizarea memoriei
+docker run --gpus all -p 8080:80 \
+    --shm-size 1g \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct \
+    --max-batch-total-tokens 8192 \
+    --max-input-length 4096
+```
+</hfoption>
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp folosește cuantificarea și dispunerea optimată a memoriei:
+
+```sh
+# Server cu optimizări de memorie
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 2048 \               # Dimensiunea contextului
+    --threads 4 \           # Thread-uri CPU
+    --n-gpu-layers 32 \     # Folosește mai multe straturi GPU pentru modele mai mari
+    --mlock \               # Blochează memoria pentru a preveni swapping-ul
+    --cont-batching         # Activează procesarea continuă în loturi
+```
+
+Pentru modele prea mari pentru GPU-ul tău, poți folosi offloading-ul CPU:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --n-gpu-layers 20 \     # Păstrează primele 20 de straturi pe GPU
+    --threads 8             # Folosește mai multe thread-uri CPU pentru straturile CPU
+```
+</hfoption>
+<hfoption value="vllm" label="vLLM">
+
+vLLM folosește PagedAttention pentru gestionarea optimă a memoriei:
+
+```python
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16,
+)
+
+llm = LLM(engine_args=engine_args)
+```
+</hfoption>
+
+</hfoptions>
+
+## Resurse
+
+- [Documentația Text Generation Inference](https://huggingface.co/docs/text-generation-inference)
+- [Depozitul GitHub TGI](https://github.com/huggingface/text-generation-inference)
+- [Documentația vLLM](https://vllm.readthedocs.io/)
+- [Depozitul GitHub vLLM](https://github.com/vllm-project/vllm)
+- [Lucrarea PagedAttention](https://arxiv.org/abs/2309.06180)
+- [Depozitul GitHub llama.cpp](https://github.com/ggerganov/llama.cpp)
+- [Depozitul llama-cpp-python](https://github.com/abetlen/llama-cpp-python)

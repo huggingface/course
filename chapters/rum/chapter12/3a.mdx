@@ -1,0 +1,391 @@
+# Înțelegerea Avansată a Optimizării Relative a Politicii de Grup (GRPO) în DeepSeekMath
+
+<Tip>
+
+Această secțiune se scufundă în detaliile tehnice și matematice ale GRPO. A fost scrisă de [Shirin Yamani](https://github.com/shirinyamani).
+
+</Tip>
+
+Să ne aprofundăm înțelegerea GRPO astfel încât să putem îmbunătăți procesul de antrenare al modelului nostru.
+
+GRPO evaluează direct răspunsurile generate de model comparându-le în cadrul grupurilor de generare pentru a optimiza modelul de politică, în loc să antreneze un model de valoare separat (Critic). Această abordare duce la o reducere semnificativă a costului computațional!
+
+GRPO poate fi aplicat la orice sarcină verificabilă unde corectitudinea răspunsului poate fi determinată. De exemplu, în raționamentul matematic, corectitudinea răspunsului poate fi ușor verificată prin compararea acestuia cu adevărul de bază.
+
+Înainte de a ne scufunda în detaliile tehnice, să vizualizăm cum funcționează GRPO la un nivel înalt:
+
+![deep](./img/2.jpg)
+
+Acum că avem o prezentare vizuală, să descompunem cum funcționează GRPO pas cu pas.
+
+## Algoritmul GRPO
+
+Inovația principală a GRPO este abordarea sa de evaluare și învățare din multiple răspunsuri generate simultan. În loc să se bazeze pe un model de recompensă separat, compară rezultatele din același grup pentru a determina care ar trebui să fie întărite.
+
+Să parcurgem fiecare pas al algoritmului în detaliu:
+
+### Pasul 1: Eșantionarea Grupului
+
+Primul pas este să genereze multiple răspunsuri posibile pentru fiecare întrebare. Aceasta creează un set divers de rezultate care pot fi comparate între ele.
+
+Pentru fiecare întrebare $q$, modelul va genera $G$ rezultate (dimensiunea grupului) din politica antrenată: ${o_1, o_2, o_3, \dots, o_G}\pi_{\theta_{\text{old}}}$, $G=8$ unde fiecare $o_i$ reprezintă o completare din model.
+
+#### Exemplu:
+
+Pentru a face acest lucru concret, să ne uităm la o problemă aritmetică simplă:
+
+- **Întrebarea** $q$ : $\text{Calculează}\space2 + 2 \times 6$
+- **Rezultatele** $(G = 8)$: $\{o_1:14 \text{ (corect)}, o_2:16 \text{ (greșit)}, o_3:10 \text{ (greșit)}, \ldots, o_8:14 \text{ (corect)}\}$
+
+Observă cum unele dintre răspunsurile generate sunt corecte (14) în timp ce altele sunt greșite (16 sau 10). Această diversitate este crucială pentru următorul pas.
+
+### Pasul 2: Calculul Avantajului
+
+Odată ce avem multiple răspunsuri, avem nevoie de o modalitate de a determina care sunt mai bune decât altele. Aici intervine calculul avantajului.
+
+#### Distribuția Recompenselor:
+
+În primul rând, atribuim un scor de recompensă fiecărui răspuns generat. În acest exemplu, vom folosi un model de recompensă, dar după cum am învățat în secțiunea anterioară, putem folosi orice funcție care returnează recompense.
+
+Atribuie un scor RM fiecăruia dintre răspunsurile generate bazat pe corectitudine $r_i$ *(de exemplu, 1 pentru răspuns corect, 0 pentru răspuns greșit)* apoi pentru fiecare dintre $r_i$ calculează următoarea valoare de Avantaj
+
+#### Formula Valorii Avantajului:
+
+Ideea cheie a GRPO este că nu avem nevoie de măsuri absolute ale calității - putem compara rezultatele în cadrul aceluiași grup. Aceasta se face folosind standardizarea:
+
+$$A_i = \frac{r_i - \text{mean}(\{r_1, r_2, \ldots, r_G\})}{\text{std}(\{r_1, r_2, \ldots, r_G\})}$$
+
+#### Exemplu:
+
+Continuând cu exemplul nostru aritmetic pentru același exemplu de mai sus, imaginează-ți că avem 8 răspunsuri, 4 dintre care sunt corecte și restul greșite, prin urmare:
+- Media Grupului: $mean(r_i) = 0.5$
+- Std: $std(r_i) = 0.53$
+- Valoarea Avantajului:
+	- Răspuns corect: $A_i = \frac{1 - 0.5}{0.53}= 0.94$
+	- Răspuns greșit: $A_i = \frac{0 - 0.5}{0.53}= -0.94$
+
+#### Interpretarea:  
+
+Acum că am calculat valorile avantajului, să înțelegem ce înseamnă:
+
+Această standardizare (adică ponderarea $A_i$) permite modelului să evalueze performanța relativă a fiecărui răspuns, ghidând procesul de optimizare să favorizeze răspunsurile care sunt mai bune decât media (recompensă mare) și să descurajeze pe cele care sunt mai rele.  De exemplu, dacă $A_i > 0$, atunci $o_i$ este un răspuns mai bun decât nivelul mediu din grupul său; și dacă $A_i < 0$, atunci $o_i$ atunci calitatea răspunsului este mai mică decât media (adică calitate/performanță slabă).
+
+Pentru exemplul de mai sus, dacă $A_i = 0.94 \text{(rezultat corect)}$ atunci în timpul pașilor de optimizare probabilitatea sa de generare va fi crescută.
+
+Cu valorile avantajului noastre calculate, suntem acum gata să actualizăm politica.
+
+### Pasul 3: Actualizarea Politicii
+
+Pasul final este să folosim aceste valori ale avantajului pentru a actualiza modelul nostru astfel încât să devină mai probabil să genereze răspunsuri bune în viitor.
+
+Funcția țintă pentru actualizarea politicii este:
+
+$$J_{GRPO}(\theta) = \left[\frac{1}{G} \sum_{i=1}^{G} \min \left( \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)} A_i, \text{clip}\left( \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)}, 1 - \epsilon, 1 + \epsilon \right) A_i \right)\right]- \beta D_{KL}(\pi_{\theta} || \pi_{ref})$$
+
+Această formulă ar putea părea intimidantă la început, dar este construită din mai multe componente care fiecare servesc un scop important. Să le descompunem una câte una.
+
+## Componentele Cheie ale Funcției Țintă
+
+Funcția de actualizare GRPO combină mai multe tehnici pentru a asigura o învățare stabilă și eficientă. Să examinăm fiecare componentă:
+
+### 1. Raportul de Probabilitate
+
+Raportul de probabilitate este definit ca:
+
+$\left(\frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)}\right)$ 
+
+Intuitiv, formula compară cât de mult diferă probabilitatea de răspuns a modelului nou de probabilitatea de răspuns a modelului vechi în timp ce încorporează o preferință pentru răspunsuri care îmbunătățesc rezultatul așteptat.
+
+#### Interpretarea:
+- Dacă $\text{raport} > 1$, modelul nou atribuie o probabilitate mai mare răspunsului $o_i$​ decât modelul vechi.
+- Dacă $\text{raport} < 1$, modelul nou atribuie o probabilitate mai mică lui $o_i$​ 
+
+Acest raport ne permite să controlăm cât de mult se schimbă modelul la fiecare pas, ceea ce ne duce la următoarea componentă.
+
+### 2. Funcția de Tăiere
+
+Funcția de tăiere este definită ca:
+
+$\text{clip}\left( \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)}, 1 - \epsilon, 1 + \epsilon\right)$ 
+
+Limitează raportul discutat mai sus să fie în intervalul $[1 - \epsilon, 1 + \epsilon]$ pentru a evita/controla schimbări drastice sau actualizări nebunești și să nu pășească prea departe de politica veche. Cu alte cuvinte, limitează cât de mult poate crește raportul de probabilitate pentru a ajuta la menținerea stabilității prin evitarea actualizărilor care împing modelul nou prea departe de cel vechi.
+
+#### Exemplu $\space \text{să presupunem}(\epsilon = 0.2)$
+Să ne uităm la două scenarii diferite pentru a înțelege mai bine această funcție de tăiere:
+
+- **Cazul 1**: dacă noua politică are o probabilitate de 0.9 pentru un răspuns specific și vechea politică are o probabilitate de 0.5, înseamnă că acest răspuns este întărit de noua politică să aibă o probabilitate mai mare, dar într-o limită controlată care este tăierea pentru a-și strânge mâinile să nu devină drastică 
+	- $\text{Raport}: \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)} = \frac{0.9}{0.5} = 1.8  → \text{Clip}\space1.2$ (limita superioară 1.2) 
+- **Cazul 2**: Dacă noua politică nu este în favoarea unui răspuns (probabilitate mai mică de exemplu 0.2), însemnând dacă răspunsul nu este benefic creșterea ar putea fi incorectă, și modelul ar fi penalizat.
+	- $\text{Raport}: \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)} = \frac{0.2}{0.5} = 0.4  →\text{Clip}\space0.8$ (limita inferioară 0.8)
+#### Interpretarea:
+- Formula încurajează modelul nou să favorizeze răspunsuri pe care modelul vechi le-a subponderat **dacă ele îmbunătățesc rezultatul**.
+- Dacă modelul vechi deja favoriza un răspuns cu o probabilitate mare, modelul nou poate totuși să-l întărească **dar doar într-o limită controlată $[1 - \epsilon, 1 + \epsilon]$, $\text{(de exemplu, }\epsilon = 0.2, \space \text{deci} \space [0.8-1.2])$**.
+- Dacă modelul vechi a supraestimat un răspuns care performează prost, modelul nou este **descurajat** să mențină acea probabilitate mare.
+- Prin urmare, intuitiv, prin încorporarea raportului de probabilitate, funcția obiectiv asigură că actualizările politicii sunt proporționale cu avantajul $A_i$ în timp ce sunt moderate pentru a preveni schimbări drastice.
+
+În timp ce funcția de tăiere ajută la prevenirea schimbărilor drastice, avem nevoie de încă o măsură de protecție pentru a ne asigura că modelul nostru nu deviază prea departe de comportamentul său original.
+
+### 3. Divergența KL
+
+Termenul de divergență KL este:
+
+$\beta D_{KL}(\pi_{\theta} || \pi_{ref})$
+
+În termenul de divergență KL, $\pi_{ref}$ este practic rezultatul modelului pre-actualizare, `per_token_logps` și $\pi_{\theta}$ este rezultatul modelului nou, `new_per_token_logps`. Teoretic, divergența KL este minimizată pentru a preveni modelul să devieze prea departe de comportamentul său original în timpul optimizării. Aceasta ajută să găsească un echilibru între îmbunătățirea performanței bazată pe semnalul de recompensă și menținerea coerenței. În acest context, minimizarea divergenței KL reduce riscul ca modelul să genereze text fără sens sau, în cazul raționamentului matematic, să producă răspunsuri extrem de incorecte.
+
+#### Interpretarea
+- O penalitate de divergență KL păstrează rezultatele modelului aproape de distribuția sa originală, prevenind schimbări extreme.
+- În loc să derive către rezultate complet iraționale, modelul și-ar rafina înțelegerea în timp ce încă permite unele explorări
+
+#### Definiția Matematică
+Pentru cei interesați de detaliile matematice, să ne uităm la definiția formală:
+
+Să ne amintim că distanța KL este definită după cum urmează:
+$$D_{KL}(P || Q) = \sum_{x \in X} P(x) \log \frac{P(x)}{Q(x)}$$
+În RLHF, cele două distribuții de interes sunt adesea distribuția versiunii noului model, P(x), și o distribuție a politicii de referință, Q(x).
+
+#### Rolul Parametrului $\beta$
+
+Coeficientul $\beta$ controlează cât de puternic impunem constrângerea divergenței KL:
+
+-  **$\beta$ Mai Mare (Penalitate KL Mai Puternică)**
+    - Mai multă constrângere asupra actualizărilor politicii. Modelul rămâne aproape de distribuția sa de referință.
+    - Poate încetini adaptarea: Modelul ar putea avea dificultăți să exploreze răspunsuri mai bune.
+- **$\beta$ Mai Mic (Penalitate KL Mai Slabă)**
+    - Mai multă libertate să actualizeze politica: Modelul poate devia mai mult de la referință.
+    - Adaptare mai rapidă dar risc de instabilitate: Modelul ar putea învăța comportamente de hack-uire a recompenselor.
+	- Risc de supra-optimizare: Dacă modelul de recompensă este defectuos, politica ar putea genera rezultate fără sens.
+- **Originala** [DeepSeekMath](https://arxiv.org/abs/2402.03300) lucrare a setat acest $\beta= 0.04$
+
+Acum că înțelegem componentele GRPO, să vedem cum funcționează împreună într-un exemplu complet.
+
+## Exemplu Lucrat cu GRPO
+
+Pentru a ne solidifica înțelegerea GRPO, să parcurgem un exemplu complet de la început la sfârșit.
+
+### Problema Exemplu
+
+$$\text{Î: Calculează}\space2 + 2 \times 6$$
+
+### Pasul 1: Eșantionarea Grupului
+
+În primul rând, generăm multiple răspunsuri din modelul nostru:
+
+Generează $(G = 8)$ răspunsuri, $4$ dintre care sunt răspunsul corect ($14, \text{recompensă=} 1$) și $4$ incorecte $\text{(recompensă= 0)}$, Prin urmare:
+
+$${o_1:14(corect), o_2:10 (greșit), o_3:16 (greșit), ... o_G:14(corect)}$$
+
+### Pasul 2: Calculul Avantajului
+
+Apoi, calculăm valorile avantajului pentru a determina care răspunsuri sunt mai bune decât media:
+
+- Media Grupului: 
+$$mean(r_i) = 0.5$$
+- Std: $$std(r_i) = 0.53$$
+- Valoarea Avantajului:
+	- Răspuns corect: $A_i = \frac{1 - 0.5}{0.53}= 0.94$
+	- Răspuns greșit: $A_i = \frac{0 - 0.5}{0.53}= -0.94$
+
+### Pasul 3: Actualizarea Politicii
+
+În final, actualizăm modelul nostru pentru a întări răspunsurile corecte:
+
+- Presupunând că probabilitatea vechii politici ($\pi_{\theta_{old}}$) pentru un rezultat corect $o_1$ este $0.5$ și noua politică o crește la $0.7$ atunci:
+$$\text{Raport}: \frac{0.7}{0.5} = 1.4  →\text{după Clip}\space1.2 \space (\epsilon = 0.2)$$
+- Apoi când funcția țintă este re-ponderată, modelul tinde să întărească generarea rezultatului corect, și $\text{Divergența KL}$ limitează deviația de la politica de referință.
+
+Cu înțelegerea teoretică la locul ei, să vedem cum poate fi implementat GRPO în cod.
+
+## Exemplu de Implementare
+
+Să punem totul împreună într-un exemplu practic. Următorul cod demonstrează cum să implementezi GRPO în PyTorch.
+
+### 1. Încărcarea Modelului și Generarea Răspunsurilor
+
+În primul rând, trebuie să încărcăm un model și să generăm multiple răspunsuri pentru o întrebare dată:
+
+```python
+import torch
+import torch.nn.functional as F
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Încarcă modelul și tokenizer-ul
+model_name = "Qwen/Qwen2-Math-1.5B"
+model = AutoModelForCausalLM.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model.eval()
+
+# Mută modelul pe GPU dacă este disponibil
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+
+# Prompt de intrare
+prompt = "Rezolvă y = 2x + 1 pentru x = 2, y = "  # Răspuns corect: 5
+inputs = tokenizer(prompt, return_tensors="pt", padding=True)
+input_ids = inputs["input_ids"].to(device)  # Forma: (1, prompt_len)
+attention_mask = inputs["attention_mask"].to(device)
+
+# Pasul 1: Generează 8 răspunsuri (B = 2 grupuri, G = 4 răspunsuri per grup)
+batch_size, num_generations = 2, 4
+outputs = model.generate(
+    input_ids=input_ids,  # Forma: (1, prompt_len)
+    attention_mask=attention_mask,
+    max_new_tokens=1,  # seq_len = 1 (un singur token per răspuns)
+    num_return_sequences=batch_size * num_generations,  # 8 răspunsuri în total
+    do_sample=True,
+    top_k=10,
+    temperature=0.7,
+    pad_token_id=tokenizer.eos_token_id,
+    return_dict_in_generate=True,
+    output_scores=True,
+)
+```
+
+această Generare inițială (Înainte de Orice Pași) va produce ceva de genul:
+
+```text
+Rezultatul 1: 5.0
+Rezultatul 2: 6.0
+Rezultatul 3: 7.0
+Rezultatul 4: 5.0
+Rezultatul 5: 10.0
+Rezultatul 6: 2.0
+Rezultatul 7: 5.0
+Rezultatul 8: 5.0
+```
+
+### 2. Calcularea Recompenselor
+
+Acum, trebuie să determinăm care răspunsuri sunt corecte și să atribuim recompense în consecință:
+
+Cu GRPO, cu același prompt de eșantion, generăm multiple completări. Deci, de exemplu, pentru prompt-urile noastre de `"Rezolvă y = 2x + 1 pentru x = 2, y = "` și `Rezolvă y = 2x + 1 pentru x = 4, y = "` avem două grupuri de rezultate generate pentru prompt-ul dat unul este să zicem 
+- `[5, 6, 7, 5]` și celălalt este 
+- `[10, 2, 9, 9]` în timp ce răspunsul corect este 5 și 9. 
+
+Observă că în practică aceste scoruri de recompensă sunt obținute printr-o funcție de recompensă bazată pe reguli care atribuie recompense bazate pe corectitudinea răspunsului sau un model mai complex bazat pe rețele neuronale care poate fi antrenat să atribuie recompense bazate pe corectitudinea răspunsului sau un amestec din ambele. Dar pentru simplitate să spunem că recompensa noastră per răspuns este 1 dacă răspunsul este corect și 0 dacă este greșit, prin urmare:  
+```python
+reward_1 = [1, 0, 0, 1]
+reward_2 = [0, 0, 1, 1]
+```
+apoi obținem media și std-ul grupului de recompense;
+
+```python
+# Forma: (B * G,) = (8,) pentru că avem 2 grupuri de 4 generări pe care le aplatizăm
+rewards = torch.tensor([1, 0, 0, 1, 0, 0, 1, 1], dtype=torch.float32)
+num_generations = 4
+
+# Recompense grupate: Forma (B, G) = 2, 4)
+rewards_grouped = rewards.view(-1, num_generations)
+
+# Media per grup: Forma (B,) = (2,)
+mean_grouped_rewards = rewards_grouped.mean(dim=1)
+
+# Std per grup: Forma (B,) = (2,)
+std_grouped_rewards = rewards_grouped.std(dim=1)
+
+# Difuzează pentru a se potrivi cu recompensele și normalizează: Forma (B * G,) = (8,)
+# de ce avem nevoie să difuzăm? pentru că trebuie să calculăm valorile avantajului pentru fiecare răspuns din grup
+mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(num_generations, dim=0)
+std_grouped_rewards = std_grouped_rewards.repeat_interleave(num_generations, dim=0)
+```
+aceasta va produce:
+```text
+Recompense Grupate: tensor([[1., 0., 0., 1.],
+                        [0., 0., 1., 1.]])
+Media per grup: tensor([0.5000, 0.5000])
+Std per grup: tensor([0.5774, 0.5774])
+Media Difuzată: tensor([0.5000, 0.5000, 0.5000, 0.5000, 0.5000, 0.5000, 0.5000, 0.5000])
+Std Difuzat: tensor([0.5774, 0.5774, 0.5774, 0.5774, 0.5774, 0.5774, 0.5774, 0.5774])
+```
+Acum putem calcula valorile avantajului pentru fiecare răspuns:
+```python
+# Avantaje: Forma (B * G,) = (8,)
+advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-8)
+```
+aceasta va produce:
+```text
+Avantaje: tensor([ 0.8659, -0.8660, -0.8660,  0.8659, -0.8660, -0.8660,  0.8659,  0.8659])
+```
+care vine din formula Avantajului de mai sus, deci:
+```text
+Pentru reward_1 = [1, 0, 0, 1]:
+1 - 0.5 / 0.5774 ≈ 0.8659
+0 - 0.5 / 0.5774 ≈ -0.8660
+Pentru reward_2 = [0, 0, 1, 1]: Același model.
+```
+cu toate acestea, forma aici este `(B*G,) = (8,)` dar în practică, avem nevoie să avem forma de `(B, G) = (2, 4)` pentru a se potrivi cu forma logits, nu? Prin urmare, trebuie să unsqueeze tensor-ul avantajelor pentru a avea forma de `(B*G, 1) = (8, 1)` pentru a se potrivi cu forma logits.
+```python
+# Forma (B * G, 1) = (8, 1) pentru a se potrivi cu forma logits
+advantages = advantages.unsqueeze(1)
+```
+care va produce:
+```text
+Avantaje: tensor([[ 0.8659],
+                    [-0.8660],
+                    [-0.8660],
+                    [ 0.8659],
+                    [-0.8660],
+                    [-0.8660],
+                    [ 0.8659],
+                    [ 0.8659]])
+```
+acum suntem bine, să trecem la următorul pas de actualizare a modelului de politică bazat pe valorile avantajului.
+
+### 3. Actualizarea Politicii
+În final, folosim valorile avantajului pentru a actualiza modelul nostru:
+
+```python
+# Calculează raportul de probabilitate între politicile noi și vechi
+ratio = torch.exp(
+    new_per_token_logps - per_token_logps
+)  # Forma: (B*G, seq_len) seq_len este lungimea rezultatului adică numărul de token-uri generate deci aici pentru simplitate să presupunem că este 1 # (8, 1)
+```
+
+Observă că `per_token_logps` poate fi obținut prin trecerea rezultatelor generate la model și obținerea logits-urilor și apoi aplicarea funcției softmax pentru a obține probabilitățile `F.softmax(logits, dim=-1)`.
+
+```python
+# Funcția de Tăiere
+eps = self.cliprange  # de exemplu 0.2
+pg_losses1 = -advantages * ratio  # Forma: (B*G, seq_len)  #(8, 1)
+pg_losses2 = -advantages * torch.clamp(
+    ratio, 1.0 - eps, 1.0 + eps
+)  # Forma: (B*G, seq_len) #(8, 1)
+pg_loss_max = torch.max(pg_losses1, pg_losses2)  # Forma: (B*G, seq_len) #(8, 1)
+
+
+# Acum Combină cu penalitatea KL # Forma: (B*G, seq_len) #(8, 1)
+per_token_loss = pg_loss_max + self.beta * per_token_kl
+```
+
+`per_token_kl` poate fi de asemenea calculat după cum urmează:
+
+```python
+# Forma: (B*G, seq_len) #(8, 1)
+per_token_kl = F.kl_div(
+    F.log_softmax(new_per_token_logps, dim=-1),
+    F.softmax(per_token_logps, dim=-1),
+    reduction="none",
+).sum(dim=-1, keepdim=True)
+```
+
+Exemplul complet poate fi găsit [aici](./basic_example.py). GRPO este de asemenea implementat de excelenta echipă TRL, poți verifica implementarea [TRL/GRPO_trainer](https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py) pentru mai multe detalii.
+
+## Rezumat și Pași Următori
+
+Felicitări! Acum ai învățat despre Optimizarea Relativă a Politicii de Grup (GRPO). Pentru a recapitula ce am acoperit:
+
+1. GRPO compară multiple rezultate în cadrul unui grup pentru a determina care sunt mai bune decât altele, fără a necesita un model de valoare separat.
+2. Calculul avantajului standardizează recompensele pentru a identifica care răspunsuri sunt peste sau sub medie.
+3. Actualizarea politicii folosește o funcție obiectiv tăiată cu o penalitate de divergență KL pentru a asigura învățarea stabilă.
+
+Această abordare este deosebit de puternică pentru sarcinile de raționament matematic, unde corectitudinea poate fi verificată obiectiv. Metoda GRPO permite antrenare mai eficientă comparativ cu abordările RLHF tradiționale care necesită un model critic separat.
+
+Pe măsură ce continui să explorezi GRPO, consideră să experimentezi cu diferite dimensiuni de grup, funcții de recompensă și coeficienți de penalitate KL pentru a vedea cum afectează performanța modelului tău.
+
+Antrenare fericită! 🚀
+
+## Referințe
+
+1. [Cartea RLHF de Nathan Lambert](https://github.com/natolambert/rlhf-book)
+2. [Raportul Tehnic DeepSeek-V3](https://huggingface.co/papers/2412.19437)
+3. [DeepSeekMath](https://huggingface.co/papers/2402.03300) 

@@ -1,0 +1,384 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section3.ipynb"},
+]} />
+
+# Fine-tuning supervizat
+
+Fine-tuningul supervizat (SFT) este un proces folosit în principal pentru a adapta modelele de limbaj pre-antrenate să urmeze instrucțiuni, să se angajeze în dialog și să folosească formate specifice de ieșire. În timp ce modelele pre-antrenate au capacități generale impresionante, SFT ajută la transformarea lor în modele asemănătoare asistentului care pot înțelege și răspunde mai bine la prompturile utilizatorilor. Acest lucru se realizează de obicei prin antrenare pe seturi de date cu conversații și instrucțiuni scrise de oameni.
+
+Această pagină oferă un ghid pas cu pas pentru fine-tuningul modelului [`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B) folosind [`SFTTrainer`](https://huggingface.co/docs/trl/en/sft_trainer). Urmând acești pași, puteți adapta modelul să îndeplinească anumite sarcini mai eficient.
+
+## Când să utilizați SFT
+
+Înainte de a se adânci în implementare, este important să înțelegem când SFT este alegerea potrivită pentru proiectul dumneavoastră. Ca primul pas, ar trebui să considerați dacă folosirea unui model existent ajustat pentru instrucțiuni cu prompturi bine elaborate ar fi suficientă pentru cazul dumneavoastră de utilizare. SFT implică resurse computaționale semnificative și efort de inginerie, așa că ar trebui urmărit doar când promptarea modelelor existente se dovedește insuficientă.
+
+<Tip>
+Considerați SFT doar dacă:
+- Aveți nevoie de performanțe suplimentare dincolo de ceea ce poate realiza promptarea
+- Aveți un caz de utilizare specific în care costul folosirii unui model mare de uz general depășește costul fine-tuningului unui model mai mic
+- Aveți nevoie de formate de ieșire specializate sau cunoștințe specifice domeniului cu care modelele existente se confruntă
+</Tip>
+
+Dacă determinați că SFT este necesar, decizia de a continua depinde de doi factori principali:
+
+### Controlul template-ului
+SFT permite control precis asupra structurii de ieșire a modelului. Acest lucru este deosebit de valoros când aveți nevoie ca modelul să:
+1. Genereze răspunsuri într-un format specific de template de chat
+2. Urmeze scheme stricte de ieșire
+3. Mențină stiluri consecvente în toate răspunsurile
+
+### Adaptarea la domeniu
+Când lucrați în domenii specializate, SFT ajută la alinierea modelului cu cerințele specifice domeniului prin:
+1. Predarea terminologiei și conceptelor domeniului
+2. Impunerea standardelor profesionale
+3. Gestionarea adecvată a întrebărilor tehnice
+4. Urmarea ghidurilor specifice industriei
+
+<Tip>
+Înainte de a începe SFT, evaluați dacă cazul dumneavoastră de utilizare necesită:
+- Formatare precisă de ieșire
+- Cunoștințe specifice domeniului
+- Modele consecvente de răspuns
+- Aderarea la ghiduri specifice
+
+Această evaluare va ajuta să determinați dacă SFT este abordarea potrivită pentru nevoile dumneavoastră.
+</Tip>
+
+## Pregătirea setului de date
+
+Procesul de fine-tuning supervizat necesită un set de date specific sarcinii structurat cu perechi intrare-ieșire. Fiecare pereche ar trebui să conțină:
+1. Un prompt de intrare
+2. Răspunsul așteptat al modelului
+3. Orice context sau metadate suplimentare
+
+Calitatea datelor de antrenare este crucială pentru succesul fine-tuningului. Să vedem cum să pregătim și să validăm setul de date:
+
+<iframe
+  src="https://huggingface.co/datasets/HuggingFaceTB/smoltalk/embed/viewer/all/train?row=0"
+  frameborder="0"
+  width="100%"
+  height="360px"
+></iframe>
+
+## Configurația antrenamentului
+
+Succesul fine-tuningului depinde în mare măsură de alegerea parametrilor de antrenare corecți. Să explorăm fiecare parametru important și cum să îi configurați eficient:
+
+Configurația SFTTrainer necesită considerarea mai multor parametri care controlează procesul de antrenare. Să explorăm fiecare parametru și scopul lor:
+
+1. **Parametrii duratei antrenamentului**:
+   - `num_train_epochs`: Controlează durata totală a antrenamentului
+   - `max_steps`: Alternativă la epoci, stabilește numărul maxim de pași de antrenare
+   - Mai multe epoci permit învățare mai bună dar riscă supraadaptarea
+
+2. **Parametrii dimensiunii batch-ului**:
+   - `per_device_train_batch_size`: Determină utilizarea memoriei și stabilitatea antrenamentului
+   - `gradient_accumulation_steps`: Permite dimensiuni efective mai mari ale batch-ului
+   - Batch-uri mai mari oferă gradienți mai stabili dar necesită mai multă memorie
+
+3. **Parametrii ratei de învățare**:
+   - `learning_rate`: Controlează dimensiunea actualizărilor greutăților
+   - `warmup_ratio`: Porțiunea de antrenament folosită pentru încălzirea ratei de învățare
+   - Prea mare poate cauza instabilitate, prea mică rezultă în învățare lentă
+
+4. **Parametrii de monitorizare**:
+   - `logging_steps`: Frecvența înregistrării metricilor
+   - `eval_steps`: Cât de des să evalueze pe datele de validare
+   - `save_steps`: Frecvența salvării punctelor de verificare ale modelului
+
+<Tip>
+Începeți cu valori conservatoare și ajustați bazat pe monitorizare:
+- Începeți cu 1-3 epoci
+- Folosiți dimensiuni mai mici ale batch-ului inițial
+- Monitorizați metricile de validare atent
+- Ajustați rata de învățare dacă antrenamentul este instabil
+</Tip>
+
+## Implementare cu TRL
+
+Acum că înțelegem componentele cheie, să implementăm antrenamentul cu validare și monitorizare adecvate. Vom folosi clasa `SFTTrainer` din biblioteca Transformers Reinforcement Learning (TRL), care este construită pe biblioteca `transformers`. Iată un exemplu complet folosind biblioteca TRL:
+
+```python
+from datasets import load_dataset
+from trl import SFTConfig, SFTTrainer
+import torch
+
+# Setați dispozitivul
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Încărcați setul de date
+dataset = load_dataset("HuggingFaceTB/smoltalk", "all")
+
+# Configurați modelul și tokenizer-ul
+model_name = "HuggingFaceTB/SmolLM2-135M"
+model = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name).to(
+    device
+)
+tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_name)
+# Configurați template-ul de chat
+model, tokenizer = setup_chat_format(model=model, tokenizer=tokenizer)
+
+# Configurați trainer-ul
+training_args = SFTConfig(
+    output_dir="./sft_output",
+    max_steps=1000,
+    per_device_train_batch_size=4,
+    learning_rate=5e-5,
+    logging_steps=10,
+    save_steps=100,
+    eval_strategy="steps",
+    eval_steps=50,
+)
+
+# Inițializați trainer-ul
+trainer = SFTTrainer(
+    model=model,
+    args=training_args,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["test"],
+    processing_class=tokenizer,
+)
+
+# Începeți antrenamentul
+trainer.train()
+```
+
+<Tip>
+Când folosiți un set de date cu un câmp "messages" (ca exemplul de mai sus), SFTTrainer aplică automat template-ul de chat al modelului, pe care îl recuperează de pe hub. Aceasta înseamnă că nu aveți nevoie de nicio configurație suplimentară pentru a gestiona conversațiile în stil chat - trainer-ul va formata mesajele conform formatului de template așteptat al modelului.
+</Tip>
+
+## Împachetarea setului de date
+
+SFTTrainer suportă împachetarea exemplelor pentru a optimiza eficiența antrenamentului. Această funcționalitate permite ca mai multe exemple scurte să fie împachetate în aceeași secvență de intrare, maximizând utilizarea GPU în timpul antrenamentului. Pentru a activa împachetarea, pur și simplu setați `packing=True` în constructorul SFTConfig. Când folosiți seturi de date împachetate cu `max_steps`, fiți conștienți că s-ar putea să antrenați pentru mai multe epoci decât ați așteptat, în funcție de configurația de împachetare. Puteți personaliza modul în care exemplele sunt combinate folosind o funcție de formatare - deosebit de utilă când lucrați cu seturi de date care au mai multe câmpuri precum perechi întrebare-răspuns. Pentru seturile de date de evaluare, puteți dezactiva împachetarea setând `eval_packing=False` în SFTConfig. Iată un exemplu de bază de personalizare a configurației de împachetare:
+
+```python
+# Configurați împachetarea
+training_args = SFTConfig(packing=True)
+
+trainer = SFTTrainer(model=model, train_dataset=dataset, args=training_args)
+
+trainer.train()
+```
+
+Când împachetați setul de date cu mai multe câmpuri, puteți defini o funcție de formatare personalizată pentru a combina câmpurile într-o singură secvență de intrare. Această funcție ar trebui să ia o listă de exemple și să returneze un dicționar cu secvența de intrare împachetată. Iată un exemplu de funcție de formatare personalizată:
+
+```python
+def formatting_func(example):
+    text = f"### Question: {example['question']}\n ### Answer: {example['answer']}"
+    return text
+
+
+training_args = SFTConfig(packing=True)
+trainer = SFTTrainer(
+    "facebook/opt-350m",
+    train_dataset=dataset,
+    args=training_args,
+    formatting_func=formatting_func,
+)
+```
+
+## Monitorizarea progresului antrenamentului
+
+Monitorizarea eficientă este crucială pentru succesul fine-tuningului. Să explorăm ce să urmărim în timpul antrenamentului:
+
+### Înțelegerea modelelor de pierdere
+
+Pierderea antrenamentului urmează de obicei trei faze distincte:
+1. Scădere abruptă inițială: Adaptare rapidă la noua distribuție de date
+2. Stabilizare graduală: Rata de învățare încetinește pe măsură ce modelul se ajustează fin
+3. Convergența: Valorile pierderilor se stabilizează, indicând finalizarea antrenamentului
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/nlp_course_sft_loss_graphic.png" alt="Antrenamentul SFTTrainer" />
+
+### Metrici de monitorizat
+
+Monitorizarea eficientă implică urmărirea metricilor cantitative și evaluarea metricilor calitative. Metricile disponibile sunt:
+
+- Pierderea antrenamentului
+- Pierderea validării
+- Progresia ratei de învățare
+- Normele gradientului
+
+<Tip warning={true}>
+Urmăriți aceste semne de avertizare în timpul antrenamentului:
+1. Pierderea validării crește în timp ce pierderea antrenamentului scade (supraadaptare)
+2. Nicio îmbunătățire semnificativă în valorile pierderilor (subadaptare)
+3. Valori extrem de mici ale pierderilor (posibilă memorizare)
+4. Formatare inconsistentă a ieșirii (probleme de învățare a template-ului)
+</Tip>
+
+### Calea către convergență
+
+Pe măsură ce antrenamentul progresează, curba pierderii ar trebui să se stabilizeze treptat. Indicatorul cheie al antrenamentului sănătos este un decalaj mic între pierderea antrenamentului și cea de validare, sugerând că modelul învață modele generalizabile mai degrabă decât să memoreze exemple specifice. Valorile absolute ale pierderilor vor varia în funcție de sarcina și setul de date.
+
+### Monitorizarea progresului antrenamentului
+
+Graficul de mai sus arată o progresie tipică a antrenamentului. Observați cum atât pierderea antrenamentului, cât și cea de validare scad brusc la început, apoi se nivelează treptat. Acest model indică faptul că modelul învață eficient menținând în același timp capacitatea de generalizare.
+
+### Semne de avertizare de urmărit
+
+Mai multe modele în curbele pierderilor pot indica probleme potențiale. Mai jos ilustrăm semne comune de avertizare și soluții pe care le putem considera.
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/sft_loss_1.png" alt="Antrenamentul SFTTrainer" />
+
+Dacă pierderea validării scade cu o rată semnificativ mai lentă decât pierderea antrenamentului, modelul probabil se supraadaptează la datele de antrenare. Considerați:
+- Reducerea pașilor de antrenare
+- Creșterea dimensiunii setului de date
+- Validarea calității și diversității setului de date
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/sft_loss_2.png" alt="Antrenamentul SFTTrainer" />
+
+Dacă pierderea nu arată îmbunătățiri semnificative, modelul ar putea să:
+- Învețe prea încet (încercați să creșteți rata de învățare)
+- Se confrunte cu sarcina (verificați calitatea datelor și complexitatea sarcinii)
+- Atingă limitările arhitecturii (considerați un model diferit)
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/sft_loss_3.png" alt="Antrenamentul SFTTrainer" />
+
+Valori extrem de mici ale pierderilor ar putea sugera memorizare mai degrabă decât învățare. Acest lucru este deosebit de îngrijorător dacă:
+- Modelul performează slab pe exemple noi, similare
+- Ieșirile lipsesc de diversitate
+- Răspunsurile sunt prea similare cu exemplele de antrenare
+
+<Tip warning={true}>
+Monitorizați atât valorile pierderilor, cât și ieșirile efective ale modelului în timpul antrenamentului. Uneori pierderea poate arăta bine în timp ce modelul dezvoltă comportamente nedorite. Evaluarea calitativă regulată a răspunsurilor modelului ajută la detectarea problemelor pe care metricile singure le-ar putea rata.
+</Tip>
+
+Ar trebui să observăm că interpretarea valorilor pierderilor pe care o descriem aici este destinată cazului cel mai comun, și de fapt, valorile pierderilor se pot comporta în moduri diferite în funcție de model, setul de date, parametrii de antrenare, etc. Dacă sunteți interesați să explorați mai multe despre modelele descrise, ar trebui să consultați acest articol de blog de la oamenii de la [Fast AI](https://www.fast.ai/posts/2023-09-04-learning-jumps/).
+
+## Evaluarea după SFT
+
+În secțiunea [11.4](/en/chapter11/4) vom învăța cum să evaluăm modelul folosind seturi de date de referință. Pentru moment, ne vom concentra pe evaluarea calitativă a modelului.
+
+După finalizarea SFT, considerați aceste acțiuni de urmărire:
+
+1. Evaluați modelul temeinic pe datele de test păstrate deoparte
+2. Validați aderarea la template pe diverse intrări
+3. Testați reținerea cunoștințelor specifice domeniului
+4. Monitorizați metricile de performanță din lumea reală
+
+<Tip>
+Documentați procesul de antrenare, inclusiv:
+- Caracteristicile setului de date
+- Parametrii antrenamentului
+- Metricile de performanță
+- Limitările cunoscute
+Această documentație va fi valoroasă pentru iterațiile viitoare ale modelului.
+</Tip>
+
+## Chestionar
+
+### 1. Ce parametri controlează durata antrenamentului în SFT?
+
+<Question
+	choices={[
+		{
+			text: "num_train_epochs și max_steps",
+			explain: "Corect! Acești parametri determină cât timp va antrena modelul, fie prin numărul de epoci, fie prin pașii totali.",
+			correct: true
+		},
+		{
+			text: "batch_size și learning_rate",
+			explain: "Deși aceștia afectează antrenamentul, nu controlează direct durata."
+		},
+		{
+			text: "gradient_checkpointing și warmup_ratio",
+			explain: "Acești parametri afectează eficiența și stabilitatea antrenamentului, nu durata."
+		}
+	]}
+/>
+
+### 2. Ce model în curbele pierderilor indică supraadaptarea potențială?
+
+<Question
+    choices={[
+        {
+            text: "Pierderea validării crește în timp ce pierderea antrenamentului continuă să scadă",
+            explain: "Corect! Această divergență între pierderea antrenamentului și cea de validare este un semn clasic al supraadaptării.",
+            correct: true
+        },
+        {
+            text: "Atât pierderea antrenamentului, cât și cea de validare scad constant",
+            explain: "Acest model indică de fapt un antrenament sănătos."
+        },
+        {
+            text: "Pierderea antrenamentului rămâne constantă în timp ce pierderea validării scade",
+            explain: "Acesta ar fi un model neobișnuit și nu indică supraadaptarea."
+        }
+    ]}
+/>
+
+### 3. Pentru ce este folosit gradient_accumulation_steps?
+
+<Question
+    choices={[
+        {
+            text: "Pentru a crește dimensiunea efectivă a batch-ului fără a folosi mai multă memorie",
+            explain: "Corect! Acumulează gradienții pe mai multe treceri înainte înainte de a actualiza greutățile.",
+            correct: true
+        },
+        {
+            text: "Pentru a salva puncte de verificare în timpul antrenamentului",
+            explain: "Aceasta este gestionată de parametrii save_steps și save_strategy."
+        },
+        {
+            text: "Pentru a controla programul ratei de învățare",
+            explain: "Programarea ratei de învățare este controlată de learning_rate și warmup_ratio."
+        }
+    ]}
+/>
+
+### 4. Ce ar trebui să monitorizați în timpul antrenamentului SFT?
+
+<Question
+    choices={[
+        {
+            text: "Atât metricile cantitative, cât și ieșirile calitative",
+            explain: "Corect! Monitorizarea ambelor tipuri de metrici ajută la detectarea tuturor problemelor potențiale.",
+            correct: true
+        },
+        {
+            text: "Doar pierderea antrenamentului",
+            explain: "Pierderea antrenamentului singură nu este suficientă pentru a asigura un comportament bun al modelului."
+        },
+        {
+            text: "Doar calitatea ieșirii modelului",
+            explain: "Deși importantă, evaluarea calitativă singură ratează dinamici importante ale antrenamentului."
+        }
+    ]}
+/>
+
+### 5. Ce indică convergența sănătoasă în timpul antrenamentului?
+
+<Question
+    choices={[
+        {
+            text: "Un decalaj mic între pierderea antrenamentului și cea de validare",
+            explain: "Corect! Aceasta indică faptul că modelul învață modele generalizabile.",
+            correct: true
+        },
+        {
+            text: "Pierderea antrenamentului ajungând la zero",
+            explain: "Valori extrem de mici ale pierderilor ar putea indica memorizare mai degrabă decât învățare."
+        },
+        {
+            text: "Pierderea validării fiind mai mică decât pierderea antrenamentului",
+            explain: "Aceasta ar fi neobișnuită și ar putea indica probleme cu setul de validare."
+        }
+    ]}
+/>
+
+## 💐 Bună treabă!
+
+Ați învățat cum să faceți fine-tuning la modele folosind SFT! Pentru a continua învățarea:
+1. Încercați notebook-ul cu parametri diferiți
+2. Experimentați cu alte seturi de date
+3. Contribuiți cu îmbunătățiri la materialul cursului
+
+## Resurse adiționale
+
+- [Documentația TRL](https://huggingface.co/docs/trl)
+- [Depozitul de exemple SFT](https://github.com/huggingface/trl/blob/main/trl/scripts/sft.py)
+- [Cele mai bune practici pentru fine-tuning](https://huggingface.co/docs/transformers/training) 
