@@ -11,6 +11,12 @@
 
 Now we'll see how to achieve the same results as we did in the last section without using the `Trainer` class, implementing a training loop from scratch with modern PyTorch best practices. Again, we assume you have done the data processing in section 2. Here is a short summary covering everything you will need:
 
+<Tip>
+
+🏗️ **Training from Scratch**: This section builds on the previous content. For comprehensive guidance on PyTorch training loops and best practices, check out the [🤗 Transformers training documentation](https://huggingface.co/docs/transformers/main/en/training#train-in-native-pytorch) and the [custom training cookbook](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm#training-loop).
+
+</Tip>
+
 ```py
 from datasets import load_dataset
 from transformers import AutoTokenizer, DataCollatorWithPadding
@@ -117,6 +123,8 @@ optimizer = AdamW(model.parameters(), lr=5e-5)
 - **8-bit Adam**: Use `bitsandbytes` for memory-efficient optimization
 - **Different learning rates**: Lower learning rates (1e-5 to 3e-5) often work better for large models
 
+🚀 **Optimization Resources**: Learn more about optimizers and training strategies in the [🤗 Transformers optimization guide](https://huggingface.co/docs/transformers/main/en/performance#optimizer) and explore advanced techniques in the [optimization cookbook](https://huggingface.co/learn/cookbook/en/training_tricks#optimizers-and-schedulers).
+
 </Tip>
 
 Finally, the learning rate scheduler used by default is just a linear decay from the maximum value (5e-5) to 0. To properly define it, we need to know the number of training steps we will take, which is the number of epochs we want to run multiplied by the number of training batches (which is the length of our training dataloader). The `Trainer` uses three epochs by default, so we will follow that:
@@ -185,6 +193,8 @@ for epoch in range(num_epochs):
 - **Gradient Accumulation**: Accumulate gradients over multiple batches to simulate larger batch sizes
 - **Checkpointing**: Save model checkpoints periodically to resume training if interrupted
 
+🔧 **Implementation Guide**: For detailed examples of these optimizations, see the [🤗 Transformers efficient training guide](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_one) and the [advanced training cookbook](https://huggingface.co/learn/cookbook/en/training_tricks#gradient-accumulation).
+
 </Tip>
 
 You can see that the core of the training loop looks a lot like the one in the introduction. We didn't ask for any reporting, so this training loop will not tell us anything about how the model fares. We need to add an evaluation loop for that.
@@ -193,6 +203,12 @@ You can see that the core of the training loop looks a lot like the one in the i
 ### The evaluation loop[[the-evaluation-loop]]
 
 As we did earlier, we will use a metric provided by the 🤗 Evaluate library. We've already seen the `metric.compute()` method, but metrics can actually accumulate batches for us as we go over the prediction loop with the method `add_batch()`. Once we have accumulated all the batches, we can get the final result with `metric.compute()`. Here's how to implement all of this in an evaluation loop:
+
+<Tip>
+
+📊 **Evaluation Best Practices**: For more sophisticated evaluation strategies and metrics, explore the [🤗 Evaluate documentation](https://huggingface.co/docs/evaluate/) and the [comprehensive evaluation cookbook](https://huggingface.co/learn/cookbook/en/evaluation).
+
+</Tip>
 
 ```py
 import evaluate
@@ -229,18 +245,28 @@ Again, your results will be slightly different because of the randomness in the 
 
 The training loop we defined earlier works fine on a single CPU or GPU. But using the [🤗 Accelerate](https://github.com/huggingface/accelerate) library, with just a few adjustments we can enable distributed training on multiple GPUs or TPUs. 🤗 Accelerate handles the complexity of distributed training, mixed precision, and device placement automatically. Starting from the creation of the training and validation dataloaders, here is what our manual training loop looks like:
 
+<Tip>
+
+⚡ **Accelerate Deep Dive**: Learn everything about distributed training, mixed precision, and hardware optimization in the [🤗 Accelerate documentation](https://huggingface.co/docs/accelerate/) and explore practical examples in the [distributed training cookbook](https://huggingface.co/learn/cookbook/en/distributed_training).
+
+</Tip>
+
 ```py
+from accelerate import Accelerator
 from torch.optim import AdamW
 from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
 
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 optimizer = AdamW(model.parameters(), lr=3e-5)
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-model.to(device)
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
 
 num_epochs = 3
-num_training_steps = num_epochs * len(train_dataloader)
+num_training_steps = num_epochs * len(train_dl)
 lr_scheduler = get_scheduler(
     "linear",
     optimizer=optimizer,
@@ -252,61 +278,15 @@ progress_bar = tqdm(range(num_training_steps))
 
 model.train()
 for epoch in range(num_epochs):
-    for batch in train_dataloader:
-        batch = {k: v.to(device) for k, v in batch.items()}
+    for batch in train_dl:
         outputs = model(**batch)
         loss = outputs.loss
-        loss.backward()
+        accelerator.backward(loss)
 
         optimizer.step()
         lr_scheduler.step()
         optimizer.zero_grad()
         progress_bar.update(1)
-```
-
-And here are the changes:
-
-```diff
-+ from accelerate import Accelerator
-  from torch.optim import AdamW
-  from transformers import AutoModelForSequenceClassification, get_scheduler
-
-+ accelerator = Accelerator()
-
-  model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
-  optimizer = AdamW(model.parameters(), lr=3e-5)
-
-- device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-- model.to(device)
-
-+ train_dataloader, eval_dataloader, model, optimizer = accelerator.prepare(
-+     train_dataloader, eval_dataloader, model, optimizer
-+ )
-
-  num_epochs = 3
-  num_training_steps = num_epochs * len(train_dataloader)
-  lr_scheduler = get_scheduler(
-      "linear",
-      optimizer=optimizer,
-      num_warmup_steps=0,
-      num_training_steps=num_training_steps
-  )
-
-  progress_bar = tqdm(range(num_training_steps))
-
-  model.train()
-  for epoch in range(num_epochs):
-      for batch in train_dataloader:
--         batch = {k: v.to(device) for k, v in batch.items()}
-          outputs = model(**batch)
-          loss = outputs.loss
--         loss.backward()
-+         accelerator.backward(loss)
-
-          optimizer.step()
-          lr_scheduler.step()
-          optimizer.zero_grad()
-          progress_bar.update(1)
 ```
 
 The first line to add is the import line. The second line instantiates an `Accelerator` object that will look at the environment and initialize the proper distributed setup. 🤗 Accelerate handles the device placement for you, so you can remove the lines that put the model on the device (or, if you prefer, change them to use `accelerator.device` instead of `device`).
@@ -380,6 +360,12 @@ notebook_launcher(training_function)
 ```
 
 You can find more examples in the [🤗 Accelerate repo](https://github.com/huggingface/accelerate/tree/main/examples).
+
+<Tip>
+
+🌐 **Distributed Training**: For comprehensive coverage of multi-GPU and multi-node training, check out the [🤗 Transformers distributed training guide](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_many) and the [scaling training cookbook](https://huggingface.co/learn/cookbook/en/distributed_training#multi-gpu-training).
+
+</Tip>
 
 ### Next Steps and Best Practices[[next-steps-and-best-practices]]
 
