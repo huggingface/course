@@ -1,4 +1,4 @@
-# A full training[[a-full-training]]
+# A full training loop[[a-full-training]]
 
 <CourseFloatingBanner chapter={3}
   classNames="absolute z-10 right-0 top-0"
@@ -9,7 +9,13 @@
 
 <Youtube id="Dh9CL8fyG80"/>
 
-Now we'll see how to achieve the same results as we did in the last section without using the `Trainer` class. Again, we assume you have done the data processing in section 2. Here is a short summary covering everything you will need:
+Now we'll see how to achieve the same results as we did in the last section without using the `Trainer` class, implementing a training loop from scratch with modern PyTorch best practices. Again, we assume you have done the data processing in section 2. Here is a short summary covering everything you will need:
+
+<Tip>
+
+🏗️ **Training from Scratch**: This section builds on the previous content. For comprehensive guidance on PyTorch training loops and best practices, check out the [🤗 Transformers training documentation](https://huggingface.co/docs/transformers/main/en/training#train-in-native-pytorch) and the [custom training cookbook](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu#model).
+
+</Tip>
 
 ```py
 from datasets import load_dataset
@@ -110,6 +116,17 @@ from torch.optim import AdamW
 optimizer = AdamW(model.parameters(), lr=5e-5)
 ```
 
+<Tip>
+
+💡 **Modern Optimization Tips**: For even better performance, you can try:
+- **AdamW with weight decay**: `AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)`
+- **8-bit Adam**: Use `bitsandbytes` for memory-efficient optimization
+- **Different learning rates**: Lower learning rates (1e-5 to 3e-5) often work better for large models
+
+🚀 **Optimization Resources**: Learn more about optimizers and training strategies in the [🤗 Transformers optimization guide](https://huggingface.co/docs/transformers/main/en/performance#optimizer).
+
+</Tip>
+
 Finally, the learning rate scheduler used by default is just a linear decay from the maximum value (5e-5) to 0. To properly define it, we need to know the number of training steps we will take, which is the number of epochs we want to run multiplied by the number of training batches (which is the length of our training dataloader). The `Trainer` uses three epochs by default, so we will follow that:
 
 ```py
@@ -167,12 +184,31 @@ for epoch in range(num_epochs):
         progress_bar.update(1)
 ```
 
+<Tip>
+
+💡 **Modern Training Optimizations**: To make your training loop even more efficient, consider:
+
+- **Gradient Clipping**: Add `torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)` before `optimizer.step()`
+- **Mixed Precision**: Use `torch.cuda.amp.autocast()` and `GradScaler` for faster training
+- **Gradient Accumulation**: Accumulate gradients over multiple batches to simulate larger batch sizes
+- **Checkpointing**: Save model checkpoints periodically to resume training if interrupted
+
+🔧 **Implementation Guide**: For detailed examples of these optimizations, see the [🤗 Transformers efficient training guide](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_one) and the [range of optimizers](https://huggingface.co/docs/transformers/main/en/optimizers).
+
+</Tip>
+
 You can see that the core of the training loop looks a lot like the one in the introduction. We didn't ask for any reporting, so this training loop will not tell us anything about how the model fares. We need to add an evaluation loop for that.
 
 
 ### The evaluation loop[[the-evaluation-loop]]
 
 As we did earlier, we will use a metric provided by the 🤗 Evaluate library. We've already seen the `metric.compute()` method, but metrics can actually accumulate batches for us as we go over the prediction loop with the method `add_batch()`. Once we have accumulated all the batches, we can get the final result with `metric.compute()`. Here's how to implement all of this in an evaluation loop:
+
+<Tip>
+
+📊 **Evaluation Best Practices**: For more sophisticated evaluation strategies and metrics, explore the [🤗 Evaluate documentation](https://huggingface.co/docs/evaluate/) and the [comprehensive evaluation cookbook](https://github.com/huggingface/evaluation-guidebook).
+
+</Tip>
 
 ```py
 import evaluate
@@ -207,20 +243,30 @@ Again, your results will be slightly different because of the randomness in the 
 
 <Youtube id="s7dy8QRgjJ0" />
 
-The training loop we defined earlier works fine on a single CPU or GPU. But using the [🤗 Accelerate](https://github.com/huggingface/accelerate) library, with just a few adjustments we can enable distributed training on multiple GPUs or TPUs. Starting from the creation of the training and validation dataloaders, here is what our manual training loop looks like:
+The training loop we defined earlier works fine on a single CPU or GPU. But using the [🤗 Accelerate](https://github.com/huggingface/accelerate) library, with just a few adjustments we can enable distributed training on multiple GPUs or TPUs. 🤗 Accelerate handles the complexity of distributed training, mixed precision, and device placement automatically. Starting from the creation of the training and validation dataloaders, here is what our manual training loop looks like:
+
+<Tip>
+
+⚡ **Accelerate Deep Dive**: Learn everything about distributed training, mixed precision, and hardware optimization in the [🤗 Accelerate documentation](https://huggingface.co/docs/accelerate/) and explore practical examples in the [transformers documentation](https://huggingface.co/docs/transformers/main/en/accelerate).
+
+</Tip>
 
 ```py
+from accelerate import Accelerator
 from torch.optim import AdamW
 from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
 
 model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
 optimizer = AdamW(model.parameters(), lr=3e-5)
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-model.to(device)
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
 
 num_epochs = 3
-num_training_steps = num_epochs * len(train_dataloader)
+num_training_steps = num_epochs * len(train_dl)
 lr_scheduler = get_scheduler(
     "linear",
     optimizer=optimizer,
@@ -232,61 +278,15 @@ progress_bar = tqdm(range(num_training_steps))
 
 model.train()
 for epoch in range(num_epochs):
-    for batch in train_dataloader:
-        batch = {k: v.to(device) for k, v in batch.items()}
+    for batch in train_dl:
         outputs = model(**batch)
         loss = outputs.loss
-        loss.backward()
+        accelerator.backward(loss)
 
         optimizer.step()
         lr_scheduler.step()
         optimizer.zero_grad()
         progress_bar.update(1)
-```
-
-And here are the changes:
-
-```diff
-+ from accelerate import Accelerator
-  from torch.optim import AdamW
-  from transformers import AutoModelForSequenceClassification, get_scheduler
-
-+ accelerator = Accelerator()
-
-  model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
-  optimizer = AdamW(model.parameters(), lr=3e-5)
-
-- device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-- model.to(device)
-
-+ train_dataloader, eval_dataloader, model, optimizer = accelerator.prepare(
-+     train_dataloader, eval_dataloader, model, optimizer
-+ )
-
-  num_epochs = 3
-  num_training_steps = num_epochs * len(train_dataloader)
-  lr_scheduler = get_scheduler(
-      "linear",
-      optimizer=optimizer,
-      num_warmup_steps=0,
-      num_training_steps=num_training_steps
-  )
-
-  progress_bar = tqdm(range(num_training_steps))
-
-  model.train()
-  for epoch in range(num_epochs):
-      for batch in train_dataloader:
--         batch = {k: v.to(device) for k, v in batch.items()}
-          outputs = model(**batch)
-          loss = outputs.loss
--         loss.backward()
-+         accelerator.backward(loss)
-
-          optimizer.step()
-          lr_scheduler.step()
-          optimizer.zero_grad()
-          progress_bar.update(1)
 ```
 
 The first line to add is the import line. The second line instantiates an `Accelerator` object that will look at the environment and initialize the proper distributed setup. 🤗 Accelerate handles the device placement for you, so you can remove the lines that put the model on the device (or, if you prefer, change them to use `accelerator.device` instead of `device`).
@@ -360,3 +360,209 @@ notebook_launcher(training_function)
 ```
 
 You can find more examples in the [🤗 Accelerate repo](https://github.com/huggingface/accelerate/tree/main/examples).
+
+<Tip>
+
+🌐 **Distributed Training**: For comprehensive coverage of multi-GPU and multi-node training, check out the [🤗 Transformers distributed training guide](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_many) and the [scaling training cookbook](https://huggingface.co/docs/transformers/main/en/accelerate).
+
+</Tip>
+
+### Next Steps and Best Practices[[next-steps-and-best-practices]]
+
+Now that you've learned how to implement training from scratch, here are some additional considerations for production use:
+
+**Model Evaluation**: Always evaluate your model on multiple metrics, not just accuracy. Use the 🤗 Evaluate library for comprehensive evaluation.
+
+**Hyperparameter Tuning**: Consider using libraries like Optuna or Ray Tune for systematic hyperparameter optimization.
+
+**Model Monitoring**: Track training metrics, learning curves, and validation performance throughout training.
+
+**Model Sharing**: Once trained, share your model on the Hugging Face Hub to make it available to the community.
+
+**Efficiency**: For large models, consider techniques like gradient checkpointing, parameter-efficient fine-tuning (LoRA, AdaLoRA), or quantization methods.
+
+This concludes our deep dive into fine-tuning with custom training loops. The skills you've learned here will serve you well when you need full control over the training process or want to implement custom training logic that goes beyond what the `Trainer` API offers.
+
+## Section Quiz[[section-quiz]]
+
+Test your understanding of custom training loops and advanced training techniques:
+
+### 1. What is the main difference between Adam and AdamW optimizers?
+
+<Question
+	choices={[
+		{
+			text: "AdamW uses a different learning rate schedule.",
+			explain: "Learning rate scheduling is separate from the optimizer choice."
+		},
+		{
+			text: "AdamW includes decoupled weight decay regularization.",
+			explain: "Correct! AdamW separates weight decay from the gradient-based parameter updates, leading to better regularization.",
+            correct: true
+		},
+		{
+			text: "AdamW only works with transformer models.",
+			explain: "AdamW can be used with any model architecture, not just transformers."
+		},
+        {
+			text: "AdamW requires less memory than Adam.",
+			explain: "Both optimizers have similar memory requirements."
+		}
+	]}
+/>
+
+### 2. In a training loop, what is the correct order of operations?
+
+<Question
+	choices={[
+		{
+			text: "Forward pass → Backward pass → Optimizer step → Zero gradients",
+			explain: "Close, but you should zero gradients before the next forward pass to avoid accumulating old gradients."
+		},
+		{
+			text: "Forward pass → Backward pass → Optimizer step → Scheduler step → Zero gradients",
+			explain: "Correct! This is the proper order: compute loss, compute gradients, update parameters, update learning rate, then clear gradients.",
+            correct: true
+		},
+		{
+			text: "Zero gradients → Forward pass → Optimizer step → Backward pass",
+			explain: "The backward pass must come after the forward pass to compute gradients from the loss."
+		},
+        {
+			text: "Forward pass → Zero gradients → Backward pass → Optimizer step",
+			explain: "Zeroing gradients before backward pass would eliminate the gradients you just computed."
+		}
+	]}
+/>
+
+### 3. What does the 🤗 Accelerate library primarily help with?
+
+<Question
+	choices={[
+		{
+			text: "Making your models train faster by optimizing the forward pass.",
+			explain: "Accelerate doesn't optimize the model architecture itself."
+		},
+		{
+			text: "Automatically selecting the best hyperparameters.",
+			explain: "Accelerate doesn't do hyperparameter optimization."
+		},
+		{
+			text: "Enabling distributed training across multiple GPUs/TPUs with minimal code changes.",
+			explain: "Correct! Accelerate handles distributed training complexity, allowing your code to run on single or multiple devices seamlessly.",
+            correct: true
+		},
+        {
+			text: "Converting models to different frameworks like TensorFlow.",
+			explain: "Accelerate works within PyTorch and doesn't convert between frameworks."
+		}
+	]}
+/>
+
+### 4. Why do we move batches to the device in a training loop?
+
+<Question
+	choices={[
+		{
+			text: "To make the training faster.",
+			explain: "While it can affect speed, the main reason is compatibility."
+		},
+		{
+			text: "Because the model and data must be on the same device (CPU/GPU) for computation.",
+			explain: "Correct! PyTorch requires tensors to be on the same device for operations to work.",
+            correct: true
+		},
+		{
+			text: "To save memory.",
+			explain: "Moving to device doesn't inherently save memory."
+		},
+        {
+			text: "It's required by the DataLoader.",
+			explain: "DataLoader doesn't require specific device placement."
+		}
+	]}
+/>
+
+### 5. What does `model.eval()` do before evaluation?
+
+<Question
+	choices={[
+		{
+			text: "It freezes the model parameters so they can't be updated.",
+			explain: "model.eval() doesn't freeze parameters - that would be done by setting requires_grad=False."
+		},
+		{
+			text: "It changes the behavior of layers like dropout and batch normalization for inference.",
+			explain: "Correct! eval() mode disables dropout and uses running statistics for batch norm instead of computing them from the current batch.",
+            correct: true
+		},
+		{
+			text: "It enables gradient computation for evaluation metrics.",
+			explain: "Actually, we typically use torch.no_grad() during evaluation to disable gradient computation."
+		},
+        {
+			text: "It automatically calculates evaluation metrics.",
+			explain: "model.eval() only changes layer behavior - you still need to implement metric calculation separately."
+		}
+	]}
+/>
+
+### 6. What is the purpose of `torch.no_grad()` during evaluation?
+
+<Question
+	choices={[
+		{
+			text: "To prevent the model from making predictions.",
+			explain: "torch.no_grad() doesn't prevent predictions, just gradient computation."
+		},
+		{
+			text: "To save memory and speed up computation by disabling gradient tracking.",
+			explain: "Correct! Since we don't need gradients for evaluation, disabling them saves memory and computation.",
+            correct: true
+		},
+		{
+			text: "To enable evaluation mode for the model.",
+			explain: "Evaluation mode is enabled with model.eval(), not torch.no_grad()."
+		},
+        {
+			text: "To ensure consistent results across runs.",
+			explain: "Reproducibility is handled by setting random seeds, not torch.no_grad()."
+		}
+	]}
+/>
+
+### 7. What changes when you use 🤗 Accelerate in your training loop?
+
+<Question
+	choices={[
+		{
+			text: "You must rewrite your entire training loop from scratch.",
+			explain: "Accelerate requires minimal changes to existing PyTorch code."
+		},
+		{
+			text: "You wrap key objects with accelerator.prepare() and use accelerator.backward() instead of loss.backward().",
+			explain: "Correct! These are the main changes - prepare your objects and use accelerator.backward() for proper distributed training.",
+            correct: true
+		},
+		{
+			text: "You need to specify the number of GPUs in your code.",
+			explain: "Accelerate automatically detects available hardware."
+		},
+        {
+			text: "You must use a different optimizer and scheduler.",
+			explain: "You can use the same optimizers and schedulers with Accelerate."
+		}
+	]}
+/>
+
+<Tip>
+
+💡 **Key Takeaways:**
+- Manual training loops give you complete control but require understanding of the proper sequence: forward → backward → optimizer step → scheduler step → zero gradients
+- AdamW with weight decay is the recommended optimizer for transformer models
+- Always use `model.eval()` and `torch.no_grad()` during evaluation for correct behavior and efficiency
+- 🤗 Accelerate makes distributed training accessible with minimal code changes
+- Device management (moving tensors to GPU/CPU) is crucial for PyTorch operations
+- Modern techniques like mixed precision, gradient accumulation, and gradient clipping can significantly improve training efficiency
+
+</Tip>
