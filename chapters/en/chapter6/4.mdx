@@ -1,123 +1,172 @@
-# Normalization and pre-tokenization[[normalization-and-pre-tokenization]]
-
-<CourseFloatingBanner chapter={6}
+<CourseFloatingBanner chapter={2}
   classNames="absolute z-10 right-0 top-0"
   notebooks={[
-    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section4.ipynb"},
-    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section4.ipynb"},
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section4.ipynb"},
 ]} />
 
-Before we dive more deeply into the three most common subword tokenization algorithms used with Transformer models (Byte-Pair Encoding [BPE], WordPiece, and Unigram), we'll first take a look at the preprocessing that each tokenizer applies to text. Here's a high-level overview of the steps in the tokenization pipeline:
+# LoRA (Low-Rank Adaptation)
 
-<div class="flex justify-center">
-<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="The tokenization pipeline.">
-<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="The tokenization pipeline.">
-</div>
+Fine-tuning large language models is a resource intensive process. LoRA is a technique that allows us to fine-tune large language models with a small number of parameters. It works by adding and optimizing smaller matrices to the attention weights, typically reducing trainable parameters by about 90%.
 
-Before splitting a text into subtokens (according to its model), the tokenizer performs two steps: _normalization_ and _pre-tokenization_.
+## Understanding LoRA
 
-## Normalization[[normalization]]
+LoRA (Low-Rank Adaptation) is a parameter-efficient fine-tuning technique that freezes the pre-trained model weights and injects trainable rank decomposition matrices into the model's layers. Instead of training all model parameters during fine-tuning, LoRA decomposes the weight updates into smaller matrices through low-rank decomposition, significantly reducing the number of trainable parameters while maintaining model performance. For example, when applied to GPT-3 175B, LoRA reduced trainable parameters by 10,000x and GPU memory requirements by 3x compared to full fine-tuning. You can read more about LoRA in the [LoRA paper](https://arxiv.org/pdf/2106.09685).
 
-<Youtube id="4IIC2jI9CaU"/>
+LoRA works by adding pairs of rank decomposition matrices to transformer layers, typically focusing on attention weights. During inference, these adapter weights can be merged with the base model, resulting in no additional latency overhead. LoRA is particularly useful for adapting large language models to specific tasks or domains while keeping resource requirements manageable.
 
-The normalization step involves some general cleanup, such as removing needless whitespace, lowercasing, and/or removing accents. If you're familiar with [Unicode normalization](http://www.unicode.org/reports/tr15/) (such as NFC or NFKC), this is also something the tokenizer may apply.
+## Key advantages of LoRA
 
-The 🤗 Transformers `tokenizer` has an attribute called `backend_tokenizer` that provides access to the underlying tokenizer from the 🤗 Tokenizers library:
+1. **Memory Efficiency**: 
+   - Only adapter parameters are stored in GPU memory
+   - Base model weights remain frozen and can be loaded in lower precision
+   - Enables fine-tuning of large models on consumer GPUs
 
-```py
-from transformers import AutoTokenizer
+2. **Training Features**:
+   - Native PEFT/LoRA integration with minimal setup
+   - Support for QLoRA (Quantized LoRA) for even better memory efficiency
 
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-print(type(tokenizer.backend_tokenizer))
+3. **Adapter Management**:
+   - Adapter weight saving during checkpoints
+   - Features to merge adapters back into base model
+
+## Loading LoRA Adapters with PEFT
+
+[PEFT](https://github.com/huggingface/peft) is a library that provides a unified interface for loading and managing PEFT methods, including LoRA. It allows you to easily load and switch between different PEFT methods, making it easier to experiment with different fine-tuning techniques. 
+
+Adapters can be loaded onto a pretrained model with `load_adapter()`, which is useful for trying out different adapters whose weights aren't merged. Set the active adapter weights with the `set_adapter()` function. To return the base model, you could use unload() to unload all of the LoRA modules. This makes it easy to switch between different task-specific weights.  
+
+```python
+from peft import PeftModel, PeftConfig
+
+config = PeftConfig.from_pretrained("ybelkada/opt-350m-lora")
+model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path)
+lora_model = PeftModel.from_pretrained(model, "ybelkada/opt-350m-lora")
 ```
 
-```python out
-<class 'tokenizers.Tokenizer'>
+![lora_load_adapter](https://github.com/huggingface/smol-course/raw/main/3_parameter_efficient_finetuning/images/lora_adapter.png)
+
+## Fine-tune LLM using `trl` and the `SFTTrainer` with LoRA
+
+The [SFTTrainer](https://huggingface.co/docs/trl/sft_trainer) from `trl` provides integration with LoRA adapters through the [PEFT](https://huggingface.co/docs/peft/en/index) library. This means that we can fine-tune a model in the same way as we did with SFT, but use LoRA to reduce the number of parameters we need to train.
+
+We'll use the `LoRAConfig` class from PEFT in our example. The setup requires just a few configuration steps:
+
+1. Define the LoRA configuration (rank, alpha, dropout)
+2. Create the SFTTrainer with PEFT config
+3. Train and save the adapter weights
+
+## LoRA Configuration
+
+Let's walk through the LoRA configuration and key parameters.
+
+| Parameter | Description |
+|-----------|-------------|
+| `r` (rank) | Dimension of the low-rank matrices used for weight updates. Typically between 4-32. Lower values provide more compression but potentially less expressiveness. |
+| `lora_alpha` | Scaling factor for LoRA layers, usually set to 2x the rank value. Higher values result in stronger adaptation effects. |
+| `lora_dropout` | Dropout probability for LoRA layers, typically 0.05-0.1. Higher values help prevent overfitting during training. |
+| `bias` | Controls training of bias terms. Options are "none", "all", or "lora_only". "none" is most common for memory efficiency. |
+| `target_modules` | Specifies which model modules to apply LoRA to. Can be "all-linear" or specific modules like "q_proj,v_proj". More modules enable greater adaptability but increase memory usage. |
+
+<Tip>
+When implementing PEFT methods, start with small rank values (4-8) for LoRA and monitor training loss. Use validation sets to prevent overfitting and compare results with full fine-tuning baselines when possible. The effectiveness of different methods can vary by task, so experimentation is key.
+</Tip>
+
+## Using TRL with PEFT
+
+PEFT methods can be combined with TRL for fine-tuning to reduce memory requirements. We can pass the  `LoraConfig` to the model when loading it.  
+
+```python
+from peft import LoraConfig
+
+# TODO: Configure LoRA parameters
+# r: rank dimension for LoRA update matrices (smaller = more compression)
+rank_dimension = 6
+# lora_alpha: scaling factor for LoRA layers (higher = stronger adaptation)
+lora_alpha = 8
+# lora_dropout: dropout probability for LoRA layers (helps prevent overfitting)
+lora_dropout = 0.05
+
+peft_config = LoraConfig(
+    r=rank_dimension,  # Rank dimension - typically between 4-32
+    lora_alpha=lora_alpha,  # LoRA scaling factor - typically 2x rank
+    lora_dropout=lora_dropout,  # Dropout probability for LoRA layers
+    bias="none",  # Bias type for LoRA. the corresponding biases will be updated during training.
+    target_modules="all-linear",  # Which modules to apply LoRA to
+    task_type="CAUSAL_LM",  # Task type for model architecture
+)
 ```
 
-The `normalizer` attribute of the `tokenizer` object has a `normalize_str()` method that we can use to see how the normalization is performed:
+Above, we used `device_map="auto"` to automatically assign the model to the correct device. You can also manually assign the model to a specific device using `device_map={"": device_index}`. 
 
-```py
-print(tokenizer.backend_tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+We will also need to define the `SFTTrainer` with the LoRA configuration.
+
+```python
+# Create SFTTrainer with LoRA configuration
+trainer = SFTTrainer(
+    model=model,
+    args=args,
+    train_dataset=dataset["train"],
+    peft_config=peft_config,  # LoRA configuration
+    max_seq_length=max_seq_length,  # Maximum sequence length
+    processing_class=tokenizer,
+)
 ```
-
-```python out
-'hello how are u?'
-```
-
-In this example, since we picked the `bert-base-uncased` checkpoint, the normalization applied lowercasing and removed the accents. 
 
 <Tip>
 
-✏️ **Try it out!** Load a tokenizer from the `bert-base-cased` checkpoint and pass the same example to it. What are the main differences you can see between the cased and uncased versions of the tokenizer?
+✏️ **Try it out!** Build on your fine-tuned model from the previous section, but fine-tune it with LoRA. Use the `HuggingFaceTB/smoltalk` dataset to fine-tune a `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model, using the LoRA configuration we defined above.
 
 </Tip>
 
-## Pre-tokenization[[pre-tokenization]]
+## Merging LoRA Adapters
 
-<Youtube id="grlLV8AIXug"/>
+After training with LoRA, you might want to merge the adapter weights back into the base model for easier deployment. This creates a single model with the combined weights, eliminating the need to load adapters separately during inference.
 
-As we will see in the next sections, a tokenizer cannot be trained on raw text alone. Instead, we first need to split the texts into small entities, like words. That's where the pre-tokenization step comes in. As we saw in [Chapter 2](/course/chapter2), a word-based tokenizer can simply split a raw text into words on whitespace and punctuation. Those words will be the boundaries of the subtokens the tokenizer can learn during its training.
+The merging process requires attention to memory management and precision. Since you'll need to load both the base model and adapter weights simultaneously, ensure sufficient GPU/CPU memory is available. Using `device_map="auto"` in `transformers` will find the correct device for the model based on your hardware. 
 
-To see how a fast tokenizer performs pre-tokenization, we can use the `pre_tokenize_str()` method of the `pre_tokenizer` attribute of the `tokenizer` object:
+Maintain consistent precision (e.g., float16) throughout the process, matching the precision used during training and saving the merged model in the same format for deployment. 
 
-```py
-tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
+## Merging Implementation
+
+After training a LoRA adapter, you can merge the adapter weights back into the base model. Here's how to do it:
+
+```python
+import torch
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
+
+# 1. Load the base model
+base_model = AutoModelForCausalLM.from_pretrained(
+    "base_model_name", torch_dtype=torch.float16, device_map="auto"
+)
+
+# 2. Load the PEFT model with adapter
+peft_model = PeftModel.from_pretrained(
+    base_model, "path/to/adapter", torch_dtype=torch.float16
+)
+
+# 3. Merge adapter weights with base model
+merged_model = peft_model.merge_and_unload()
 ```
 
-```python out
-[('Hello', (0, 5)), (',', (5, 6)), ('how', (7, 10)), ('are', (11, 14)), ('you', (16, 19)), ('?', (19, 20))]
+If you encounter size discrepancies in the saved model, ensure you're also saving the tokenizer:
+
+```python
+# Save both model and tokenizer
+tokenizer = AutoTokenizer.from_pretrained("base_model_name")
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
 ```
 
-Notice how the tokenizer is already keeping track of the offsets, which is how it can give us the offset mapping we used in the previous section. Here the tokenizer ignores the two spaces and replaces them with just one, but the offset jumps between `are` and `you` to account for that.
+<Tip>
 
-Since we're using a BERT tokenizer, the pre-tokenization involves splitting on whitespace and punctuation. Other tokenizers can have different rules for this step. For example, if we use the GPT-2 tokenizer:
+✏️ **Try it out!** Merge the adapter weights back into the base model. Use the `HuggingFaceTB/smoltalk` dataset to fine-tune a `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` model, using the LoRA configuration we defined above.
 
-```py
-tokenizer = AutoTokenizer.from_pretrained("gpt2")
-tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
-```
-
-it will split on whitespace and punctuation as well, but it will keep the spaces and replace them with a `Ġ` symbol, enabling it to recover the original spaces if we decode the tokens:
-
-```python out
-[('Hello', (0, 5)), (',', (5, 6)), ('Ġhow', (6, 10)), ('Ġare', (10, 14)), ('Ġ', (14, 15)), ('Ġyou', (15, 19)),
- ('?', (19, 20))]
-```
-
-Also note that unlike the BERT tokenizer, this tokenizer does not ignore the double space.
-
-For a last example, let's have a look at the T5 tokenizer, which is based on the SentencePiece algorithm:
-
-```py
-tokenizer = AutoTokenizer.from_pretrained("t5-small")
-tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("Hello, how are  you?")
-```
-
-```python out
-[('▁Hello,', (0, 6)), ('▁how', (7, 10)), ('▁are', (11, 14)), ('▁you?', (16, 20))]
-```
-
-Like the GPT-2 tokenizer, this one keeps spaces and replaces them with a specific token (`_`), but the T5 tokenizer only splits on whitespace, not punctuation. Also note that it added a space by default at the beginning of the sentence (before `Hello`) and ignored the double space between `are` and `you`.
-
-Now that we've seen a little of how some different tokenizers process text, we can start to explore the underlying algorithms themselves. We'll begin with a quick look at the broadly widely applicable SentencePiece; then, over the next three sections, we'll examine how the three main algorithms used for subword tokenization work.
-
-## SentencePiece[[sentencepiece]]
-
-[SentencePiece](https://github.com/google/sentencepiece) is a tokenization algorithm for the preprocessing of text that you can use with any of the models we will see in the next three sections. It considers the text as a sequence of Unicode characters, and replaces spaces with a special character, `▁`. Used in conjunction with the Unigram algorithm (see [section 7](/course/chapter6/7)), it doesn't even require a pre-tokenization step, which is very useful for languages where the space character is not used (like Chinese or Japanese).
-
-The other main feature of SentencePiece is *reversible tokenization*: since there is no special treatment of spaces, decoding the tokens is done simply by concatenating them and replacing the `_`s with spaces -- this results in the normalized text. As we saw earlier, the BERT tokenizer removes repeating spaces, so its tokenization is not reversible.
-
-## Algorithm overview[[algorithm-overview]]
-
-In the following sections, we'll dive into the three main subword tokenization algorithms: BPE (used by GPT-2 and others), WordPiece (used for example by BERT), and Unigram (used by T5 and others). Before we get started, here's a quick overview of how they each work. Don't hesitate to come back to this table after reading each of the next sections if it doesn't make sense to you yet.
+</Tip>
 
 
-Model | BPE | WordPiece | Unigram
-:----:|:---:|:---------:|:------:
-Training | Starts from a small vocabulary and learns rules to merge tokens |  Starts from a small vocabulary and learns rules to merge tokens | Starts from a large vocabulary and learns rules to remove tokens
-Training step | Merges the tokens corresponding to the most common pair | Merges the tokens corresponding to the pair with the best score based on the frequency of the pair, privileging pairs where each individual token is less frequent | Removes all the tokens in the vocabulary that will minimize the loss computed on the whole corpus
-Learns | Merge rules and a vocabulary | Just a vocabulary | A vocabulary with a score for each token
-Encoding | Splits a word into characters and applies the merges learned during training | Finds the longest subword starting from the beginning that is in the vocabulary, then does the same for the rest of the word | Finds the most likely split into tokens, using the scores learned during training
+# Resources
 
-Now let's dive into BPE!
+- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/pdf/2106.09685)
+- [PEFT Documentation](https://huggingface.co/docs/peft)
+- [Hugging Face blog post on PEFT](https://huggingface.co/blog/peft)

@@ -1,744 +1,1044 @@
-# Time to slice and dice[[time-to-slice-and-dice]]
+<FrameworkSwitchCourse {fw} />
 
-<CourseFloatingBanner chapter={5}
+# Fine-tuning a masked language model[[fine-tuning-a-masked-language-model]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
   classNames="absolute z-10 right-0 top-0"
   notebooks={[
-    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
-    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_pt.ipynb"},
 ]} />
 
-Most of the time, the data you work with won't be perfectly prepared for training models. In this section we'll explore the various features that 🤗 Datasets provides to clean up your datasets.
+{:else}
 
-<Youtube id="tqfSFcPMgOI"/>
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_tf.ipynb"},
+]} />
 
-## Slicing and dicing our data[[slicing-and-dicing-our-data]]
+{/if}
 
-Similar to Pandas, 🤗 Datasets provides several functions to manipulate the contents of `Dataset` and `DatasetDict` objects. We already encountered the `Dataset.map()` method in [Chapter 3](/course/chapter3), and in this section we'll explore some of the other functions at our disposal.
+For many NLP applications involving Transformer models, you can simply take a pretrained model from the Hugging Face Hub and fine-tune it directly on your data for the task at hand. Provided that the corpus used for pretraining is not too different from the corpus used for fine-tuning, transfer learning will usually produce good results. 
 
-For this example we'll use the [Drug Review Dataset](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29) that's hosted on the [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/ml/index.php), which contains patient reviews on various drugs, along with the condition being treated and a 10-star rating of the patient's satisfaction.
+However, there are a few cases where you'll want to first fine-tune the language models on your data, before training a task-specific head. For example, if your dataset contains legal contracts or scientific articles, a vanilla Transformer model like BERT will typically treat the domain-specific words in your corpus as rare tokens, and the resulting performance may be less than satisfactory. By fine-tuning the language model on in-domain data you can boost the performance of many downstream tasks, which means you usually only have to do this step once!
 
-First we need to download and extract the data, which can be done with the `wget` and `unzip` commands:
+This process of fine-tuning a pretrained language model on in-domain data is usually called _domain adaptation_. It was popularized in 2018 by [ULMFiT](https://arxiv.org/abs/1801.06146), which was one of the first neural architectures (based on LSTMs) to make transfer learning really work for NLP. An example of domain adaptation with ULMFiT is shown in the image below; in this section we'll do something similar, but with a Transformer instead of an LSTM!
 
-```py
-!wget "https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip"
-!unzip drugsCom_raw.zip
-```
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/ulmfit.svg" alt="ULMFiT."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/ulmfit-dark.svg" alt="ULMFiT."/>
+</div>
 
-Since TSV is just a variant of CSV that uses tabs instead of commas as the separator, we can load these files by using the `csv` loading script and specifying the `delimiter` argument in the `load_dataset()` function as follows:
+By the end of this section you'll have a [masked language model](https://huggingface.co/huggingface-course/distilbert-base-uncased-finetuned-imdb?text=This+is+a+great+%5BMASK%5D.) on the Hub that can autocomplete sentences as shown below:
 
-```py
-from datasets import load_dataset
+<iframe src="https://course-demos-distilbert-base-uncased-finetuned-imdb.hf.space" frameBorder="0" height="300" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
 
-data_files = {"train": "drugsComTrain_raw.tsv", "test": "drugsComTest_raw.tsv"}
-# \t is the tab character in Python
-drug_dataset = load_dataset("csv", data_files=data_files, delimiter="\t")
-```
+Let's dive in!
 
-A good practice when doing any sort of data analysis is to grab a small random sample to get a quick feel for the type of data you're working with. In 🤗 Datasets, we can create a random sample by chaining the `Dataset.shuffle()` and `Dataset.select()` functions together:
-
-```py
-drug_sample = drug_dataset["train"].shuffle(seed=42).select(range(1000))
-# Peek at the first few examples
-drug_sample[:3]
-```
-
-```python out
-{'Unnamed: 0': [87571, 178045, 80482],
- 'drugName': ['Naproxen', 'Duloxetine', 'Mobic'],
- 'condition': ['Gout, Acute', 'ibromyalgia', 'Inflammatory Conditions'],
- 'review': ['"like the previous person mention, I&#039;m a strong believer of aleve, it works faster for my gout than the prescription meds I take. No more going to the doctor for refills.....Aleve works!"',
-  '"I have taken Cymbalta for about a year and a half for fibromyalgia pain. It is great\r\nas a pain reducer and an anti-depressant, however, the side effects outweighed \r\nany benefit I got from it. I had trouble with restlessness, being tired constantly,\r\ndizziness, dry mouth, numbness and tingling in my feet, and horrible sweating. I am\r\nbeing weaned off of it now. Went from 60 mg to 30mg and now to 15 mg. I will be\r\noff completely in about a week. The fibro pain is coming back, but I would rather deal with it than the side effects."',
-  '"I have been taking Mobic for over a year with no side effects other than an elevated blood pressure.  I had severe knee and ankle pain which completely went away after taking Mobic.  I attempted to stop the medication however pain returned after a few days."'],
- 'rating': [9.0, 3.0, 10.0],
- 'date': ['September 2, 2015', 'November 7, 2011', 'June 5, 2013'],
- 'usefulCount': [36, 13, 128]}
-```
-
-Note that we've fixed the seed in `Dataset.shuffle()` for reproducibility purposes. `Dataset.select()` expects an iterable of indices, so we've passed `range(1000)` to grab the first 1,000 examples from the shuffled dataset. From this sample we can already see a few quirks in our dataset:
-
-* The `Unnamed: 0` column looks suspiciously like an anonymized ID for each patient.
-* The `condition` column includes a mix of uppercase and lowercase labels.
-* The reviews are of varying length and contain a mix of Python line separators (`\r\n`) as well as HTML character codes like `&\#039;`.
-
-Let's see how we can use 🤗 Datasets to deal with each of these issues. To test the patient ID hypothesis for the `Unnamed: 0` column, we can use the `Dataset.unique()` function to verify that the number of IDs matches the number of rows in each split:
-
-```py
-for split in drug_dataset.keys():
-    assert len(drug_dataset[split]) == len(drug_dataset[split].unique("Unnamed: 0"))
-```
-
-This seems to confirm our hypothesis, so let's clean up the dataset a bit by renaming the `Unnamed: 0` column to something a bit more interpretable. We can use the `DatasetDict.rename_column()` function to rename the column across both splits in one go:
-
-```py
-drug_dataset = drug_dataset.rename_column(
-    original_column_name="Unnamed: 0", new_column_name="patient_id"
-)
-drug_dataset
-```
-
-```python out
-DatasetDict({
-    train: Dataset({
-        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
-        num_rows: 161297
-    })
-    test: Dataset({
-        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
-        num_rows: 53766
-    })
-})
-```
+<Youtube id="mqElG5QJWUg"/>
 
 <Tip>
 
-✏️ **Try it out!** Use the `Dataset.unique()` function to find the number of unique drugs and conditions in the training and test sets.
+🙋 If the terms "masked language modeling" and "pretrained model" sound unfamiliar to you, go check out [Chapter 1](/course/chapter1), where we explain all these core concepts, complete with videos!
 
 </Tip>
 
-Next, let's normalize all the `condition` labels using `Dataset.map()`. As we did with tokenization in [Chapter 3](/course/chapter3), we can define a simple function that can be applied across all the rows of each split in `drug_dataset`:
+## Picking a pretrained model for masked language modeling[[picking-a-pretrained-model-for-masked-language-modeling]]
 
-```py
-def lowercase_condition(example):
-    return {"condition": example["condition"].lower()}
+To get started, let's pick a suitable pretrained model for masked language modeling. As shown in the following screenshot, you can find a list of candidates by applying the "Fill-Mask" filter on the [Hugging Face Hub](https://huggingface.co/models?pipeline_tag=fill-mask&sort=downloads):
 
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/mlm-models.png" alt="Hub models." width="80%"/>
+</div>
 
-drug_dataset.map(lowercase_condition)
-```
+Although the BERT and RoBERTa family of models are the most downloaded, we'll use a model called [DistilBERT](https://huggingface.co/distilbert-base-uncased) 
+that can be trained much faster with little to no loss in downstream performance. This model was trained using a special technique called [_knowledge distillation_](https://en.wikipedia.org/wiki/Knowledge_distillation), where a large "teacher model" like BERT is used to guide the training of a "student model" that has far fewer parameters. An explanation of the details of knowledge distillation would take us too far afield in this section, but if you're interested you can read all about it in [_Natural Language Processing with Transformers_](https://www.oreilly.com/library/view/natural-language-processing/9781098136789/) (colloquially known as the Transformers textbook).
 
-```python out
-AttributeError: 'NoneType' object has no attribute 'lower'
-```
+{#if fw === 'pt'}
 
-Oh no, we've run into a problem with our map function! From the error we can infer that some of the entries in the `condition` column are `None`, which cannot be lowercased as they're not strings. Let's drop these rows using `Dataset.filter()`, which works in a similar way to `Dataset.map()` and expects a function that receives a single example of the dataset. Instead of writing an explicit function like:
-
-```py
-def filter_nones(x):
-    return x["condition"] is not None
-```
-
-and then running `drug_dataset.filter(filter_nones)`, we can do this in one line using a _lambda function_. In Python, lambda functions are small functions that you can define without explicitly naming them. They take the general form:
-
-```
-lambda <arguments> : <expression>
-```
-
-where `lambda` is one of Python's special [keywords](https://docs.python.org/3/reference/lexical_analysis.html#keywords), `<arguments>` is a list/set of comma-separated values that define the inputs to the function, and `<expression>` represents the operations you wish to execute. For example, we can define a simple lambda function that squares a number as follows:
-
-```
-lambda x : x * x
-```
-
-To apply this function to an input, we need to wrap it and the input in parentheses:
-
-```py
-(lambda x: x * x)(3)
-```
-
-```python out
-9
-```
-
-Similarly, we can define lambda functions with multiple arguments by separating them with commas. For example, we can compute the area of a triangle as follows:
-
-```py
-(lambda base, height: 0.5 * base * height)(4, 8)
-```
-
-```python out
-16.0
-```
-
-Lambda functions are handy when you want to define small, single-use functions (for more information about them, we recommend reading the excellent [Real Python tutorial](https://realpython.com/python-lambda/) by Andre Burgaud). In the 🤗 Datasets context, we can use lambda functions to define simple map and filter operations, so let's use this trick to eliminate the `None` entries in our dataset:
-
-```py
-drug_dataset = drug_dataset.filter(lambda x: x["condition"] is not None)
-```
-
-With the `None` entries removed, we can normalize our `condition` column:
-
-```py
-drug_dataset = drug_dataset.map(lowercase_condition)
-# Check that lowercasing worked
-drug_dataset["train"]["condition"][:3]
-```
-
-```python out
-['left ventricular dysfunction', 'adhd', 'birth control']
-```
-
-It works! Now that we've cleaned up the labels, let's take a look at cleaning up the reviews themselves.
-
-## Creating new columns[[creating-new-columns]]
-
-Whenever you're dealing with customer reviews, a good practice is to check the number of words in each review. A review might be just a single word like "Great!" or a full-blown essay with thousands of words, and depending on the use case you'll need to handle these extremes differently. To compute the number of words in each review, we'll use a rough heuristic based on splitting each text by whitespace.
-
-Let's define a simple function that counts the number of words in each review:
-
-```py
-def compute_review_length(example):
-    return {"review_length": len(example["review"].split())}
-```
-
-Unlike our `lowercase_condition()` function, `compute_review_length()` returns a dictionary whose key does not correspond to one of the column names in the dataset. In this case, when `compute_review_length()` is passed to `Dataset.map()`, it will be applied to all the rows in the dataset to create a new `review_length` column:
-
-```py
-drug_dataset = drug_dataset.map(compute_review_length)
-# Inspect the first training example
-drug_dataset["train"][0]
-```
-
-```python out
-{'patient_id': 206461,
- 'drugName': 'Valsartan',
- 'condition': 'left ventricular dysfunction',
- 'review': '"It has no side effect, I take it in combination of Bystolic 5 Mg and Fish Oil"',
- 'rating': 9.0,
- 'date': 'May 20, 2012',
- 'usefulCount': 27,
- 'review_length': 17}
-```
-
-As expected, we can see a `review_length` column has been added to our training set. We can sort this new column with `Dataset.sort()` to see what the extreme values look like:
-
-```py
-drug_dataset["train"].sort("review_length")[:3]
-```
-
-```python out
-{'patient_id': [103488, 23627, 20558],
- 'drugName': ['Loestrin 21 1 / 20', 'Chlorzoxazone', 'Nucynta'],
- 'condition': ['birth control', 'muscle spasm', 'pain'],
- 'review': ['"Excellent."', '"useless"', '"ok"'],
- 'rating': [10.0, 1.0, 6.0],
- 'date': ['November 4, 2008', 'March 24, 2017', 'August 20, 2016'],
- 'usefulCount': [5, 2, 10],
- 'review_length': [1, 1, 1]}
-```
-
-As we suspected, some reviews contain just a single word, which, although it may be okay for sentiment analysis, would not be informative if we want to predict the condition.
-
-<Tip>
-
-🙋 An alternative way to add new columns to a dataset is with the `Dataset.add_column()` function. This allows you to provide the column as a Python list or NumPy array and can be handy in situations where `Dataset.map()` is not well suited for your analysis.
-
-</Tip>
-
-Let's use the `Dataset.filter()` function to remove reviews that contain fewer than 30 words. Similarly to what we did with the `condition` column, we can filter out the very short reviews by requiring that the reviews have a length above this threshold:
-
-```py
-drug_dataset = drug_dataset.filter(lambda x: x["review_length"] > 30)
-print(drug_dataset.num_rows)
-```
-
-```python out
-{'train': 138514, 'test': 46108}
-```
-
-As you can see, this has removed around 15% of the reviews from our original training and test sets.
-
-<Tip>
-
-✏️ **Try it out!** Use the `Dataset.sort()` function to inspect the reviews with the largest numbers of words. See the [documentation](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.sort) to see which argument you need to use sort the reviews by length in descending order.
-
-</Tip>
-
-The last thing we need to deal with is the presence of HTML character codes in our reviews. We can use Python's `html` module to unescape these characters, like so:
-
-```py
-import html
-
-text = "I&#039;m a transformer called BERT"
-html.unescape(text)
-```
-
-```python out
-"I'm a transformer called BERT"
-```
-
-We'll use `Dataset.map()` to unescape all the HTML characters in our corpus:
+Let's go ahead and download DistilBERT using the `AutoModelForMaskedLM` class:
 
 ```python
-drug_dataset = drug_dataset.map(lambda x: {"review": html.unescape(x["review"])})
+from transformers import AutoModelForMaskedLM
+
+model_checkpoint = "distilbert-base-uncased"
+model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)
 ```
 
-As you can see, the `Dataset.map()` method is quite useful for processing data -- and we haven't even scratched the surface of everything it can do!
-
-## The `map()` method's superpowers[[the-map-methods-superpowers]]
-
-The `Dataset.map()` method takes a `batched` argument that, if set to `True`, causes it to send a batch of examples to the map function at once (the batch size is configurable but defaults to 1,000). For instance, the previous map function that unescaped all the HTML took a bit of time to run (you can read the time taken from the progress bars). We can speed this up by processing several elements at the same time using a list comprehension.
-
-When you specify `batched=True` the function receives a dictionary with the fields of the dataset, but each value is now a _list of values_, and not just a single value. The return value of `Dataset.map()` should be the same: a dictionary with the fields we want to update or add to our dataset, and a list of values. For example, here is another way to unescape all HTML characters, but using `batched=True`:
+We can see how many parameters this model has by calling the `num_parameters()` method:
 
 ```python
-new_drug_dataset = drug_dataset.map(
-    lambda x: {"review": [html.unescape(o) for o in x["review"]]}, batched=True
-)
+distilbert_num_parameters = model.num_parameters() / 1_000_000
+print(f"'>>> DistilBERT number of parameters: {round(distilbert_num_parameters)}M'")
+print(f"'>>> BERT number of parameters: 110M'")
 ```
 
-If you're running this code in a notebook, you'll see that this command executes way faster than the previous one. And it's not because our reviews have already been HTML-unescaped -- if you re-execute the instruction from the previous section (without `batched=True`), it will take the same amount of time as before. This is because list comprehensions are usually faster than executing the same code in a `for` loop, and we also gain some performance by accessing lots of elements at the same time instead of one by one.
+```python out
+'>>> DistilBERT number of parameters: 67M'
+'>>> BERT number of parameters: 110M'
+```
 
-Using `Dataset.map()` with `batched=True` will be essential to unlock the speed of the "fast" tokenizers that we'll encounter in [Chapter 6](/course/chapter6), which can quickly tokenize big lists of texts. For instance, to tokenize all the drug reviews with a fast tokenizer, we could use a function like this:
+{:else}
+
+Let's go ahead and download DistilBERT using the `AutoModelForMaskedLM` class:
+
+```python
+from transformers import TFAutoModelForMaskedLM
+
+model_checkpoint = "distilbert-base-uncased"
+model = TFAutoModelForMaskedLM.from_pretrained(model_checkpoint)
+```
+
+We can see how many parameters this model has by calling the `summary()` method:
+
+```python
+model.summary()
+```
+
+```python out
+Model: "tf_distil_bert_for_masked_lm"
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #   
+=================================================================
+distilbert (TFDistilBertMain multiple                  66362880  
+_________________________________________________________________
+vocab_transform (Dense)      multiple                  590592    
+_________________________________________________________________
+vocab_layer_norm (LayerNorma multiple                  1536      
+_________________________________________________________________
+vocab_projector (TFDistilBer multiple                  23866170  
+=================================================================
+Total params: 66,985,530
+Trainable params: 66,985,530
+Non-trainable params: 0
+_________________________________________________________________
+```
+
+{/if}
+
+With around 67 million parameters, DistilBERT is approximately two times smaller than the BERT base model, which roughly translates into a two-fold speedup in training -- nice! Let's now see what kinds of tokens this model predicts are the most likely completions of a small sample of text:
+
+```python
+text = "This is a great [MASK]."
+```
+
+As humans, we can imagine many possibilities for the `[MASK]` token, such as "day", "ride", or "painting". For pretrained models, the predictions depend on the corpus the model was trained on, since it learns to pick up the statistical patterns present in the data. Like BERT, DistilBERT was pretrained on the [English Wikipedia](https://huggingface.co/datasets/wikipedia) and [BookCorpus](https://huggingface.co/datasets/bookcorpus) datasets, so we expect the predictions for `[MASK]` to reflect these domains. To predict the mask we need DistilBERT's tokenizer to produce the inputs for the model, so let's download that from the Hub as well:
 
 ```python
 from transformers import AutoTokenizer
 
-tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+With a tokenizer and a model, we can now pass our text example to the model, extract the logits, and print out the top 5 candidates:
+
+{#if fw === 'pt'}
+
+```python
+import torch
+
+inputs = tokenizer(text, return_tensors="pt")
+token_logits = model(**inputs).logits
+# Find the location of [MASK] and extract its logits
+mask_token_index = torch.where(inputs["input_ids"] == tokenizer.mask_token_id)[1]
+mask_token_logits = token_logits[0, mask_token_index, :]
+# Pick the [MASK] candidates with the highest logits
+top_5_tokens = torch.topk(mask_token_logits, 5, dim=1).indices[0].tolist()
+
+for token in top_5_tokens:
+    print(f"'>>> {text.replace(tokenizer.mask_token, tokenizer.decode([token]))}'")
+```
+
+{:else}
+
+```python
+import numpy as np
+import tensorflow as tf
+
+inputs = tokenizer(text, return_tensors="np")
+token_logits = model(**inputs).logits
+# Find the location of [MASK] and extract its logits
+mask_token_index = np.argwhere(inputs["input_ids"] == tokenizer.mask_token_id)[0, 1]
+mask_token_logits = token_logits[0, mask_token_index, :]
+# Pick the [MASK] candidates with the highest logits
+# We negate the array before argsort to get the largest, not the smallest, logits
+top_5_tokens = np.argsort(-mask_token_logits)[:5].tolist()
+
+for token in top_5_tokens:
+    print(f">>> {text.replace(tokenizer.mask_token, tokenizer.decode([token]))}")
+```
+
+{/if}
+
+```python out
+'>>> This is a great deal.'
+'>>> This is a great success.'
+'>>> This is a great adventure.'
+'>>> This is a great idea.'
+'>>> This is a great feat.'
+```
+
+We can see from the outputs that the model's predictions refer to everyday terms, which is perhaps not surprising given the foundation of English Wikipedia. Let's see how we can change this domain to something a bit more niche -- highly polarized movie reviews!
 
 
+## The dataset[[the-dataset]]
+
+To showcase domain adaptation, we'll use the famous [Large Movie Review Dataset](https://huggingface.co/datasets/imdb) (or IMDb for short), which is a corpus of movie reviews that is often used to benchmark sentiment analysis models. By fine-tuning DistilBERT on this corpus, we expect the language model will adapt its vocabulary from the factual data of Wikipedia that it was pretrained on to the more subjective elements of movie reviews. We can get the data from the Hugging Face Hub with the `load_dataset()` function from 🤗 Datasets:
+
+```python
+from datasets import load_dataset
+
+imdb_dataset = load_dataset("imdb")
+imdb_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['text', 'label'],
+        num_rows: 25000
+    })
+    test: Dataset({
+        features: ['text', 'label'],
+        num_rows: 25000
+    })
+    unsupervised: Dataset({
+        features: ['text', 'label'],
+        num_rows: 50000
+    })
+})
+```
+
+We can see that the `train` and `test` splits each consist of 25,000 reviews, while there is an unlabeled split called `unsupervised` that contains 50,000 reviews. Let's take a look at a few samples to get an idea of what kind of text we're dealing with. As we've done in previous chapters of the course, we'll chain the `Dataset.shuffle()` and `Dataset.select()` functions to create a random sample:
+
+```python
+sample = imdb_dataset["train"].shuffle(seed=42).select(range(3))
+
+for row in sample:
+    print(f"\n'>>> Review: {row['text']}'")
+    print(f"'>>> Label: {row['label']}'")
+```
+
+```python out
+
+'>>> Review: This is your typical Priyadarshan movie--a bunch of loony characters out on some silly mission. His signature climax has the entire cast of the film coming together and fighting each other in some crazy moshpit over hidden money. Whether it is a winning lottery ticket in Malamaal Weekly, black money in Hera Pheri, "kodokoo" in Phir Hera Pheri, etc., etc., the director is becoming ridiculously predictable. Don\'t get me wrong; as clichéd and preposterous his movies may be, I usually end up enjoying the comedy. However, in most his previous movies there has actually been some good humor, (Hungama and Hera Pheri being noteworthy ones). Now, the hilarity of his films is fading as he is using the same formula over and over again.<br /><br />Songs are good. Tanushree Datta looks awesome. Rajpal Yadav is irritating, and Tusshar is not a whole lot better. Kunal Khemu is OK, and Sharman Joshi is the best.'
+'>>> Label: 0'
+
+'>>> Review: Okay, the story makes no sense, the characters lack any dimensionally, the best dialogue is ad-libs about the low quality of movie, the cinematography is dismal, and only editing saves a bit of the muddle, but Sam" Peckinpah directed the film. Somehow, his direction is not enough. For those who appreciate Peckinpah and his great work, this movie is a disappointment. Even a great cast cannot redeem the time the viewer wastes with this minimal effort.<br /><br />The proper response to the movie is the contempt that the director San Peckinpah, James Caan, Robert Duvall, Burt Young, Bo Hopkins, Arthur Hill, and even Gig Young bring to their work. Watch the great Peckinpah films. Skip this mess.'
+'>>> Label: 0'
+
+'>>> Review: I saw this movie at the theaters when I was about 6 or 7 years old. I loved it then, and have recently come to own a VHS version. <br /><br />My 4 and 6 year old children love this movie and have been asking again and again to watch it. <br /><br />I have enjoyed watching it again too. Though I have to admit it is not as good on a little TV.<br /><br />I do not have older children so I do not know what they would think of it. <br /><br />The songs are very cute. My daughter keeps singing them over and over.<br /><br />Hope this helps.'
+'>>> Label: 1'
+```
+
+Yep, these are certainly movie reviews, and if you're old enough you may even understand the comment in the last review about owning a VHS version 😜! Although we won't need the labels for language modeling, we can already see that a `0` denotes a negative review, while a `1` corresponds to a positive one.
+
+<Tip>
+
+✏️ **Try it out!** Create a random sample of the `unsupervised` split and verify that the labels are neither `0` nor `1`. While you're at it, you could also check that the labels in the `train` and `test` splits are indeed `0` or `1` -- this is a useful sanity check that every NLP practitioner should perform at the start of a new project!
+
+</Tip>
+
+Now that we've had a quick look at the data, let's dive into preparing it for masked language modeling. As we'll see, there are some additional steps that one needs to take compared to the sequence classification tasks we saw in [Chapter 3](/course/chapter3). Let's go!
+
+## Preprocessing the data[[preprocessing-the-data]]
+
+<Youtube id="8PmhEIXhBvI"/>
+
+For both auto-regressive and masked language modeling, a common preprocessing step is to concatenate all the examples and then split the whole corpus into chunks of equal size. This is quite different from our usual approach, where we simply tokenize individual examples. Why concatenate everything together? The reason is that individual examples might get truncated if they're too long, and that would result in losing information that might be useful for the language modeling task!
+
+So to get started, we'll first tokenize our corpus as usual, but _without_ setting the `truncation=True` option in our tokenizer. We'll also grab the word IDs if they are available ((which they will be if we're using a fast tokenizer, as described in [Chapter 6](/course/chapter6/3)), as we will need them later on to do whole word masking. We'll wrap this in a simple function, and while we're at it we'll remove the `text` and `label` columns since we don't need them any longer:
+
+```python
 def tokenize_function(examples):
-    return tokenizer(examples["review"], truncation=True)
-```
-
-As you saw in [Chapter 3](/course/chapter3), we can pass one or several examples to the tokenizer, so we can use this function with or without `batched=True`. Let's take this opportunity to compare the performance of the different options. In a notebook, you can time a one-line instruction by adding `%time` before the line of code you wish to measure:
-
-```python no-format
-%time tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
-```
-
-You can also time a whole cell by putting `%%time` at the beginning of the cell. On the hardware we executed this on, it showed 10.8s for this instruction (it's the number written after "Wall time").
-
-<Tip>
-
-✏️ **Try it out!** Execute the same instruction with and without `batched=True`, then try it with a slow tokenizer (add `use_fast=False` in the `AutoTokenizer.from_pretrained()` method) so you can see what numbers you get on your hardware.
-
-</Tip>
-
-Here are the results we obtained with and without batching, with a fast and a slow tokenizer:
-
-Options         | Fast tokenizer | Slow tokenizer
-:--------------:|:--------------:|:-------------:
-`batched=True`  | 10.8s          | 4min41s
-`batched=False` | 59.2s          | 5min3s
-
-This means that using a fast tokenizer with the `batched=True` option is 30 times faster than its slow counterpart with no batching -- this is truly amazing! That's the main reason why fast tokenizers are the default when using `AutoTokenizer` (and why they are called "fast"). They're able to achieve such a speedup because behind the scenes the tokenization code is executed in Rust, which is a language that makes it easy to parallelize code execution.
-
-Parallelization is also the reason for the nearly 6x speedup the fast tokenizer achieves with batching: you can't parallelize a single tokenization operation, but when you want to tokenize lots of texts at the same time you can just split the execution across several processes, each responsible for its own texts.
-
-`Dataset.map()` also has some parallelization capabilities of its own. Since they are not backed by Rust, they won't let a slow tokenizer catch up with a fast one, but they can still be helpful (especially if you're using a tokenizer that doesn't have a fast version). To enable multiprocessing, use the `num_proc` argument and specify the number of processes to use in your call to `Dataset.map()`:
-
-```py
-slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False)
+    result = tokenizer(examples["text"])
+    if tokenizer.is_fast:
+        result["word_ids"] = [result.word_ids(i) for i in range(len(result["input_ids"]))]
+    return result
 
 
-def slow_tokenize_function(examples):
-    return slow_tokenizer(examples["review"], truncation=True)
-
-
-tokenized_dataset = drug_dataset.map(slow_tokenize_function, batched=True, num_proc=8)
-```
-
-You can experiment a little with timing to determine the optimal number of processes to use; in our case 8 seemed to produce the best speed gain. Here are the numbers we got with and without multiprocessing:
-
-Options         | Fast tokenizer | Slow tokenizer
-:--------------:|:--------------:|:-------------:
-`batched=True`  | 10.8s          | 4min41s
-`batched=False` | 59.2s          | 5min3s
-`batched=True`, `num_proc=8`  | 6.52s          | 41.3s
-`batched=False`, `num_proc=8` | 9.49s          | 45.2s
-
-Those are much more reasonable results for the slow tokenizer, but the performance of the fast tokenizer was also substantially improved. Note, however, that won't always be the case -- for values of `num_proc` other than 8, our tests showed that it was faster to use `batched=True` without that option. In general, we don't recommend using Python multiprocessing for fast tokenizers with `batched=True`.
-
-<Tip>
-
-Using `num_proc` to speed up your processing is usually a great idea, as long as the function you are using is not already doing some kind of multiprocessing of its own.
-
-</Tip>
-
-All of this functionality condensed into a single method is already pretty amazing, but there's more! With `Dataset.map()` and `batched=True` you can change the number of elements in your dataset. This is super useful in many situations where you want to create several training features from one example, and we will need to do this as part of the preprocessing for several of the NLP tasks we'll undertake in [Chapter 7](/course/chapter7).
-
-<Tip>
-
-💡 In machine learning, an _example_ is usually defined as the set of _features_ that we feed to the model. In some contexts, these features will be the set of columns in a `Dataset`, but in others (like here and for question answering), multiple features can be extracted from a single example and belong to a single column.
-
-</Tip>
-
-Let's have a look at how it works! Here we will tokenize our examples and truncate them to a maximum length of 128, but we will ask the tokenizer to return *all* the chunks of the texts instead of just the first one. This can be done with `return_overflowing_tokens=True`:
-
-```py
-def tokenize_and_split(examples):
-    return tokenizer(
-        examples["review"],
-        truncation=True,
-        max_length=128,
-        return_overflowing_tokens=True,
-    )
-```
-
-Let's test this on one example before using `Dataset.map()` on the whole dataset:
-
-```py
-result = tokenize_and_split(drug_dataset["train"][0])
-[len(inp) for inp in result["input_ids"]]
-```
-
-```python out
-[128, 49]
-```
-
-So, our first example in the training set became two features because it was tokenized to more than the maximum number of tokens we specified: the first one of length 128 and the second one of length 49. Now let's do this for all elements of the dataset!
-
-```py
-tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
-```
-
-```python out
-ArrowInvalid: Column 1 named condition expected length 1463 but got length 1000
-```
-
-Oh no! That didn't work! Why not? Looking at the error message will give us a clue: there is a mismatch in the lengths of one of the columns, one being of length 1,463 and the other of length 1,000. If you've looked at the `Dataset.map()` [documentation](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.map), you may recall that it's the number of samples passed to the function that we are mapping; here those 1,000 examples gave 1,463 new features, resulting in a shape error.
-
-The problem is that we're trying to mix two different datasets of different sizes: the `drug_dataset` columns will have a certain number of examples (the 1,000 in our error), but the `tokenized_dataset` we are building will have more (the 1,463 in the error message; it is more than 1,000 because we are tokenizing long reviews into more than one example by using `return_overflowing_tokens=True`). That doesn't work for a `Dataset`, so we need to either remove the columns from the old dataset or make them the same size as they are in the new dataset. We can do the former with the `remove_columns` argument:
-
-```py
-tokenized_dataset = drug_dataset.map(
-    tokenize_and_split, batched=True, remove_columns=drug_dataset["train"].column_names
+# Use batched=True to activate fast multithreading!
+tokenized_datasets = imdb_dataset.map(
+    tokenize_function, batched=True, remove_columns=["text", "label"]
 )
-```
-
-Now this works without error. We can check that our new dataset has many more elements than the original dataset by comparing the lengths:
-
-```py
-len(tokenized_dataset["train"]), len(drug_dataset["train"])
+tokenized_datasets
 ```
 
 ```python out
-(206772, 138514)
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'input_ids', 'word_ids'],
+        num_rows: 25000
+    })
+    test: Dataset({
+        features: ['attention_mask', 'input_ids', 'word_ids'],
+        num_rows: 25000
+    })
+    unsupervised: Dataset({
+        features: ['attention_mask', 'input_ids', 'word_ids'],
+        num_rows: 50000
+    })
+})
 ```
 
-We mentioned that we can also deal with the mismatched length problem by making the old columns the same size as the new ones. To do this, we will need the `overflow_to_sample_mapping` field the tokenizer returns when we set `return_overflowing_tokens=True`. It gives us a mapping from a new feature index to the index of the sample it originated from. Using this, we can associate each key present in our original dataset with a list of values of the right size by repeating the values of each example as many times as it generates new features:
+Since DistilBERT is a BERT-like model, we can see that the encoded texts consist of the `input_ids` and `attention_mask` that we've seen in other chapters, as well as the `word_ids` we added. 
 
-```py
-def tokenize_and_split(examples):
-    result = tokenizer(
-        examples["review"],
-        truncation=True,
-        max_length=128,
-        return_overflowing_tokens=True,
-    )
-    # Extract mapping between new and old indices
-    sample_map = result.pop("overflow_to_sample_mapping")
-    for key, values in examples.items():
-        result[key] = [values[i] for i in sample_map]
+Now that we've tokenized our movie reviews, the next step is to group them all together and split the result into chunks. But how big should these chunks be? This will ultimately be determined by the amount of GPU memory that you have available, but a good starting point is to see what the model's maximum context size is. This can be inferred by inspecting the `model_max_length` attribute of the tokenizer:
+
+```python
+tokenizer.model_max_length
+```
+
+```python out
+512
+```
+
+This value is derived from the *tokenizer_config.json* file associated with a checkpoint; in this case we can see that the context size is 512 tokens, just like with BERT.
+
+<Tip>
+
+✏️ **Try it out!** Some Transformer models, like [BigBird](https://huggingface.co/google/bigbird-roberta-base) and [Longformer](hf.co/allenai/longformer-base-4096), have a much longer context length than BERT and other early Transformer models. Instantiate the tokenizer for one of these checkpoints and verify that the `model_max_length` agrees with what's quoted on its model card.
+
+</Tip>
+
+So, in order to run our experiments on GPUs like those found on Google Colab, we'll pick something a bit smaller that can fit in memory:
+
+```python
+chunk_size = 128
+```
+
+<Tip warning={true}>
+
+Note that using a small chunk size can be detrimental in real-world scenarios, so you should use a size that corresponds to the use case you will apply your model to.
+
+</Tip>
+
+Now comes the fun part. To show how the concatenation works, let's take a few reviews from our tokenized training set and print out the number of tokens per review:
+
+```python
+# Slicing produces a list of lists for each feature
+tokenized_samples = tokenized_datasets["train"][:3]
+
+for idx, sample in enumerate(tokenized_samples["input_ids"]):
+    print(f"'>>> Review {idx} length: {len(sample)}'")
+```
+
+```python out
+'>>> Review 0 length: 200'
+'>>> Review 1 length: 559'
+'>>> Review 2 length: 192'
+```
+
+We can then concatenate all these examples with a simple dictionary comprehension, as follows:
+
+```python
+concatenated_examples = {
+    k: sum(tokenized_samples[k], []) for k in tokenized_samples.keys()
+}
+total_length = len(concatenated_examples["input_ids"])
+print(f"'>>> Concatenated reviews length: {total_length}'")
+```
+
+```python out
+'>>> Concatenated reviews length: 951'
+```
+
+Great, the total length checks out -- so now let's split the concatenated reviews into chunks of the size given by `chunk_size`. To do so, we iterate over the features in `concatenated_examples` and use a list comprehension to create slices of each feature. The result is a dictionary of chunks for each feature:
+
+```python
+chunks = {
+    k: [t[i : i + chunk_size] for i in range(0, total_length, chunk_size)]
+    for k, t in concatenated_examples.items()
+}
+
+for chunk in chunks["input_ids"]:
+    print(f"'>>> Chunk length: {len(chunk)}'")
+```
+
+```python out
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 55'
+```
+
+As you can see in this example, the last chunk will generally be smaller than the maximum chunk size. There are two main strategies for dealing with this:
+
+* Drop the last chunk if it's smaller than `chunk_size`.
+* Pad the last chunk until its length equals `chunk_size`.
+
+We'll take the first approach here, so let's wrap all of the above logic in a single function that we can apply to our tokenized datasets:
+
+```python
+def group_texts(examples):
+    # Concatenate all texts
+    concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+    # Compute length of concatenated texts
+    total_length = len(concatenated_examples[list(examples.keys())[0]])
+    # We drop the last chunk if it's smaller than chunk_size
+    total_length = (total_length // chunk_size) * chunk_size
+    # Split by chunks of max_len
+    result = {
+        k: [t[i : i + chunk_size] for i in range(0, total_length, chunk_size)]
+        for k, t in concatenated_examples.items()
+    }
+    # Create a new labels column
+    result["labels"] = result["input_ids"].copy()
     return result
 ```
 
-We can see it works with `Dataset.map()` without us needing to remove the old columns:
+Note that in the last step of `group_texts()` we create a new `labels` column which is a copy of the `input_ids` one. As we'll see shortly, that's because in masked language modeling the objective is to predict randomly masked tokens in the input batch, and by creating a `labels` column we provide the ground truth for our language model to learn from. 
 
-```py
-tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
-tokenized_dataset
-```
-
-```python out
-DatasetDict({
-    train: Dataset({
-        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
-        num_rows: 206772
-    })
-    test: Dataset({
-        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
-        num_rows: 68876
-    })
-})
-```
-
-We get the same number of training features as before, but here we've kept all the old fields. If you need them for some post-processing after applying your model, you might want to use this approach.
-
-You've now seen how 🤗 Datasets can be used to preprocess a dataset in various ways. Although the processing functions of 🤗 Datasets will cover most of your model training needs,
-there may be times when you'll need to switch to Pandas to access more powerful features, like `DataFrame.groupby()` or high-level APIs for visualization. Fortunately, 🤗 Datasets is designed to be interoperable with libraries such as Pandas, NumPy, PyTorch, TensorFlow, and JAX. Let's take a look at how this works.
-
-## From `Dataset`s to `DataFrame`s and back[[from-datasets-to-dataframes-and-back]]
-
-<Youtube id="tfcY1067A5Q"/>
-
-To enable the conversion between various third-party libraries, 🤗 Datasets provides a `Dataset.set_format()` function. This function only changes the _output format_ of the dataset, so you can easily switch to another format without affecting the underlying _data format_, which is Apache Arrow. The formatting is done in place. To demonstrate, let's convert our dataset to Pandas:
-
-```py
-drug_dataset.set_format("pandas")
-```
-
-Now when we access elements of the dataset we get a `pandas.DataFrame` instead of a dictionary:
-
-```py
-drug_dataset["train"][:3]
-```
-
-<table border="1" class="dataframe">
-  <thead>
-    <tr style="text-align: right;">
-      <th></th>
-      <th>patient_id</th>
-      <th>drugName</th>
-      <th>condition</th>
-      <th>review</th>
-      <th>rating</th>
-      <th>date</th>
-      <th>usefulCount</th>
-      <th>review_length</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <th>0</th>
-      <td>95260</td>
-      <td>Guanfacine</td>
-      <td>adhd</td>
-      <td>"My son is halfway through his fourth week of Intuniv..."</td>
-      <td>8.0</td>
-      <td>April 27, 2010</td>
-      <td>192</td>
-      <td>141</td>
-    </tr>
-    <tr>
-      <th>1</th>
-      <td>92703</td>
-      <td>Lybrel</td>
-      <td>birth control</td>
-      <td>"I used to take another oral contraceptive, which had 21 pill cycle, and was very happy- very light periods, max 5 days, no other side effects..."</td>
-      <td>5.0</td>
-      <td>December 14, 2009</td>
-      <td>17</td>
-      <td>134</td>
-    </tr>
-    <tr>
-      <th>2</th>
-      <td>138000</td>
-      <td>Ortho Evra</td>
-      <td>birth control</td>
-      <td>"This is my first time using any form of birth control..."</td>
-      <td>8.0</td>
-      <td>November 3, 2015</td>
-      <td>10</td>
-      <td>89</td>
-    </tr>
-  </tbody>
-</table>
-
-Let's create a `pandas.DataFrame` for the whole training set by selecting all the elements of `drug_dataset["train"]`:
-
-```py
-train_df = drug_dataset["train"][:]
-```
-
-<Tip>
-
-🚨 Under the hood, `Dataset.set_format()` changes the return format for the dataset's `__getitem__()` dunder method. This means that when we want to create a new object like `train_df` from a `Dataset` in the `"pandas"` format, we need to slice the whole dataset to obtain a `pandas.DataFrame`. You can verify for yourself that the type of `drug_dataset["train"]` is `Dataset`, irrespective of the output format.
-
-</Tip>
-
-
-From here we can use all the Pandas functionality that we want. For example, we can do fancy chaining to compute the class distribution among the `condition` entries:
-
-```py
-frequencies = (
-    train_df["condition"]
-    .value_counts()
-    .to_frame()
-    .reset_index()
-    .rename(columns={"index": "condition", "count": "frequency"})
-)
-frequencies.head()
-```
-
-<table border="1" class="dataframe">
-  <thead>
-    <tr style="text-align: right;">
-      <th></th>
-      <th>condition</th>
-      <th>frequency</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <th>0</th>
-      <td>birth control</td>
-      <td>27655</td>
-    </tr>
-    <tr>
-      <th>1</th>
-      <td>depression</td>
-      <td>8023</td>
-    </tr>
-    <tr>
-      <th>2</th>
-      <td>acne</td>
-      <td>5209</td>
-    </tr>
-    <tr>
-      <th>3</th>
-      <td>anxiety</td>
-      <td>4991</td>
-    </tr>
-    <tr>
-      <th>4</th>
-      <td>pain</td>
-      <td>4744</td>
-    </tr>
-  </tbody>
-</table>
-
-
-And once we're done with our Pandas analysis, we can always create a new `Dataset` object by using the `Dataset.from_pandas()` function as follows:
-
-
-```py
-from datasets import Dataset
-
-freq_dataset = Dataset.from_pandas(frequencies)
-freq_dataset
-```
-
-```python out
-Dataset({
-    features: ['condition', 'frequency'],
-    num_rows: 819
-})
-```
-
-<Tip>
-
-✏️ **Try it out!** Compute the average rating per drug and store the result in a new `Dataset`.
-
-</Tip>
-
-This wraps up our tour of the various preprocessing techniques available in 🤗 Datasets. To round out the section, let's create a validation set to prepare the dataset for training a classifier on. Before doing so, we'll reset the output format of `drug_dataset` from `"pandas"` to `"arrow"`:
+Let's now apply `group_texts()` to our tokenized datasets using our trusty `Dataset.map()` function:
 
 ```python
-drug_dataset.reset_format()
-```
-
-## Creating a validation set[[creating-a-validation-set]]
-
-Although we have a test set we could use for evaluation, it's a good practice to leave the test set untouched and create a separate validation set during development. Once you are happy with the performance of your models on the validation set, you can do a final sanity check on the test set. This process helps mitigate the risk that you'll overfit to the test set and deploy a model that fails on real-world data.
-
-🤗 Datasets provides a `Dataset.train_test_split()` function that is based on the famous functionality from `scikit-learn`. Let's use it to split our training set into `train` and `validation` splits (we set the `seed` argument for reproducibility):
-
-```py
-drug_dataset_clean = drug_dataset["train"].train_test_split(train_size=0.8, seed=42)
-# Rename the default "test" split to "validation"
-drug_dataset_clean["validation"] = drug_dataset_clean.pop("test")
-# Add the "test" set to our `DatasetDict`
-drug_dataset_clean["test"] = drug_dataset["test"]
-drug_dataset_clean
+lm_datasets = tokenized_datasets.map(group_texts, batched=True)
+lm_datasets
 ```
 
 ```python out
 DatasetDict({
     train: Dataset({
-        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
-        num_rows: 110811
-    })
-    validation: Dataset({
-        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
-        num_rows: 27703
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 61289
     })
     test: Dataset({
-        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
-        num_rows: 46108
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 59905
+    })
+    unsupervised: Dataset({
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 122963
     })
 })
 ```
 
-Great, we've now prepared a dataset that's ready for training some models on! In [section 5](/course/chapter5/5) we'll show you how to upload datasets to the Hugging Face Hub, but for now let's cap off our analysis by looking at a few ways you can save datasets on your local machine.
+You can see that grouping and then chunking the texts has produced many more examples than our original 25,000 for the `train` and `test` splits. That's because we now have examples involving _contiguous tokens_ that span across multiple examples from the original corpus. You can see this explicitly by looking for the special `[SEP]` and `[CLS]` tokens in one of the chunks:
 
-## Saving a dataset[[saving-a-dataset]]
+```python
+tokenizer.decode(lm_datasets["train"][1]["input_ids"])
+```
 
-<Youtube id="blF9uxYcKHo"/>
+```python out
+".... at.......... high. a classic line : inspector : i'm here to sack one of your teachers. student : welcome to bromwell high. i expect that many adults of my age think that bromwell high is far fetched. what a pity that it isn't! [SEP] [CLS] homelessness ( or houselessness as george carlin stated ) has been an issue for years but never a plan to help those on the street that were once considered human who did everything from going to school, work, or vote for the matter. most people think of the homeless"
+```
 
-Although 🤗 Datasets will cache every downloaded dataset and the operations performed on it, there are times when you'll want to save a dataset to disk (e.g., in case the cache gets deleted). As shown in the table below, 🤗 Datasets provides three main functions to save your dataset in different formats:
+In this example you can see two overlapping movie reviews, one about a high school movie and the other about homelessness. Let's also check out what the labels look like for masked language modeling:
 
-| Data format |        Function        |
-| :---------: | :--------------------: |
-|    Arrow    | `Dataset.save_to_disk()` |
-|     CSV     |    `Dataset.to_csv()`    |
-|    JSON     |   `Dataset.to_json()`    |
+```python out
+tokenizer.decode(lm_datasets["train"][1]["labels"])
+```
 
-For example, let's save our cleaned dataset in the Arrow format:
+```python out
+".... at.......... high. a classic line : inspector : i'm here to sack one of your teachers. student : welcome to bromwell high. i expect that many adults of my age think that bromwell high is far fetched. what a pity that it isn't! [SEP] [CLS] homelessness ( or houselessness as george carlin stated ) has been an issue for years but never a plan to help those on the street that were once considered human who did everything from going to school, work, or vote for the matter. most people think of the homeless"
+```
+
+As expected from our `group_texts()` function above, this looks identical to the decoded `input_ids` -- but then how can our model possibly learn anything? We're missing a key step: inserting `[MASK]` tokens at random positions in the inputs! Let's see how we can do this on the fly during fine-tuning using a special data collator.
+
+## Fine-tuning DistilBERT with the `Trainer` API[[fine-tuning-distilbert-with-the-trainer-api]]
+
+Fine-tuning a masked language model is almost identical to fine-tuning a sequence classification model, like we did in [Chapter 3](/course/chapter3). The only difference is that we need a special data collator that can randomly mask some of the tokens in each batch of texts. Fortunately, 🤗 Transformers comes prepared with a dedicated `DataCollatorForLanguageModeling` for just this task. We just have to pass it the tokenizer and an `mlm_probability` argument that specifies what fraction of the tokens to mask. We'll pick 15%, which is the amount used for BERT and a common choice in the literature:
+
+```python
+from transformers import DataCollatorForLanguageModeling
+
+data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
+```
+
+To see how the random masking works, let's feed a few examples to the data collator. Since it expects a list of `dict`s, where each `dict` represents a single chunk of contiguous text, we first iterate over the dataset before feeding the batch to the collator. We remove the `"word_ids"` key for this data collator as it does not expect it:
+
+```python
+samples = [lm_datasets["train"][i] for i in range(2)]
+for sample in samples:
+    _ = sample.pop("word_ids")
+
+for chunk in data_collator(samples)["input_ids"]:
+    print(f"\n'>>> {tokenizer.decode(chunk)}'")
+```
+
+```python output
+'>>> [CLS] bromwell [MASK] is a cartoon comedy. it ran at the same [MASK] as some other [MASK] about school life, [MASK] as " teachers ". [MASK] [MASK] [MASK] in the teaching [MASK] lead [MASK] to believe that bromwell high\'[MASK] satire is much closer to reality than is " teachers ". the scramble [MASK] [MASK] financially, the [MASK]ful students whogn [MASK] right through [MASK] pathetic teachers\'pomp, the pettiness of the whole situation, distinction remind me of the schools i knew and their students. when i saw [MASK] episode in [MASK] a student repeatedly tried to burn down the school, [MASK] immediately recalled. [MASK]...'
+
+'>>> .... at.. [MASK]... [MASK]... high. a classic line plucked inspector : i\'[MASK] here to [MASK] one of your [MASK]. student : welcome to bromwell [MASK]. i expect that many adults of my age think that [MASK]mwell [MASK] is [MASK] fetched. what a pity that it isn\'t! [SEP] [CLS] [MASK]ness ( or [MASK]lessness as george 宇in stated )公 been an issue for years but never [MASK] plan to help those on the street that were once considered human [MASK] did everything from going to school, [MASK], [MASK] vote for the matter. most people think [MASK] the homeless'
+```
+
+Nice, it worked! We can see that the `[MASK]` token has been randomly inserted at various locations in our text. These will be the tokens which our model will have to predict during training -- and the beauty of the data collator is that it will randomize the `[MASK]` insertion with every batch! 
+
+<Tip>
+
+✏️ **Try it out!** Run the code snippet above several times to see the random masking happen in front of your very eyes! Also replace the `tokenizer.decode()` method with `tokenizer.convert_ids_to_tokens()` to see that sometimes a single token from a given word is masked, and not the others.
+
+</Tip>
+
+{#if fw === 'pt'}
+
+One side effect of random masking is that our evaluation metrics will not be deterministic when using the `Trainer`, since we use the same data collator for the training and test sets. We'll see later, when we look at fine-tuning with 🤗 Accelerate, how we can use the flexibility of a custom evaluation loop to freeze the randomness.
+
+{/if}
+
+When training models for masked language modeling, one technique that can be used is to mask whole words together, not just individual tokens. This approach is called _whole word masking_. If we want to use whole word masking, we will need to build a data collator ourselves. A data collator is just a function that takes a list of samples and converts them into a batch, so let's do this now! We'll use the word IDs computed earlier to make a map between word indices and the corresponding tokens, then randomly decide which words to mask and apply that mask on the inputs. Note that the labels are all `-100` except for the ones corresponding to mask words.
+
+{#if fw === 'pt'}
 
 ```py
-drug_dataset_clean.save_to_disk("drug-reviews")
+import collections
+import numpy as np
+
+from transformers import default_data_collator
+
+wwm_probability = 0.2
+
+
+def whole_word_masking_data_collator(features):
+    for feature in features:
+        word_ids = feature.pop("word_ids")
+
+        # Create a map between words and corresponding token indices
+        mapping = collections.defaultdict(list)
+        current_word_index = -1
+        current_word = None
+        for idx, word_id in enumerate(word_ids):
+            if word_id is not None:
+                if word_id != current_word:
+                    current_word = word_id
+                    current_word_index += 1
+                mapping[current_word_index].append(idx)
+
+        # Randomly mask words
+        mask = np.random.binomial(1, wwm_probability, (len(mapping),))
+        input_ids = feature["input_ids"]
+        labels = feature["labels"]
+        new_labels = [-100] * len(labels)
+        for word_id in np.where(mask)[0]:
+            word_id = word_id.item()
+            for idx in mapping[word_id]:
+                new_labels[idx] = labels[idx]
+                input_ids[idx] = tokenizer.mask_token_id
+        feature["labels"] = new_labels
+
+    return default_data_collator(features)
 ```
 
-This will create a directory with the following structure:
-
-```
-drug-reviews/
-├── dataset_dict.json
-├── test
-│   ├── dataset.arrow
-│   ├── dataset_info.json
-│   └── state.json
-├── train
-│   ├── dataset.arrow
-│   ├── dataset_info.json
-│   ├── indices.arrow
-│   └── state.json
-└── validation
-    ├── dataset.arrow
-    ├── dataset_info.json
-    ├── indices.arrow
-    └── state.json
-```
-
-where we can see that each split is associated with its own *dataset.arrow* table, and some metadata in *dataset_info.json* and *state.json*. You can think of the Arrow format as a fancy table of columns and rows that is optimized for building high-performance applications that process and transport large datasets.
-
-Once the dataset is saved, we can load it by using the `load_from_disk()` function as follows:
+{:else}
 
 ```py
-from datasets import load_from_disk
+import collections
+import numpy as np
 
-drug_dataset_reloaded = load_from_disk("drug-reviews")
-drug_dataset_reloaded
+from transformers.data.data_collator import tf_default_data_collator
+
+wwm_probability = 0.2
+
+
+def whole_word_masking_data_collator(features):
+    for feature in features:
+        word_ids = feature.pop("word_ids")
+
+        # Create a map between words and corresponding token indices
+        mapping = collections.defaultdict(list)
+        current_word_index = -1
+        current_word = None
+        for idx, word_id in enumerate(word_ids):
+            if word_id is not None:
+                if word_id != current_word:
+                    current_word = word_id
+                    current_word_index += 1
+                mapping[current_word_index].append(idx)
+
+        # Randomly mask words
+        mask = np.random.binomial(1, wwm_probability, (len(mapping),))
+        input_ids = feature["input_ids"]
+        labels = feature["labels"]
+        new_labels = [-100] * len(labels)
+        for word_id in np.where(mask)[0]:
+            word_id = word_id.item()
+            for idx in mapping[word_id]:
+                new_labels[idx] = labels[idx]
+                input_ids[idx] = tokenizer.mask_token_id
+        feature["labels"] = new_labels
+
+    return tf_default_data_collator(features)
+```
+
+{/if}
+
+Next, we can try it on the same samples as before:
+
+```py
+samples = [lm_datasets["train"][i] for i in range(2)]
+batch = whole_word_masking_data_collator(samples)
+
+for chunk in batch["input_ids"]:
+    print(f"\n'>>> {tokenizer.decode(chunk)}'")
+```
+
+```python out
+'>>> [CLS] bromwell high is a cartoon comedy [MASK] it ran at the same time as some other programs about school life, such as " teachers ". my 35 years in the teaching profession lead me to believe that bromwell high\'s satire is much closer to reality than is " teachers ". the scramble to survive financially, the insightful students who can see right through their pathetic teachers\'pomp, the pettiness of the whole situation, all remind me of the schools i knew and their students. when i saw the episode in which a student repeatedly tried to burn down the school, i immediately recalled.....'
+
+'>>> .... [MASK] [MASK] [MASK] [MASK]....... high. a classic line : inspector : i\'m here to sack one of your teachers. student : welcome to bromwell high. i expect that many adults of my age think that bromwell high is far fetched. what a pity that it isn\'t! [SEP] [CLS] homelessness ( or houselessness as george carlin stated ) has been an issue for years but never a plan to help those on the street that were once considered human who did everything from going to school, work, or vote for the matter. most people think of the homeless'
+```
+
+<Tip>
+
+✏️ **Try it out!** Run the code snippet above several times to see the random masking happen in front of your very eyes! Also replace the `tokenizer.decode()` method with `tokenizer.convert_ids_to_tokens()` to see that the tokens from a given word are always masked together.
+
+</Tip>
+
+Now that we have two data collators, the rest of the fine-tuning steps are standard. Training can take a while on Google Colab if you're not lucky enough to score a mythical P100 GPU 😭, so we'll first downsample the size of the training set to a few thousand examples. Don't worry, we'll still get a pretty decent language model! A quick way to downsample a dataset in 🤗 Datasets is via the `Dataset.train_test_split()` function that we saw in [Chapter 5](/course/chapter5):
+
+```python
+train_size = 10_000
+test_size = int(0.1 * train_size)
+
+downsampled_dataset = lm_datasets["train"].train_test_split(
+    train_size=train_size, test_size=test_size, seed=42
+)
+downsampled_dataset
 ```
 
 ```python out
 DatasetDict({
     train: Dataset({
-        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
-        num_rows: 110811
-    })
-    validation: Dataset({
-        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
-        num_rows: 27703
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 10000
     })
     test: Dataset({
-        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
-        num_rows: 46108
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 1000
     })
 })
 ```
 
-For the CSV and JSON formats, we have to store each split as a separate file. One way to do this is by iterating over the keys and values in the `DatasetDict` object:
+This has automatically created new `train` and `test` splits, with the training set size set to 10,000 examples and the validation set to 10% of that -- feel free to increase this if you have a beefy GPU! The next thing we need to do is log in to the Hugging Face Hub. If you're running this code in a notebook, you can do so with the following utility function:
 
-```py
-for split, dataset in drug_dataset_clean.items():
-    dataset.to_json(f"drug-reviews-{split}.jsonl")
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
 ```
 
-This saves each split in [JSON Lines format](https://jsonlines.org), where each row in the dataset is stored as a single line of JSON. Here's what the first example looks like:
+which will display a widget where you can enter your credentials. Alternatively, you can run: 
+
+```
+huggingface-cli login
+```
+
+in your favorite terminal and log in there. 
+
+{#if fw === 'tf'}
+
+Once we're logged in, we can create our `tf.data` datasets. To do so, we'll use the `prepare_tf_dataset()` method, which uses our model to automatically infer which columns should go into the dataset. If you want to control exactly which columns to use, you can use the `Dataset.to_tf_dataset()` method instead. To keep things simple, we'll just use the standard data collator here, but you can also try the whole word masking collator and compare the results as an exercise:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    downsampled_dataset["train"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=32,
+)
+
+tf_eval_dataset = model.prepare_tf_dataset(
+    downsampled_dataset["test"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=32,
+)
+```
+
+Next, we set up our training hyperparameters and compile our model. We use the `create_optimizer()` function from the 🤗 Transformers library, which gives us an `AdamW` optimizer with linear learning rate decay. We also use the model's built-in loss, which is the default when no loss is specified as an argument to `compile()`, and we set the training precision to `"mixed_float16"`. Note that if you're using a Colab GPU or other GPU that does not have accelerated float16 support, you should probably comment out that line.
+
+In addition, we set up a `PushToHubCallback` that will save the model to the Hub after each epoch. You can specify the name of the repository you want to push to with the `hub_model_id` argument (in particular, you will have to use this argument to push to an organization). For instance, to push the model to the [`huggingface-course` organization](https://huggingface.co/huggingface-course), we added `hub_model_id="huggingface-course/distilbert-finetuned-imdb"`. By default, the repository used will be in your namespace and named after the output directory you set, so in our case it will be `"lewtun/distilbert-finetuned-imdb"`.
+
+```python
+from transformers import create_optimizer
+from transformers.keras_callbacks import PushToHubCallback
+import tensorflow as tf
+
+num_train_steps = len(tf_train_dataset)
+optimizer, schedule = create_optimizer(
+    init_lr=2e-5,
+    num_warmup_steps=1_000,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Train in mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+
+model_name = model_checkpoint.split("/")[-1]
+callback = PushToHubCallback(
+    output_dir=f"{model_name}-finetuned-imdb", tokenizer=tokenizer
+)
+```
+
+We're now ready to run `model.fit()` -- but before doing so let's briefly look at _perplexity_, which is a common metric to evaluate the performance of language models.
+
+{:else}
+
+Once we're logged in, we can specify the arguments for the `Trainer`:
+
+```python
+from transformers import TrainingArguments
+
+batch_size = 64
+# Show the training loss with every epoch
+logging_steps = len(downsampled_dataset["train"]) // batch_size
+model_name = model_checkpoint.split("/")[-1]
+
+training_args = TrainingArguments(
+    output_dir=f"{model_name}-finetuned-imdb",
+    overwrite_output_dir=True,
+    evaluation_strategy="epoch",
+    learning_rate=2e-5,
+    weight_decay=0.01,
+    per_device_train_batch_size=batch_size,
+    per_device_eval_batch_size=batch_size,
+    push_to_hub=True,
+    fp16=True,
+    logging_steps=logging_steps,
+)
+```
+
+Here we tweaked a few of the default options, including `logging_steps` to ensure we track the training loss with each epoch. We've also used `fp16=True` to enable mixed-precision training, which gives us another boost in speed. By default, the `Trainer` will remove any columns that are not part of the model's `forward()` method. This means that if you're using the whole word masking collator, you'll also need to set `remove_unused_columns=False` to ensure we don't lose the `word_ids` column during training.
+
+Note that you can specify the name of the repository you want to push to with the `hub_model_id` argument (in particular, you will have to use this argument to push to an organization). For instance, when we pushed the model to the [`huggingface-course` organization](https://huggingface.co/huggingface-course), we added `hub_model_id="huggingface-course/distilbert-finetuned-imdb"` to `TrainingArguments`. By default, the repository used will be in your namespace and named after the output directory you set, so in our case it will be `"lewtun/distilbert-finetuned-imdb"`.
+
+We now have all the ingredients to instantiate the `Trainer`. Here we just use the standard `data_collator`, but you can try the whole word masking collator and compare the results as an exercise: 
+
+```python
+from transformers import Trainer
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=downsampled_dataset["train"],
+    eval_dataset=downsampled_dataset["test"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+We're now ready to run `trainer.train()` -- but before doing so let's briefly look at _perplexity_, which is a common metric to evaluate the performance of language models.
+
+{/if}
+
+### Perplexity for language models[[perplexity-for-language-models]]
+
+<Youtube id="NURcDHhYe98"/>
+
+Unlike other tasks like text classification or question answering where we're given a labeled corpus to train on, with language modeling we don't have any explicit labels. So how do we determine what makes a good language model? Like with the autocorrect feature in your phone, a good language model is one that assigns high probabilities to sentences that are grammatically correct, and low probabilities to nonsense sentences. To give you a better idea of what this looks like, you can find whole sets of "autocorrect fails" online, where the model in a person's phone has produced some rather funny (and often inappropriate) completions! 
+
+{#if fw === 'pt'}
+
+Assuming our test set consists mostly of sentences that are grammatically correct, then one way to measure the quality of our language model is to calculate the probabilities it assigns to the next word in all the sentences of the test set. High probabilities indicates that the model is not "surprised" or "perplexed" by the unseen examples, and suggests it has learned the basic patterns of grammar in the language. There are various mathematical definitions of perplexity, but the one we'll use defines it as the exponential of the cross-entropy loss. Thus, we can calculate the perplexity of our pretrained model by using the `Trainer.evaluate()` function to compute the cross-entropy loss on the test set and then taking the exponential of the result:
+
+```python
+import math
+
+eval_results = trainer.evaluate()
+print(f">>> Perplexity: {math.exp(eval_results['eval_loss']):.2f}")
+```
+
+{:else}
+
+Assuming our test set consists mostly of sentences that are grammatically correct, then one way to measure the quality of our language model is to calculate the probabilities it assigns to the next word in all the sentences of the test set. High probabilities indicates that the model indicates that the model is not "surprised" or "perplexed" by the unseen examples, and suggests it has learned the basic patterns of grammar in the language. There are various mathematical definitions of perplexity, but the one we'll use defines it as the exponential of the cross-entropy loss. Thus, we can calculate the perplexity of our pretrained model by using the `model.evaluate()` method to compute the cross-entropy loss on the test set and then taking the exponential of the result:
+
+```python
+import math
+
+eval_loss = model.evaluate(tf_eval_dataset)
+print(f"Perplexity: {math.exp(eval_loss):.2f}")
+```
+
+{/if}
+
+```python out
+>>> Perplexity: 21.75
+```
+
+A lower perplexity score means a better language model, and we can see here that our starting model has a somewhat large value. Let's see if we can lower it by fine-tuning! To do that, we first run the training loop:
+
+{#if fw === 'pt'}
+
+```python
+trainer.train()
+```
+
+{:else}
+
+```python
+model.fit(tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback])
+```
+
+{/if}
+
+and then compute the resulting perplexity on the test set as before:
+
+{#if fw === 'pt'}
+
+```python
+eval_results = trainer.evaluate()
+print(f">>> Perplexity: {math.exp(eval_results['eval_loss']):.2f}")
+```
+
+{:else}
+
+```python
+eval_loss = model.evaluate(tf_eval_dataset)
+print(f"Perplexity: {math.exp(eval_loss):.2f}")
+```
+
+{/if}
+
+```python out
+>>> Perplexity: 11.32
+```
+
+Nice -- this is quite a reduction in perplexity, which tells us the model has learned something about the domain of movie reviews!
+
+{#if fw === 'pt'}
+
+Once training is finished, we can push the model card with the training information to the Hub (the checkpoints are saved during training itself):
+
+```python
+trainer.push_to_hub()
+```
+
+{/if}
+
+<Tip>
+
+✏️ **Your turn!** Run the training above after changing the data collator to the whole word masking collator. Do you get better results?
+
+</Tip>
+
+{#if fw === 'pt'} 
+
+In our use case we didn't need to do anything special with the training loop, but in some cases you might need to implement some custom logic. For these applications, you can use 🤗 Accelerate -- let's take a look!
+
+## Fine-tuning DistilBERT with 🤗 Accelerate[[fine-tuning-distilbert-with-accelerate]]
+
+As we saw with the `Trainer`, fine-tuning a masked language model is very similar to the text classification example from [Chapter 3](/course/chapter3). In fact, the only subtlety is the use of a special data collator, and we've already covered that earlier in this section! 
+
+However, we saw that `DataCollatorForLanguageModeling` also applies random masking with each evaluation, so we'll see some fluctuations in our perplexity scores with each training run. One way to eliminate this source of randomness is to apply the masking _once_ on the whole test set, and then use the default data collator in 🤗 Transformers to collect the batches during evaluation. To see how this works, let's implement a simple function that applies the masking on a batch, similar to our first encounter with `DataCollatorForLanguageModeling`:
+
+```python
+def insert_random_mask(batch):
+    features = [dict(zip(batch, t)) for t in zip(*batch.values())]
+    masked_inputs = data_collator(features)
+    # Create a new "masked" column for each column in the dataset
+    return {"masked_" + k: v.numpy() for k, v in masked_inputs.items()}
+```
+
+Next, we'll apply this function to our test set and drop the unmasked columns so we can replace them with the masked ones. You can use whole word masking by replacing the `data_collator` above with the appropriate one, in which case you should remove the first line here:
 
 ```py
-!head -n 1 drug-reviews-train.jsonl
+downsampled_dataset = downsampled_dataset.remove_columns(["word_ids"])
+eval_dataset = downsampled_dataset["test"].map(
+    insert_random_mask,
+    batched=True,
+    remove_columns=downsampled_dataset["test"].column_names,
+)
+eval_dataset = eval_dataset.rename_columns(
+    {
+        "masked_input_ids": "input_ids",
+        "masked_attention_mask": "attention_mask",
+        "masked_labels": "labels",
+    }
+)
+```
+
+We can then set up the dataloaders as usual, but we'll use the `default_data_collator` from 🤗 Transformers for the evaluation set:
+
+```python
+from torch.utils.data import DataLoader
+from transformers import default_data_collator
+
+batch_size = 64
+train_dataloader = DataLoader(
+    downsampled_dataset["train"],
+    shuffle=True,
+    batch_size=batch_size,
+    collate_fn=data_collator,
+)
+eval_dataloader = DataLoader(
+    eval_dataset, batch_size=batch_size, collate_fn=default_data_collator
+)
+```
+
+Form here, we follow the standard steps with 🤗 Accelerate. The first order of business is to load a fresh version of the pretrained model:
+
+```
+model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)
+```
+
+Then we need to specify the optimizer; we'll use the standard `AdamW`:
+
+```python
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+With these objects, we can now prepare everything for training with the `Accelerator` object:
+
+```python
+from accelerate import Accelerator
+
+accelerator = Accelerator()
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+Now that our model, optimizer, and dataloaders are configured, we can specify the learning rate scheduler as follows:
+
+```python
+from transformers import get_scheduler
+
+num_train_epochs = 3
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+There is just one last thing to do before training: create a model repository on the Hugging Face Hub! We can use the 🤗 Hub library to first generate the full name of our repo:
+
+```python
+from huggingface_hub import get_full_repo_name
+
+model_name = "distilbert-base-uncased-finetuned-imdb-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
 ```
 
 ```python out
-{"patient_id":141780,"drugName":"Escitalopram","condition":"depression","review":"\"I seemed to experience the regular side effects of LEXAPRO, insomnia, low sex drive, sleepiness during the day. I am taking it at night because my doctor said if it made me tired to take it at night. I assumed it would and started out taking it at night. Strange dreams, some pleasant. I was diagnosed with fibromyalgia. Seems to be helping with the pain. Have had anxiety and depression in my family, and have tried quite a few other medications that haven't worked. Only have been on it for two weeks but feel more positive in my mind, want to accomplish more in my life. Hopefully the side effects will dwindle away, worth it to stick with it from hearing others responses. Great medication.\"","rating":9.0,"date":"May 29, 2011","usefulCount":10,"review_length":125}
+'lewtun/distilbert-base-uncased-finetuned-imdb-accelerate'
 ```
 
-We can then use the techniques from [section 2](/course/chapter5/2) to load the JSON files as follows:
+then create and clone the repository using the `Repository` class from 🤗 Hub:
 
-```py
-data_files = {
-    "train": "drug-reviews-train.jsonl",
-    "validation": "drug-reviews-validation.jsonl",
-    "test": "drug-reviews-test.jsonl",
-}
-drug_dataset_reloaded = load_dataset("json", data_files=data_files)
+```python
+from huggingface_hub import Repository
+
+output_dir = model_name
+repo = Repository(output_dir, clone_from=repo_name)
 ```
 
-And that's it for our excursion into data wrangling with 🤗 Datasets! Now that we have a cleaned dataset for training a model on, here are a few ideas that you could try out:
+With that done, it's just a simple matter of writing out the full training and evaluation loop:
 
-1. Use the techniques from [Chapter 3](/course/chapter3) to train a classifier that can predict the patient condition based on the drug review.
-2. Use the `summarization` pipeline from [Chapter 1](/course/chapter1) to generate summaries of the reviews.
+```python
+from tqdm.auto import tqdm
+import torch
+import math
 
-Next, we'll take a look at how 🤗 Datasets can enable you to work with huge datasets without blowing up your laptop!
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Training
+    model.train()
+    for batch in train_dataloader:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluation
+    model.eval()
+    losses = []
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        loss = outputs.loss
+        losses.append(accelerator.gather(loss.repeat(batch_size)))
+
+    losses = torch.cat(losses)
+    losses = losses[: len(eval_dataset)]
+    try:
+        perplexity = math.exp(torch.mean(losses))
+    except OverflowError:
+        perplexity = float("inf")
+
+    print(f">>> Epoch {epoch}: Perplexity: {perplexity}")
+
+    # Save and upload
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+```python out
+>>> Epoch 0: Perplexity: 11.397545307900472
+>>> Epoch 1: Perplexity: 10.904909330983092
+>>> Epoch 2: Perplexity: 10.729503505340409
+```
+
+Cool, we've been able to evaluate perplexity with each epoch and ensure that multiple training runs are reproducible!
+
+{/if}
+
+## Using our fine-tuned model[[using-our-fine-tuned-model]]
+
+You can interact with your fine-tuned model either by using its widget on the Hub or locally with the `pipeline` from 🤗 Transformers. Let's use the latter to download our model using the `fill-mask` pipeline:
+
+```python
+from transformers import pipeline
+
+mask_filler = pipeline(
+    "fill-mask", model="huggingface-course/distilbert-base-uncased-finetuned-imdb"
+)
+```
+
+We can then feed the pipeline our sample text of "This is a great [MASK]" and see what the top 5 predictions are:
+
+```python
+preds = mask_filler(text)
+
+for pred in preds:
+    print(f">>> {pred['sequence']}")
+```
+
+```python out
+'>>> this is a great movie.'
+'>>> this is a great film.'
+'>>> this is a great story.'
+'>>> this is a great movies.'
+'>>> this is a great character.'
+```
+
+Neat -- our model has clearly adapted its weights to predict words that are more strongly associated with movies!
+
+<Youtube id="0Oxphw4Q9fo"/>
+
+This wraps up our first experiment with training a language model. In [section 6](/course/en/chapter7/6) you'll learn how to train an auto-regressive model like GPT-2 from scratch; head over there if you'd like to see how you can pretrain your very own Transformer model!
+
+<Tip>
+
+✏️ **Try it out!** To quantify the benefits of domain adaptation, fine-tune a classifier on the IMDb labels for both the pretrained and fine-tuned DistilBERT checkpoints. If you need a refresher on text classification, check out [Chapter 3](/course/chapter3). 
+
+</Tip>
