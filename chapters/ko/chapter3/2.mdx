@@ -1,0 +1,381 @@
+<FrameworkSwitchCourse {fw} />
+
+# 데이터 처리 작업[[processing-the-data]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section2_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section2_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section2_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section2_tf.ipynb"},
+]} />
+
+{/if}
+
+{#if fw === 'pt'}
+[2장](/course/chapter2)에서 공부한 것과 같이, PyTorch에서 단일 배치(batch)를 기반으로 시퀀스 분류기(sequence classifier)를 학습하는 방법은 다음과 같습니다.
+
+```python
+import torch
+from transformers import AdamW, AutoTokenizer, AutoModelForSequenceClassification
+
+# Same as before
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+sequences = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "This course is amazing!",
+]
+batch = tokenizer(sequences, padding=True, truncation=True, return_tensors="pt")
+
+# This is new
+batch["labels"] = torch.tensor([1, 1])
+
+optimizer = AdamW(model.parameters())
+loss = model(**batch).loss
+loss.backward()
+optimizer.step()
+```
+{:else}
+[2장](/course/chapter2)에서 공부한 것과 같이, TensorFlow에서 단일 배치(batch)를 기반으로 시퀀스 분류기(sequence classifier)를 학습하는 방법은 다음과 같습니다.
+
+```python
+import tensorflow as tf
+import numpy as np
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
+
+# Same as before
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = TFAutoModelForSequenceClassification.from_pretrained(checkpoint)
+sequences = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "This course is amazing!",
+]
+batch = dict(tokenizer(sequences, padding=True, truncation=True, return_tensors="tf"))
+
+# This is new
+model.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
+labels = tf.convert_to_tensor([1, 1])
+model.train_on_batch(batch, labels)
+```
+{/if}
+
+물론 두 문장만으로 모델을 학습하는 것으로는 그다지 좋은 결과를 얻을 수 없습니다. 더 좋은 결과를 얻으려면, 더 큰 데이터셋을 준비해야 합니다.
+
+이 섹션에서는 William B. Dolan과 Chris Brockett의 [논문](https://www.aclweb.org/anthology/I05-5002.pdf)에서 소개된 MRPC(Microsoft Research Paraphrase Corpus) 데이터셋을 예제로 사용할 것입니다. 이 데이터셋은 5,801건의 문장 쌍으로 구성되어 있으며 각 문장 쌍의 관계가 의역(paraphrasing) 관계인지 여부를 나타내는 레이블이 존재합니다(즉, 두 문장이 동일한 의미인지 여부). 데이터셋의 규모가 그리 크지 않기 때문에 학습 과정을 쉽게 실험할 수 있습니다.
+
+### 🤗 Hub에서 데이터셋 로딩[[loading-a-dataset-from-the-hub]]
+
+{#if fw === 'pt'}
+<Youtube id="_BZearw7f0w"/>
+{:else}
+<Youtube id="W_gMJF0xomE"/>
+{/if}
+
+🤗 Hub에는 모델만 존재하는 것이 아닙니다. 다양한 언어로 구축된 여러 데이터셋들도 있습니다. [여기](https://huggingface.co/datasets)에서 다양한 데이터셋을 탐색할 수 있으며, 이 섹션을 완료한 후에는 다른 데이터셋을 로드하고 처리해 보기를 권장합니다 ([여기](https://huggingface.co/docs/datasets/loading_datasets.html#from-the-huggingface-hub)에서 일반 문서 참조). 하지만 지금은 MRPC 데이터셋에 집중합시다! 이 데이터셋은 10개의 데이터셋으로 구성된 [GLUE 벤치마크](https://gluebenchmark.com/) 중 하나입니다. GLUE 벤치마크는 10가지 텍스트 분류 작업을 통해서 기계학습 모델의 성능을 측정하기 위한 학술적 벤치마크 데이터 집합입니다.
+
+🤗 Datasets 라이브러리는 허브(hub)에서 데이터셋을 다운로드하고 캐시(cache) 기능을 수행하는 쉬운 명령어를 제공합니다. 다음과 같이 MRPC 데이터셋을 다운로드할 수 있습니다:
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("glue", "mrpc")
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 3668
+    })
+    validation: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 408
+    })
+    test: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 1725
+    })
+})
+```
+
+위 결과에서 보듯이, 학습(training), 검증(validation) 및 평가(test) 집합이 저장된 `DatasetDict` 객체를 얻을 수 있습니다. 이들 각각은 여러 종류의 열(columns)(`sentence1`, `sentence2`, `label` 및 `idx`)과 행(row)의 개수를 포함하는데, 여기서 행(row)의 개수는 각 집합의 문장쌍의 개수를 나타냅니다. 따라서, 학습 집합(training set)에는 3,668개의 문장 쌍, 검증 집합(validation set)에는 408개, 평가 집합(test set)에는 1,725개의 문장 쌍이 있습니다.
+
+`load_dataset` 명령은 기본적으로 *~/.cache/huggingface/datasets*에 데이터셋을 다운로드하고 임시저장(캐시, cache)합니다. 2장에서 보았듯이, `HF_HOME` 환경 변수를 설정하여 캐시 폴더를 변경할 수 있습니다.
+
+파이썬의 딕셔너리(dictionary)와 같이 키값으로 `raw_datasets` 개체의 개별 집합(학습, 검증, 평가)에 접근할 수 있습니다:
+
+```py
+raw_train_dataset = raw_datasets["train"]
+raw_train_dataset[0]
+```
+
+```python out
+{'idx': 0,
+ 'label': 1,
+ 'sentence1': 'Amrozi accused his brother , whom he called " the witness " , of deliberately distorting his evidence .',
+ 'sentence2': 'Referring to him as only " the witness " , Amrozi accused his brother of deliberately distorting his evidence .'}
+```
+
+위의 예에서 보듯이, 레이블(label)이 이미 정수(integers)라서 전처리(preprocessing)가 필요 없습니다. 어떤 정수가 어떤 레이블에 해당하는지 파악하기 위해서는 `raw_train_dataset`의 `features` 속성을 살펴보면 됩니다:
+
+```py
+raw_train_dataset.features
+```
+
+```python out
+{'sentence1': Value(dtype='string', id=None),
+ 'sentence2': Value(dtype='string', id=None),
+ 'label': ClassLabel(num_classes=2, names=['not_equivalent', 'equivalent'], names_file=None, id=None),
+ 'idx': Value(dtype='int32', id=None)}
+```
+
+세부적으로, `레이블(label)`은 `ClassLabel` 타입이고 레이블 이름에 대한 정수 매핑은 *names* 폴더에 저장되어 있습니다. `0`은 `not_equivalent`를 의미하고, `1`은 `equivalent`를 나타냅니다.
+
+<Tip>
+
+✏️ **직접 해보기** 학습 집합의 15번째 요소와 검증 집합의 87번째 요소를 살펴보세요. 각각의 레이블은 무엇인가요?
+
+</Tip>
+
+### 데이터셋 전처리[[preprocessing-a-dataset]]
+
+{#if fw === 'pt'}
+<Youtube id="0u3ioSwev3s"/>
+{:else}
+<Youtube id="P-rZWqcB6CE"/>
+{/if}
+
+데이터셋 전처리를 위해서는 우선적으로 텍스트를 모델이 이해할 수 있는 숫자로 변환해야 합니다. [이전 장](/course/chapter2)에서 보았듯이 이는 토크나이저가 담당합니다. 토크나이저에 단일 문장 또는 다중 문장 리스트를 입력할 수 있으므로, 다음과 같이 각 쌍의 모든 첫 번째 문장과 두 번째 문장을 각각 직접 토큰화할 수 있습니다:
+
+```py
+from transformers import AutoTokenizer
+
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+tokenized_sentences_1 = tokenizer(raw_datasets["train"]["sentence1"])
+tokenized_sentences_2 = tokenizer(raw_datasets["train"]["sentence2"])
+```
+
+하지만 두 개의 시퀀스를 모델에 바로 전달(각각의 문장을 모델에 별도로 매개변수로 전달)하여 두 문장이 의역인지 아닌지에 대한 예측을 얻을 수는 없습니다. 두 시퀀스를 쌍(pair)으로 처리(단일 매개변수로 처리)하고 적절한 전처리를 적용해야 합니다. 다행히도 토크나이저(tokenizer)는 다음과 같이 한 쌍의 시퀀스를 가져와 BERT 모델이 요구하는 입력 형태로 구성할 수 있습니다:
+
+```py
+inputs = tokenizer("This is the first sentence.", "This is the second one.")
+inputs
+```
+
+```python out
+{ 
+  'input_ids': [101, 2023, 2003, 1996, 2034, 6251, 1012, 102, 2023, 2003, 1996, 2117, 2028, 1012, 102],
+  'token_type_ids': [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+  'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+}
+```
+
+[2장](/course/chapter2)에서 `input_ids` 및 `attention_mask` 키값에 대해서는 논의했지만, `token_type_ids`에 대한 이야기는 하지 않았습니다. 위의 예에서 보듯이, `token_type_ids`는 전체 입력의 어느 부분이 첫 번째 문장이고 어느 것이 두 번째 문장인지 모델에 알려줍니다.
+
+<Tip>
+
+✏️ **직접 해보기** 학습 집합 15번째 요소의 두 문장을 개별적으로/쌍으로 토큰화해보세요. 두 결과의 차이가 있나요?
+
+</Tip>
+
+`input_ids` 내부의 ID들을 다시 단어로 디코딩하면:
+
+```py
+tokenizer.convert_ids_to_tokens(inputs["input_ids"])
+```
+
+출력은 다음과 같습니다:
+
+```python out
+['[CLS]', 'this', 'is', 'the', 'first', 'sentence', '.', '[SEP]', 'this', 'is', 'the', 'second', 'one', '.', '[SEP]']
+```
+
+따라서 모델은 두 개의 문장으로 구성되고 입력의 형태가 `[CLS] 문장1 [SEP] 문장2 [SEP]`와 같이 될 것으로 짐작할 수 있습니다. 이를 `token_type_ids`와 정렬하면 다음과 같습니다:
+
+```python out
+['[CLS]', 'this', 'is', 'the', 'first', 'sentence', '.', '[SEP]', 'this', 'is', 'the', 'second', 'one', '.', '[SEP]']
+[      0,      0,    0,     0,       0,          0,   0,       0,      1,    1,     1,        1,     1,   1,       1]
+```
+
+위에서 보는 바와 같이, `[CLS] 문장1 [SEP]`에 해당하는 입력 부분은 `token_type_id`가 `0`이고 `문장2 [SEP]`에 해당하는 다른 부분은 모두 `1`입니다.
+
+다른 체크포인트(checkpoint)를 선택한다면, 토큰화된 입력(tokenized inputs)에 `token_type_ids`가 존재하지 않을 수도 있습니다. 예를 들어, DistilBERT 모델을 사용하는 경우에는 tokenizer가 `token_type_ids`를 반환하지 않습니다. 모델이 사전학습 과정에서 이러한 형태의 입력 형식으로 학습을 진행했을 경우에만 반환됩니다.
+
+여기서, BERT는 토큰 타입 IDs를 사용하여 사전 학습되며, [1장](/course/chapter1)에서 설명한 마스킹된 언어 모델링 목적 외에 다음 문장 예측(next sentence prediction) 이라는 추가 목적이 있습니다. 이 작업의 목표는 문장 간의 관계를 모델링하는 것입니다.
+
+사전 학습 과정에서 다음 문장 예측(next sentence prediction)을 사용하면 모델에 무작위로 마스킹된 토큰(masked tokens)이 포함된 문장 쌍이 입력되고 두 번째 문장이 첫 번째 문장을 따르는지 여부를 예측하도록 요구됩니다. 학습 과정에서 이 작업(next sentence prediction)의 난도를 높이기 위해서, 입력의 약 50% 정도는 두 문장이 원본 문서에서 연속적으로 나타나는 쌍 집합이며, 나머지 50%는 문장 쌍을 서로 다른 문서에서 추출된 문장들로 구성하였습니다.
+
+일반적으로, 토큰화 완료된 입력에 `token_type_ids`가 있는지 여부에 대해 걱정할 필요가 없습니다. 토크나이저와 모델 모두에 동일한 체크포인트(checkpoint)를 사용하는 한, 토크나이저는 모델에 무엇을 제공해야 하는지 알고 있기 때문에 아무런 문제가 되지 않습니다.
+
+이제 토크나이저가 한 쌍의 문장을 처리하는 방법을 보았으므로, 이를 전체 데이터셋을 토큰화(tokenize)하는데 사용할 수 있습니다. [이전 장](/course/chapter2)에서처럼, 우리는 토크나이저에게 첫 번째 문장 리스트를 제공하고 그 다음 두 번째 문장 리스트를 제공함으로써 문장 쌍 리스트를 입력할 수 있습니다. 이것은 [2장](/course/chapter2)에서 본 패딩(padding) 및 절단(truncation) 옵션과도 호환됩니다. 따라서 학습 데이터셋을 전처리하는 한 가지 방법은 다음과 같습니다:
+
+```py
+tokenized_dataset = tokenizer(
+    raw_datasets["train"]["sentence1"],
+    raw_datasets["train"]["sentence2"],
+    padding=True,
+    truncation=True,
+)
+```
+
+이 방법은 잘 작동하지만, `input_ids`, `attention_mask`, `token_type_ids` 및 데이터가 담겨진 다차원 리스트가 키로 지정된 `tokenized_dataset`이라는 별도의 파이썬 딕셔너리를 반환하는 단점이 있습니다. 또한 이 방법은 토큰화하는 동안 전체 데이터셋을 저장할 충분한 공간의 RAM이 있는 경우에만 작동합니다. 반면, 🤗Datasets 라이브러리의 데이터셋들은 디스크에 저장된 [Apache Arrow](https://arrow.apache.org/) 파일이므로, 요청한 샘플만 메모리에 로드된 상태로 유지합니다.
+
+특정 데이터를 dataset 객체로 유지하기 위해 [`Dataset.map()`](https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map) 메서드를 사용합니다. 이 방법은 토큰화(tokenization) 외에 더 많은 전처리가 필요한 경우 유연성을 발휘합니다. map() 메서드는 데이터셋의 개별 요소에 함수(function)를 적용하여 작동하므로 입력을 토큰화하는 함수를 정의해 보겠습니다:
+
+```py
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+```
+
+이 함수는 데이터셋의 개별 항목이 담겨진 딕셔너리를 매개변수로 입력받아서 `input_ids`, `attention_mask` 및 `token_type_ids` 키가 지정된 새로운 딕셔너리를 반환합니다. 이전에 본 것처럼 `tokenizer`는 문장 쌍 리스트에서 작동하기 때문에 `example` 딕셔너리에 여러 샘플(각 키가 문장 목록임)이 포함된 경우에도 작동합니다. 이렇게 하면 `map()` 호출에서 `batched=True` 옵션을 사용할 수 있어 토큰화 속도가 크게 빨라집니다. `tokenizer`는 [🤗 Tokenizers](https://github.com/huggingface/tokenizers) 라이브러리에서 Rust로 작성된 또 다른 토크나이저에 의해 지원됩니다. 이 토크나이저는 매우 빠를 수 있지만, 한 번에 많은 입력을 제공하는 경우에만 그렇습니다.
+
+일단 현재는 토큰화 함수에서 `padding` 매개변수를 생략했습니다. 이는 모든 샘플들을 최대 길이로 채우는 것(padding)이 효율적이지 않기 때문입니다. 배치(batch) 형태로 실행할 때 샘플을 채우는 것(padding)이 효과를 발휘합니다. 그러면 전체 데이터셋에서의 최대 길이가 아니라 해당 배치(batch) 내에서의 최대 길이로 채우기만(padding) 하면 되기 때문입니다. 이것은 입력의 길이가 매우 가변적일 때 많은 시간과 처리 능력을 절약할 수 있습니다!
+
+다음은 한 번에 모든 데이터셋에 토큰화 기능을 적용하는 방법입니다. `map` 메서드 호출에서 `batched=True`를 사용하므로 함수가 각 요소에 개별적으로 적용되지 않고 데이터셋의 하부집합, 즉 각 배치(batch) 내에 존재하는 모든 요소들에 한꺼번에 적용됩니다. 이 방법은 더 빠른 전처리를 가능하게 합니다:
+
+```py
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+tokenized_datasets
+```
+
+🤗Datasets 라이브러리는 데이터셋(datasets)에 새로운 필드들을 추가합니다. 이 필드들은 전처리 함수에서 반환된 사전의 각 키(`input_ids`, `token_type_ids`, `attention_mask`)에 해당합니다.
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 3668
+    })
+    validation: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 408
+    })
+    test: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 1725
+    })
+})
+```
+
+`num_proc` 매개변수를 전달하여 `map()`으로 전처리 기능을 적용할 때 다중 처리(multi-processing)를 사용할 수도 있습니다. 🤗Tokenizers 라이브러리는 샘플을 더 빠르게 토큰화하기 위해 이미 다중 스레드(multiple threads)를 사용하지만, 이 라이브러리에서 지원하는 "빠른 토크나이저(fast tokenizer)"를 사용하지 않는 경우 전처리 속도가 빨라질 수 있습니다.
+
+위의 `tokenize_function`은 `input_ids`, `attention_mask` 및 `token_type_ids` 키가 존재하는 딕셔너리를 반환하므로 이 3개의 새로운 필드가 데이터셋의 모든 분할(학습, 검증, 평가)에 추가됩니다. 전처리 함수가 `map()`을 적용한 데이터셋의 기존 키들 즉, `idx`, `label` 등에 대한 새로운 값을 반환한 경우 기존 필드(`idx`, `label`, `sentence1`, `sentence2` 등)를 변경할 수도 있습니다.
+
+마지막으로 해야 할 일은 전체 요소들을 배치(batch)로 분리할 때 가장 긴 요소의 길이로 모든 예제를 채우는(padding) 것입니다. 이를 *동적 패딩(dynamic padding)*이라고 합니다.
+
+### 동적 패딩[[dynamic-padding]]
+
+<Youtube id="7q5NyFT8REg"/>
+
+{#if fw === 'pt'}
+샘플들을 함께 모아서 지정된 크기의 배치(batch)로 구성하는 역할을 하는 함수를 *콜레이트 함수(collate function)* 라고 합니다. 이 함수는 `DataLoader`를 빌드(build)할 때 전달할 수 있는 매개변수입니다. 기본값은 단순히 샘플들을 PyTorch 텐서로 변환하고 결합하는 함수입니다. 만일 대상 샘플들이 리스트, 튜플 혹은 딕셔너리면 재귀적으로 이 작업이 수행됩니다. 우리 예제의 경우, 입력값이 모두 동일한 크기(길이)가 아니기 때문에 이 작업이 불가능합니다. 지금까지 우리는 일부러 패딩(padding) 작업을 미뤄왔는데 그 이유는 전체 데이터셋이 아닌 개별 배치(batch)에 대해서 별도로 패딩(padding)을 수행하여 과도하게 긴 입력으로 인한 과도한 패딩(padding) 작업을 방지하기 위함입니다. 이렇게 하면 학습 속도가 상당히 빨라지지만 TPU에서 학습하는 경우 문제가 발생할 수 있습니다. TPU는 추가적인 패딩(padding)이 필요한 경우에도 전체 데이터셋이 고정된 형태를 선호합니다.
+
+{:else}
+
+샘플들을 함께 모아서 지정된 크기의 배치(batch)로 구성하는 역할을 하는 함수를 *콜레이트 함수(collate function)* 라고 합니다. 기본값은 단순히 샘플들을 tf.Tensor로 변환하고 결합하는 함수입니다. 만일 대상 샘플들이 리스트, 튜플 혹은 딕셔너리면 재귀적으로 이 작업이 수행됩니다. 우리 예제의 경우, 입력값이 모두 동일한 크기(길이)가 아니기 때문에 이 작업이 불가능합니다. 지금까지 우리는 일부러 패딩(padding) 작업을 미뤄왔는데 그 이유는 전체 데이터셋이 아닌 개별 배치(batch)에 대해서 별도로 패딩(padding)을 수행하여 과도하게 긴 입력으로 인한 과도한 패딩(padding) 작업을 방지하기 위함입니다. 이렇게 하면 학습 속도가 상당히 빨라지지만 TPU에서 학습하는 경우 문제가 발생할 수 있습니다. TPU는 추가적인 패딩(padding)이 필요한 경우에도 전체 데이터셋이 고정된 형태를 선호합니다.
+
+{/if}
+
+실제로 이를 수행하려면, 배치(batch)로 분리하려는 데이터셋의 요소 각각에 대해서 정확한 수의 패딩(padding)을 적용할 수 있는 콜레이트 함수(collate function)를 정의해야 합니다. 다행히도, 🤗Transformers 라이브러리는 `DataCollatorWithPadding`을 통해 이러한 기능을 제공합니다. 이 함수는 토크나이저를 입력으로 받습니다. 그 이유는 사용하려는 패딩 토큰(padding token)이 무엇인지와 모델이 입력의 왼쪽 혹은 오른쯕 중 어느 쪽에 패딩(padding)을 수행할지를 파악하기 위함입니다. 이 입력 하나면 모든 것이 해결됩니다:
+
+{#if fw === 'pt'}
+```py
+from transformers import DataCollatorWithPadding
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+{:else}
+```py
+from transformers import DataCollatorWithPadding
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="tf")
+```
+{/if}
+
+이 새로운 함수를 테스트하기 위해 학습집합에서 배치(batch)로 묶을 몇개의 샘플들을 가져오겠습니다. 여기서는 필요하지도 않을 뿐더러 심지어 문자열까지도 포함하는 `idx`, `sentence1` 및 `sentence2` 열을 제거합니다(문자열로는 텐서를 생성할 수 없습니다). 아래에서 배치(batch) 내의 각 요소들의 길이를 살펴보세요:
+
+```py
+samples = tokenized_datasets["train"][:8]
+samples = {k: v for k, v in samples.items() if k not in ["idx", "sentence1", "sentence2"]}
+[len(x) for x in samples["input_ids"]]
+```
+
+```python out
+[50, 59, 47, 67, 59, 50, 62, 32]
+```
+
+당연히, 32에서 67까지 다양한 길이의 샘플을 얻을 수 있습니다. 동적 패딩(dynamic padding)은 이 배치(batch) 내의 모든 샘플들이 배치 내부에서 최대 길이인 67 길이로 패딩(padding)되어야 함을 의미합니다. 동적 패딩(dynamic padding)이 없으면 모든 샘플들은 전체 데이터셋의 최대 길이 또는 모델이 허용할 수 있는 최대 길이로 채워져야 합니다. `data_collator`가 동적으로 배치(batch)를 적절하게 패딩(padding)하는지 다시 확인합시다:
+
+```py
+batch = data_collator(samples)
+{k: v.shape for k, v in batch.items()}
+```
+
+{#if fw === 'tf'}
+
+```python out
+{'attention_mask': TensorShape([8, 67]),
+ 'input_ids': TensorShape([8, 67]),
+ 'token_type_ids': TensorShape([8, 67]),
+ 'labels': TensorShape([8])}
+```
+
+{:else}
+
+```python out
+{'attention_mask': torch.Size([8, 67]),
+ 'input_ids': torch.Size([8, 67]),
+ 'token_type_ids': torch.Size([8, 67]),
+ 'labels': torch.Size([8])}
+```
+
+좋습니다! 미가공(raw) 텍스트에서 모델이 처리할 수 있는 배치(batch) 형태로 변경되었으므로, 이제 미세 조정(fine-tuning)할 준비가 되었습니다!
+
+{/if}
+
+<Tip>
+
+✏️ **직접 해보기** GLUE SST-2 데이터 세트에서 전처리를 복제합니다. 쌍이 아닌 단문으로 구성되어 있어서 조금 다르지만, 나머지는 똑같이 보여야 해요. 더 어려운 문제를 원한다면 GLUE 작업에 사용할 수 있는 전처리 함수를 작성해 보세요.
+
+</Tip>
+
+{#if fw === 'tf'}
+
+이제 데이터셋과 데이터 콜레이터가 준비되었으므로 이들을 함께 사용해야 합니다. 우리는 일일이 배치를 로드하고 콜레이션하는 수고스러운 작업을 직접 수행할 수도 있지만, 그렇게 하면 많은 작업이 필요하고 성능도 그다지 좋지 않을 것입니다. 대신, 이 문제에 대한 효율적인 해결책을 제공하는 간단한 메서드가 있습니다: `to_tf_dataset()`. 이 메서드는 선택적인 콜레이션 함수와 함께 데이터셋을 `tf.data.Dataset`으로 래핑합니다. `tf.data.Dataset`은 Keras의 `model.fit()`에 사용할 수 있는 네이티브 TensorFlow 형식입니다. 따라서 이 한 가지 메서드로 🤗 Dataset을 훈련에 적합한 형식으로 바로 변환할 수 있습니다. 이제 데이터셋과 함께 이 메서드가 어떻게 작동하는지 살펴보겠습니다!
+
+```py
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+
+tf_validation_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "token_type_ids"],
+    label_cols=["labels"],
+    shuffle=False,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+```
+
+그것으로 끝입니다! 데이터 전처리의 모든 어려운 작업을 마치고 나면, 훈련은 쉽게 진행될 것입니다. 그 다음 강의에서 이러한 데이터셋을 활용할 수 있습니다.
+
+{/if}
