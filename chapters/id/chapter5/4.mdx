@@ -1,0 +1,304 @@
+# Big data? 🤗 Datasets siap membantu![[big-data-datasets-to-the-rescue]]
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section4.ipynb"},
+]} />
+
+Saat ini, bukan hal yang aneh jika kamu harus bekerja dengan dataset berukuran beberapa gigabyte, terutama jika kamu berencana melatih model transformer seperti BERT atau GPT-2 dari awal. Dalam kasus seperti ini, bahkan hanya *memuat* datanya saja sudah bisa menjadi tantangan. Misalnya, korpus WebText yang digunakan untuk melatih GPT-2 terdiri dari lebih dari 8 juta dokumen dan 40 GB teks — memuatnya ke dalam RAM laptop bisa bikin "serangan jantung"!
+
+Untungnya, 🤗 Datasets dirancang untuk mengatasi keterbatasan ini. Library ini membebaskanmu dari masalah manajemen memori dengan memperlakukan dataset sebagai file _memory-mapped_, dan dari batas penyimpanan hard disk dengan fitur _streaming_ entri dari korpus.
+
+<Youtube id="JwISwTCPPWo"/>
+
+Di bagian ini, kita akan menjelajahi fitur-fitur tersebut menggunakan korpus besar berukuran 825 GB yang dikenal sebagai [The Pile](https://pile.eleuther.ai). Ayo mulai!
+
+## Apa itu The Pile?[[what-is-the-pile]]
+
+The Pile adalah korpus teks berbahasa Inggris yang dibuat oleh [EleutherAI](https://www.eleuther.ai) untuk melatih model bahasa skala besar. Korpus ini mencakup berbagai macam dataset, mulai dari artikel ilmiah, repositori kode GitHub, hingga teks web yang telah difilter. Korpus pelatihan ini tersedia dalam [potongan 14 GB](https://the-eye.eu/public/AI/pile/), dan Anda juga bisa mengunduh beberapa [komponen individual](https://the-eye.eu/public/AI/pile_preliminary_components/). Mari kita mulai dengan melihat dataset PubMed Abstracts, yaitu korpus abstrak dari 15 juta publikasi biomedis di [PubMed](https://pubmed.ncbi.nlm.nih.gov/). Dataset ini menggunakan [format JSON Lines](https://jsonlines.org) dan dikompresi menggunakan pustaka `zstandard`, jadi pertama-tama kita perlu menginstalnya:
+
+```py
+!pip install zstandard
+```
+
+Selanjutnya, kita bisa memuat dataset menggunakan metode file jarak jauh yang sudah kita pelajari di [bagian 2](/course/chapter5/2):
+
+```py
+from datasets import load_dataset
+
+# Ini akan memakan waktu beberapa menit, jadi silakan ngopi atau ngeteh dulu :)
+data_files = "https://the-eye.eu/public/AI/pile_preliminary_components/PUBMED_title_abstracts_2019_baseline.jsonl.zst"
+pubmed_dataset = load_dataset("json", data_files=data_files, split="train")
+pubmed_dataset
+```
+
+```python out
+Dataset({
+    features: ['meta', 'text'],
+    num_rows: 15518009
+})
+```
+
+Kita bisa melihat bahwa dataset ini memiliki **15.518.009 baris** dan **2 kolom** — banyak sekali!
+
+<Tip>
+
+✎ Secara default, 🤗 Datasets akan mengekstrak file yang dibutuhkan untuk memuat dataset. Jika kamu ingin menghemat ruang penyimpanan, kamu bisa menambahkan `DownloadConfig(delete_extracted=True)` ke argumen `download_config` di `load_dataset()`. Lihat [dokumentasi](https://huggingface.co/docs/datasets/package_reference/builder_classes#datasets.DownloadConfig) untuk info lebih lanjut.
+
+</Tip>
+
+Mari kita lihat isi dari contoh pertama:
+
+```py
+pubmed_dataset[0]
+```
+
+```python out
+{
+ 'meta': {'pmid': 11409574, 'language': 'eng'},
+ 'text': 'Epidemiology of hypoxaemia in children with acute lower respiratory infection.\nTo determine the prevalence of hypoxaemia in children aged under 5 years suffering acute lower respiratory infections (ALRI), the risk factors for hypoxaemia in children under 5 years of age with ALRI, and the association of hypoxaemia with an increased risk of dying in children of the same age ...'
+}
+```
+
+Oke, ini tampaknya adalah abstrak dari artikel jurnal medis. Sekarang mari kita lihat berapa banyak RAM yang digunakan untuk memuat dataset ini!
+
+## Keajaiban memory mapping[[the-magic-of-memory-mapping]]
+
+Salah satu cara sederhana untuk mengukur penggunaan memori di Python adalah dengan menggunakan pustaka [`psutil`](https://psutil.readthedocs.io/en/latest/), yang bisa diinstal seperti ini:
+
+```python
+!pip install psutil
+```
+
+Pustaka ini menyediakan kelas `Process` yang memungkinkan kita memeriksa penggunaan memori proses saat ini:
+
+```py
+import psutil
+
+# memory_info diekspresikan dalam byte, jadi kita konversi ke megabyte
+print(f"RAM used: {psutil.Process().memory_info().rss / (1024 * 1024):.2f} MB")
+```
+
+```python out
+RAM used: 5678.33 MB
+```
+
+Di sini, atribut `rss` mengacu pada _resident set size_, yaitu bagian dari memori yang digunakan suatu proses di RAM. Pengukuran ini juga mencakup memori yang digunakan oleh interpreter Python dan pustaka-pustaka yang telah kita muat, sehingga jumlah memori yang sebenarnya digunakan untuk memuat dataset sedikit lebih kecil. Sebagai perbandingan, mari kita lihat seberapa besar ukuran dataset di penyimpanan disk, menggunakan atribut `dataset_size`. Karena hasilnya diekspresikan dalam byte seperti sebelumnya, kita perlu mengonversinya secara manual ke dalam satuan gigabyte:
+
+```py
+print(f"Dataset size in bytes: {pubmed_dataset.dataset_size}")
+size_gb = pubmed_dataset.dataset_size / (1024**3)
+print(f"Dataset size (cache file) : {size_gb:.2f} GB")
+```
+
+```python out
+Dataset size in bytes : 20979437051
+Dataset size (cache file) : 19.54 GB
+```
+
+Bagus — meskipun ukurannya hampir 20 GB, kita bisa memuat dan mengakses dataset ini dengan konsumsi RAM yang jauh lebih kecil!
+
+<Tip>
+
+✏️ **Coba sendiri!** Pilih salah satu [komponen](https://the-eye.eu/public/AI/pile_preliminary_components/) dari The Pile yang ukurannya lebih besar dari RAM laptop/komputer kamu, muat menggunakan 🤗 Datasets, dan ukur penggunaan RAM-nya. Untuk hasil akurat, lakukan pengukuran di proses baru. Kamu bisa menemukan ukuran dekompresi setiap subset di Tabel 1 dari [makalah The Pile](https://arxiv.org/abs/2101.00027).
+
+</Tip>
+
+Jika kamu terbiasa dengan Pandas, hasil ini mungkin mengejutkan karena aturan umum Wes Kinney yang terkenal bahwa kamu biasanya butuh **5 sampai 10 kali lebih banyak RAM** dibandingkan ukuran dataset. Lantas, bagaimana 🤗 Datasets mengatasi masalah manajemen memori ini? 🤗 Datasets memperlakukan setiap dataset sebagai [file memory-mapped](https://en.wikipedia.org/wiki/Memory-mapped_file), yang memungkinkan perpindahan antara RAM dan penyimpanan disk tanpa perlu memuat keseluruhan dataset ke dalam memori.
+
+File yang menggunakan memory-mapping juga dapat dibagikan ke berbagai proses secara bersamaan, yang memungkinkan metode seperti `Dataset.map()` diparalelkan tanpa perlu memindahkan atau menyalin dataset. Di balik layar, semua kemampuan ini dimungkinkan oleh format memori [Apache Arrow](https://arrow.apache.org) dan pustaka [`pyarrow`](https://arrow.apache.org/docs/python/index.html), yang membuat proses pemuatan dan pemrosesan data menjadi sangat cepat. (Untuk informasi lebih lanjut tentang Apache Arrow dan perbandingannya dengan Pandas, lihat [tulisan blog Dejan Simic](https://towardsdatascience.com/apache-arrow-read-dataframe-with-zero-memory-69634092b1a).) Untuk melihat cara kerjanya secara langsung, mari kita jalankan uji kecepatan kecil dengan melakukan iterasi pada semua elemen dalam dataset PubMed Abstracts:
+
+```py
+import timeit
+
+code_snippet = """batch_size = 1000
+
+for idx in range(0, len(pubmed_dataset), batch_size):
+    _ = pubmed_dataset[idx:idx + batch_size]
+"""
+
+time = timeit.timeit(stmt=code_snippet, number=1, globals=globals())
+print(
+    f"Iterated over {len(pubmed_dataset)} examples (about {size_gb:.1f} GB) in "
+    f"{time:.1f}s, i.e. {size_gb/time:.3f} GB/s"
+)
+```
+
+```python out
+Iterated over 15518009 examples (about 19.5 GB) in 64.2s, i.e. 0.304 GB/s
+```
+
+Di sini kita menggunakan modul `timeit` dari Python untuk mengukur waktu eksekusi yang dibutuhkan oleh `code_snippet`. Biasanya, Anda bisa melakukan iterasi terhadap dataset dengan kecepatan beberapa persepuluh GB/s hingga beberapa GB/s. Ini sangat cocok untuk sebagian besar aplikasi, tetapi terkadang Anda harus bekerja dengan dataset yang terlalu besar bahkan untuk disimpan di hard drive laptop Anda. Sebagai contoh, jika kita mencoba mengunduh seluruh isi The Pile, kita akan membutuhkan ruang disk kosong sebesar 825 GB! Untuk menangani kasus seperti ini, 🤗 Datasets menyediakan fitur streaming yang memungkinkan kita mengunduh dan mengakses elemen secara langsung (on the fly), tanpa perlu mengunduh seluruh dataset. Mari kita lihat bagaimana cara kerjanya.
+
+<Tip>
+
+💡 Di Jupyter Notebook kamu juga bisa mengukur waktu eksekusi cell menggunakan [`%%timeit`](https://ipython.readthedocs.io/en/stable/interactive/magics.html#magic-timeit).
+
+</Tip>
+
+## Streaming dataset[[streaming-datasets]]
+
+Untuk mengaktifkan **streaming**, cukup tambahkan argumen `streaming=True` saat memanggil `load_dataset()`. Contohnya, mari kita muat kembali dataset **PubMed Abstracts** dalam mode streaming:
+
+```py
+pubmed_dataset_streamed = load_dataset(
+    "json", data_files=data_files, split="train", streaming=True
+)
+```
+
+Alih-alih objek `Dataset` seperti sebelumnya, mode streaming akan mengembalikan objek `IterableDataset`. Sesuai namanya, kamu harus **mengiterasi** objek ini untuk mengakses elemennya. Untuk mengambil elemen pertama:
+
+```py
+next(iter(pubmed_dataset_streamed))
+```
+
+```python out
+{'meta': {'pmid': 11409574, 'language': 'eng'},
+  "text": "Epidemiologi hipoksemia pada anak-anak dengan infeksi saluran pernapasan bawah akut.\nUntuk menentukan prevalensi hipoksemia pada anak-anak di bawah usia 5 tahun yang menderita infeksi saluran pernapasan bawah akut (ALRI), faktor risiko hipoksemia pada anak-anak di bawah usia 5 tahun dengan ALRI, dan hubungan antara hipoksemia dengan peningkatan risiko kematian pada anak-anak dengan usia yang sama ..."}
+```
+
+Elemen dari dataset streaming bisa diproses langsung menggunakan `IterableDataset.map()`, yang berguna misalnya saat proses pelatihan model dan kamu ingin melakukan tokenisasi. Prosesnya sama seperti yang kita lakukan di [Bab 3](/course/chapter3), bedanya adalah hasilnya dikembalikan satu per satu:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+tokenized_dataset = pubmed_dataset_streamed.map(lambda x: tokenizer(x["text"]))
+next(iter(tokenized_dataset))
+```
+
+```python out
+{'input_ids': [101, 4958, 5178, 4328, 6779, ...], 'attention_mask': [1, 1, 1, 1, 1, ...]}
+```
+
+<Tip>
+
+💡 Untuk mempercepat proses tokenisasi pada dataset streaming, kamu bisa menambahkan `batched=True`. Ini akan memproses data per batch (default-nya 1000) dan bisa disesuaikan dengan `batch_size`.
+
+</Tip>
+
+Kamu juga bisa mengacak dataset streaming menggunakan `IterableDataset.shuffle()`, meskipun fungsinya berbeda dari `Dataset.shuffle()`. Di sini, elemen hanya diacak dalam `buffer_size` tertentu:
+
+```py
+shuffled_dataset = pubmed_dataset_streamed.shuffle(buffer_size=10_000, seed=42)
+next(iter(shuffled_dataset))
+```
+
+```python out
+{'meta': {'pmid': 11410799, 'language': 'eng'},
+ 'text': 'Randomized study of dose or schedule modification of granulocyte colony-stimulating factor in platinum-based chemotherapy...'}
+```
+
+Dalam contoh ini, kita memilih satu contoh secara acak dari 10.000 contoh pertama dalam buffer. Setelah sebuah contoh diakses, posisinya di buffer akan diisi oleh contoh berikutnya dari korpus (yaitu contoh ke-10.001 dalam kasus di atas). Anda juga dapat memilih elemen dari dataset yang sedang di-stream menggunakan fungsi `IterableDataset.take()` dan `IterableDataset.skip()`, yang cara kerjanya mirip dengan `Dataset.select()`. Misalnya, untuk memilih 5 contoh pertama dari dataset PubMed Abstracts, kita bisa melakukan hal berikut:
+
+```py
+dataset_head = pubmed_dataset_streamed.take(5)
+list(dataset_head)
+```
+
+```python out
+[
+  {
+    "meta": { "pmid": 11409574, "language": "eng" },
+    "text": "Epidemiologi hipoksemia pada anak-anak dengan infeksi saluran pernapasan bawah akut ..."
+  },
+  {
+    "meta": { "pmid": 11409575, "language": "eng" },
+    "text": "Tanda-tanda klinis hipoksemia pada anak-anak dengan infeksi saluran pernapasan bawah akut: indikator terapi oksigen ..."
+  },
+  {
+    "meta": { "pmid": 11409576, "language": "eng" },
+    "text": "Hipoksemia pada anak-anak dengan pneumonia berat di Papua Nugini ..."
+  },
+  {
+    "meta": { "pmid": 11409577, "language": "eng" },
+    "text": "Konsentrator dan tabung oksigen ..."
+  },
+  {
+    "meta": { "pmid": 11409578, "language": "eng" },
+    "text": "Pasokan oksigen di daerah pedesaan Afrika: sebuah pengalaman pribadi ..."
+  }
+]
+```
+
+Demikian pula, Anda dapat menggunakan fungsi `IterableDataset.skip()` untuk membuat pembagian data pelatihan dan validasi dari dataset yang telah diacak, seperti berikut:
+
+```py
+# Melewatkan 1000 contoh pertama untuk training
+train_dataset = shuffled_dataset.skip(1000)
+# Mengambil 1000 contoh pertama untuk validasi
+validation_dataset = shuffled_dataset.take(1000)
+```
+
+Mari kita akhiri eksplorasi kita tentang streaming dataset dengan sebuah aplikasi umum: menggabungkan beberapa dataset menjadi satu korpus. 🤗 Datasets menyediakan fungsi `interleave_datasets()` yang mengubah daftar objek `IterableDataset` menjadi satu `IterableDataset`, di mana elemen-elemen dari dataset baru diperoleh secara bergantian dari contoh-contoh sumber. Fungsi ini sangat berguna ketika Anda ingin menggabungkan dataset berukuran besar. Sebagai contoh, mari kita lakukan streaming subset FreeLaw dari The Pile, yaitu dataset sebesar 51 GB yang berisi opini hukum dari pengadilan-pengadilan di Amerika Serikat:
+
+```py
+law_dataset_streamed = load_dataset(
+    "json",
+    data_files="https://the-eye.eu/public/AI/pile_preliminary_components/FreeLaw_Opinions.jsonl.zst",
+    split="train",
+    streaming=True,
+)
+next(iter(law_dataset_streamed))
+```
+
+```python out
+{'meta': {'case_ID': '110921.json', ...}, 'text': '461 U.S. 238 (1983)...'}
+```
+
+Dataset ini cukup besar untuk membuat laptop kewalahan, tetapi dengan streaming kita bisa mengaksesnya dengan lancar! Sekarang, mari kita **gabungkan** PubMed dan FreeLaw:
+
+```py
+from itertools import islice
+from datasets import interleave_datasets
+
+combined_dataset = interleave_datasets([pubmed_dataset_streamed, law_dataset_streamed])
+list(islice(combined_dataset, 2))
+```
+
+```python out
+[
+  {
+    "meta": { "pmid": 11409574, "language": "eng" },
+    "text": "Epidemiologi hipoksemia pada anak-anak dengan infeksi saluran pernapasan bawah akut ..."
+  },
+  {
+    "meta": {
+      "case_ID": "110921.json",
+      "case_jurisdiction": "scotus.tar.gz",
+      "date_created": "2010-04-28T17:12:49Z"
+    },
+    "text": "\n461 U.S. 238 (1983)\nOLIM DKK.\nlawan\nWAKINEKONA\nNo. 81-1581.\nMahkamah Agung Amerika Serikat.\nDisidangkan pada 19 Januari 1983.\nDiputuskan pada 26 April 1983.\nBANDING KEPADA PENGADILAN BANDING AMERIKA SERIKAT UNTUK SIRKUIT KESEMBILAN\n*239 Michael A. Lilly, Wakil Jaksa Agung Utama Hawaii, menyampaikan argumen untuk para pemohon. Bersamanya dalam dokumen tertulis adalah James H. Dannenberg, Wakil Jaksa Agung..."
+  }
+]
+
+```
+
+Di sini kita menggunakan fungsi `islice()` dari modul `itertools` di Python untuk memilih dua contoh pertama dari dataset gabungan, dan kita bisa melihat bahwa contoh-contoh tersebut cocok dengan contoh pertama dari masing-masing dua dataset sumber.
+
+Terakhir, jika Anda ingin melakukan streaming seluruh isi The Pile yang berukuran 825 GB, Anda bisa mengambil semua berkas yang telah disiapkan dengan cara berikut:
+
+```py
+base_url = "https://the-eye.eu/public/AI/pile/"
+data_files = {
+    "train": [base_url + "train/" + f"{idx:02d}.jsonl.zst" for idx in range(30)],
+    "validation": base_url + "val.jsonl.zst",
+    "test": base_url + "test.jsonl.zst",
+}
+pile_dataset = load_dataset("json", data_files=data_files, streaming=True)
+next(iter(pile_dataset["train"]))
+```
+
+```python out
+{'meta': {'pile_set_name': 'Pile-CC'}, 'text': 'It is done, and submitted...'}
+```
+
+<Tip>
+
+✏️ **Coba sendiri!** Gunakan salah satu korpus besar seperti [`mc4`](https://huggingface.co/datasets/mc4) atau [`oscar`](https://huggingface.co/datasets/oscar) untuk membuat dataset multibahasa streaming yang mencerminkan proporsi bahasa yang digunakan di suatu negara. Misalnya: di Swiss ada 4 bahasa nasional — Jerman, Prancis, Italia, dan Romansh — kamu bisa membuat korpus Swiss dengan sampling subset Oscar berdasarkan proporsi bahasa tersebut.
+
+</Tip>
+
+Sekarang kamu sudah punya semua alat yang dibutuhkan untuk **memuat dan memproses dataset dari berbagai ukuran dan jenis** — tapi, kecuali kamu sangat beruntung, akan tiba waktunya kamu harus membuat dataset sendiri untuk menyelesaikan masalah tertentu. Itulah yang akan kita bahas di bagian selanjutnya!

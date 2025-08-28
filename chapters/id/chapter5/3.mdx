@@ -1,0 +1,740 @@
+# Saatnya memotong dan memilah data[[time-to-slice-and-dice]]
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+]} />
+
+Sebagian besar waktu, data yang kamu kerjakan tidak akan langsung siap untuk digunakan dalam pelatihan model. Di bagian ini kita akan menjelajahi berbagai fitur yang disediakan oleh 🤗 Datasets untuk membersihkan dataset-mu.
+
+<Youtube id="tqfSFcPMgOI"/>
+
+## Memotong dan memilah data[[slicing-and-dicing-our-data]]
+
+Mirip dengan Pandas, 🤗 Datasets menyediakan beberapa fungsi untuk memanipulasi isi objek `Dataset` dan `DatasetDict`. Kita sudah pernah bertemu dengan metode `Dataset.map()` di [Bab 3](/course/chapter3), dan di bagian ini kita akan menjelajahi beberapa fungsi lainnya yang tersedia.
+
+Untuk contoh ini kita akan menggunakan [Drug Review Dataset](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29) yang dihosting di [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/ml/index.php), yang berisi ulasan pasien tentang berbagai obat, kondisi yang diobati, dan penilaian kepuasan dari 1 sampai 10 bintang.
+
+Pertama kita perlu mengunduh dan mengekstrak data, yang bisa dilakukan dengan perintah `wget` dan `unzip`:
+
+```py
+!wget "https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip"
+!unzip drugsCom_raw.zip
+```
+
+Karena TSV adalah varian dari CSV yang menggunakan tab sebagai pemisah, kita dapat memuat file ini menggunakan skrip pemuatan `csv` dan menetapkan argumen `delimiter` dalam fungsi `load_dataset()` seperti berikut:
+
+```py
+from datasets import load_dataset
+
+data_files = {"train": "drugsComTrain_raw.tsv", "test": "drugsComTest_raw.tsv"}
+# \t adalah karakter tab di Python
+drug_dataset = load_dataset("csv", data_files=data_files, delimiter="\t")
+```
+
+Praktik yang baik saat melakukan analisis data adalah mengambil sampel acak kecil untuk memahami jenis data yang sedang kamu kerjakan. Di 🤗 Datasets, kita bisa membuat sampel acak dengan menggabungkan fungsi `Dataset.shuffle()` dan `Dataset.select()`:
+
+```py
+drug_sample = drug_dataset["train"].shuffle(seed=42).select(range(1000))
+# Lihat beberapa contoh pertama
+drug_sample[:3]
+```
+
+```python out
+{'Unnamed: 0': [87571, 178045, 80482],
+ 'drugName': ['Naproxen', 'Duloxetine', 'Mobic'],
+ 'condition': ['Gout, Acute', 'ibromyalgia', 'Inflammatory Conditions'],
+ 'review': ['"like the previous person mention, I&#039;m a strong believer of aleve, it works faster for my gout than the prescription meds I take. No more going to the doctor for refills.....Aleve works!"',
+  '"I have taken Cymbalta for about a year and a half for fibromyalgia pain. It is great\r\nas a pain reducer and an anti-depressant, however, the side effects outweighed \r\nany benefit I got from it. I had trouble with restlessness, being tired constantly,\r\ndizziness, dry mouth, numbness and tingling in my feet, and horrible sweating. I am\r\nbeing weaned off of it now. Went from 60 mg to 30mg and now to 15 mg. I will be\r\noff completely in about a week. The fibro pain is coming back, but I would rather deal with it than the side effects."',
+  '"I have been taking Mobic for over a year with no side effects other than an elevated blood pressure.  I had severe knee and ankle pain which completely went away after taking Mobic.  I attempted to stop the medication however pain returned after a few days."'],
+ 'rating': [9.0, 3.0, 10.0],
+ 'date': ['September 2, 2015', 'November 7, 2011', 'June 5, 2013'],
+ 'usefulCount': [36, 13, 128]}
+```
+
+Perhatikan bahwa kita menetapkan seed pada `Dataset.shuffle()` untuk keperluan replikasi. `Dataset.select()` mengharapkan iterable berupa indeks, jadi kita gunakan `range(1000)` untuk mengambil 1.000 contoh pertama dari dataset yang sudah diacak. Dari sampel ini kita sudah bisa melihat beberapa hal menarik:
+
+* Kolom `Unnamed: 0` terlihat seperti ID anonim untuk tiap pasien.
+* Kolom `condition` mencampur label huruf besar dan kecil.
+* Ulasan memiliki panjang yang bervariasi dan mengandung pemisah baris Python (`\r\n`) serta karakter HTML seperti `&\#039;`.
+
+Mari kita lihat bagaimana cara menggunakan 🤗 Datasets untuk mengatasi masing-masing masalah ini. Untuk menguji hipotesis bahwa kolom `Unnamed: 0` adalah ID pasien, kita bisa menggunakan fungsi `Dataset.unique()` untuk memverifikasi apakah jumlah ID cocok dengan jumlah baris di setiap split:
+
+```py
+for split in drug_dataset.keys():
+    assert len(drug_dataset[split]) == len(drug_dataset[split].unique("Unnamed: 0"))
+```
+
+Hipotesis ini tampaknya benar, jadi mari kita rapikan dataset sedikit dengan mengganti nama kolom `Unnamed: 0` menjadi sesuatu yang lebih bermakna. Kita bisa menggunakan fungsi `DatasetDict.rename_column()` untuk mengganti nama kolom di kedua split sekaligus:
+
+```py
+drug_dataset = drug_dataset.rename_column(
+    original_column_name="Unnamed: 0", new_column_name="patient_id"
+)
+drug_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 161297
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 53766
+    })
+})
+```
+
+<Tip>
+
+✏️ **Coba sendiri!** Gunakan fungsi `Dataset.unique()` untuk menemukan jumlah obat dan kondisi unik di data pelatihan dan pengujian.
+
+</Tip>
+
+Selanjutnya, mari kita normalisasi semua label di kolom `condition` menggunakan `Dataset.map()`. Seperti saat kita melakukan tokenisasi di [Bab 3](/course/chapter3), kita dapat mendefinisikan fungsi sederhana yang diterapkan ke semua baris dalam setiap split:
+
+```py
+def lowercase_condition(example):
+    return {"condition": example["condition"].lower()}
+
+
+drug_dataset.map(lowercase_condition)
+```
+
+```python out
+AttributeError: 'NoneType' object has no attribute 'lower'
+```
+
+Oh tidak, kita menemui masalah! Dari error tersebut kita tahu bahwa beberapa entri di kolom `condition` bernilai `None`, yang tidak bisa diubah menjadi huruf kecil. Mari kita hilangkan baris-baris ini menggunakan `Dataset.filter()`, yang bekerja mirip seperti `map()` dan mengharapkan fungsi yang menerima satu contoh dataset. Daripada menulis fungsi eksplisit seperti:
+
+```py
+def filter_nones(x):
+    return x["condition"] is not None
+```
+
+Alih-alih menjalankan `drug_dataset.filter(filter_nones)`, kita bisa melakukannya dalam satu baris menggunakan _lambda function_. Dalam Python, lambda function adalah fungsi kecil yang bisa Anda definisikan tanpa harus memberi nama eksplisit. Bentuk umumnya adalah:
+
+```
+lambda <argumen> : <ekspresi>
+```
+
+di mana `lambda` adalah salah satu [kata kunci khusus](https://docs.python.org/3/reference/lexical_analysis.html#keywords) di Python, `<argumen>` adalah daftar nilai yang dipisahkan koma yang mendefinisikan input untuk fungsi, dan `<ekspresi>` mewakili operasi yang ingin Anda jalankan. Misalnya, kita bisa mendefinisikan fungsi lambda sederhana untuk menghitung kuadrat dari suatu angka seperti ini:
+
+```
+lambda x : x * x
+```
+
+Untuk menerapkan fungsi ini ke suatu input, kita perlu membungkusnya bersama input dalam tanda kurung:
+
+```py
+(lambda x: x * x)(3)
+```
+
+```python out
+9
+```
+
+Demikian juga, kita bisa mendefinisikan lambda function dengan beberapa argumen dengan memisahkannya menggunakan koma. Contohnya, kita bisa menghitung luas segitiga sebagai berikut:
+
+```py
+(lambda base, height: 0.5 * base * height)(4, 8)
+```
+
+```python out
+16.0
+```
+
+Lambda function sangat berguna saat Anda ingin mendefinisikan fungsi kecil yang hanya digunakan sekali. (Untuk informasi lebih lanjut, kami sarankan membaca [tutorial Real Python](https://realpython.com/python-lambda/) yang sangat baik oleh Andre Burgaud). Dalam konteks 🤗 Datasets, kita bisa menggunakan lambda function untuk mendefinisikan operasi `map` dan `filter` sederhana. Jadi, mari kita gunakan trik ini untuk menghilangkan entri `None` dalam dataset kita:
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["condition"] is not None)
+```
+
+Dengan entri `None` dihapus, kita bisa menormalisasi kolom `condition`:
+
+```py
+drug_dataset = drug_dataset.map(lowercase_condition)
+# Cek apakah berhasil
+drug_dataset["train"]["condition"][:3]
+```
+
+```python out
+['left ventricular dysfunction', 'adhd', 'birth control']
+```
+
+Berhasil! Sekarang setelah kita membersihkan labelnya, mari kita lanjutkan dengan membersihkan bagian ulasannya.
+
+## Membuat kolom baru[[creating-new-columns]]
+
+Setiap kali Anda bekerja dengan ulasan pelanggan, praktik yang baik adalah memeriksa jumlah kata dalam setiap ulasan. Sebuah ulasan bisa saja hanya terdiri dari satu kata seperti "Bagus!" atau berupa esai panjang dengan ribuan kata, dan tergantung pada kasus penggunaannya, Anda perlu menangani kedua ekstrem ini dengan cara yang berbeda. Untuk menghitung jumlah kata dalam setiap ulasan, kita akan menggunakan pendekatan sederhana dengan memisahkan setiap teks berdasarkan spasi.
+
+Mari kita definisikan fungsi untuk menghitung jumlah kata:
+
+```py
+def compute_review_length(example):
+    return {"review_length": len(example["review"].split())}
+```
+
+Berbeda dengan fungsi `lowercase_condition()`, fungsi `compute_review_length()` mengembalikan sebuah dictionary dengan key yang **tidak** sesuai dengan salah satu nama kolom dalam dataset. Dalam kasus ini, ketika `compute_review_length()` diberikan ke `Dataset.map()`, fungsi tersebut akan diterapkan ke semua baris dalam dataset untuk membuat kolom baru bernama `review_length`:
+
+```py
+drug_dataset = drug_dataset.map(compute_review_length)
+# Lihat contoh pertama
+drug_dataset["train"][0]
+```
+
+```python out
+{'patient_id': 206461,
+ 'drugName': 'Valsartan',
+ 'condition': 'left ventricular dysfunction',
+ 'review': '"It has no side effect, I take it in combination of Bystolic 5 Mg and Fish Oil"',
+ 'rating': 9.0,
+ 'date': 'May 20, 2012',
+ 'usefulCount': 27,
+ 'review_length': 17}
+```
+
+Seperti yang diharapkan, kolom `review_length` sudah ditambahkan. Kita bisa mengurutkan kolom ini dengan `Dataset.sort()` untuk melihat nilai ekstrem:
+
+```py
+drug_dataset["train"].sort("review_length")[:3]
+```
+
+```python out
+{'patient_id': [103488, 23627, 20558],
+ 'drugName': ['Loestrin 21 1 / 20', 'Chlorzoxazone', 'Nucynta'],
+ 'condition': ['birth control', 'muscle spasm', 'pain'],
+ 'review': ['"Excellent."', '"useless"', '"ok"'],
+ 'rating': [10.0, 1.0, 6.0],
+ 'date': ['November 4, 2008', 'March 24, 2017', 'August 20, 2016'],
+ 'usefulCount': [5, 2, 10],
+ 'review_length': [1, 1, 1]}
+```
+
+Seperti dugaan, ada ulasan yang hanya satu kata. Ini mungkin cukup untuk analisis sentimen, tapi tidak ideal untuk memprediksi kondisi.
+
+<Tip>
+
+🙋 Alternatif lain untuk menambahkan kolom baru ke dalam sebuah dataset adalah dengan menggunakan fungsi `Dataset.add_column()`. Fungsi ini memungkinkan Anda memberikan kolom sebagai daftar Python atau array NumPy, dan bisa sangat berguna dalam situasi di mana `Dataset.map()` kurang cocok untuk analisis Anda.
+
+</Tip>
+
+Mari kita gunakan fungsi `Dataset.filter()` untuk menghapus ulasan yang berisi kurang dari 30 kata. Mirip dengan yang kita lakukan pada kolom `condition`, kita bisa menyaring ulasan yang sangat pendek dengan mensyaratkan bahwa panjang ulasan harus melebihi ambang batas ini:
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["review_length"] > 30)
+print(drug_dataset.num_rows)
+```
+
+```python out
+{'train': 138514, 'test': 46108}
+```
+
+Seperti yang terlihat, ini menghapus sekitar 15% ulasan dari dataset pelatihan dan pengujian.
+
+<Tip>
+
+✏️ **Coba sendiri!** Gunakan `Dataset.sort()` untuk melihat ulasan dengan jumlah kata terbanyak. Lihat [dokumentasi](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.sort) untuk mengetahui cara mengurutkan secara menurun.
+
+</Tip>
+
+Hal terakhir yang perlu kita tangani adalah karakter HTML dalam ulasan. Kita bisa menggunakan modul `html` dari Python untuk mengubah kode HTML kembali ke karakter aslinya:
+
+```py
+import html
+
+text = "I&#039;m a transformer called BERT"
+html.unescape(text)
+```
+
+```python out
+"I'm a transformer called BERT"
+```
+
+Kita akan menggunakan `Dataset.map()` untuk mengganti semua karakter HTML dalam seluruh korpus:
+
+```python
+drug_dataset = drug_dataset.map(lambda x: {"review": html.unescape(x["review"])})
+```
+
+Seperti yang kamu lihat, metode `Dataset.map()` sangat berguna untuk memproses data — dan kita bahkan belum menyentuh semua fitur yang bisa dilakukannya!
+
+## Kekuatan super dari metode `map()`[[the-map-methods-superpowers]]
+
+Metode `Dataset.map()` memiliki argumen `batched` yang, jika disetel ke `True`, akan mengirim satu batch contoh ke fungsi map sekaligus (ukuran batch ini dapat diatur, default-nya 1000). Misalnya, fungsi `map()` sebelumnya yang digunakan untuk menghilangkan karakter HTML membutuhkan waktu agak lama untuk dijalankan. Kita bisa mempercepatnya dengan memproses beberapa elemen sekaligus menggunakan list comprehension.
+
+Saat kamu menentukan `batched=True`, fungsi akan menerima dictionary berisi field dari dataset, tapi setiap nilai sekarang berupa _list dari nilai_, bukan satu nilai saja. Nilai kembalian dari `Dataset.map()` juga harus dalam bentuk dictionary yang memiliki field yang ingin diubah atau ditambahkan, dengan daftar nilai. Berikut contoh lain untuk menghapus karakter HTML, kali ini dengan `batched=True`:
+
+```python
+new_drug_dataset = drug_dataset.map(
+    lambda x: {"review": [html.unescape(o) for o in x["review"]]}, batched=True
+)
+```
+
+Jika Anda menjalankan kode ini di dalam sebuah notebook, Anda akan melihat bahwa perintah ini dieksekusi jauh lebih cepat dibandingkan perintah sebelumnya. Dan bukan karena ulasan kita sudah tidak lagi mengandung karakter HTML — jika Anda menjalankan kembali instruksi dari bagian sebelumnya (tanpa `batched=True`), waktunya akan tetap sama seperti sebelumnya. Hal ini terjadi karena *list comprehension* umumnya lebih cepat dibanding menjalankan kode yang sama dalam sebuah *for loop*, dan kita juga mendapatkan peningkatan performa dengan mengakses banyak elemen sekaligus dibandingkan satu per satu.
+
+Menggunakan `Dataset.map()` dengan `batched=True` sangat penting untuk memanfaatkan kecepatan tokenizer "fast" yang akan kita temui di [Bab 6](/course/chapter6), yang bisa melakukan tokenisasi cepat terhadap banyak teks. Misalnya, untuk melakukan tokenisasi semua review obat dengan tokenizer cepat, kita bisa menggunakan fungsi berikut:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+
+
+def tokenize_function(examples):
+    return tokenizer(examples["review"], truncation=True)
+```
+
+Seperti yang kamu lihat di [Bab 3](/course/chapter3), kita bisa memberi satu atau beberapa contoh ke tokenizer, jadi kita bisa menggunakan fungsi ini dengan atau tanpa `batched=True`. Mari manfaatkan kesempatan ini untuk membandingkan performa dari berbagai opsi. Di notebook, kamu bisa mengukur waktu eksekusi dengan menambahkan `%time` di depan baris kode:
+
+```python no-format
+%time tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
+```
+
+Kamu juga bisa mengukur waktu seluruh cell dengan `%%time` di awal cell. Di perangkat kami, perintah ini memakan waktu 10.8 detik (terlihat dari "Wall time").
+
+<Tip>
+
+✏️ **Coba sendiri!** Jalankan perintah yang sama dengan dan tanpa `batched=True`, lalu coba juga dengan tokenizer lambat (tambah `use_fast=False` dalam `AutoTokenizer.from_pretrained()`) untuk melihat perbandingannya di perangkat kamu.
+
+</Tip>
+
+Berikut hasil yang kami dapat:
+
+| Opsi                       | Tokenizer Cepat | Tokenizer Lambat |
+|---------------------------|-----------------|------------------|
+| `batched=True`            | 10.8s           | 4menit 41detik   |
+| `batched=False`           | 59.2s           | 5menit 3detik    |
+
+Artinya, menggunakan tokenizer cepat dengan `batched=True` 30x lebih cepat dari tokenizer lambat tanpa batching — luar biasa! Ini alasan utama mengapa tokenizer cepat adalah default saat menggunakan `AutoTokenizer`. Mereka mencapai kecepatan ini karena di balik layar, tokenisasi dilakukan dalam bahasa **Rust**, yang memungkinkan eksekusi paralel secara efisien.
+
+Paralelisasi juga menjadi alasan mengapa tokenizer cepat bisa 6x lebih cepat saat menggunakan batching: kamu tidak bisa paralelkan satu proses tokenisasi, tapi kamu bisa memecah ribuan teks untuk diproses oleh beberapa thread/proses.
+
+`Dataset.map()` juga memiliki kemampuan paralelisasi. Karena tidak menggunakan Rust, tokenizer lambat tetap tidak bisa menandingi tokenizer cepat, tapi ini tetap membantu (terutama jika kamu menggunakan tokenizer yang belum mendukung versi cepat). Untuk mengaktifkan multiprocessing, gunakan argumen `num_proc` dan tentukan jumlah proses:
+
+```python
+slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False)
+
+
+def slow_tokenize_function(examples):
+    return slow_tokenizer(examples["review"], truncation=True)
+
+
+tokenized_dataset = drug_dataset.map(slow_tokenize_function, batched=True, num_proc=8)
+```
+
+Anda bisa bereksperimen sedikit dengan waktu eksekusi untuk menentukan jumlah proses yang optimal; dalam kasus kami, 8 tampaknya memberikan peningkatan kecepatan terbaik. Berikut adalah hasil yang kami peroleh dengan dan tanpa multiprocessing:
+
+Opsi              | Tokenizer Cepat | Tokenizer Lambat
+:----------------:|:---------------:|:----------------:
+`batched=True`    | 10.8 detik      | 4 menit 41 detik
+`batched=False`   | 59.2 detik      | 5 menit 3 detik
+`batched=True`, `num_proc=8`  | 6.52 detik      | 41.3 detik
+`batched=False`, `num_proc=8` | 9.49 detik      | 45.2 detik
+
+Itu adalah hasil yang jauh lebih masuk akal untuk tokenizer lambat, namun performa tokenizer cepat juga meningkat secara signifikan. Namun, perlu dicatat bahwa hal tersebut tidak selalu berlaku -- untuk nilai `num_proc` selain 8, pengujian kami menunjukkan bahwa lebih cepat menggunakan `batched=True` tanpa opsi tersebut. Secara umum, kami tidak menyarankan penggunaan multiprocessing Python untuk tokenizer cepat dengan `batched=True`.
+
+<Tip>
+
+Menggunakan `num_proc` untuk mempercepat proses sangat disarankan, **selama fungsi yang kamu gunakan tidak sudah memproses paralel secara internal**.
+
+</Tip>
+
+Semua fungsionalitas ini yang diringkas ke dalam satu metode saja sudah sangat mengagumkan, tetapi masih ada lagi! Dengan `Dataset.map()` dan `batched=True`, Anda bisa mengubah jumlah elemen dalam dataset Anda. Ini sangat berguna dalam banyak situasi, terutama ketika Anda ingin membuat beberapa fitur pelatihan dari satu contoh data, dan kita akan perlu melakukan ini sebagai bagian dari pra-pemrosesan untuk beberapa tugas NLP yang akan kita kerjakan di [Bab 7](/course/chapter7).
+
+<Tip>
+
+💡 Dalam pembelajaran mesin, *contoh (example)* biasanya didefinisikan sebagai sekumpulan *fitur* yang kita masukkan ke model. Dalam beberapa konteks, fitur ini adalah kolom dalam `Dataset`, tapi dalam kasus lain (seperti tanya jawab), satu contoh bisa menghasilkan beberapa fitur sekaligus.
+
+</Tip>
+
+Mari lihat bagaimana caranya! Kita akan tokenisasi dan potong contoh kita hingga maksimal 128 token, tapi kita minta tokenizer untuk mengembalikan *semua potongan teks* bukan hanya yang pertama. Ini bisa dilakukan dengan `return_overflowing_tokens=True`:
+
+```python
+def tokenize_and_split(examples):
+    return tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+```
+
+Mari kita uji ini pada satu contoh terlebih dahulu sebelum menggunakan `Dataset.map()` pada seluruh dataset:
+
+```python
+result = tokenize_and_split(drug_dataset["train"][0])
+[len(inp) for inp in result["input_ids"]]
+```
+
+```python out
+[128, 49]
+```
+
+Jadi, contoh pertama dalam set pelatihan kita menjadi dua fitur karena ditokenisasi melebihi jumlah token maksimum yang telah kita tentukan: yang pertama dengan panjang 128 dan yang kedua dengan panjang 49. Sekarang mari kita lakukan ini untuk semua elemen dalam dataset!
+
+```python
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+```
+
+```python out
+ArrowInvalid: Column 1 named condition expected length 1463 but got length 1000
+```
+
+Oh tidak! Itu tidak berhasil! Kenapa? Melihat pesan error akan memberi kita petunjuk: ada ketidaksesuaian panjang pada salah satu kolom, yang satu memiliki panjang 1.463 dan yang lainnya 1.000. Jika Anda sudah melihat [dokumentasi](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.map) `Dataset.map()`, Anda mungkin ingat bahwa yang diberikan ke fungsi yang kita mapping adalah jumlah sampel; di sini, 1.000 contoh menghasilkan 1.463 fitur baru, yang menyebabkan error pada bentuk (shape).
+
+Masalahnya adalah kita mencoba menggabungkan dua dataset dengan ukuran berbeda: kolom-kolom dari `drug_dataset` memiliki jumlah contoh tertentu (yaitu 1.000 seperti dalam pesan error), tetapi `tokenized_dataset` yang sedang kita buat memiliki lebih banyak (1.463 dalam pesan error; lebih dari 1.000 karena kita melakukan tokenisasi ulasan panjang menjadi lebih dari satu contoh dengan menggunakan `return_overflowing_tokens=True`). Ini tidak bisa dilakukan pada sebuah `Dataset`, jadi kita harus menghapus kolom-kolom dari dataset lama atau membuat ukurannya sama seperti pada dataset baru. Kita bisa melakukan yang pertama dengan argumen `remove_columns`:
+
+```python
+tokenized_dataset = drug_dataset.map(
+    tokenize_and_split, batched=True, remove_columns=drug_dataset["train"].column_names
+)
+```
+
+Sekarang berhasil. Kita bisa cek bahwa dataset baru memiliki jumlah elemen lebih banyak dari sebelumnya:
+
+```python
+len(tokenized_dataset["train"]), len(drug_dataset["train"])
+```
+
+```python out
+(206772, 138514)
+```
+
+Kita sempat menyebutkan bahwa kita juga bisa menangani masalah panjang yang tidak cocok dengan menyamakan ukuran kolom lama dengan kolom baru. Untuk melakukan ini, kita membutuhkan field `overflow_to_sample_mapping` yang dikembalikan oleh tokenizer saat kita menetapkan `return_overflowing_tokens=True`. Field ini memberikan pemetaan dari indeks fitur baru ke indeks contoh asalnya. Dengan itu, kita bisa mengaitkan setiap key yang ada di dataset asli dengan daftar nilai yang ukurannya tepat, dengan mengulangi nilai tiap contoh sebanyak jumlah fitur baru yang dihasilkannya:
+
+```py
+def tokenize_and_split(examples):
+    result = tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+    # Ambil pemetaan antara indeks baru dan lama
+    sample_map = result.pop("overflow_to_sample_mapping")
+    for key, values in examples.items():
+        result[key] = [values[i] for i in sample_map]
+    return result
+```
+
+Kita bisa melihat bahwa ini bekerja dengan `Dataset.map()` tanpa perlu menghapus kolom-kolom lama:
+
+```py
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+tokenized_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
+        num_rows: 206772
+    })
+    test: Dataset({
+        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
+        num_rows: 68876
+    })
+})
+```
+
+Kita mendapatkan jumlah fitur pelatihan yang sama seperti sebelumnya, tetapi kali ini kita mempertahankan semua kolom lama. Jika kamu membutuhkannya untuk pasca-pemrosesan setelah menerapkan model, pendekatan ini bisa sangat berguna.
+
+Sekarang kamu telah melihat bagaimana 🤗 Datasets dapat digunakan untuk melakukan praproses dataset dengan berbagai cara. Walaupun fungsi pemrosesan di 🤗 Datasets sudah mencakup sebagian besar kebutuhan pelatihan model, mungkin ada saatnya kamu perlu berpindah ke Pandas untuk menggunakan fitur yang lebih canggih seperti `DataFrame.groupby()` atau API tingkat tinggi untuk visualisasi. Untungnya, 🤗 Datasets dirancang agar interoperable dengan library seperti Pandas, NumPy, PyTorch, TensorFlow, dan JAX. Mari kita lihat bagaimana cara kerjanya.
+
+## Dari `Dataset` ke `DataFrame` dan sebaliknya[[from-datasets-to-dataframes-and-back]]
+
+<Youtube id="tfcY1067A5Q"/>
+
+Untuk memungkinkan konversi antar berbagai library pihak ketiga, 🤗 Datasets menyediakan fungsi `Dataset.set_format()`. Fungsi ini hanya mengubah **format keluaran** dataset, jadi kamu bisa berpindah ke format lain tanpa mempengaruhi **format data inti**, yang menggunakan Apache Arrow. Format ini diubah secara langsung. Untuk demontrasi, mari kita ubah dataset kita ke format Pandas:
+
+```py
+drug_dataset.set_format("pandas")
+```
+
+Sekarang saat kita mengakses elemen dari dataset, kita mendapatkan `pandas.DataFrame` alih-alih dictionary:
+
+```py
+drug_dataset["train"][:3]
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>patient_id</th>
+      <th>drugName</th>
+      <th>condition</th>
+      <th>review</th>
+      <th>rating</th>
+      <th>date</th>
+      <th>usefulCount</th>
+      <th>review_length</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>95260</td>
+      <td>Guanfacine</td>
+      <td>adhd</td>
+      <td>"My son is halfway through his fourth week of Intuniv..."</td>
+      <td>8.0</td>
+      <td>April 27, 2010</td>
+      <td>192</td>
+      <td>141</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>92703</td>
+      <td>Lybrel</td>
+      <td>birth control</td>
+      <td>"I used to take another oral contraceptive, which had 21 pill cycle, and was very happy- very light periods, max 5 days, no other side effects..."</td>
+      <td>5.0</td>
+      <td>December 14, 2009</td>
+      <td>17</td>
+      <td>134</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>138000</td>
+      <td>Ortho Evra</td>
+      <td>birth control</td>
+      <td>"This is my first time using any form of birth control..."</td>
+      <td>8.0</td>
+      <td>November 3, 2015</td>
+      <td>10</td>
+      <td>89</td>
+    </tr>
+  </tbody>
+</table>
+
+Mari kita buat `pandas.DataFrame` untuk seluruh set pelatihan dengan memilih semua elemen dari `drug_dataset["train"]`:
+
+```py
+train_df = drug_dataset["train"][:]
+```
+
+<Tip>
+
+🚨 Di balik layar, `Dataset.set_format()` mengubah format keluaran dari metode `__getitem__()` milik dataset. Artinya, saat kita ingin membuat objek baru seperti `train_df` dari `Dataset` dalam format `"pandas"`, kita perlu melakukan slicing seluruh dataset untuk mendapatkan `pandas.DataFrame`. Kamu bisa verifikasi bahwa `drug_dataset["train"]` tetap bertipe `Dataset`, terlepas dari format output-nya.
+
+</Tip>
+
+Dari sini, kita bisa menggunakan semua fitur Pandas yang kita inginkan. Contohnya, kita bisa melakukan chaining untuk menghitung distribusi kelas pada kolom `condition`:
+
+```py
+frequencies = (
+    train_df["condition"]
+    .value_counts()
+    .to_frame()
+    .reset_index()
+    .rename(columns={"index": "condition", "count": "frequency"})
+)
+frequencies.head()
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>condition</th>
+      <th>frequency</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>birth control</td>
+      <td>27655</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>depression</td>
+      <td>8023</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>acne</td>
+      <td>5209</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>anxiety</td>
+      <td>4991</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>pain</td>
+      <td>4744</td>
+    </tr>
+  </tbody>
+</table>
+
+Setelah selesai melakukan analisis di Pandas, kita bisa membuat objek `Dataset` baru dari `DataFrame` tersebut dengan menggunakan fungsi `Dataset.from_pandas()`:
+
+```py
+from datasets import Dataset
+
+freq_dataset = Dataset.from_pandas(frequencies)
+freq_dataset
+```
+
+```python out
+Dataset({
+    features: ['condition', 'frequency'],
+    num_rows: 819
+})
+```
+
+<Tip>
+
+✏️ **Coba sendiri!** Hitung rata-rata rating per obat, lalu simpan hasilnya ke dalam `Dataset` baru.
+
+</Tip>
+
+Ini mengakhiri tur kita terhadap berbagai teknik praproses data yang tersedia di 🤗 Datasets. Sebagai penutup bagian ini, mari kita buat *validation set* untuk menyiapkan dataset agar bisa digunakan melatih sebuah *classifier*. Sebelum itu, kita reset kembali format keluaran `drug_dataset` dari `"pandas"` ke `"arrow"`:
+
+```python
+drug_dataset.reset_format()
+```
+
+## Membuat validation set[[creating-a-validation-set]]
+
+Meskipun kita memiliki *test set* yang bisa digunakan untuk evaluasi, praktik terbaik adalah membiarkan *test set* tetap utuh dan membuat *validation set* terpisah selama pengembangan. Setelah kamu puas dengan performa model di *validation set*, kamu bisa melakukan pengecekan akhir pada *test set*. Proses ini membantu mengurangi risiko *overfitting* ke *test set*, yang bisa menyebabkan model gagal saat digunakan pada data nyata.
+
+🤗 Datasets menyediakan fungsi `Dataset.train_test_split()` yang mirip dengan fungsi populer dari `scikit-learn`. Mari kita gunakan untuk membagi *training set* menjadi *train* dan *validation set* (dengan `seed` untuk replikasi hasil):
+
+```py
+drug_dataset_clean = drug_dataset["train"].train_test_split(train_size=0.8, seed=42)
+# Ubah nama default "test" menjadi "validation"
+drug_dataset_clean["validation"] = drug_dataset_clean.pop("test")
+# Tambahkan "test set" ke `DatasetDict` kita
+drug_dataset_clean["test"] = drug_dataset["test"]
+drug_dataset_clean
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 110811
+    })
+    validation: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 27703
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 46108
+    })
+})
+```
+
+Mantap, kita telah menyiapkan dataset yang siap untuk digunakan dalam pelatihan model! Di [bagian 5](/course/chapter5/5) kita akan melihat bagaimana cara mengunggah dataset ke Hugging Face Hub, tapi untuk sekarang mari kita akhiri analisis ini dengan melihat beberapa cara menyimpan dataset ke penyimpanan lokal.
+
+## Menyimpan dataset[[saving-a-dataset]]
+
+<Youtube id="blF9uxYcKHo"/>
+
+Meskipun 🤗 Datasets akan menyimpan cache untuk setiap dataset yang diunduh dan operasi yang dilakukan padanya, terkadang kamu tetap ingin menyimpan dataset ke disk (misalnya, jika cache terhapus). Seperti yang ditunjukkan pada tabel berikut, 🤗 Datasets menyediakan tiga fungsi utama untuk menyimpan dataset ke dalam berbagai format:
+
+| Format Data |        Fungsi         |
+| :---------: | :-------------------: |
+|    Arrow    | `Dataset.save_to_disk()` |
+|     CSV     |    `Dataset.to_csv()`    |
+|    JSON     |   `Dataset.to_json()`    |
+
+Sebagai contoh, mari kita simpan dataset yang telah dibersihkan dalam format Arrow:
+
+```py
+drug_dataset_clean.save_to_disk("drug-reviews")
+```
+
+Ini akan membuat direktori dengan struktur berikut:
+
+```
+drug-reviews/
+├── dataset_dict.json
+├── test
+│   ├── dataset.arrow
+│   ├── dataset_info.json
+│   └── state.json
+├── train
+│   ├── dataset.arrow
+│   ├── dataset_info.json
+│   ├── indices.arrow
+│   └── state.json
+└── validation
+    ├── dataset.arrow
+    ├── dataset_info.json
+    ├── indices.arrow
+    └── state.json
+```
+
+Kita bisa melihat bahwa setiap *split* memiliki file *dataset.arrow* sendiri, bersama dengan metadata di *dataset_info.json* dan *state.json*. Kamu bisa menganggap format Arrow ini seperti tabel baris-kolom yang dioptimalkan untuk aplikasi performa tinggi yang memproses dataset besar.
+
+Setelah dataset disimpan, kita bisa memuatnya kembali menggunakan fungsi `load_from_disk()` seperti ini:
+
+```py
+from datasets import load_from_disk
+
+drug_dataset_reloaded = load_from_disk("drug-reviews")
+drug_dataset_reloaded
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 110811
+    })
+    validation: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 27703
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 46108
+    })
+})
+```
+
+Untuk format CSV dan JSON, kita harus menyimpan setiap *split* sebagai file terpisah. Salah satu caranya adalah dengan melakukan iterasi pada `DatasetDict`:
+
+```py
+for split, dataset in drug_dataset_clean.items():
+    dataset.to_json(f"drug-reviews-{split}.jsonl")
+```
+
+Ini akan menyimpan setiap split dalam [format JSON Lines](https://jsonlines.org), di mana setiap baris adalah satu entri JSON. Contoh baris pertama:
+
+```py
+!head -n 1 drug-reviews-train.jsonl
+```
+
+```python out
+{"patient_id":141780,"drugName":"Escitalopram","condition":"depression","review":"\"I seemed to experience the regular side effects of LEXAPRO, insomnia, low sex drive, sleepiness during the day. I am taking it at night because my doctor said if it made me tired to take it at night. I assumed it would and started out taking it at night. Strange dreams, some pleasant. I was diagnosed with fibromyalgia. Seems to be helping with the pain. Have had anxiety and depression in my family, and have tried quite a few other medications that haven't worked. Only have been on it for two weeks but feel more positive in my mind, want to accomplish more in my life. Hopefully the side effects will dwindle away, worth it to stick with it from hearing others responses. Great medication.\"","rating":9.0,"date":"May 29, 2011","usefulCount":10,"review_length":125}
+```
+
+Kita bisa memuat kembali file-file ini menggunakan teknik dari [bagian 2](/course/chapter5/2) seperti berikut:
+
+```py
+data_files = {
+    "train": "drug-reviews-train.jsonl",
+    "validation": "drug-reviews-validation.jsonl",
+    "test": "drug-reviews-test.jsonl",
+}
+drug_dataset_reloaded = load_dataset("json", data_files=data_files)
+```
+
+Dan selesai sudah eksplorasi kita mengenai *data wrangling* dengan 🤗 Datasets! Sekarang setelah kita memiliki dataset yang bersih dan siap digunakan untuk pelatihan model, berikut beberapa ide yang bisa kamu coba:
+
+1. Gunakan teknik dari [Bab 3](/course/chapter3) untuk melatih *classifier* yang bisa memprediksi kondisi pasien berdasarkan ulasan obat.
+2. Gunakan pipeline `summarization` dari [Bab 1](/course/chapter1) untuk membuat ringkasan dari ulasan pasien.
+
+Selanjutnya, kita akan melihat bagaimana 🤗 Datasets memungkinkan kamu bekerja dengan dataset berukuran besar tanpa membuat laptopmu kewalahan!
