@@ -1,0 +1,821 @@
+# Penerapan Inferensi yang Dioptimalkan
+
+Dalam bagian ini, kita akan mengeksplorasi kerangka kerja lanjutan untuk mengoptimalkan penerapan LLM: Text Generation Inference (TGI), vLLM, dan llama.cpp. Aplikasi-aplikasi ini terutama digunakan di lingkungan produksi untuk menyajikan LLM kepada pengguna. Bagian ini berfokus pada cara menerapkan kerangka kerja tersebut di produksi, bukan cara menggunakannya untuk inferensi di mesin tunggal.
+
+Kami akan membahas bagaimana alat-alat ini memaksimalkan efisiensi inferensi dan menyederhanakan penerapan Large Language Models di lingkungan produksi.
+
+## Panduan Pemilihan Kerangka Kerja
+
+TGI, vLLM, dan llama.cpp memiliki tujuan serupa namun memiliki karakteristik yang berbeda, sehingga lebih cocok untuk berbagai kasus penggunaan. Mari kita lihat perbedaan utama antara mereka, dengan fokus pada kinerja dan integrasi.
+
+### Manajemen Memori dan Performa
+
+**TGI** dirancang agar stabil dan dapat diprediksi di lingkungan produksi, menggunakan panjang urutan tetap untuk menjaga penggunaan memori yang konsisten. TGI mengelola memori menggunakan Flash Attention 2 dan teknik continuous batching. Ini berarti ia dapat memproses perhitungan attention secara sangat efisien dan menjaga GPU tetap sibuk dengan terus memberikan pekerjaan. Sistem ini dapat memindahkan bagian model antara CPU dan GPU sesuai kebutuhan, yang membantu menangani model yang lebih besar.
+
+![Flash Attention](https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/tgi/flash-attn.png)
+
+<Tip title="Cara Kerja Flash Attention">
+Flash Attention adalah teknik yang mengoptimalkan mekanisme attention dalam model transformer dengan mengatasi hambatan bandwidth memori. Seperti yang dibahas dalam [Bab 1.8](/course/chapter1/8), mekanisme attention memiliki kompleksitas kuadrat dan penggunaan memori yang tinggi, sehingga tidak efisien untuk urutan panjang.
+
+Inovasi utama terletak pada cara mengelola transfer memori antara High Bandwidth Memory (HBM) dan cache SRAM yang lebih cepat. Attention tradisional berulang kali mentransfer data antara HBM dan SRAM, menciptakan hambatan dan membuat GPU tidak aktif. Flash Attention memuat data sekali ke SRAM dan melakukan semua perhitungan di sana, meminimalkan transfer memori yang mahal.
+
+Meskipun manfaatnya paling besar saat pelatihan, penggunaan VRAM yang lebih rendah dan efisiensi Flash Attention juga sangat berguna saat inferensi, memungkinkan penyajian LLM yang lebih cepat dan skalabel.
+</Tip>
+
+**vLLM** menggunakan pendekatan berbeda dengan teknik bernama PagedAttention. Seperti sistem operasi mengelola memori dalam bentuk halaman, vLLM membagi memori model menjadi blok-blok kecil. Sistem cerdas ini memungkinkan penanganan permintaan berukuran berbeda secara fleksibel dan menghindari pemborosan memori. vLLM sangat efisien dalam berbagi memori antar permintaan dan mengurangi fragmentasi memori, menjadikan sistem lebih efisien secara keseluruhan.
+
+<Tip title="Cara Kerja PagedAttention">
+PagedAttention adalah teknik yang mengatasi hambatan kritis dalam inferensi LLM: manajemen memori KV cache. Seperti yang dijelaskan di [Bab 1.8](/course/chapter1/8), saat menghasilkan teks, model menyimpan key dan value attention (KV cache) untuk setiap token yang dihasilkan agar menghindari perhitungan ulang. KV cache dapat menjadi sangat besar, terutama untuk urutan panjang atau banyak permintaan secara bersamaan.
+
+Inovasi utama vLLM adalah:
+
+1. **Memory Paging**: KV cache dibagi menjadi "halaman" berukuran tetap (seperti virtual memory).
+2. **Penyimpanan Non-Kontigu**: Halaman tidak harus tersimpan secara berurutan di memori GPU.
+3. **Manajemen Tabel Halaman**: Tabel halaman melacak halaman mana milik urutan mana, memungkinkan akses efisien.
+4. **Berbagi Memori**: Untuk operasi seperti sampling paralel, halaman KV cache dapat dibagi antara banyak urutan.
+
+PagedAttention meningkatkan throughput hingga 24x dibandingkan metode tradisional — sangat signifikan untuk produksi. Untuk detail lebih lanjut, lihat [panduan vLLM](https://docs.vllm.ai/en/latest/design/kernel/paged_attention.html).
+</Tip>
+
+**llama.cpp** adalah implementasi C/C++ yang sangat dioptimalkan, awalnya dirancang untuk menjalankan model LLaMA di perangkat konsumen. Fokusnya pada efisiensi CPU dengan dukungan opsional untuk akselerasi GPU, ideal untuk lingkungan dengan sumber daya terbatas. llama.cpp menggunakan teknik kuantisasi untuk mengurangi ukuran dan kebutuhan memori model sambil mempertahankan kinerja yang baik. Ia juga menyediakan kernel yang dioptimalkan untuk berbagai arsitektur CPU dan manajemen KV cache dasar untuk menghasilkan token secara efisien.
+
+<Tip title="Cara Kerja Kuantisasi llama.cpp">
+Kuantisasi di llama.cpp menurunkan presisi bobot model dari 32-bit atau 16-bit float menjadi format yang lebih rendah seperti INT8 (8-bit), 4-bit, atau bahkan lebih kecil. Ini secara signifikan mengurangi penggunaan memori dan mempercepat inferensi tanpa kehilangan kualitas secara signifikan.
+
+Fitur kuantisasi utama di llama.cpp:
+1. **Banyak Tingkat Kuantisasi**: Mendukung kuantisasi 8-bit, 4-bit, 3-bit, hingga 2-bit
+2. **Format GGML/GGUF**: Format tensor khusus yang dioptimalkan untuk inferensi kuantisasi
+3. **Presisi Campuran**: Bisa menerapkan tingkat kuantisasi berbeda di bagian berbeda dari model
+4. **Optimasi Perangkat Keras**: Kode dioptimalkan untuk berbagai arsitektur CPU (AVX2, AVX-512, NEON)
+
+Pendekatan ini memungkinkan model dengan miliaran parameter dijalankan di perangkat konsumen dengan memori terbatas — sangat cocok untuk deployment lokal dan perangkat edge.
+</Tip>
+
+### Penerapan dan Integrasi
+
+Sekarang mari kita bahas perbedaan penerapan dan integrasi antar kerangka kerja.
+
+**TGI** unggul dalam penerapan tingkat enterprise dengan fitur siap-produksi. Ini memiliki dukungan bawaan untuk Kubernetes, pemantauan dengan Prometheus dan Grafana, penskalaan otomatis, serta fitur keamanan lengkap. Logging tingkat enterprise dan fitur seperti penyaringan konten serta pembatasan laju (rate limiting) membuatnya aman dan stabil.
+
+**vLLM** menawarkan pendekatan yang lebih fleksibel dan ramah pengembang. Dibangun dengan Python sebagai inti, vLLM bisa dengan mudah menggantikan API OpenAI di aplikasi yang sudah ada. Cocok digunakan dengan Ray untuk mengelola klaster, sangat ideal saat Anda membutuhkan performa tinggi dan kemampuan kustomisasi.
+
+**llama.cpp** mengutamakan kesederhanaan dan portabilitas. Implementasi servernya ringan dan dapat dijalankan di berbagai perangkat — dari server bertenaga tinggi hingga laptop konsumen dan beberapa perangkat seluler kelas atas. Dengan ketergantungan minimal dan inti C/C++ sederhana, sangat mudah diterapkan di lingkungan yang sulit menginstal framework Python. Server ini kompatibel dengan API OpenAI sambil tetap memiliki jejak sumber daya yang jauh lebih kecil dibanding solusi lain.
+
+## Memulai Penggunaan
+
+Mari kita eksplorasi cara menggunakan kerangka kerja ini untuk menerapkan LLM, dimulai dari instalasi dan pengaturan dasar.
+
+### Instalasi dan Pengaturan Dasar
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI mudah dipasang dan digunakan, dengan integrasi mendalam ke ekosistem Hugging Face.
+
+Pertama, jalankan server TGI menggunakan Docker:
+
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct
+```
+
+Lalu berinteraksi dengannya menggunakan `InferenceClient` dari Hugging Face:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(
+    model="http://localhost:8080",  # URL untuk server TGI
+)
+
+response = client.text_generation(
+    "Ceritakan sebuah kisah",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+    stop_sequences=[],
+)
+print(response.generated_text)
+
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Kamu adalah asisten yang membantu."},
+        {"role": "user", "content": "Ceritakan sebuah kisah"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Alternatif lain, gunakan klien OpenAI:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/v1",  # Pastikan menyertakan /v1
+    api_key="not-needed",  # Secara default, TGI tidak memerlukan API key
+)
+
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "Kamu adalah asisten yang membantu."},
+        {"role": "user", "content": "Ceritakan sebuah kisah"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp mudah dipasang dan digunakan, hanya membutuhkan dependensi minimal dan mendukung inferensi via CPU dan GPU.
+
+Pertama, instal dan bangun `llama.cpp`:
+
+```sh
+# Klon repositori
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Build project
+make
+
+# Download mode SmolLM2-1.7B-Instruct-GGUF 
+curl -L -O https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct.Q4_K_M.gguf
+```
+
+Lalu jalankan server-nya:
+
+```sh
+# Menjalankan server
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \
+    --n-gpu-layers 0   # Atur ke angka lebih tinggi untuk menggunakan GPU
+```
+
+Gunakan `InferenceClient` untuk mengaksesnya:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Inisialisasi klien yang mengarah ke server llama.cpp
+client = InferenceClient(
+    model="http://localhost:8080/v1", # URL untuk server llama.cpp
+    token="sk-no-key-required", # server llama.cpp memerlukan placeholder ini
+)
+
+# Pembuatan teks
+response = client.text_generation(
+    "Ceritakan sebuah kisah",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+
+print(response.generated_text)
+
+# Untuk format percakapan
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Kamu adalah asisten yang membantu."},
+        {"role": "user", "content": "Ceritakan sebuah kisah"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Atau gunakan klien OpenAI:
+
+```python
+from openai import OpenAI
+
+# Inisialisasi klien yang menunjuk ke server llama.cpp
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-no-key-required",  # server llama.cpp memerlukan placeholder ini
+)
+
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",  # Pengenal model bisa apa saja karena server hanya memuat satu model
+    messages=[
+        {"role": "system", "content": "Kamu adalah asisten yang membantu."},
+        {"role": "user", "content": "Ceritakan sebuah kisah"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+</hfoption>
+<hfoption value="vllm" label="vLLM">
+
+vLLM mudah dipasang, dengan kompatibilitas API OpenAI dan antarmuka Python bawaan.
+
+Jalankan server API vLLM:
+
+```sh
+python -m vllm.entrypoints.openai.api_server \
+    --model HuggingFaceTB/SmolLM2-360M-Instruct \
+    --host 0.0.0.0 \
+    --port 8000
+```
+
+Lalu berinteraksilah dengannya menggunakan `InferenceClient` dari Hugging Face:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Inisialisasi klien yang menunjuk ke endpoint vLLM
+client = InferenceClient(
+    model="http://localhost:8000/v1",  # URL untuk server vLLM
+)
+
+# Pembuatan teks
+response = client.text_generation(
+    "Ceritakan sebuah kisah",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# Untuk format percakapan
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Kamu adalah asisten yang membantu."},
+        {"role": "user", "content": "Ceritakan sebuah kisah"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Atau dengan klien OpenAI:
+
+```python
+from openai import OpenAI
+
+# Inisialisasi klien yang mengarah ke endpoint vLLM
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed",  # Secara bawaan, vLLM tidak memerlukan API key
+)
+
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "Kamu adalah asisten yang membantu."},
+        {"role": "user", "content": "Ceritakan sebuah kisah"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+</hfoption>
+
+</hfoptions>
+
+### Generasi Teks Dasar
+
+Mari kita lihat contoh-contoh generasi teks dengan berbagai framework:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+Pertama, jalankan TGI dengan parameter lanjutan:
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --max-total-tokens 4096 \
+    --max-input-length 3072 \
+    --max-batch-total-tokens 8192 \
+    --waiting-served-ratio 1.2
+```
+
+Gunakan `InferenceClient` untuk generasi teks yang fleksibel:
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080")
+
+# Contoh parameter lanjutan
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Kamu adalah seorang pendongeng kreatif."},
+        {"role": "user", "content": "Tulis sebuah cerita kreatif"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Generasi teks mentah
+response = client.text_generation(
+    "Tulis cerita kreatif tentang eksplorasi luar angkasa",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    do_sample=True,
+    details=True,
+)
+print(response.generated_text)
+```
+
+Atau gunakan klien OpenAI:
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+
+# Contoh parameter lanjutan
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "Kamu adalah seorang pendongeng kreatif."},
+        {"role": "user", "content": "Tulis sebuah cerita kreatif"},
+    ],
+    temperature=0.8,  # Lebih tinggi untuk hasil yang lebih kreatif
+)
+print(response.choices[0].message.content)
+```
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+Untuk `llama.cpp`, Anda dapat menetapkan parameter lanjutan saat menjalankan server:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \            # Ukuran konteks
+    --threads 8 \        # Jumlah thread CPU yang digunakan
+    --batch-size 512 \   # Ukuran batch evaluasi prompt
+    --n-gpu-layers 0     # Lapisan GPU (0 = hanya CPU)
+```
+
+Gunakan `InferenceClient`:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080/v1", token="sk-no-key-required")
+
+# Contoh parameter lanjutan
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Kamu adalah seorang pendongeng kreatif."},
+        {"role": "user", "content": "Tulis sebuah cerita kreatif"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Untuk generasi teks langsung
+response = client.text_generation(
+    "Tulis cerita kreatif tentang eksplorasi luar angkasa",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    details=True,
+)
+print(response.generated_text)
+```
+
+Atau gunakan klien OpenAI untuk mengontrol parameter sampling:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="sk-no-key-required")
+
+# Contoh parameter lanjutan
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",
+    messages=[
+        {"role": "system", "content": "Kamu adalah seorang pendongeng kreatif."},
+        {"role": "user", "content": "Tulis sebuah cerita kreatif"},
+    ],
+    temperature=0.8,
+    top_p=0.95,
+    frequency_penalty=0.5,
+    presence_penalty=0.5,
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+```
+
+Anda juga dapat menggunakan modul native `llama.cpp` untuk kontrol yang lebih mendetail:
+
+```python
+# Menggunakan paket llama-cpp-python untuk akses langsung ke model
+from llama_cpp import Llama
+
+# Memuat model
+llm = Llama(
+    model_path="smollm2-1.7b-instruct.Q4_K_M.gguf",
+    n_ctx=4096,
+    n_threads=8,
+    n_gpu_layers=0,
+)
+
+# Format prompt sesuai format yang diharapkan oleh model
+prompt = """<|im_start|>system
+Kamu adalah seorang pendongeng kreatif.
+<|im_end|>
+<|im_start|>user
+Tulis sebuah cerita kreatif
+<|im_end|>
+<|im_start|>assistant
+"""
+
+# Menghasilkan respon dengan kontrol parameter yang tepat
+output = llm(
+    prompt,
+    max_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    frequency_penalty=0.5,
+    presence_penalty=0.5,
+    stop=["<|im_end|>"],
+)
+
+print(output["choices"][0]["text"])
+```
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+Untuk penggunaan lanjutan dengan `vLLM`, Anda dapat menggunakan `InferenceClient`:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8000/v1")
+
+# Contoh parameter lanjutan
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "Kamu adalah seorang pendongeng kreatif."},
+        {"role": "user", "content": "Tulis sebuah cerita kreatif"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Untuk generasi teks langsung
+response = client.text_generation(
+    "Tulis cerita kreatif tentang eksplorasi luar angkasa",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+```
+
+Anda juga dapat menggunakan klien OpenAI:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# Contoh parameter lanjutan
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "Kamu adalah seorang pendongeng kreatif."},
+        {"role": "user", "content": "Tulis sebuah cerita kreatif"},
+    ],
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+```
+
+`vLLM` juga menyediakan antarmuka Python native dengan kontrol yang lebih rinci:
+
+```python
+from vllm import LLM, SamplingParams
+
+# Inisialisasi model dengan parameter lanjutan
+llm = LLM(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    max_num_seqs=256,
+    block_size=16,
+)
+
+# Konfigurasi parameter sampling
+sampling_params = SamplingParams(
+    temperature=0.8,  # Semakin tinggi, semakin kreatif
+    top_p=0.95,  # Pertimbangkan 95% dari massa probabilitas teratas
+    max_tokens=100,  # Panjang maksimum
+    presence_penalty=1.1,  # Kurangi pengulangan
+    frequency_penalty=1.1,  # Kurangi pengulangan
+    stop=["\n\n", "###"],  # Urutan berhenti
+)
+
+# Menghasilkan teks
+prompt = "Tulis sebuah cerita kreatif"
+outputs = llm.generate(prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+
+# Untuk interaksi gaya chat
+chat_prompt = [
+    {"role": "system", "content": "Kamu adalah seorang pendongeng kreatif."},
+    {"role": "user", "content": "Tulis sebuah cerita kreatif"},
+]
+formatted_prompt = llm.get_chat_template()(chat_prompt)
+outputs = llm.generate(formatted_prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+```
+</hfoption>
+
+</hfoptions>
+
+## Kontrol Generasi Lanjutan
+
+### Pemilihan Token dan Sampling
+
+Proses generasi teks melibatkan pemilihan token berikutnya di setiap langkah. Proses ini bisa dikendalikan melalui berbagai parameter:
+
+1. **Logit Mentah**: Probabilitas awal untuk setiap token
+2. **Temperature**: Mengatur tingkat kreativitas (semakin tinggi, semakin acak)
+3. **Top-p (Nucleus Sampling)**: Memfilter token dengan probabilitas kumulatif X%
+4. **Top-k Filtering**: Membatasi pilihan ke k token dengan kemungkinan tertinggi
+
+Berikut cara mengkonfigurasinya:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Tulis sebuah cerita kreatif",
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    max_new_tokens=100,
+    repetition_penalty=1.1,
+)
+```
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Melalui API OpenAI
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",  # Nama model (bisa berupa string apa saja untuk server llama.cpp)
+    prompt="Tulis sebuah cerita kreatif",
+    temperature=0.8,  # Semakin tinggi, semakin kreatif
+    top_p=0.95,  # Pertimbangkan 95% dari massa probabilitas teratas
+    frequency_penalty=1.1,  # Kurangi pengulangan
+    presence_penalty=0.1,  # Kurangi pengulangan
+    max_tokens=100,  # Panjang maksimum
+)
+
+# Melalui akses langsung llama-cpp-python
+output = llm(
+    "Tulis sebuah cerita kreatif",
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=100,
+    repeat_penalty=1.1,
+)
+```
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    temperature=0.8,  # Semakin tinggi, semakin kreatif
+    top_p=0.95,  # Pertimbangkan 95% dari massa probabilitas teratas
+    top_k=50,  # Pertimbangkan 50 token teratas
+    max_tokens=100,  # Panjang maksimum
+    presence_penalty=0.1,  # Kurangi pengulangan
+)
+llm.generate("Tulis sebuah cerita kreatif", sampling_params=params)
+```
+</hfoption>
+
+</hfoptions>
+
+### Mengontrol Pengulangan
+
+Semua framework menyediakan cara untuk mencegah generasi teks yang berulang:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+```python
+client.generate(
+    "Tulis teks yang bervariasi",
+    repetition_penalty=1.1,  # Penalti untuk token yang diulang
+    no_repeat_ngram_size=3,  # Cegah pengulangan 3-gram
+)
+```
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Melalui API OpenAI
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Tulis teks yang bervariasi",
+    frequency_penalty=1.1,  # Penalti untuk token yang sering muncul
+    presence_penalty=0.8,  # Penalti untuk token yang sudah muncul
+)
+
+# Melalui modul langsung
+output = llm(
+    "Tulis teks yang bervariasi",
+    repeat_penalty=1.1,  # Penalti untuk token yang diulang
+    frequency_penalty=0.5,  # Penalti tambahan untuk frekuensi tinggi
+    presence_penalty=0.5,  # Penalti tambahan untuk token yang sudah muncul
+)
+```
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    presence_penalty=0.1,  # Penalti untuk keberadaan token
+    frequency_penalty=0.1,  # Penalti untuk frekuensi token
+)
+```
+</hfoption>
+
+</hfoptions>
+
+### Kontrol Panjang dan Stop Sequences
+
+Anda bisa mengontrol panjang generasi dan menetapkan titik berhenti:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+```python
+client.generate(
+    "Hasilkan paragraf singkat",
+    max_new_tokens=100,
+    min_new_tokens=10,
+    stop_sequences=["\n\n", "###"],
+)
+```
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Melalui API OpenAI
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Hasilkan paragraf singkat",
+    max_tokens=100,
+    stop=["\n\n", "###"],
+)
+
+# Melalui modul langsung
+output = llm("Hasilkan paragraf singkat", max_tokens=100, stop=["\n\n", "###"])
+```
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    max_tokens=100,
+    min_tokens=10,
+    stop=["###", "\n\n"],
+    ignore_eos=False,
+    skip_special_tokens=True,
+)
+```
+</hfoption>
+
+</hfoptions>
+
+## Pengelolaan Memori
+
+Ketiga kerangka kerja menerapkan teknik manajemen memori canggih untuk efisiensi inferensi.
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI menggunakan Flash Attention 2 dan continuous batching:
+
+```sh
+docker run --gpus all -p 8080:80 \
+    --shm-size 1g \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct \
+    --max-batch-total-tokens 8192 \
+    --max-input-length 4096
+```
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp menggunakan kuantisasi dan tata letak memori yang dioptimalkan:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 2048 \               # Ukuran konteks
+    --threads 4 \           # Thread CPU
+    --n-gpu-layers 32 \     # Gunakan lebih banyak lapisan GPU untuk model yang lebih besar
+    --mlock \               # Kunci memori untuk mencegah swapping
+    --cont-batching         # Aktifkan batching kontinu
+```
+
+Untuk model terlalu besar bagi GPU Anda, gunakan offloading ke CPU:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --n-gpu-layers 20 \     # Simpan 20 lapisan pertama di GPU
+    --threads 8             # Gunakan lebih banyak thread CPU untuk lapisan CPU
+```
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM menggunakan PagedAttention untuk manajemen memori optimal:
+
+```python
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16,
+)
+
+llm = LLM(engine_args=engine_args)
+```
+</hfoption>
+
+</hfoptions>
+
+## Sumber
+
+- [Dokumentasi Text Generation Inference](https://huggingface.co/docs/text-generation-inference)
+- [Repositori GitHub TGI](https://github.com/huggingface/text-generation-inference)
+- [Dokumentasi vLLM](https://vllm.readthedocs.io/)
+- [Repositori GitHub vLLM](https://github.com/vllm-project/vllm)
+- [Makalah PagedAttention](https://arxiv.org/abs/2309.06180)
+- [Repositori llama.cpp](https://github.com/ggerganov/llama.cpp)
+- [Repositori llama-cpp-python](https://github.com/abetlen/llama-cpp-python)
