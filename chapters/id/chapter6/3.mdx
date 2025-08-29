@@ -1,0 +1,472 @@
+<FrameworkSwitchCourse {fw} />
+
+# Kekuatan Khusus Tokenizer Cepat[[fast-tokenizers-special-powers]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3_tf.ipynb"},
+]} />
+
+{/if}
+
+Di bagian ini, kita akan melihat lebih dekat kemampuan tokenizer di 🤗 Transformers. Sampai sekarang kita hanya menggunakannya untuk men-tokenisasi input atau mendekode ID kembali menjadi teks, tetapi tokenizer -- terutama yang didukung oleh pustaka 🤗 Tokenizers -- bisa melakukan jauh lebih banyak. Untuk mengilustrasikan fitur tambahan ini, kita akan menjelajahi cara mereplikasi hasil dari pipeline `token-classification` (yang kita sebut `ner`) dan `question-answering` yang pertama kali kita temui di [Bab 1](/course/chapter1).
+
+<Youtube id="g8quOxoqhHQ"/>
+
+Dalam pembahasan berikut, kita akan sering membedakan antara tokenizer "lambat" dan "cepat". Tokenizer lambat adalah tokenizer yang ditulis dalam Python di dalam pustaka 🤗 Transformers, sementara versi cepat disediakan oleh 🤗 Tokenizers, yang ditulis dalam bahasa Rust. Jika Anda masih ingat tabel dari [Bab 5](/course/chapter5/3) yang menunjukkan berapa lama waktu yang dibutuhkan oleh tokenizer cepat dan lambat untuk melakukan tokenisasi pada Drug Review Dataset, Anda pasti sudah punya gambaran mengapa kita menyebutnya cepat dan lambat:
+
+|               | Tokenizer Cepat | Tokenizer Lambat |
+|:-------------:|:---------------:|:----------------:|
+| `batched=True`  | 10.8s            | 4m41s            |
+| `batched=False` | 59.2s            | 5m3s             |
+
+<Tip warning={true}>
+
+⚠️ Saat men-tokenisasi satu kalimat, Anda mungkin tidak melihat perbedaan kecepatan antara tokenizer lambat dan cepat. Bahkan, tokenizer cepat bisa lebih lambat! Perbedaannya baru terlihat jelas saat Anda men-tokenisasi banyak teks sekaligus.
+
+</Tip>
+
+## Enkode dalam Batch[[batch-encoding]]
+
+<Youtube id="3umI3tm27Vw"/>
+
+Output dari tokenizer bukan hanya dictionary Python biasa; yang kita dapatkan sebenarnya adalah objek khusus `BatchEncoding`. Ini adalah turunan dari dictionary (itulah mengapa kita bisa mengaksesnya seperti dictionary), tetapi memiliki metode tambahan yang umumnya digunakan oleh tokenizer cepat.
+
+Selain kemampuannya untuk melakukan paralelisasi, fungsi utama dari tokenizer cepat adalah mereka **selalu melacak rentang asli teks** dari mana token akhir berasal — fitur ini disebut *offset mapping*. Ini memungkinkan kita melakukan hal-hal seperti memetakan setiap kata ke token yang dihasilkannya, atau memetakan setiap karakter dalam teks asli ke token tempat karakter itu berada, dan sebaliknya.
+
+Mari kita lihat contoh:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+encoding = tokenizer(example)
+print(type(encoding))
+```
+
+Seperti disebutkan sebelumnya, kita mendapatkan objek `BatchEncoding`:
+
+```python out
+<class 'transformers.tokenization_utils_base.BatchEncoding'>
+```
+
+Karena `AutoTokenizer` secara default memilih tokenizer cepat, kita bisa menggunakan metode tambahan dari objek ini. Ada dua cara untuk mengecek apakah tokenizer kita adalah versi cepat atau lambat: kita bisa mengecek atribut `is_fast` dari `tokenizer`:
+
+```python
+tokenizer.is_fast
+```
+
+```python out
+True
+```
+
+atau dari objek `encoding`:
+
+```python
+encoding.is_fast
+```
+
+```python out
+True
+```
+
+Mari lihat apa yang memungkinkan dilakukan oleh tokenizer cepat. Pertama, kita bisa mengakses token tanpa perlu mengonversi ID kembali ke token:
+
+```py
+encoding.tokens()
+```
+
+```python out
+['[CLS]', 'My', 'name', 'is', 'S', '##yl', '##va', '##in', 'and', 'I', 'work', 'at', 'Hu', '##gging', 'Face', 'in',
+ 'Brooklyn', '.', '[SEP]']
+```
+
+Token dengan indeks ke-5 adalah `##yl`, bagian dari kata "Sylvain" dalam kalimat asli. Kita juga bisa menggunakan metode `word_ids()` untuk mendapatkan indeks kata asal dari setiap token:
+
+```py
+encoding.word_ids()
+```
+
+```python out
+[None, 0, 1, 2, 3, 3, 3, 3, 4, 5, 6, 7, 8, 8, 9, 10, 11, 12, None]
+```
+
+Kita bisa melihat bahwa token khusus milik tokenizer seperti `[CLS]` dan `[SEP]` dipetakan ke `None`, dan kemudian setiap token dipetakan ke kata asalnya. Ini sangat berguna untuk menentukan apakah suatu token berada di awal sebuah kata atau apakah dua token berasal dari kata yang sama. Kita memang bisa mengandalkan awalan `##` untuk itu, tetapi cara ini hanya berfungsi pada tokenizer seperti BERT; metode ini bisa digunakan pada jenis tokenizer apa pun selama merupakan tokenizer cepat. Pada bab selanjutnya, kita akan melihat bagaimana kita bisa menggunakan kemampuan ini untuk menerapkan label yang kita miliki untuk setiap kata secara tepat ke token-token dalam tugas seperti named entity recognition (NER) dan part-of-speech (POS) tagging. Kita juga bisa menggunakannya untuk memask semua token yang berasal dari kata yang sama dalam masked language modeling (teknik yang disebut _whole word masking_).
+
+<Tip>
+
+Konsep “kata” bisa membingungkan. Misalnya, apakah “I'll” (gabungan dari "I will") dihitung sebagai satu atau dua kata? Ini tergantung tokenizer dan proses _pre-tokenization_ yang digunakan. Beberapa tokenizer hanya memisahkan berdasarkan spasi, sehingga akan menganggap ini sebagai satu kata. Lainnya menggunakan tanda baca juga, jadi akan memisahkannya menjadi dua kata.
+
+✏️ **Coba sendiri!** Buat tokenizer dari checkpoint `bert-base-cased` dan `roberta-base`, lalu tokenisasi kata "81s". Apa yang Anda amati? Bagaimana hasil dari `word_ids()`?
+
+</Tip>
+
+Ada juga metode `sentence_ids()` untuk memetakan token ke kalimat asalnya (meskipun atribut `token_type_ids` juga menyediakan informasi yang serupa).
+
+Akhirnya, kita dapat memetakan token atau kata ke karakter dalam teks asli dan sebaliknya menggunakan metode `word_to_chars()`, `token_to_chars()`, `char_to_word()`, atau `char_to_token()`. Misalnya, `word_ids()` menunjukkan bahwa `##yl` adalah bagian dari kata ke-3. Tapi kata apa itu di kalimat?
+
+```py
+start, end = encoding.word_to_chars(3)
+example[start:end]
+```
+
+```python out
+Sylvain
+```
+
+Seperti disebutkan, semua ini dimungkinkan karena tokenizer cepat menyimpan informasi rentang teks asal setiap token dalam daftar *offset*. Selanjutnya, kita akan tunjukkan bagaimana mereplikasi hasil pipeline `token-classification` secara manual.
+
+<Tip>
+
+✏️ **Coba sendiri!** Buat teks contoh Anda sendiri, dan coba pahami token apa yang dikaitkan dengan ID kata tertentu. Juga, coba ekstrak rentang karakter untuk sebuah kata. Bonus: coba gunakan dua kalimat dan lihat apakah ID kalimatnya masuk akal.
+
+</Tip>
+
+## Di Balik Pipeline `token-classification`[[inside-the-token-classification-pipeline]]
+
+Dalam [Bab 1](/course/chapter1), kita telah mencoba menerapkan NER untuk pertama kalinya — yaitu tugas untuk mengidentifikasi bagian-bagian teks yang merupakan entitas seperti orang, lokasi, atau organisasi — menggunakan fungsi `pipeline()` dari 🤗 Transformers. Kemudian, di [Bab 2](/course/chapter2), kita melihat bahwa sebuah pipeline menggabungkan tiga tahap yang diperlukan untuk mendapatkan prediksi dari teks mentah: tokenisasi, menjalankan input melalui model, dan pasca-pemrosesan. Dua langkah pertama dalam pipeline `token-classification` sama seperti pipeline lainnya, tetapi proses pasca-pemrosesannya sedikit lebih kompleks — mari kita lihat bagaimana caranya!
+
+{#if fw === 'pt'}
+
+<Youtube id="0E7ltQB7fM8"/>
+
+{:else}
+
+<Youtube id="PrX4CjrVnNc"/>
+
+{/if}
+
+### Mendapatkan Hasil Dasar dari Pipeline[[getting-the-base-results-with-the-pipeline]]
+
+Pertama, mari ambil pipeline `token-classification` agar kita bisa mendapatkan hasil untuk dibandingkan secara manual. Model default yang digunakan adalah [`dbmdz/bert-large-cased-finetuned-conll03-english`](https://huggingface.co/dbmdz/bert-large-cased-finetuned-conll03-english), yang melakukan NER pada kalimat:
+
+```py
+from transformers import pipeline
+
+token_classifier = pipeline("token-classification")
+token_classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S', 'start': 11, 'end': 12},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl', 'start': 12, 'end': 14},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va', 'start': 14, 'end': 16},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in', 'start': 16, 'end': 18},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu', 'start': 33, 'end': 35},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging', 'start': 35, 'end': 40},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face', 'start': 41, 'end': 45},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Model berhasil mengidentifikasi setiap token dari kata "Sylvain" sebagai entitas orang, "Hugging Face" sebagai organisasi, dan "Brooklyn" sebagai lokasi. Kita juga bisa meminta pipeline untuk mengelompokkan token-token yang berasal dari entitas yang sama:
+
+```py
+from transformers import pipeline
+
+token_classifier = pipeline("token-classification", aggregation_strategy="simple")
+token_classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+```
+
+```python out
+[{'entity_group': 'PER', 'score': 0.9981694, 'word': 'Sylvain', 'start': 11, 'end': 18},
+ {'entity_group': 'ORG', 'score': 0.97960204, 'word': 'Hugging Face', 'start': 33, 'end': 45},
+ {'entity_group': 'LOC', 'score': 0.99321055, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Strategi `aggregation_strategy` yang dipilih akan memengaruhi skor yang dihitung untuk setiap entitas yang dikelompokkan. Dengan `"simple"`, skornya hanyalah rata-rata dari skor setiap token dalam entitas tersebut: misalnya, skor untuk "Sylvain" adalah rata-rata dari skor yang kita lihat pada contoh sebelumnya untuk token `S`, `##yl`, `##va`, dan `##in`. Strategi lain yang tersedia adalah:
+
+- `"first"`: skor entitas diambil dari skor token pertama (untuk "Sylvain" = 0.993828)
+- `"max"`: skor entitas adalah skor token tertinggi (untuk "Hugging Face" = 0.98879766 dari "Face")
+- `"average"`: rata-rata skor dari kata yang membentuk entitas (untuk "Hugging Face", rata-rata skor dari "Hugging" dan "Face")
+
+Sekarang mari kita lihat bagaimana cara mendapatkan hasil ini **tanpa menggunakan fungsi `pipeline()`**!
+
+### Dari Input ke Prediksi[[from-inputs-to-predictions]]
+
+{#if fw === 'pt'}
+
+Pertama, kita perlu men-tokenisasi input kita dan melewatkannya ke dalam model. Ini dilakukan persis seperti di [Bab 2](/course/chapter2); kita menginstansiasi tokenizer dan model menggunakan kelas `AutoXxx`, lalu menggunakannya pada contoh:
+
+```py
+from transformers import AutoTokenizer, AutoModelForTokenClassification
+
+model_checkpoint = "dbmdz/bert-large-cased-finetuned-conll03-english"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForTokenClassification.from_pretrained(model_checkpoint)
+
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+inputs = tokenizer(example, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+Karena kita menggunakan `AutoModelForTokenClassification`, kita mendapatkan satu set _logits_ untuk setiap token dalam urutan input:
+
+```py
+print(inputs["input_ids"].shape)
+print(outputs.logits.shape)
+```
+
+```python out
+torch.Size([1, 19])
+torch.Size([1, 19, 9])
+```
+
+{:else}
+
+Pertama, kita perlu men-tokenisasi input kita dan melewatkannya ke dalam model. Ini dilakukan persis seperti di [Bab 2](/course/chapter2); kita menginstansiasi tokenizer dan model menggunakan kelas `TFAutoXxx`, lalu menggunakannya pada contoh:
+
+```py
+from transformers import AutoTokenizer, TFAutoModelForTokenClassification
+
+model_checkpoint = "dbmdz/bert-large-cased-finetuned-conll03-english"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = TFAutoModelForTokenClassification.from_pretrained(model_checkpoint)
+
+example = "My name is Sylvain and I work at Hugging Face in Brooklyn."
+inputs = tokenizer(example, return_tensors="tf")
+outputs = model(**inputs)
+```
+
+Karena kita menggunakan `TFAutoModelForTokenClassification`, kita mendapatkan satu set _logits_ untuk setiap token dalam urutan input:
+
+```py
+print(inputs["input_ids"].shape)
+print(outputs.logits.shape)
+```
+
+```python out
+(1, 19)
+(1, 19, 9)
+```
+
+{/if}
+
+Kita memiliki satu _batch_ yang terdiri dari 1 urutan berisi 19 token, dan model memiliki 9 label berbeda, sehingga output model memiliki bentuk (shape) 1 × 19 × 9. Seperti pada pipeline klasifikasi teks, kita menggunakan fungsi *softmax* untuk mengubah logits menjadi probabilitas, lalu menggunakan *argmax* untuk mendapatkan prediksi (karena urutan tidak berubah oleh *softmax*, kita bisa langsung mengambil argmax dari logits).
+
+{#if fw === 'pt'}
+
+```py
+import torch
+
+probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)[0].tolist()
+predictions = outputs.logits.argmax(dim=-1)[0].tolist()
+print(predictions)
+```
+
+{:else}
+
+```py
+import tensorflow as tf
+
+probabilities = tf.math.softmax(outputs.logits, axis=-1)[0]
+probabilities = probabilities.numpy().tolist()
+predictions = tf.math.argmax(outputs.logits, axis=-1)[0]
+predictions = predictions.numpy().tolist()
+print(predictions)
+```
+
+{/if}
+
+```python out
+[0, 0, 0, 0, 4, 4, 4, 4, 0, 0, 0, 0, 6, 6, 6, 0, 8, 0, 0]
+```
+
+Atribut `model.config.id2label` berisi pemetaan dari indeks ke label, yang bisa kita gunakan untuk memahami hasil prediksi:
+
+```py
+model.config.id2label
+```
+
+```python out
+{0: 'O',
+ 1: 'B-MISC',
+ 2: 'I-MISC',
+ 3: 'B-PER',
+ 4: 'I-PER',
+ 5: 'B-ORG',
+ 6: 'I-ORG',
+ 7: 'B-LOC',
+ 8: 'I-LOC'}
+```
+
+Seperti yang telah kita lihat sebelumnya, terdapat 9 label: `O` adalah label untuk token-token yang tidak termasuk dalam entitas apa pun (singkatan dari "outside"), dan kemudian kita memiliki dua label untuk setiap jenis entitas (miscellaneous, person, organization, dan location). Label `B-XXX` menunjukkan bahwa token berada di awal entitas `XXX`, sedangkan label `I-XXX` menunjukkan bahwa token berada di dalam entitas `XXX`. Sebagai contoh, dalam contoh saat ini kita mengharapkan model mengklasifikasikan token `S` sebagai `B-PER` (awal dari entitas person) dan token `##yl`, `##va`, serta `##in` sebagai `I-PER` (di dalam entitas person).
+
+Mungkin terlihat bahwa model salah karena memberikan `I-PER` ke semua empat token ini, tapi itu sebenarnya tidak sepenuhnya salah. Ada dua format untuk label `B-` dan `I-`: yaitu *IOB1* dan *IOB2*. Format IOB2 (ditunjukkan dengan warna merah muda di bawah) adalah yang kita perkenalkan, sedangkan format IOB1 (biru) menggunakan label `B-` hanya untuk memisahkan dua entitas yang berdampingan dari tipe yang sama. Model yang kita gunakan telah disetel ulang menggunakan dataset dengan format IOB1, itulah sebabnya token `S` diberi label `I-PER`.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/IOB_versions.svg" alt="Format IOB1 vs IOB2"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/IOB_versions-dark.svg" alt="Format IOB1 vs IOB2"/>
+</div>
+
+Dengan peta ini, kita siap untuk mereplikasi (hampir seluruhnya) hasil dari pipeline pertama — kita hanya perlu mengambil skor dan label dari setiap token yang tidak diklasifikasikan sebagai `O`:
+
+```py
+results = []
+tokens = inputs.tokens()
+
+for idx, pred in enumerate(predictions):
+    label = model.config.id2label[pred]
+    if label != "O":
+        results.append(
+            {"entity": label, "score": probabilities[idx][pred], "word": tokens[idx]}
+        )
+
+print(results)
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S'},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl'},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va'},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in'},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu'},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging'},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face'},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn'}]
+```
+
+Ini sangat mirip dengan hasil yang kita dapatkan sebelumnya, dengan satu pengecualian: pipeline juga memberikan informasi tentang posisi `start` dan `end` dari setiap entitas dalam kalimat asli. Di sinilah offset mapping akan digunakan. Untuk mendapatkan offset, kita cukup mengatur `return_offsets_mapping=True` saat menggunakan tokenizer:
+
+```py
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+inputs_with_offsets["offset_mapping"]
+```
+
+```python out
+[(0, 0), (0, 2), (3, 7), (8, 10), (11, 12), (12, 14), (14, 16), (16, 18), (19, 22), (23, 24), (25, 29), (30, 32),
+ (33, 35), (35, 40), (41, 45), (46, 48), (49, 57), (57, 58), (0, 0)]
+```
+
+Setiap pasangan tuple menunjukkan rentang teks yang sesuai untuk setiap token, di mana `(0, 0)` dicadangkan untuk token khusus. Kita telah melihat bahwa token pada indeks ke-5 adalah `##yl`, dan offset-nya adalah `(12, 14)`. Jika kita ambil potongan teks dari contoh:
+
+```py
+example[12:14]
+```
+
+kita mendapatkan rentang teks yang tepat tanpa `##`:
+
+```python out
+yl
+```
+
+Dengan ini, kita bisa menyempurnakan hasil sebelumnya:
+
+```py
+results = []
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+tokens = inputs_with_offsets.tokens()
+offsets = inputs_with_offsets["offset_mapping"]
+
+for idx, pred in enumerate(predictions):
+    label = model.config.id2label[pred]
+    if label != "O":
+        start, end = offsets[idx]
+        results.append(
+            {
+                "entity": label,
+                "score": probabilities[idx][pred],
+                "word": tokens[idx],
+                "start": start,
+                "end": end,
+            }
+        )
+
+print(results)
+```
+
+```python out
+[{'entity': 'I-PER', 'score': 0.9993828, 'index': 4, 'word': 'S', 'start': 11, 'end': 12},
+ {'entity': 'I-PER', 'score': 0.99815476, 'index': 5, 'word': '##yl', 'start': 12, 'end': 14},
+ {'entity': 'I-PER', 'score': 0.99590725, 'index': 6, 'word': '##va', 'start': 14, 'end': 16},
+ {'entity': 'I-PER', 'score': 0.9992327, 'index': 7, 'word': '##in', 'start': 16, 'end': 18},
+ {'entity': 'I-ORG', 'score': 0.97389334, 'index': 12, 'word': 'Hu', 'start': 33, 'end': 35},
+ {'entity': 'I-ORG', 'score': 0.976115, 'index': 13, 'word': '##gging', 'start': 35, 'end': 40},
+ {'entity': 'I-ORG', 'score': 0.98879766, 'index': 14, 'word': 'Face', 'start': 41, 'end': 45},
+ {'entity': 'I-LOC', 'score': 0.99321055, 'index': 16, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Ini adalah hasil yang **sama persis** dengan pipeline pertama!
+
+### Mengelompokkan Entitas[[grouping-entities]]
+
+Menggunakan offset untuk menentukan posisi awal dan akhir setiap entitas memang berguna, tetapi informasi tersebut sebenarnya tidak sepenuhnya diperlukan. Namun, saat kita ingin mengelompokkan entitas, offset akan sangat membantu dan menghindarkan kita dari kode yang rumit. Misalnya, jika kita ingin menggabungkan token `Hu`, `##gging`, dan `Face`, kita bisa membuat aturan khusus yang menyatakan bahwa dua token pertama harus digabung dengan menghapus `##`, dan `Face` ditambahkan dengan spasi karena tidak diawali dengan `##` — tetapi aturan ini hanya akan bekerja untuk jenis tokenizer tertentu. Kita harus menulis seperangkat aturan lain untuk tokenizer seperti SentencePiece atau Byte-Pair Encoding (yang akan dibahas lebih lanjut di bab ini).
+
+Dengan menggunakan offset, semua kode khusus tersebut tidak lagi diperlukan: kita cukup mengambil rentang dalam teks asli yang dimulai dari token pertama dan berakhir pada token terakhir. Jadi, dalam kasus token `Hu`, `##gging`, dan `Face`, kita harus mulai dari karakter ke-33 (awal dari `Hu`) dan berakhir sebelum karakter ke-45 (akhir dari `Face`):
+
+```py
+example[33:45]
+```
+
+```python out
+Hugging Face
+```
+
+Untuk menulis kode yang melakukan pasca-pemrosesan terhadap prediksi sambil mengelompokkan entitas, kita akan mengelompokkan entitas yang berurutan dan dilabeli dengan `I-XXX`, kecuali entitas pertama yang bisa saja dilabeli sebagai `B-XXX` atau `I-XXX` (jadi, kita berhenti mengelompokkan suatu entitas ketika kita mendapatkan label `O`, jenis entitas yang baru, atau `B-XXX` yang menunjukkan bahwa entitas baru dari tipe yang sama telah dimulai):
+
+```py
+import numpy as np
+
+results = []
+inputs_with_offsets = tokenizer(example, return_offsets_mapping=True)
+tokens = inputs_with_offsets.tokens()
+offsets = inputs_with_offsets["offset_mapping"]
+
+idx = 0
+while idx < len(predictions):
+    pred = predictions[idx]
+    label = model.config.id2label[pred]
+    if label != "O":
+        # Hapus awalan B- atau I-
+        label = label[2:]
+        start, _ = offsets[idx]
+
+        # Ambil semua token yang diberi label I
+        all_scores = []
+        while (
+            idx < len(predictions)
+            and model.config.id2label[predictions[idx]] == f"I-{label}"
+        ):
+            all_scores.append(probabilities[idx][pred])
+            _, end = offsets[idx]
+            idx += 1
+
+        # Skor adalah rata-rata skor dari semua token dalam entitas tersebut
+        score = np.mean(all_scores).item()
+        word = example[start:end]
+        results.append(
+            {
+                "entity_group": label,
+                "score": score,
+                "word": word,
+                "start": start,
+                "end": end,
+            }
+        )
+    idx += 1
+
+print(results)
+```
+
+Dan hasilnya akan sama seperti pipeline kedua:
+
+```python out
+[{'entity_group': 'PER', 'score': 0.9981694, 'word': 'Sylvain', 'start': 11, 'end': 18},
+ {'entity_group': 'ORG', 'score': 0.97960204, 'word': 'Hugging Face', 'start': 33, 'end': 45},
+ {'entity_group': 'LOC', 'score': 0.99321055, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+Contoh lain dari tugas yang sangat terbantu dengan offset adalah **question answering**. Pembahasan pipeline tersebut (yang akan kita lakukan di bagian selanjutnya) juga akan membawa kita pada satu fitur terakhir dari tokenizer di 🤗 Transformers: menangani **token yang meluap (overflow)** saat input terlalu panjang dan perlu dipotong (truncate).
