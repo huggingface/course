@@ -1,0 +1,237 @@
+<FrameworkSwitchCourse {fw} />
+
+# Di Balik Fungsi Pipeline[[behind-the-pipeline]]
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section2_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section2_pt.ipynb"},
+]} />
+
+<Youtube id="1pedAIvTWXk"/>
+
+Mari kita mulai dengan sebuah contoh lengkap, melihat apa yang terjadi di balik layar saat kita menjalankan kode berikut di [Bab 1](/course/chapter1):
+
+```python
+from transformers import pipeline
+
+classifier = pipeline("sentiment-analysis")
+classifier(
+    [
+        "I've been waiting for a HuggingFace course my whole life.",
+        "I hate this so much!",
+    ]
+)
+```
+
+dan mendapatkan:
+
+```python out
+[{'label': 'POSITIVE', 'score': 0.9598047137260437},
+ {'label': 'NEGATIVE', 'score': 0.9994558095932007}]
+```
+
+Seperti yang kita lihat di [Bab 1](/course/chapter1), pipeline ini menggabungkan tiga langkah: prapemrosesan, menjalankan input melalui model, dan pascapemrosesan:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/full_nlp_pipeline.svg" alt="Alur lengkap NLP: tokenisasi teks, konversi ke ID, dan inferensi melalui model Transformer dan kepala model."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/full_nlp_pipeline-dark.svg" alt="Alur lengkap NLP: tokenisasi teks, konversi ke ID, dan inferensi melalui model Transformer dan kepala model."/>
+</div>
+
+Mari kita ulas secara singkat masing-masing langkah ini.
+
+## Prapemrosesan dengan Tokenizer[[preprocessing-with-a-tokenizer]]
+
+Seperti jaringan saraf lainnya, model Transformer tidak bisa memproses teks mentah secara langsung, jadi langkah pertama dalam pipeline kita adalah mengubah input teks menjadi angka yang bisa dipahami oleh model. Untuk itu, kita menggunakan *tokenizer*, yang bertugas:
+
+- Memecah input menjadi kata, sub-kata, atau simbol (seperti tanda baca) yang disebut *token*
+- Memetakan setiap token ke bilangan bulat
+- Menambahkan input tambahan yang mungkin diperlukan oleh model
+
+Semua prapemrosesan ini harus dilakukan dengan cara yang sama persis seperti saat model dilatih sebelumnya, jadi kita perlu mengunduh informasi itu dari [Model Hub](https://huggingface.co/models). Untuk melakukannya, kita menggunakan kelas `AutoTokenizer` dan metode `from_pretrained()`. Dengan menggunakan nama checkpoint model, metode ini akan secara otomatis mengambil data terkait tokenizer model dan menyimpannya di cache (jadi hanya diunduh saat pertama kali dijalankan).
+
+Karena checkpoint default pipeline `sentiment-analysis` adalah `distilbert-base-uncased-finetuned-sst-2-english` (lihat kartu modelnya [di sini](https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english)), kita jalankan:
+
+```python
+from transformers import AutoTokenizer
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+```
+
+Setelah kita memiliki tokenizer, kita bisa langsung memberikan kalimat ke tokenizer dan akan mendapatkan dictionary yang siap digunakan oleh model. Satu-satunya hal yang tersisa adalah mengonversi daftar `input_ids` menjadi tensor.
+
+Anda dapat menggunakan 🤗 Transformers tanpa perlu khawatir tentang kerangka kerja ML (machine learning) yang digunakan sebagai backend; bisa saja PyTorch atau Flax untuk beberapa model. Namun, model Transformer hanya menerima *tensor* sebagai masukan. Jika ini adalah pertama kalinya Anda mendengar tentang tensor, Anda bisa menganggapnya sebagai array NumPy. Array NumPy bisa berupa skalar (0D), vektor (1D), matriks (2D), atau memiliki lebih banyak dimensi. Ini pada dasarnya adalah tensor; tensor pada kerangka kerja ML lainnya berperilaku serupa, dan biasanya sama mudahnya untuk dibuat seperti array NumPy.
+
+Untuk menentukan jenis tensor yang diinginkan (PyTorch atau NumPy biasa), kita menggunakan argumen `return_tensors`:
+
+```python
+raw_inputs = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "I hate this so much!",
+]
+inputs = tokenizer(raw_inputs, padding=True, truncation=True, return_tensors="pt")
+print(inputs)
+```
+
+Jangan khawatir dulu soal padding dan truncation; itu akan dijelaskan nanti. Yang penting diingat adalah Anda bisa memberikan satu kalimat atau daftar kalimat, serta menentukan tipe tensor yang ingin dikembalikan (jika tidak ditentukan, hasilnya berupa daftar dari daftar).
+
+Berikut contoh hasil sebagai tensor PyTorch:
+
+```python out
+{
+    'input_ids': tensor([
+        [  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172, 2607,  2026,  2878,  2166,  1012,   102],
+        [  101,  1045,  5223,  2023,  2061,  2172,   999,   102,     0,     0,     0,     0,     0,     0,     0,     0]
+    ]), 
+    'attention_mask': tensor([
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+    ])
+}
+```
+
+Output-nya adalah dictionary yang berisi dua kunci: `input_ids` dan `attention_mask`. `input_ids` berisi dua baris angka (masing-masing untuk satu kalimat) yang merupakan ID unik dari setiap token. Penjelasan tentang `attention_mask` akan dibahas nanti.
+
+## Melewati Model[[going-through-the-model]]
+
+Kita bisa mengunduh model yang sudah dilatih sebelumnya dengan cara yang sama seperti tokenizer. 🤗 Transformers menyediakan kelas `AutoModel` yang juga memiliki metode `from_pretrained()`:
+
+```python
+from transformers import AutoModel
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = AutoModel.from_pretrained(checkpoint)
+```
+
+Dalam cuplikan kode ini, kita telah mengunduh checkpoint yang sama seperti yang kita gunakan sebelumnya dalam pipeline kita (sebenarnya seharusnya sudah tersimpan dalam cache) dan menginisialisasi sebuah model dengannya.
+
+Arsitektur ini hanya berisi modul dasar Transformer: diberikan beberapa input, model akan menghasilkan *hidden states*, juga dikenal sebagai *fitur*. Untuk setiap input, kita akan mendapatkan vektor berdimensi tinggi yang mewakili **pemahaman kontekstual input oleh model Transformer**.
+
+Jika ini belum sepenuhnya masuk akal, jangan khawatir—akan dijelaskan lebih lanjut nanti.
+
+Meskipun hidden states ini bisa berguna, biasanya mereka menjadi input untuk bagian lain dari model, yang disebut *head*. Di [Bab 1](/course/chapter1), tugas yang berbeda bisa dilakukan dengan arsitektur yang sama, tetapi masing-masing tugas memiliki head yang berbeda.
+
+### Vektor Berdimensi Tinggi?[[a-high-dimensional-vector]]
+
+Vektor yang dihasilkan oleh modul Transformer biasanya besar. Umumnya memiliki tiga dimensi:
+
+- **Ukuran batch**: Jumlah urutan yang diproses sekaligus (2 dalam contoh kita).
+- **Panjang urutan**: Panjang representasi numerik dari urutan (16 dalam contoh kita).
+- **Ukuran tersembunyi (hidden size)**: Dimensi vektor untuk tiap input model.
+
+Disebut "berdimensi tinggi" karena nilai terakhir. Hidden size ini bisa sangat besar (768 umum untuk model kecil, dan bisa mencapai 3072 atau lebih untuk model besar).
+
+Kita bisa melihat ini jika kita beri input ke model:
+
+```python
+outputs = model(**inputs)
+print(outputs.last_hidden_state.shape)
+```
+
+```python out
+torch.Size([2, 16, 768])
+```
+
+Output dari model 🤗 Transformers berperilaku seperti `namedtuple` atau dictionary. Anda bisa mengakses elemennya dengan atribut (`outputs.last_hidden_state`), kunci (`outputs["last_hidden_state"]`), atau indeks (`outputs[0]`).
+
+### Model Head: Mengubah Angka Menjadi Arti[[model-heads-making-sense-out-of-numbers]]
+
+Model head mengambil vektor hidden states berdimensi tinggi sebagai input dan memproyeksikannya ke dimensi yang berbeda. Biasanya terdiri dari satu atau beberapa lapisan linear:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/transformer_and_head.svg" alt="Sebuah jaringan Transformer beserta kepala modelnya."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/transformer_and_head-dark.svg" alt="Sebuah jaringan Transformer beserta kepala modelnya."/>
+
+</div>
+
+Output dari Transformer langsung dikirim ke model head untuk diproses.
+
+Dalam diagram ini, model direpresentasikan oleh lapisan embeddings dan lapisan-lapisan setelahnya. Lapisan embeddings mengubah setiap ID masukan dalam input yang telah ditokenisasi menjadi vektor yang merepresentasikan token terkait. Lapisan-lapisan setelahnya memanipulasi vektor-vektor tersebut menggunakan mekanisme perhatian (attention) untuk menghasilkan representasi akhir dari kalimat-kalimat tersebut.
+
+Berbagai arsitektur tersedia di 🤗 Transformers, masing-masing dirancang untuk tugas tertentu. Contohnya:
+
+- `*Model` (mengambil hidden states)
+- `*ForCausalLM`
+- `*ForMaskedLM`
+- `*ForMultipleChoice`
+- `*ForQuestionAnswering`
+- `*ForSequenceClassification`
+- `*ForTokenClassification`
+- dan lainnya 🤗
+
+Untuk contoh kita, kita akan membutuhkan model dengan kepala klasifikasi sekuens (agar dapat mengklasifikasikan kalimat sebagai positif atau negatif). Jadi, kita tidak akan menggunakan kelas `AutoModel`, melainkan `AutoModelForSequenceClassification`:
+
+```python
+from transformers import AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+outputs = model(**inputs)
+```
+
+Sekarang jika kita melihat bentuk (shape) dari output kita, dimensinya akan jauh lebih rendah: kepala model menerima sebagai masukan vektor berdimensi tinggi yang telah kita lihat sebelumnya, dan menghasilkan vektor yang berisi dua nilai (satu untuk setiap label):
+
+```python
+print(outputs.logits.shape)
+```
+
+```python out
+torch.Size([2, 2])
+```
+
+Karena kita punya dua kalimat dan dua label, hasil dari model adalah 2 × 2.
+
+## Pascapemrosesan Output[[postprocessing-the-output]]
+
+Nilai yang kita dapat dari model belum tentu langsung bermakna. Mari kita lihat:
+
+```python
+print(outputs.logits)
+```
+
+```python out
+tensor([[-1.5607,  1.6123],
+        [ 4.1692, -3.3464]], grad_fn=<AddmmBackward>)
+```
+
+Model kita memprediksi `[-1.5607, 1.6123]` untuk kalimat pertama dan `[ 4.1692, -3.3464]` untuk kalimat kedua. Nilai-nilai tersebut bukan probabilitas, melainkan *logit*, yaitu skor mentah yang belum dinormalisasi yang dihasilkan oleh lapisan terakhir model. Untuk diubah menjadi probabilitas, nilai-nilai ini perlu melalui lapisan [SoftMax](https://id.wikipedia.org/wiki/Fungsi_softmax) (semua model 🤗 Transformers mengeluarkan logit, karena fungsi kehilangan (loss function) untuk pelatihan umumnya menggabungkan fungsi aktivasi terakhir, seperti SoftMax, dengan fungsi kehilangan itu sendiri, seperti cross entropy):
+
+```python
+import torch
+
+predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+print(predictions)
+```
+
+```python out
+tensor([[4.0195e-02, 9.5980e-01],
+        [9.9946e-01, 5.4418e-04]], grad_fn=<SoftmaxBackward>)
+```
+
+Sekarang kita dapat melihat bahwa model memprediksi `[0.0402, 0.9598]` untuk kalimat pertama dan `[0.9995,  0.0005]` untuk kalimat kedua. Ini adalah skor probabilitas yang mudah dikenali.
+
+Untuk mendapatkan label yang sesuai dengan setiap posisi, kita dapat memeriksa atribut `id2label` dari konfigurasi model (akan dibahas lebih lanjut di bagian berikutnya):
+
+```python
+model.config.id2label
+```
+
+```python out
+{0: 'NEGATIVE', 1: 'POSITIVE'}
+```
+
+Kesimpulan:
+
+- Kalimat pertama: NEGATIVE: 0.0402, POSITIVE: 0.9598
+- Kalimat kedua: NEGATIVE: 0.9995, POSITIVE: 0.0005
+
+Kita telah berhasil mereproduksi tiga langkah dari pipeline: praproses dengan tokenizer, memasukkan input ke dalam model, dan pascaproses! Sekarang, mari kita luangkan waktu untuk menyelami lebih dalam setiap langkah tersebut.
+
+<Tip>
+
+✏️ **Coba sendiri!** Pilih dua (atau lebih) teks Anda sendiri dan jalankan melalui pipeline `sentiment-analysis`. Lalu replikasi langkah-langkah di atas dan lihat apakah hasilnya sama!
+
+</Tip>
+
