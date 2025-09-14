@@ -1,14 +1,16 @@
 import argparse
 import os
-import yaml
-
 from pathlib import Path
+
+import yaml
 
 PATH_TO_COURSE = Path("chapters/")
 
 
 def load_sections(language: str):
-    toc = yaml.safe_load(open(os.path.join(PATH_TO_COURSE / language, "_toctree.yml"), "r"))
+    toc = yaml.safe_load(
+        open(os.path.join(PATH_TO_COURSE / language, "_toctree.yml"), "r")
+    )
     sections = []
     for chapter in toc:
         for section in chapter["sections"]:
