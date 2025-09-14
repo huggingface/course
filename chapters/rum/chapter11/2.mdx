@@ -1,0 +1,253 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section2.ipynb"},
+]} />
+
+# Template-uri de chat
+
+## Introducere
+
+Template-urile de chat sunt esențiale pentru structurarea interacțiunilor dintre modelele de limbaj și utilizatori. Indiferent dacă construiți un chatbot simplu sau un agent AI complex, înțelegerea modului de a formata corect conversațiile este crucială pentru a obține cele mai bune rezultate de la modelul dumneavoastră. În acest ghid, vom explora ce sunt template-urile de chat, de ce sunt importante și cum să le folosiți eficient.
+
+<Tip>
+Template-urile de chat sunt cruciale pentru:
+- Menținerea unei structuri consecvente de conversație
+- Asigurarea identificării corecte a rolurilor
+- Gestionarea contextului pe mai multe tururi
+- Suportarea funcționalităților avansate precum utilizarea instrumentelor
+</Tip>
+
+## Tipuri de modele și template-uri
+
+### Modele de bază versus modele instruct
+Un model de bază este antrenat pe date text brute pentru a prezice următorul token, în timp ce un model instruct este ajustat specific pentru a urma instrucțiuni și a se angaja în conversații. De exemplu, [`SmolLM2-135M`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) este un model de bază, în timp ce [`SmolLM2-135M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct) este varianta sa ajustată pentru instrucțiuni.
+
+Modelele ajustate pentru instrucțiuni sunt antrenate să urmeze o structură conversațională specifică, făcându-le mai potrivite pentru aplicații de chatbot. Mai mult, modelele instruct pot gestiona interacțiuni complexe, inclusiv utilizarea instrumentelor, intrări multimodale și apeluri de funcții.
+
+Pentru a face ca un model de bază să se comporte ca un model instruct, trebuie să formatăm prompturile într-un mod consecvent pe care modelul să îl înțeleagă. Aici intervin template-urile de chat. ChatML este unul dintre aceste formate de template care structurează conversațiile cu indicatori clari de rol (sistem, utilizator, asistent). Iată un ghid despre [ChatML](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/blob/e2c3f7557efbdec707ae3a336371d169783f1da1/tokenizer_config.json#L146).
+
+<Tip warning={true}>
+Când folosiți un model instruct, verificați întotdeauna că folosiți formatul corect de template de chat. Folosirea unui template greșit poate duce la performanțe slabe ale modelului sau comportament neașteptat. Cea mai ușoară modalitate de a vă asigura de acest lucru este să verificați configurația tokenizer-ului modelului pe Hub. De exemplu, modelul `SmolLM2-135M-Instruct` folosește <a href="https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/blob/e2c3f7557efbdec707ae3a336371d169783f1da1/tokenizer_config.json#L146">această configurație</a>.
+</Tip>
+
+### Formate comune de template
+
+Înainte de a aprofunda implementări specifice, este important să înțelegem cum diferite modele se așteaptă ca conversațiile lor să fie formatate. Să explorăm câteva formate comune de template folosind un exemplu simplu de conversație:
+
+Vom folosi următoarea structură de conversație pentru toate exemplele:
+
+```python
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+    {"role": "assistant", "content": "Hi! How can I help you today?"},
+    {"role": "user", "content": "What's the weather?"},
+]
+```
+
+Acesta este template-ul ChatML folosit în modele precum SmolLM2 și Qwen 2:
+
+```sh
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Hello!<|im_end|>
+<|im_start|>assistant
+Hi! How can I help you today?<|im_end|>
+<|im_start|>user
+What's the weather?<|im_start|>assistant
+```
+
+Acesta folosește formatul de template `mistral`:
+
+```sh
+<s>[INST] You are a helpful assistant. [/INST]
+Hi! How can I help you today?</s>
+[INST] Hello! [/INST]
+```
+
+Diferențele cheie între aceste formate includ:
+1. **Gestionarea mesajelor de sistem**:
+   - Llama 2 înfășoară mesajele de sistem în etichete `<<SYS>>`
+   - Llama 3 folosește etichete `<|system|>` cu încheierea `</s>`
+   - Mistral include mesajul de sistem în prima instrucțiune
+   - Qwen folosește rolul explicit `system` cu etichete `<|im_start|>`
+   - ChatGPT folosește prefixul `SYSTEM:`
+
+2. **Granițele mesajelor**:
+   - Llama 2 folosește etichete `[INST]` și `[/INST]`
+   - Llama 3 folosește etichete specifice rolurilor (`<|system|>`, `<|user|>`, `<|assistant|>`) cu încheierea `</s>`
+   - Mistral folosește `[INST]` și `[/INST]` cu `<s>` și `</s>`
+   - Qwen folosește token-uri de start/sfârșit specifice rolurilor
+
+3. **Token-uri speciale**:
+   - Llama 2 folosește `<s>` și `</s>` pentru granițele conversației
+   - Llama 3 folosește `</s>` pentru a încheia fiecare mesaj
+   - Mistral folosește `<s>` și `</s>` pentru granițele turului
+   - Qwen folosește token-uri de start/sfârșit specifice rolurilor
+
+Înțelegerea acestor diferențe este cheia pentru a lucra cu modele variate. Să vedem cum biblioteca transformers ne ajută să gestionăm aceste variații automat:
+
+```python
+from transformers import AutoTokenizer
+
+# Acestea vor folosi template-uri diferite automat
+mistral_tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.1")
+qwen_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen-7B-Chat")
+smol_tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
+
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+]
+
+# Fiecare va formata conform template-ului modelului său
+mistral_chat = mistral_tokenizer.apply_chat_template(messages, tokenize=False)
+qwen_chat = qwen_tokenizer.apply_chat_template(messages, tokenize=False)
+smol_chat = smol_tokenizer.apply_chat_template(messages, tokenize=False)
+```
+
+<details>
+<summary>Faceți clic pentru a vedea exemplele de template</summary>
+
+Template ChatML pentru Qwen 2 și SmolLM2:
+
+```sh
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Hello!<|im_end|>
+<|im_start|>assistant
+Hi! How can I help you today?<|im_end|>
+<|im_start|>user
+What's the weather?<|im_start|>assistant
+```
+
+Template Mistral:
+
+```sh
+<s>[INST] You are a helpful assistant. [/INST]
+Hi! How can I help you today?</s>
+[INST] Hello! [/INST]
+```
+
+</details>
+
+### Funcționalități avansate
+Template-urile de chat pot gestiona scenarii mai complexe dincolo de simpla interacțiune conversațională, inclusiv:
+
+1. **Utilizarea instrumentelor**: Când modelele trebuie să interacționeze cu instrumente externe sau API-uri
+2. **Intrări multimodale**: Pentru gestionarea imaginilor, audio sau alte tipuri de media
+3. **Apeluri de funcții**: Pentru executarea structurată de funcții
+4. **Context multi-turn**: Pentru menținerea istoricului conversației
+
+<Tip>
+Când implementați funcționalități avansate:
+- Testați temeinic cu modelul dumneavoastră specific. Template-urile de viziune și utilizare a instrumentelor sunt deosebit de diverse.
+- Monitorizați cu atenție utilizarea token-urilor între fiecare funcționalitate și model.
+- Documentați formatul așteptat pentru fiecare funcționalitate
+</Tip>
+
+Pentru conversații multimodale, template-urile de chat pot include referințe la imagini sau imagini codificate în base64:
+
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are a helpful vision assistant that can analyze images.",
+    },
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image", "image_url": "https://example.com/image.jpg"},
+        ],
+    },
+]
+```
+
+Iată un exemplu de template de chat cu utilizarea instrumentelor:
+
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are an AI assistant that can use tools. Available tools: calculator, weather_api",
+    },
+    {"role": "user", "content": "What's 123 * 456 and is it raining in Paris?"},
+    {
+        "role": "assistant",
+        "content": "Let me help you with that.",
+        "tool_calls": [
+            {
+                "tool": "calculator",
+                "parameters": {"operation": "multiply", "x": 123, "y": 456},
+            },
+            {"tool": "weather_api", "parameters": {"city": "Paris", "country": "France"}},
+        ],
+    },
+    {"role": "tool", "tool_name": "calculator", "content": "56088"},
+    {
+        "role": "tool",
+        "tool_name": "weather_api",
+        "content": "{'condition': 'rain', 'temperature': 15}",
+    },
+]
+```
+
+## Cele mai bune practici
+
+### Ghiduri generale
+Când lucrați cu template-uri de chat, urmați aceste practici cheie:
+
+1. **Formatare consecventă**: Folosiți întotdeauna același format de template în toată aplicația
+2. **Definirea clară a rolurilor**: Specificați clar rolurile (sistem, utilizator, asistent, instrument) pentru fiecare mesaj
+3. **Gestionarea contextului**: Fiți atenți la limitele token-urilor când mențineți istoricul conversației
+4. **Gestionarea erorilor**: Includeți gestionarea adecvată a erorilor pentru apelurile de instrumente și intrările multimodale
+5. **Validare**: Validați structura mesajelor înainte de a le trimite la model
+
+<Tip warning={true}>
+Capcane comune de evitat:
+- Amestecarea diferitelor formate de template în aceeași aplicație
+- Depășirea limitelor de token-uri cu istoricuri lungi de conversație
+- Neescaparea corespunzătoare a caracterelor speciale în mesaje
+- Uitarea validării structurii mesajelor de intrare
+- Ignorarea cerințelor specifice de template ale modelului
+</Tip>
+
+## Exercițiu practic
+
+Să exersăm implementarea template-urilor de chat cu un exemplu din lumea reală.
+
+<Tip>
+Urmați acești pași pentru a converti setul de date `HuggingFaceTB/smoltalk` în formatul chatml:
+
+1. Încărcați setul de date:
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("HuggingFaceTB/smoltalk")
+```
+
+2. Creați o funcție de procesare:
+```python
+def convert_to_chatml(example):
+    return {
+        "messages": [
+            {"role": "user", "content": example["input"]},
+            {"role": "assistant", "content": example["output"]},
+        ]
+    }
+```
+
+3. Aplicați template-ul de chat folosind tokenizer-ul modelului ales
+
+Amintiți-vă să validați că formatul de ieșire se potrivește cu cerințele modelului țintă!
+</Tip>
+
+## Resurse adiționale
+
+- [Ghidul Hugging Face pentru template-uri de chat](https://huggingface.co/docs/transformers/main/en/chat_templating)
+- [Documentația Transformers](https://huggingface.co/docs/transformers)
+- [Depozitul de exemple pentru template-uri de chat](https://github.com/chujiezheng/chat_templates) 
