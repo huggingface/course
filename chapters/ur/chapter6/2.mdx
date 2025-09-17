@@ -1,0 +1,252 @@
+# ایک پرانے tokenizer سے نیا tokenizer تربیت دینا[[training-a-new-tokenizer-from-an-old-one]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section2.ipynb"},
+]} />
+
+اگر آپ کی دلچسپی کی زبان میں کوئی language model دستیاب نہیں ہے، یا اگر آپ کا corpus اس corpus سے کافی مختلف ہے جس پر آپ کا language model تربیت یافتہ تھا، تو زیادہ امکان ہے کہ آپ کو model کو صفر سے تربیت دینے کی ضرورت ہوگی اور اس کے لیے آپ کو اپنے ڈیٹا کے مطابق ایک tokenizer تیار کرنا ہوگا۔ اس کا مطلب ہے کہ آپ کو اپنے dataset پر ایک نیا tokenizer تربیت دینا ہوگا۔ لیکن اس سے اصل میں کیا مراد ہے؟ جب ہم نے پہلی بار [باب 2](/course/chapter2) میں tokenizers کا جائزہ لیا، تو ہمیں معلوم ہوا کہ زیادہ تر Transformer models ایک _subword tokenization algorithm_ استعمال کرتے ہیں۔ جس corpus میں کون سے subwords زیادہ اہم اور کثرت سے آنے چاہئیں، یہ معلوم کرنے کے لیے tokenizer کو corpus میں موجود تمام texts کا بغور مطالعہ کرنا پڑتا ہے — اس عمل کو ہم *training* کہتے ہیں۔ اس تربیت کے قوانین tokenizer کی قسم پر منحصر ہوتے ہیں، اور ہم اس باب میں بعد میں تین اہم الگورتھمز پر بات کریں گے۔
+
+<Youtube id="DJimQynXZsQ"/>
+
+<Tip warning={true}>
+⚠️ Tokenizer کی تربیت model کی تربیت کے مترادف نہیں ہے! Model training stochastic gradient descent کا استعمال کرتی ہے تاکہ ہر batch کے لیے loss کو تھوڑا کم کیا جا سکے۔ یہ فطری طور پر randomized ہوتا ہے (یعنی ایک ہی تربیت دوبارہ کرنے پر ایک جیسی نتائج حاصل کرنے کے لیے آپ کو کچھ seeds سیٹ کرنے پڑتے ہیں)۔ Tokenizer کی تربیت ایک شماریاتی عمل ہے جو یہ تعین کرتا ہے کہ کس corpus کے لیے کون سے subwords بہترین ہیں، اور ان subwords کو منتخب کرنے کے لیے استعمال شدہ اصول tokenizer کے الگورتھم پر منحصر ہوتے ہیں۔ یہ deterministic ہوتا ہے، یعنی اگر آپ ایک ہی الگورتھم کو ایک ہی corpus پر تربیت دیں تو ہمیشہ ایک ہی نتائج حاصل ہوں گے۔
+</Tip>
+
+## ایک corpus کو اکٹھا کرنا[[assembling-a-corpus]]
+
+🤗 Transformers میں ایک بہت سادہ API موجود ہے جس کا استعمال کرتے ہوئے آپ ایک نیا tokenizer اسی خصوصیات کے ساتھ تربیت دے سکتے ہیں جو کسی موجودہ tokenizer میں موجود ہیں: `AutoTokenizer.train_new_from_iterator()`. اس کا مظاہرہ کرنے کے لیے، فرض کریں کہ ہم GPT-2 کو صفر سے تربیت دینا چاہتے ہیں، مگر انگریزی کے علاوہ کسی اور زبان میں۔ ہمارا پہلا کام اس زبان میں بہت سا ڈیٹا اکٹھا کرنا ہوگا تاکہ ایک training corpus تیار کیا جا سکے۔ مثال کے طور پر، ہم یہاں روسی یا چینی استعمال کرنے کی بجائے ایک مخصوص انگریزی زبان استعمال کریں گے: Python code.
+
+[🤗 Datasets](https://github.com/huggingface/datasets) لائبریری ہماری مدد کر سکتی ہے کہ ہم Python source code کا ایک corpus تیار کریں۔ ہم عام `load_dataset()` فنکشن کا استعمال کر کے [CodeSearchNet](https://huggingface.co/datasets/code_search_net) dataset کو ڈاؤن لوڈ اور cache کریں گے۔ یہ dataset [CodeSearchNet challenge](https://wandb.ai/github/CodeSearchNet/benchmark) کے لیے بنایا گیا تھا اور GitHub کی کئی open source libraries سے لاکھوں functions پر مشتمل ہے۔ یہاں ہم صرف اس dataset کے Python حصے کو لوڈ کریں گے:
+
+```py
+from datasets import load_dataset
+
+# یہ لوڈ ہونے میں چند منٹ لگ سکتے ہیں، تو چائے یا کافی لے کر بیٹھ جائیں!
+raw_datasets = load_dataset("code_search_net", "python")
+```
+
+ہم training split کو دیکھ کر معلوم کر سکتے ہیں کہ ہمیں کون سے columns دستیاب ہیں:
+
+```py
+raw_datasets["train"]
+```
+
+```python
+Dataset({
+    features: ['repository_name', 'func_path_in_repository', 'func_name', 'whole_func_string', 'language', 
+      'func_code_string', 'func_code_tokens', 'func_documentation_string', 'func_documentation_tokens', 'split_name', 
+      'func_code_url'
+    ],
+    num_rows: 412178
+})
+```
+
+ہم دیکھ سکتے ہیں کہ dataset docstrings کو code سے الگ کرتا ہے اور دونوں کی tokenization کی تجویز دیتا ہے۔ یہاں، ہم صرف `whole_func_string` column کو اپنے tokenizer کی تربیت کے لیے استعمال کریں گے۔ ہم ایک مثال بھی دیکھ سکتے ہیں جسے ہم training split سے index کر کے حاصل کر سکتے ہیں:
+
+```py
+print(raw_datasets["train"][123456]["whole_func_string"])
+```
+
+جو کہ مندرجہ ذیل output دینا چاہیے:
+
+```out
+def handle_simple_responses(
+      self, timeout_ms=None, info_cb=DEFAULT_MESSAGE_CALLBACK):
+    """Accepts normal responses from the device.
+
+    Args:
+      timeout_ms: Timeout in milliseconds to wait for each response.
+      info_cb: Optional callback for text sent from the bootloader.
+
+    Returns:
+      OKAY packet's message.
+    """
+    return self._accept_responses('OKAY', info_cb, timeout_ms=timeout_ms)
+```
+
+سب سے پہلے ہمیں اپنے dataset کو texts کی lists کے iterator میں تبدیل کرنا ہوگا — مثلاً، texts کی lists کی ایک list. texts کی lists استعمال کرنے سے ہمارا tokenizer تیز ہو جائے گا (batch میں texts پر تربیت دینے سے بجائے کہ ایک ایک کر کے texts کو process کیا جائے)، اور یہ ایک iterator ہونا چاہیے تاکہ تمام ڈیٹا کو ایک ساتھ memory میں load نہ کیا جائے۔ اگر آپ کا corpus بہت بڑا ہے تو آپ اس بات سے فائدہ اٹھا سکتے ہیں کہ 🤗 Datasets پورا ڈیٹا RAM میں load نہیں کرتا بلکہ اسے disk پر محفوظ رکھتا ہے۔
+
+نیچے والا code 1,000 texts کی lists کی ایک list بنائے گا، مگر یہ سب کچھ memory میں load کر لے گا:
+
+```py
+# اگر آپ کا dataset چھوٹا ہے تو اس لائن کو uncomment کریں!
+# training_corpus = [raw_datasets["train"][i: i + 1000]["whole_func_string"] for i in range(0, len(raw_datasets["train"]), 1000)]
+```
+
+Python generator کا استعمال کر کے، ہم memory میں کچھ load ہونے سے بچ سکتے ہیں جب تک کہ واقعی ضرورت نہ ہو۔ ایسا generator بنانے کے لیے، آپ بس brackets کی جگہ parentheses استعمال کریں:
+
+```py
+training_corpus = (
+    raw_datasets["train"][i : i + 1000]["whole_func_string"]
+    for i in range(0, len(raw_datasets["train"]), 1000)
+)
+```
+
+یہ code dataset کے کسی بھی element کو fetch نہیں کرتا؛ یہ بس ایک ایسا object تخلیق کرتا ہے جسے آپ Python کے `for` loop میں استعمال کر سکتے ہیں۔ texts تب ہی load ہوں گی جب آپ کو ان کی ضرورت ہوگی (یعنی، جب `for` loop میں آ کر انہیں استعمال کیا جائے گا)، اور ہر بار صرف 1,000 texts load ہوں گی۔ اس طرح آپ memory ختم ہونے سے بچ سکتے ہیں، چاہے آپ ایک بہت بڑے dataset پر کام کر رہے ہوں۔
+
+generator object کا مسئلہ یہ ہے کہ اسے صرف ایک بار استعمال کیا جا سکتا ہے۔ مثال کے طور پر:
+
+```py
+gen = (i for i in range(10))
+print(list(gen))
+print(list(gen))
+```
+
+```python
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+[]
+```
+
+اسی لیے ہم ایک function تعریف کرتے ہیں جو generator return کرتا ہے:
+
+```py
+def get_training_corpus():
+    return (
+        raw_datasets["train"][i : i + 1000]["whole_func_string"]
+        for i in range(0, len(raw_datasets["train"]), 1000)
+    )
+
+training_corpus = get_training_corpus()
+```
+
+آپ `yield` statement کا استعمال کرتے ہوئے اپنے generator کو `for` loop کے اندر بھی تعریف کر سکتے ہیں:
+
+```py
+def get_training_corpus():
+    dataset = raw_datasets["train"]
+    for start_idx in range(0, len(dataset), 1000):
+        samples = dataset[start_idx : start_idx + 1000]
+        yield samples["whole_func_string"]
+```
+
+جو کہ بالکل وہی generator پیدا کرے گا، مگر اس میں آپ list comprehension کی نسبت زیادہ پیچیدہ logic استعمال کر سکتے ہیں۔
+
+## ایک نیا tokenizer تربیت دینا[[training-a-new-tokenizer]]
+
+اب جب کہ ہمارے پاس texts کے batches کی شکل میں corpus موجود ہے، ہم ایک نیا tokenizer تربیت دینے کے لیے تیار ہیں۔ ایسا کرنے کے لیے، سب سے پہلے ہمیں وہ tokenizer لوڈ کرنا ہوگا جسے ہم اپنے model کے ساتھ جوڑنا چاہتے ہیں (یہاں، GPT-2):
+
+```py
+from transformers import AutoTokenizer
+
+old_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+اگرچہ ہم نیا tokenizer تربیت دینے جا رہے ہیں، یہ اچھا خیال ہے کہ ہم اس کو base کے طور پر استعمال کریں تاکہ بالکل صفر سے شروع نہ کرنا پڑے۔ اس طرح، ہمیں tokenization algorithm یا خاص tokens کے بارے میں کچھ بھی بیان نہیں کرنا پڑے گا؛ ہمارا نیا tokenizer GPT-2 جیسا ہی ہوگا، صرف vocabulary تبدیل ہو گی جو corpus کی تربیت سے متعین ہوگی۔
+
+سب سے پہلے دیکھتے ہیں کہ یہ tokenizer ایک مثال function کو کیسے treat کرتا ہے:
+
+```py
+example = '''def add_numbers(a, b):
+    """Add the two numbers `a` and `b`."""
+    return a + b'''
+
+tokens = old_tokenizer.tokenize(example)
+tokens
+```
+
+```python out
+['def', 'Ġadd', '_', 'n', 'umbers', '(', 'a', ',', 'Ġb', '):', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġ"""', 'Add', 'Ġthe', 'Ġtwo',
+ 'Ġnumbers', 'Ġ`', 'a', '`', 'Ġand', 'Ġ`', 'b', '`', '."', '""', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġreturn', 'Ġa', 'Ġ+', 'Ġb']
+```
+
+یہ tokenizer کچھ خاص symbols جیسے کہ `Ġ` اور `Ċ` استعمال کرتا ہے جو بالترتیب spaces اور newlines کو ظاہر کرتے ہیں۔ جیسا کہ دیکھا جا سکتا ہے، یہ کافی مؤثر نہیں ہے: tokenizer ہر space کے لیے علیحدہ token return کرتا ہے جبکہ وہ indentation levels کو گروپ کر سکتا ہے (کیونکہ code میں چار یا آٹھ spaces کا استعمال بہت عام ہے)۔ اس کے علاوہ، یہ function name کو تھوڑا غیر متوقع طور پر split کرتا ہے، کیونکہ اسے `_` character کا استعمال دیکھنے کی عادت نہیں ہے۔
+
+اب آئیں ایک نیا tokenizer تربیت دیتے ہیں اور دیکھتے ہیں کہ کیا یہ ان مسائل کو حل کرتا ہے۔ اس کے لیے ہم `train_new_from_iterator()` میتھڈ استعمال کریں گے:
+
+```py
+tokenizer = old_tokenizer.train_new_from_iterator(training_corpus, 52000)
+```
+
+یہ کمانڈ آپ کے corpus کی سائز کے حساب سے کچھ وقت لے سکتی ہے، مگر اس 1.6 GB کے dataset کے لیے یہ انتہائی تیز ہے (ایک AMD Ryzen 9 3900X CPU کے ساتھ 1 منٹ 16 سیکنڈ لگتے ہیں)۔
+
+نوٹ کریں کہ `AutoTokenizer.train_new_from_iterator()` صرف تب کام کرتا ہے جب آپ جس tokenizer کا استعمال کر رہے ہیں وہ "فاسٹ" tokenizer ہو۔ جیسے کہ اگلے سیکشن میں آپ دیکھیں گے، 🤗 Transformers لائبریری میں دو قسم کے tokenizers ہوتے ہیں: کچھ مکمل طور پر Python میں لکھے گئے ہوتے ہیں اور کچھ (فاسٹ) 🤗 Tokenizers لائبریری سے مربوط ہوتے ہیں، جو کہ [Rust](https://www.rust-lang.org) programming language میں لکھے گئے ہوتے ہیں۔ Python عام طور پر data science اور deep learning applications کے لیے استعمال ہوتی ہے، مگر جب بھی کسی چیز کو parallelize کرنا ہو تو اسے کسی اور زبان میں لکھنا پڑتا ہے۔ مثال کے طور پر، model computation کے core میں matrix multiplications CUDA میں لکھے جاتے ہیں، جو کہ GPUs کے لیے optimized C library ہے۔
+
+خالص Python میں ایک نیا tokenizer تربیت دینا ناقابل برداشت طور پر سست ہو گا، اسی لیے ہم نے 🤗 Tokenizers لائبریری تیار کی۔ یاد رکھیں کہ جیسے آپ کو GPU پر inputs کے batch کو execute کرنے کے لیے CUDA زبان سیکھنے کی ضرورت نہیں پڑی، ویسے ہی آپ کو fast tokenizer استعمال کرنے کے لیے Rust سیکھنے کی ضرورت نہیں پڑے گی۔ 🤗 Tokenizers لائبریری Python bindings فراہم کرتی ہے جو اندرونی طور پر Rust کے کوڈ کو call کرتی ہے؛ مثال کے طور پر، آپ کے نئے tokenizer کی تربیت کو parallelize کرنے یا [باب 3](/course/chapter3) میں batch میں inputs کی tokenization کرنے کے لیے۔
+
+زیادہ تر Transformer models کے پاس fast tokenizer دستیاب ہوتا ہے (کچھ exceptions ہیں جنہیں آپ [یہاں](https://huggingface.co/transformers/#supported-frameworks) دیکھ سکتے ہیں)، اور `AutoTokenizer` API ہمیشہ fast tokenizer کو منتخب کرتا ہے اگر وہ دستیاب ہو۔ اگلے سیکشن میں ہم fast tokenizers کی دیگر خاص خصوصیات پر نظر ڈالیں گے، جو کہ token classification اور question answering جیسے کاموں کے لیے واقعی مفید ہوں گی۔ لیکن اس سے پہلے، آئیں اپنی نئی تربیت شدہ tokenizer کو پچھلی مثال پر آزماتے ہیں:
+
+```py
+tokens = tokenizer.tokenize(example)
+tokens
+```
+
+```python out
+['def', 'Ġadd', '_', 'numbers', '(', 'a', ',', 'Ġb', '):', 'ĊĠĠĠ', 'Ġ"""', 'Add', 'Ġthe', 'Ġtwo', 'Ġnumbers', 'Ġ`',
+ 'a', '`', 'Ġand', 'Ġ`', 'b', '`."""', 'ĊĠĠĠ', 'Ġreturn', 'Ġa', 'Ġ+', 'Ġb']
+```
+
+یہاں دوبارہ ہم وہ خاص symbols `Ġ` اور `Ċ` دیکھ سکتے ہیں جو spaces اور newlines کو ظاہر کرتے ہیں، مگر اب ہمیں یہ بھی نظر آ رہا ہے کہ ہمارا tokenizer Python functions کے corpus کے لیے مخصوص tokens سیکھ گیا ہے: مثلاً `ĊĠĠĠ` جو ایک indentation کو ظاہر کرتا ہے، اور `Ġ"""` جو docstring شروع کرنے والی تین quotes کو ظاہر کرتا ہے۔ tokenizer نے function name کو بھی `_` پر صحیح طور پر split کیا۔ یہ ایک کافی مختصر representation ہے؛ موازنہ کے لیے، اگر ہم plain English tokenizer استعمال کریں تو وہ اسی مثال کے لیے زیادہ الفاظ کا output دے گا:
+
+```py
+print(len(tokens))
+print(len(old_tokenizer.tokenize(example)))
+```
+
+```python
+27
+36
+```
+
+ایک اور مثال دیکھتے ہیں:
+
+```py
+example = """class LinearLayer():
+    def __init__(self, input_size, output_size):
+        self.weight = torch.randn(input_size, output_size)
+        self.bias = torch.zeros(output_size)
+
+    def __call__(self, x):
+        return x @ self.weights + self.bias
+    """
+tokenizer.tokenize(example)
+```
+
+```python
+['class', 'ĠLinear', 'Layer', '():', 'ĊĠĠĠ', 'Ġdef', 'Ġ__', 'init', '__(', 'self', ',', 'Ġinput', '_', 'size', ',',
+ 'Ġoutput', '_', 'size', '):', 'ĊĠĠĠĠĠĠĠ', 'Ġself', '.', 'weight', 'Ġ=', 'Ġtorch', '.', 'randn', '(', 'input', '_',
+ 'size', ',', 'Ġoutput', '_', 'size', ')', 'ĊĠĠĠĠĠĠĠ', 'Ġself', '.', 'bias', 'Ġ=', 'Ġtorch', '.', 'zeros', '(',
+ 'output', '_', 'size', ')', 'ĊĊĠĠĠ', 'Ġdef', 'Ġ__', 'call', '__(', 'self', ',', 'Ġx', '):', 'ĊĠĠĠĠĠĠĠ',
+ 'Ġreturn', 'Ġx', 'Ġ@', 'Ġself', '.', 'weights', 'Ġ+', 'Ġself', '.', 'bias', 'ĊĠĠĠĠ']
+```
+
+اس مثال میں، ہمیں indentation کے لیے ایک token کے ساتھ ساتھ double indentation کا token بھی ملتا ہے: `ĊĠĠĠĠĠĠĠ`. Python کے خاص keywords جیسے `class`, `init`, `call`, `self`, اور `return` کو ہر ایک token کے طور پر tokenize کیا گیا ہے، اور ہم دیکھ سکتے ہیں کہ tokenizer نے `_` اور `.` پر split کرنے کے ساتھ ساتھ camel-cased ناموں کو بھی صحیح طور پر تقسیم کیا: `LinearLayer` کو `["ĠLinear", "Layer"]` کے طور پر tokenize کیا گیا ہے۔
+
+## tokenizer کو محفوظ کرنا[[saving-the-tokenizer]]
+
+یہ یقینی بنانے کے لیے کہ ہم بعد میں اسے استعمال کر سکیں، ہمیں اپنے نئے tokenizer کو محفوظ کرنا ہوگا۔ ماڈلز کی طرح، یہ `save_pretrained()` method کے ذریعے کیا جاتا ہے:
+
+```py
+tokenizer.save_pretrained("code-search-net-tokenizer")
+```
+
+یہ ایک نیا فولڈر *code-search-net-tokenizer* تخلیق کرے گا، جس میں وہ تمام فائلیں ہوں گی جن کی ضرورت tokenizer کو دوبارہ لوڈ کرنے کے لیے ہوتی ہے۔ اگر آپ اپنے tokenizer کو اپنے colleagues اور دوستوں کے ساتھ شیئر کرنا چاہتے ہیں تو آپ اسے Hub پر upload کر سکتے ہیں۔ اگر آپ نوٹ بُک میں کام کر رہے ہیں تو ایک سہولت کا function بھی موجود ہے:
+
+```py
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+یہ ایک widget ظاہر کرے گا جہاں آپ اپنے Hugging Face login credentials درج کر سکیں۔ اگر آپ نوٹ بُک میں نہیں ہیں تو ٹرمینل میں یہ لائن چلائیں:
+
+```bash
+huggingface-cli login
+```
+
+ایک بار login ہو جانے کے بعد، آپ اپنے tokenizer کو push کر سکتے ہیں:
+
+```py
+tokenizer.push_to_hub("code-search-net-tokenizer")
+```
+
+یہ آپ کے namespace میں `code-search-net-tokenizer` کے نام سے ایک نیا repository تخلیق کرے گا جس میں tokenizer کی فائل شامل ہوگی۔ اب آپ کہیں سے بھی `from_pretrained()` method کا استعمال کر کے tokenizer کو لوڈ کر سکتے ہیں:
+
+```py
+# "huggingface-course" کو اپنے اصل namespace سے تبدیل کریں تاکہ آپ اپنا tokenizer استعمال کر سکیں
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+```
+
+اب آپ language model کو صفر سے تربیت دینے اور اسے اپنی ضرورت کے مطابق fine-tune کرنے کے لیے تیار ہیں! ہم اس پر [باب 7](/course/chapter7) میں بات کریں گے، لیکن اس باب کے باقی حصوں میں ہم fast tokenizers کی مزید خصوصیات پر تفصیل سے نظر ڈالیں گے اور اس بات کی تحقیق کریں گے کہ `train_new_from_iterator()` method کو call کرنے پر اصل میں کیا ہوتا ہے۔
