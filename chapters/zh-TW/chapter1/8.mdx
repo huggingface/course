@@ -1,31 +1,269 @@
-# Bias and limitations
+# 深入探討大型語言模型的文本生成推理
 
-<CourseFloatingBanner chapter={1}
-  classNames="absolute z-10 right-0 top-0"
-  notebooks={[
-    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/zh-CN/chapter1/section8.ipynb"},
-    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/zh-CN/chapter1/section8.ipynb"},
-]} />
+<CourseFloatingBanner
+    chapter={1}
+    classNames="absolute z-10 right-0 top-0"
+/>
 
-如果您打算在正式的項目中使用經過預訓練或經過微調的模型。請注意：雖然這些模型是很強大，但它們也有侷限性。其中最大的一個問題是，爲了對大量數據進行預訓練，研究人員通常會蒐集所有他們能找到的內容，中間可能夾帶一些意識形態或者價值觀的刻板印象。
+<Youtube id="Xp2w1_LKZN4" />
 
-爲了快速解釋清楚這個問題，讓我們回到一個使用 BERT 模型的 pipeline 的例子：
+到目前為止，我們已經探討了 Transformer 架構與一系列離散任務的關係，如文本分類或摘要。然而，大型語言模型最常用於文本生成，這就是我們將在本章節中探討的內容。
 
-```python
-from transformers import pipeline
+在本頁面中，我們將探討大型語言模型推理背後的核心概念，提供對這些模型如何生成文本以及推理過程中涉及的關鍵組件的全面理解。
 
-unmasker = pipeline("fill-mask", model="bert-base-uncased")
-result = unmasker("This man works as a [MASK].")
-print([r["token_str"] for r in result])
+## 理解基礎概念
 
-result = unmasker("This woman works as a [MASK].")
-print([r["token_str"] for r in result])
-```
+讓我們從基本概念開始。推理是使用已訓練的大型語言模型（LLM）從給定的輸入提示生成類人文本的過程。語言模型利用從訓練中獲得的知識，逐字制定回應。模型利用從數十億參數中學習到的機率來預測和生成序列中的下一個標記。這種順序生成正是讓大型語言模型能夠產生連貫且與上下文相關文本的原因。
 
-```python out
-['lawyer', 'carpenter', 'doctor', 'waiter', 'mechanic']
-['nurse', 'waitress', 'teacher', 'maid', 'prostitute']
-```
-當要求模型填寫這兩句話中缺少的單詞時，模型給出的答案中，只有一個與性別無關（服務生/女服務生）。其他職業通常與某一特定性別相關，妓女最終進入了模型中與「女人」和「工作」相關的前五位。儘管 BERT 是使用經過篩選和清洗後，明顯中立的數據集上建立的的 Transformer 模型，而不是通過從互聯網上搜集數據（它是在[Wikipedia 英文](https://huggingface.co/datasets/wikipedia)和[BookCorpus](https://huggingface.co/datasets/bookcorpus)數據集）。
+## 注意力機制的作用
 
-因此，當您使用這些工具時，您需要記住，使用的原始模型的時候，很容易生成性別歧視、種族主義或恐同內容。這種固有偏見不會隨着微調模型而使消失。
+注意力機制是賦予大型語言模型理解上下文和生成連貫回應能力的關鍵。在預測下一個詞時，句子中的每個詞並不具有相同的權重——例如，在句子「法國的首都是...」中，「法國」和「首都」這兩個詞對於確定下一個詞應該是「巴黎」至關重要。這種專注於相關資訊的能力就是我們所說的注意力。
+
+<img src="https://huggingface.co/datasets/agents-course/course-images/resolve/main/en/unit1/AttentionSceneFinal.gif" alt="Visual Gif of Attention" width="60%">
+
+這種識別最相關詞彙來預測下一個標記的過程已被證明極其有效。儘管訓練大型語言模型的基本原理——預測下一個標記——自 BERT 和 GPT-2 以來基本保持一致，但在擴展神經網路規模以及讓注意力機制能夠處理越來越長的序列，同時成本越來越低方面，已經取得了重大進展。
+
+<Tip>
+
+簡而言之，注意力機制是大型語言模型能夠生成既連貫又具有上下文感知能力文本的關鍵。它使現代大型語言模型與前幾代語言模型區別開來。
+
+</Tip>
+
+### 上下文長度與注意力範圍
+
+既然我們已經理解了注意力機制，讓我們來探討大型語言模型實際上能處理多少上下文。這就帶我們來到上下文長度，或者說是模型的「注意力範圍」。
+
+上下文長度是指大型語言模型能夠一次處理的最大標記數量（單詞或單詞的一部分）。可以將其視為模型工作記憶體的大小。
+
+這些能力受到幾個實際因素的限制：
+
+- 模型的架構和大小
+- 可用的計算資源
+- 輸入和期望輸出的複雜性
+
+在理想的世界中，我們可以向模型提供無限的上下文，但硬體限制和計算成本使這變得不切實際。這就是為什麼不同的模型被設計成具有不同的上下文長度，以平衡能力與效率。
+
+<Tip>
+
+上下文長度是模型在生成回應時能夠同時考慮的最大標記數量。
+
+</Tip>
+
+### 提示的藝術
+
+當我們向大型語言模型傳遞資訊時，我們會以一種引導大型語言模型生成所需輸出的方式來結構化我們的輸入。這稱為_提示_。
+
+了解大型語言模型如何處理資訊有助於我們製作更好的提示。由於模型的主要任務是通過分析每個輸入標記的重要性來預測下一個標記，因此輸入序列的措辭變得至關重要。
+
+<Tip>
+
+精心設計的提示使得引導大型語言模型生成所需輸出變得更加容易。
+
+</Tip>
+
+## 兩階段推理過程
+
+現在我們了解了基本組件，讓我們深入探討大型語言模型實際如何生成文本。這個過程可以分解為兩個主要階段：預填充和解碼。這些階段像裝配線一樣協同工作，每個階段在產生連貫文本方面都發揮著關鍵作用。
+
+### 預填充階段
+
+預填充階段就像烹飪中的準備階段——這是所有初始材料被處理並準備就緒的地方。這個階段涉及三個關鍵步驟：
+
+1. **標記化**：將輸入文本轉換為標記（將這些視為模型理解的基本構建塊）
+2. **嵌入轉換**：將這些標記轉換為捕捉其含義的數值表示
+3. **初始處理**：通過模型的神經網絡運行這些嵌入，以創建對上下文的豐富理解
+
+這個階段在計算上是密集的，因為它需要一次處理所有輸入標記。可以將其視為在開始寫回應之前閱讀並理解整個段落。
+您可以在下面的互動遊樂場中實驗不同的標記器：
+
+<iframe
+	src="https://agents-course-the-tokenizer-playground.static.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+### 解碼階段
+
+在預填充階段處理完輸入後，我們進入解碼階段——這是實際文本生成發生的地方。模型以我們稱為自回歸過程的方式一次生成一個標記（每個新標記都依賴於所有先前的標記）。
+
+解碼階段涉及每個新標記都會發生的幾個關鍵步驟：
+1. **注意力計算**：回顧所有先前的標記以理解上下文
+2. **機率計算**：確定每個可能的下一個標記的可能性
+3. **標記選擇**：根據這些機率選擇下一個標記
+4. **繼續檢查**：決定是否繼續或停止生成
+
+這個階段是記憶體密集型的，因為模型需要追蹤所有先前生成的標記及其關係。
+
+## 採樣策略
+
+既然我們了解了模型如何生成文本，讓我們探索控制這個生成過程的各種方法。就像作家可能會選擇更有創意或更精確的寫作方式一樣，我們可以調整模型如何進行標記選擇。
+
+您可以在這個空間中親自與 SmolLM2 的基本解碼過程互動（請記住，它會解碼直到達到 **EOS** 標記，對於這個模型來說是 **<|im_end|>**）：
+
+<iframe
+	src="https://agents-course-decoding-visualizer.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+### 理解詞元選擇：從機率到詞元選擇
+
+當模型需要選擇下一個詞元時，它會從詞彙表中每個詞的原始機率（稱為 logits）開始。但我們如何將這些機率轉換為實際的選擇呢？讓我們分解這個過程：
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/1.png)  
+
+1. **原始 Logits**：將這些視為模型對每個可能的下一個詞的初始直覺判斷
+2. **溫度控制**：就像創意調節器 - 較高的設定（>1.0）使選擇更隨機和創意，較低的設定（<1.0）使其更專注和確定性
+3. **Top-p（核心）採樣**：不考慮所有可能的詞，我們只關注最可能的詞，這些詞加起來達到我們選擇的機率閾值（例如，前 90%）
+4. **Top-k 過濾**：另一種方法，我們只考慮 k 個最可能的下一個詞
+
+### 管理重複：保持輸出新鮮
+
+LLM 的一個常見挑戰是它們傾向於重複自己 - 就像演講者不斷回到相同論點一樣。為了解決這個問題，我們使用兩種類型的懲罰機制：
+
+1. **存在懲罰**：對任何之前出現過的詞元施加固定懲罰，無論出現頻率如何。這有助於防止模型重複使用相同的詞彙。
+2. **頻率懲罰**：根據詞元使用頻率遞增的懲罰機制。詞彙出現次數越多，再次被選中的可能性就越低。
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/2.png)  
+
+這些懲罰機制在詞元選擇過程的早期階段就會被應用，在其他採樣策略執行之前調整原始機率。可以將它們視為溫和的推動力，鼓勵模型探索新的詞彙。
+
+### 控制生成長度：設定邊界
+
+就像一個好故事需要適當的節奏和長度一樣，我們需要方法來控制大型語言模型生成多少文本。這對實際應用至關重要——無論我們是要生成推文長度的回應還是完整的部落格文章。
+
+我們可以透過幾種方式控制生成長度：
+1. **Token 限制**：設定最小和最大 token 數量
+2. **停止序列**：定義特定模式來標示生成結束
+3.**序列結束檢測**：讓模型自然地結束其回應
+
+例如，如果我們想要生成單一段落，我們可能會設定最多 100 個 token，並使用 "\n\n" 作為停止序列。這確保我們的輸出保持專注且大小適合其用途。
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/3.png)  
+
+### 束搜尋：前瞻性思考以獲得更好的連貫性
+
+雖然我們到目前為止討論的策略都是一次決定一個 token，但束搜尋採用了更全面的方法。它不會在每一步都承諾單一選擇，而是同時探索多個可能的路徑——就像棋手會提前思考幾步棋一樣。
+
+運作方式如下：
+1. 在每一步中，維持多個候選序列（通常是 5-10 個）
+2. 對每個候選序列，計算下一個 token 的機率
+3. 只保留序列和下一個 token 最有希望的組合
+4. 持續這個過程直到達到所需長度或停止條件
+5. 選擇具有最高整體機率的序列
+
+你可以在這裡視覺化探索束搜尋：
+
+<iframe
+	src="https://agents-course-beam-search-visualizer.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+這種方法通常能產生更連貫且語法正確的文本，儘管它比簡單方法需要更多的計算資源。
+
+## 實際挑戰與最佳化
+
+在我們結束對大型語言模型推論的探索時，讓我們來看看在部署這些模型時會面臨的實際挑戰，以及如何衡量和最佳化它們的效能。
+
+### 關鍵效能指標
+
+在使用大型語言模型時，四個關鍵指標將影響你的實作決策：
+
+1. **首個 Token 時間 (TTFT)**：你能多快獲得第一個回應？這對使用者體驗至關重要，主要受到預填充階段的影響。
+2. **每個輸出 Token 時間 (TPOT)**：你能多快生成後續的 token？這決定了整體生成速度。
+3. **吞吐量**：你能同時處理多少個請求？這影響擴展性和成本效率。
+4. **VRAM 使用量**：你需要多少 GPU 記憶體？這通常成為實際應用中的主要限制。
+
+### 上下文長度挑戰
+
+大型語言模型推論中最重要的挑戰之一是有效管理上下文長度。較長的上下文提供更多資訊，但伴隨著巨大的成本：
+
+- **記憶體使用量**：隨上下文長度呈二次方成長
+- **處理速度**：隨上下文變長而線性下降
+- **資源配置**：需要仔細平衡 VRAM 使用量
+
+像[Qwen2.5-1M](https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-1M) 這樣的最新模型提供令人印象深刻的 100 萬 token 上下文視窗，但這是以顯著較慢的推論時間為代價。關鍵是為你的特定使用案例找到正確的平衡。
+
+<div style="max-width: 800px; margin: 20px auto; padding: 20px; 
+font-family: system-ui;">
+    <div style="border: 2px solid #ddd; border-radius: 8px; 
+    padding: 20px; margin-bottom: 20px;">
+        <div style="display: flex; align-items: center; 
+        margin-bottom: 15px;">
+            <div style="flex: 1; text-align: center; padding: 
+            10px; background: #f0f0f0; border-radius: 4px;">
+                Input Text (Raw)
+            </div>
+            <div style="margin: 0 10px;">→</div>
+            <div style="flex: 1; text-align: center; padding: 
+            10px; background: #e1f5fe; border-radius: 4px;">
+                Tokenized Input
+            </div>
+        </div>
+        <div style="display: flex; margin-bottom: 15px;">
+            <div style="flex: 1; border: 1px solid #ccc; 
+            padding: 10px; margin: 5px; background: #e8f5e9; 
+            border-radius: 4px; text-align: center;">
+                Context Window<br/>(e.g., 4K tokens)
+                <div style="display: flex; margin-top: 10px;">
+                    <div style="flex: 1; background: #81c784; 
+                    margin: 2px; height: 20px; border-radius: 
+                    2px;"></div>
+                    <div style="flex: 1; background: #81c784; 
+                    margin: 2px; height: 20px; border-radius: 
+                    2px;"></div>
+                    <div style="flex: 1; background: #81c784; 
+                    margin: 2px; height: 20px; border-radius: 
+                    2px;"></div>
+                    <div style="flex: 1; background: #81c784; 
+                    margin: 2px; height: 20px; border-radius: 
+                    2px;"></div>
+                </div>
+            </div>
+        </div>
+        <div style="display: flex; justify-content: 
+        space-between; text-align: center; font-size: 0.9em; 
+        color: #666;">
+            <div style="flex: 1;">
+                <div style="border: 1px solid #ffcc80; padding: 
+                8px; margin: 5px; background: #fff3e0; 
+                border-radius: 4px;">
+                    Memory Usage<br/>∝ Length²
+                </div>
+            </div>
+            <div style="flex: 1;">
+                <div style="border: 1px solid #90caf9; padding: 
+                8px; margin: 5px; background: #e3f2fd; 
+                border-radius: 4px;">
+                    Processing Time<br/>∝ Length
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+### KV 快取最佳化
+
+為了解決這些挑戰，最強大的最佳化技術之一是 KV（鍵值）快取。這項技術透過儲存和重複使用中間計算結果來顯著提升推論速度。這項最佳化：
+- 減少重複計算
+- 提升生成速度
+- 讓長上下文生成變得實用
+
+代價是額外的記憶體使用量，但效能優勢通常遠超過這個成本。
+
+## 結論
+
+理解大型語言模型推論對於有效部署和最佳化這些強大模型至關重要。我們已經涵蓋了關鍵組成部分：
+
+- 注意力機制和上下文的基本作用
+- 兩階段推論過程
+- 控制生成的各種採樣策略
+- 實際挑戰和最佳化
+
+透過掌握這些概念，你將更有能力建構有效且高效利用大型語言模型的應用程式。
+
+請記住，大型語言模型推論領域正在快速發展，新技術和最佳化方法不斷湧現。保持好奇心，持續嘗試不同方法，找出最適合你特定使用案例的解決方案。
