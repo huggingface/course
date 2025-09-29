@@ -1,0 +1,626 @@
+# ပြည့်စုံသော Training Loop တစ်ခု[[a-full-training]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+]} />
+
+<Youtube id="Dh9CL8fyG80"/>
+
+ယခု ကျွန်တော်တို့သည် `Trainer` class ကို အသုံးမပြုဘဲ၊ ခေတ်မီ PyTorch ၏ အကောင်းဆုံး အလေ့အကျင့်များနှင့်အတူ training loop တစ်ခုကို စတင်တည်ဆောက်ခြင်းဖြင့် ယခင်အပိုင်းတွင် ရရှိခဲ့သော ရလဒ်များအတိုင်း မည်သို့ရရှိနိုင်ကြောင်း လေ့လာပါမည်။ ထပ်မံ၍ သင်သည် အပိုင်း ၂ တွင် ဒေတာ စီမံဆောင်ရွက်မှု (data processing) ကို လုပ်ဆောင်ပြီးဖြစ်သည်ဟု ကျွန်တော်တို့ ယူဆပါသည်။ သင်လိုအပ်မည့် အရာအားလုံး၏ အကျဉ်းချုပ်ကို ဤတွင် ဖော်ပြထားသည်။
+
+> [!TIP]
+> 🏗️ **Scratch မှ Training လုပ်ခြင်း**: ဤအပိုင်းသည် ယခင်အကြောင်းအရာများပေါ်တွင် အခြေခံထားသည်။ PyTorch training loops နှင့် အကောင်းဆုံးအလေ့အကျင့်များဆိုင်ရာ ပြည့်စုံသော လမ်းညွှန်ချက်များအတွက် [🤗 Transformers training documentation](https://huggingface.co/docs/transformers/main/en/training#train-in-native-pytorch) နှင့် [custom training cookbook](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu#model) ကို ကြည့်ရှုပါ။
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### Training အတွက် ပြင်ဆင်ခြင်း[[prepare-for-training]]
+
+ကျွန်တော်တို့၏ training loop ကို တကယ်တမ်း မရေးမီတွင် objects အချို့ကို သတ်မှတ်ရန် လိုအပ်ပါလိမ့်မည်။ ပထမဆုံးအရာများမှာ batches များကို ထပ်ခါတလဲလဲ လုပ်ဆောင်ရန် အသုံးပြုမည့် dataloaders များဖြစ်သည်။ သို့သော် ထို dataloaders များကို မသတ်မှတ်မီ၊ `Trainer` က ကျွန်တော်တို့အတွက် အလိုအလျောက် လုပ်ဆောင်ပေးခဲ့သော အရာအချို့ကို ဂရုစိုက်ရန်အတွက် ကျွန်တော်တို့၏ `tokenized_datasets` ကို postprocessing အနည်းငယ် လုပ်ရန်လိုအပ်သည်။ အထူးသဖြင့်၊ ကျွန်တော်တို့ လုပ်ရန်လိုအပ်သည်များမှာ 
+
+- model က မမျှော်လင့်ထားသော (ဥပမာ `sentence1` နှင့် `sentence2` columns ကဲ့သို့) values များနှင့် ကိုက်ညီသော columns များကို ဖယ်ရှားပါ။
+- `label` column ကို `labels` ဟု ပြန်လည်အမည်ပြောင်းပါ (ဘာလို့လဲဆိုတော့ model က argument ကို `labels` ဟု အမည်ပေးထားတာကို မျှော်လင့်ထားလို့ပါ)။
+- datasets ၏ format ကို PyTorch tensors များကို ပြန်ပို့မည့်အစား lists များကို ပြန်ပို့ရန် သတ်မှတ်ပါ။
+
+ကျွန်တော်တို့၏ `tokenized_datasets` တွင် ထိုအဆင့်တစ်ခုစီအတွက် method တစ်ခုစီ ရှိသည်။
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+tokenized_datasets["train"].column_names
+```
+
+ထို့နောက် ရလဒ်တွင် ကျွန်တော်တို့၏ model က လက်ခံမည့် columns များသာ ပါဝင်ခြင်း ရှိမရှိ စစ်ဆေးနိုင်သည်။
+
+```python
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+ယခု ဒါတွေအားလုံး ပြီးသွားပြီဆိုတော့ ကျွန်တော်တို့၏ dataloaders များကို အလွယ်တကူ သတ်မှတ်နိုင်သည်။
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+ဒေတာ စီမံဆောင်ရွက်မှု (data processing) တွင် အမှားအယွင်းမရှိစေရန် လျင်မြန်စွာ စစ်ဆေးရန်အတွက် batch တစ်ခုကို ဤသို့ စစ်ဆေးနိုင်သည်။
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+training dataloader အတွက် `shuffle=True` ကို သတ်မှတ်ထားပြီး batch အတွင်းရှိ အများဆုံးအရှည်အထိ padding လုပ်ထားသောကြောင့် အမှန်တကယ် shape များသည် သင်အတွက် အနည်းငယ် ကွဲပြားနိုင်သည်ကို သတိပြုပါ။
+
+ယခု ဒေတာ preprocessing ကို ကျွန်တော်တို့ အပြည့်အဝ ပြီးဆုံးသွားပြီဖြစ်ရာ (မည်သည့် ML (Machine Learning) practitioner အတွက်မဆို ကျေနပ်ဖွယ်ကောင်းသော်လည်း ရရှိရန်ခက်ခဲသော ပန်းတိုင်တစ်ခု) model ဆီသို့ ပြောင်းရအောင်။ ၎င်းကို ယခင်အပိုင်းတွင် ကျွန်တော်တို့ လုပ်ဆောင်ခဲ့သည့်အတိုင်း အတိအကျ instantiate လုပ်သည်။
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+training လုပ်နေစဉ် အားလုံးချောမွေ့စွာ ဖြစ်ပျက်စေရန်အတွက် ကျွန်တော်တို့၏ batch ကို model ထံ ပေးပို့သည်။
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+🤗 Transformers model များအားလုံးသည် `labels` များကို ပေးဆောင်သောအခါ loss ကို ပြန်ပေးလိမ့်မည်ဖြစ်ပြီး ကျွန်တော်တို့သည် logits (ကျွန်တော်တို့၏ batch ရှိ input တစ်ခုစီအတွက် နှစ်ခုစီ၊ ထို့ကြောင့် size 8 x 2 tensor တစ်ခု) ကိုလည်း ရရှိသည်။
+
+ကျွန်တော်တို့၏ training loop ကို ရေးရန် အသင့်ဖြစ်ခါနီးပြီ။ ကျွန်တော်တို့ နှစ်ခုသာ လိုအပ်တော့သည်- optimizer နှင့် learning rate scheduler။ `Trainer` က လုပ်ဆောင်ခဲ့သည့်အရာများကို ကိုယ်တိုင် ပြန်လုပ်ရန် ကြိုးစားနေသောကြောင့် တူညီသော defaults များကို အသုံးပြုမည်။ `Trainer` မှ အသုံးပြုသော optimizer မှာ `AdamW` ဖြစ်သည်။ ၎င်းသည် Adam နှင့် တူသော်လည်း weight decay regularization အတွက် အနည်းငယ် ကွဲပြားမှုရှိသည် (Ilya Loshchilov နှင့် Frank Hutter ရေးသားသော ["Decoupled Weight Decay Regularization"](https://arxiv.org/abs/1711.05101) ကို ကြည့်ပါ)။
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+> [!TIP]
+> 💡 **ခေတ်မီ Optimization အကြံပြုချက်များ**: ပိုမိုကောင်းမွန်သော စွမ်းဆောင်ရည်အတွက်၊ အောက်ပါတို့ကို စမ်းသပ်နိုင်သည်။
+> - **Weight decay ပါသော AdamW**: `AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)`
+> - **8-bit Adam**: memory-efficient optimization အတွက် `bitsandbytes` ကို အသုံးပြုပါ။
+> - **မတူညီသော learning rates**: large models များအတွက် learning rates နည်းပါးခြင်း (1e-5 မှ 3e-5) က ပိုမိုကောင်းမွန်စွာ အလုပ်လုပ်လေ့ရှိသည်။
+>
+> 🚀 **Optimization အရင်းအမြစ်များ**: optimizers များနှင့် training strategies များအကြောင်း [🤗 Transformers optimization guide](https://huggingface.co/docs/transformers/main/en/performance#optimizer) တွင် ပိုမိုလေ့လာပါ။
+
+နောက်ဆုံးအနေဖြင့်၊ default အားဖြင့် အသုံးပြုသော learning rate scheduler သည် အများဆုံးတန်ဖိုး (5e-5) မှ 0 အထိ linear decay သက်သက်ဖြစ်သည်။ ၎င်းကို မှန်ကန်စွာ သတ်မှတ်ရန်အတွက် ကျွန်တော်တို့ လုပ်ဆောင်မည့် training steps အရေအတွက်ကို သိရှိရန် လိုအပ်သည်၊ ၎င်းသည် ကျွန်တော်တို့ run လိုသော epochs အရေအတွက်ကို training batches အရေအတွက် (ကျွန်တော်တို့၏ training dataloader ၏ length) ဖြင့် မြှောက်ခြင်းဖြစ်သည်။ `Trainer` သည် default အားဖြင့် သုံး epochs ကို အသုံးပြုသောကြောင့် ကျွန်တော်တို့ ထိုအတိုင်း လိုက်နာမည်။
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+### Training Loop[[the-training-loop]]
+
+နောက်ဆုံးတစ်ချက်- ကျွန်တော်တို့ GPU တစ်ခုကို အသုံးပြုနိုင်သည်ဆိုလျှင် ၎င်းကို အသုံးပြုလိုသည် (CPU ပေါ်တွင် training သည် မိနစ်အနည်းငယ်အစား နာရီများစွာ ကြာနိုင်သည်)။ ၎င်းကို လုပ်ဆောင်ရန်အတွက် ကျွန်တော်တို့၏ model နှင့် batches များကို တင်မည့် `device` တစ်ခုကို သတ်မှတ်သည်။
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+device
+```
+
+```python out
+device(type='cuda')
+```
+
+ကျွန်တော်တို့ training လုပ်ရန် အသင့်ဖြစ်ပြီ။ training ပြီးဆုံးမည့်အချိန်ကို ခန့်မှန်းနိုင်ရန် `tqdm` library ကို အသုံးပြု၍ ကျွန်တော်တို့၏ training steps အရေအတွက်ပေါ်တွင် progress bar တစ်ခု ထည့်သွင်းသည်။
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+> [!TIP]
+> 💡 **ခေတ်မီ Training Optimization များ**: သင်၏ training loop ကို ပိုမိုထိရောက်စေရန်အတွက် အောက်ပါတို့ကို ထည့်သွင်းစဉ်းစားပါ။
+>
+> - **Gradient Clipping**: `optimizer.step()` မတိုင်မီ `torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)` ကို ထည့်သွင်းပါ။
+> - **Mixed Precision**: ပိုမိုမြန်ဆန်သော training အတွက် `torch.cuda.amp.autocast()` နှင့် `GradScaler` ကို အသုံးပြုပါ။
+> - **Gradient Accumulation**: ပိုကြီးမားသော batch sizes များကို အတုယူရန် batches အများအပြားပေါ်တွင် gradients များကို စုဆောင်းပါ။
+> - **Checkpointing**: training လုပ်ငန်းစဉ် ပြတ်တောက်သွားပါက ပြန်လည်စတင်နိုင်ရန် model checkpoints များကို အခါအားလျော်စွာ သိမ်းဆည်းပါ။
+>
+> 🔧 **Implementation လမ်းညွှန်**: ဤ optimization များ၏ အသေးစိတ်ဥပမာများအတွက် [🤗 Transformers efficient training guide](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_one) နှင့် [optimizers များ](https://huggingface.co/docs/transformers/main/en/optimizers) ကို ကြည့်ရှုပါ။
+
+training loop ၏ အဓိက အစိတ်အပိုင်းသည် နိဒါန်းတွင် ပါရှိသည့်ပုံစံနှင့် အလွန်တူညီကြောင်း သင်တွေ့ရပါလိမ့်မည်။ ကျွန်တော်တို့သည် မည်သည့်အစီရင်ခံမှုကိုမျှ တောင်းဆိုခြင်း မရှိသောကြောင့် ဤ training loop က model ၏ စွမ်းဆောင်ရည်နှင့် ပတ်သက်၍ ဘာမျှ ပြောပြမည်မဟုတ်ပါ။ ထိုအတွက် evaluation loop တစ်ခု ထည့်သွင်းရန် လိုအပ်သည်။
+
+### Evaluation Loop[[the-evaluation-loop]]
+
+ကျွန်တော်တို့ ယခင်က လုပ်ဆောင်ခဲ့သည့်အတိုင်း 🤗 Evaluate library မှ ပံ့ပိုးပေးထားသော metric တစ်ခုကို အသုံးပြုမည်။ ကျွန်တော်တို့သည် `metric.compute()` method ကို မြင်တွေ့ခဲ့ပြီးဖြစ်သော်လည်း metrics များသည် `add_batch()` method ဖြင့် prediction loop ကို လုပ်ဆောင်နေစဉ် batches များကို တကယ်တမ်း စုဆောင်းနိုင်ပါသည်။ batches အားလုံးကို စုဆောင်းပြီးသည်နှင့် `metric.compute()` ဖြင့် နောက်ဆုံးရလဒ်ကို ရရှိနိုင်ပါသည်။ evaluation loop တွင် ဤအရာအားလုံးကို မည်သို့ အကောင်အထည်ဖော်ရမည်ကို ဤတွင် ဖော်ပြထားသည်။
+
+> [!TIP]
+> 📊 **Evaluation အကောင်းဆုံးအလေ့အကျင့်များ**: ပိုမိုရှုပ်ထွေးသော evaluation strategies နှင့် metrics များအတွက် [🤗 Evaluate documentation](https://huggingface.co/docs/evaluate/) နှင့် [comprehensive evaluation cookbook](https://github.com/huggingface/evaluation-guidebook) ကို လေ့လာပါ။
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+ထပ်မံ၍ သင်၏ရလဒ်များသည် model head initialization နှင့် data shuffling ရှိ ကျပန်း (randomness) ကြောင့် အနည်းငယ် ကွဲပြားနိုင်သော်လည်း ၎င်းတို့သည် အနီးစပ်ဆုံး တူညီသင့်သည်။
+
+> [!TIP]
+> ✏️ **စမ်းသပ်ကြည့်ပါ။** သင်၏ model ကို SST-2 dataset ပေါ်တွင် fine-tune လုပ်ရန် ယခင် training loop ကို ပြင်ဆင်ပါ။
+
+### 🤗 Accelerate ဖြင့် သင်၏ Training Loop ကို အစွမ်းထက်စေခြင်း[[supercharge-your-training-loop-with-accelerate]]
+
+<Youtube id="s7dy8QRgjJ0" />
+
+ကျွန်တော်တို့ ယခင်က သတ်မှတ်ခဲ့သော training loop သည် single CPU (Central Processing Unit) သို့မဟုတ် GPU (Graphics Processing Unit) ပေါ်တွင် ကောင်းစွာ အလုပ်လုပ်ပါသည်။ သို့သော် [🤗 Accelerate](https://github.com/huggingface/accelerate) library ကို အသုံးပြု၍ အပြောင်းအလဲ အနည်းငယ်ဖြင့် GPUs များစွာ သို့မဟုတ် TPUs (Tensor Processing Units) များပေါ်တွင် distributed training (ဖြန့်ကျက်လေ့ကျင့်မှု) ကို ဖွင့်နိုင်ပါသည်။ 🤗 Accelerate သည် distributed training၊ mixed precision နှင့် device placement တို့၏ ရှုပ်ထွေးမှုများကို အလိုအလျောက် ကိုင်တွယ်ပေးပါသည်။ training နှင့် validation dataloaders များ ဖန်တီးခြင်းမှ စတင်၍ ကျွန်တော်တို့၏ manual training loop သည် ဤသို့ ဖြစ်ပါသည်။
+
+> [!TIP]
+> ⚡ **Accelerate Deep Dive**: distributed training၊ mixed precision နှင့် hardware optimization အကြောင်း [🤗 Accelerate documentation](https://huggingface.co/docs/accelerate/) တွင် အားလုံးကို လေ့လာပြီး [transformers documentation](https://huggingface.co/docs/transformers/main/en/accelerate) တွင် လက်တွေ့ဥပမာများကို ရှာဖွေပါ။
+
+```py
+from accelerate import Accelerator
+from torch.optim import AdamW
+from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+ပထမဆုံး ထည့်သွင်းရမည့် လိုင်းမှာ import လိုင်းဖြစ်သည်။ ဒုတိယလိုင်းတွင် `Accelerator` object တစ်ခုကို instantiate လုပ်ထားသည်၊ ၎င်းသည် ပတ်ဝန်းကျင်ကို ကြည့်ရှုပြီး မှန်ကန်သော distributed setup ကို initialize လုပ်ပေးမည်။ 🤗 Accelerate သည် သင့်အတွက် device placement ကို ကိုင်တွယ်ပေးသောကြောင့် model ကို device ပေါ်တွင် တင်မည့်လိုင်းများကို ဖယ်ရှားနိုင်သည် (သို့မဟုတ် သင်ပိုနှစ်သက်ပါက ၎င်းတို့ကို `device` အစား `accelerator.device` ကို အသုံးပြုရန် ပြောင်းလဲနိုင်သည်)။
+
+ထို့နောက် အလုပ်၏ အဓိကအစိတ်အပိုင်းကို dataloaders, model နှင့် optimizer တို့ကို `accelerator.prepare()` ထံ ပေးပို့သည့် လိုင်းတွင် လုပ်ဆောင်သည်။ ၎င်းသည် ထို objects များကို သင်၏ distributed training က ရည်ရွယ်ထားသည့်အတိုင်း အလုပ်လုပ်ကြောင်း သေချာစေရန် မှန်ကန်သော container ထဲတွင် ထည့်သွင်းပေးမည်။ ပြုလုပ်ရမည့် ကျန်ရှိသော အပြောင်းအလဲများမှာ batch ကို `device` ပေါ်တွင် တင်သည့်လိုင်းကို ဖယ်ရှားခြင်း (ထပ်မံ၍ သင် ၎င်းကို ထားလိုပါက `accelerator.device` ကို အသုံးပြုရန် ပြောင်းလဲနိုင်သည်) နှင့် `loss.backward()` ကို `accelerator.backward(loss)` ဖြင့် အစားထိုးခြင်းတို့ဖြစ်သည်။
+
+> [!TIP]
+> ⚠️ Cloud TPUs မှ ပေးဆောင်သော အရှိန်အဟုန်ကို အကျိုးခံစားရန်အတွက် သင်၏ samples များကို tokenizer ၏ `padding="max_length"` နှင့် `max_length` arguments များဖြင့် fixed length တစ်ခုသို့ padding လုပ်ရန် ကျွန်ုပ်တို့ အကြံပြုပါသည်။
+
+သင် ကူးယူပြီး ကစားကြည့်လိုပါက 🤗 Accelerate ဖြင့် ပြည့်စုံသော training loop သည် ဤသို့ ဖြစ်ပါသည်။
+
+```py
+from accelerate import Accelerator
+from torch.optim import AdamW
+from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+ဤ code ကို `train.py` script တစ်ခုထဲတွင် ထည့်သွင်းခြင်းဖြင့် မည်သည့် distributed setup အမျိုးအစားပေါ်တွင်မဆို ထို script ကို run နိုင်မည်ဖြစ်သည်။ သင်၏ distributed setup တွင် ၎င်းကို စမ်းသပ်ရန်အတွက် အောက်ပါ command ကို run ပါ။
+
+```bash
+accelerate config
+```
+
+၎င်းသည် သင့်အား မေးခွန်းအနည်းငယ် မေးပြီး သင်၏ အဖြေများကို configuration file တစ်ခုထဲတွင် dump လုပ်လိမ့်မည်၊ ၎င်းကို ဤ command မှ အသုံးပြုသည်။
+
+```
+accelerate launch train.py
+```
+
+၎င်းသည် distributed training ကို စတင်လိမ့်မည်။
+
+သင် ၎င်းကို Notebook (ဥပမာ Colab တွင် TPUs ဖြင့် စမ်းသပ်ရန်) တွင် စမ်းသပ်လိုပါက code ကို `training_function()` တစ်ခုထဲတွင် ကူးထည့်ပြီး နောက်ဆုံး cell တစ်ခုကို ဤသို့ run ပါ။
+
+```python
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+[🤗 Accelerate repo](https://github.com/huggingface/accelerate/tree/main/examples) တွင် ဥပမာများ ထပ်မံ ရှာဖွေနိုင်ပါသည်။
+
+> [!TIP]
+> 🌐 **Distributed Training**: multi-GPU နှင့် multi-node training များအကြောင်း ပြည့်စုံသော အကြောင်းအရာများအတွက် [🤗 Transformers distributed training guide](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_many) နှင့် [scaling training cookbook](https://huggingface.co/docs/transformers/main/en/accelerate) ကို ကြည့်ရှုပါ။
+
+### နောက်တစ်ဆင့်များနှင့် အကောင်းဆုံးအလေ့အကျင့်များ[[next-steps-and-best-practices]]
+
+ယခု သင်သည် training ကို အစမှ အကောင်အထည်ဖော်နည်းကို သင်ယူပြီးပြီဖြစ်ရာ၊ ထုတ်လုပ်မှု (production) အတွက် ထပ်မံ ထည့်သွင်းစဉ်းစားရမည့် အချက်အချို့ ဤတွင် ဖော်ပြထားသည်။
+
+**Model Evaluation**: သင်၏ model ကို accuracy သက်သက်မဟုတ်ဘဲ metrics များစွာဖြင့် အမြဲတမ်း အကဲဖြတ်ပါ။ ပြည့်စုံသော evaluation အတွက် 🤗 Evaluate library ကို အသုံးပြုပါ။
+
+**Hyperparameter Tuning**: စနစ်တကျ hyperparameter optimization အတွက် Optuna သို့မဟုတ် Ray Tune ကဲ့သို့သော library များကို အသုံးပြုရန် စဉ်းစားပါ။
+
+**Model Monitoring**: training လုပ်နေစဉ် တစ်လျှောက်လုံး training metrics၊ learning curves နှင့် validation performance များကို မှတ်တမ်းတင်ပါ။
+
+**Model Sharing**: လေ့ကျင့်ပြီးသည်နှင့် သင်၏ model ကို Hugging Face Hub ပေါ်တွင် မျှဝေခြင်းဖြင့် လူအဖွဲ့အစည်း (community) အတွက် ရရှိနိုင်စေပါ။
+
+**Efficiency**: large models များအတွက် gradient checkpointing၊ parameter-efficient fine-tuning (LoRA, AdaLoRA) သို့မဟုတ် quantization methods ကဲ့သို့သော နည်းလမ်းများကို ထည့်သွင်းစဉ်းစားပါ။
+
+ဒါက custom training loops တွေနဲ့ fine-tuning လုပ်ခြင်းအကြောင်း ကျွန်တော်တို့ရဲ့ နက်နက်နဲနဲ လေ့လာမှုကို နိဂုံးချုပ်လိုက်ပါပြီ။ ဒီနေရာမှာ သင်သင်ယူခဲ့တဲ့ ကျွမ်းကျင်မှုတွေက training process ပေါ်မှာ အပြည့်အဝ ထိန်းချုပ်ဖို့ လိုအပ်တဲ့အခါ ဒါမှမဟုတ် `Trainer` API က ပေးစွမ်းနိုင်တာထက် ကျော်လွန်တဲ့ custom training logic ကို အကောင်အထည်ဖော်ချင်တဲ့အခါ သင့်ကို အထောက်အကူပြုပါလိမ့်မယ်။
+
+## အခန်း၏ ဗဟုသုတစစ်ဆေးခြင်း[[section-quiz]]
+
+custom training loops များနှင့် advanced training နည်းလမ်းများအကြောင်း သင့်နားလည်မှုကို စမ်းသပ်ပါ။
+
+### 1. Adam နှင့် AdamW optimizers များကြား အဓိကကွာခြားချက်က ဘာလဲ။
+
+<Question
+	choices={[
+		{
+			text: "AdamW သည် မတူညီသော learning rate schedule ကို အသုံးပြုသည်။",
+			explain: "Learning rate scheduling သည် optimizer ရွေးချယ်မှုနှင့် သီးခြားဖြစ်သည်။"
+		},
+		{
+			text: "AdamW တွင် decoupled weight decay regularization ပါဝင်သည်။",
+			explain: "မှန်ပါသည်။ AdamW သည် gradient-based parameter updates မှ weight decay ကို ခွဲခြားထားခြင်းဖြင့် ပိုမိုကောင်းမွန်သော regularization ကို ဖြစ်ပေါ်စေသည်။",
+            correct: true
+		},
+		{
+			text: "AdamW သည် transformer models များနှင့်သာ အလုပ်လုပ်သည်။",
+			explain: "AdamW ကို transformers များသာမက မည်သည့် model architecture နှင့်မဆို အသုံးပြုနိုင်သည်။"
+		},
+        {
+			text: "AdamW သည် Adam ထက် memory ပိုမိုနည်းပါးစွာ လိုအပ်သည်။",
+			explain: "optimizers နှစ်ခုလုံးတွင် memory လိုအပ်ချက်များ တူညီသည်။"
+		}
+	]}
+/>
+
+### 2. training loop တစ်ခုတွင် လုပ်ဆောင်မှုများ၏ မှန်ကန်သော အစီအစဉ်က ဘာလဲ။
+
+<Question
+	choices={[
+		{
+			text: "Forward pass → Backward pass → Optimizer step → Zero gradients",
+			explain: "နီးစပ်သော်လည်း၊ gradients အဟောင်းများ စုပုံခြင်းကို ရှောင်ရှားရန် နောက်ထပ် forward pass မလုပ်မီ gradients များကို zero ပြန်လုပ်သင့်သည်။"
+		},
+		{
+			text: "Forward pass → Backward pass → Optimizer step → Scheduler step → Zero gradients",
+			explain: "မှန်ပါသည်။ ၎င်းသည် မှန်ကန်သော အစီအစဉ်ဖြစ်သည်။ loss ကို တွက်ချက်ပါ၊ gradients ကို တွက်ချက်ပါ၊ parameters ကို update လုပ်ပါ၊ learning rate ကို update လုပ်ပါ၊ ထို့နောက် gradients ကို ရှင်းလင်းပါ။",
+            correct: true
+		},
+		{
+			text: "Zero gradients → Forward pass → Optimizer step → Backward pass",
+			explain: "gradients ကို တွက်ချက်ရန်အတွက် backward pass သည် forward pass နောက်တွင် လာရမည်။"
+		},
+        {
+			text: "Forward pass → Zero gradients → Backward pass → Optimizer step",
+			explain: "backward pass မတိုင်မီ gradients များကို zero ပြန်လုပ်ခြင်းသည် သင်ခုမှ တွက်ချက်ထားသော gradients များကို ဖျက်ဆီးပစ်လိမ့်မည်။"
+		}
+	]}
+/>
+
+### 3. 🤗 Accelerate library သည် အဓိကအားဖြင့် ဘာကို ကူညီသလဲ။
+
+<Question
+	choices={[
+		{
+			text: "forward pass ကို optimized လုပ်ခြင်းဖြင့် သင်၏ models များကို ပိုမိုမြန်ဆန်စွာ train လုပ်ခြင်း။",
+			explain: "Accelerate သည် model architecture ကိုယ်တိုင်ကို optimized လုပ်ခြင်း မရှိပါ။"
+		},
+		{
+			text: "အကောင်းဆုံး hyperparameters များကို အလိုအလျောက် ရွေးချယ်ခြင်း။",
+			explain: "Accelerate သည် hyperparameter optimization ကို မလုပ်ဆောင်ပါ။"
+		},
+		{
+			text: "code အပြောင်းအလဲ အနည်းငယ်ဖြင့် GPUs/TPUs များစွာတွင် distributed training ကို ဖွင့်နိုင်စေခြင်း။",
+			explain: "မှန်ပါသည်။ Accelerate သည် distributed training ၏ ရှုပ်ထွေးမှုများကို ကိုင်တွယ်ကာ သင်၏ code ကို single သို့မဟုတ် multiple devices များပေါ်တွင် ချောမွေ့စွာ run နိုင်စေသည်။",
+            correct: true
+		},
+        {
+			text: "models များကို TensorFlow ကဲ့သို့သော မတူညီသော frameworks များသို့ ပြောင်းလဲခြင်း။",
+			explain: "Accelerate သည် PyTorch အတွင်း၌ အလုပ်လုပ်ပြီး frameworks များကြား ပြောင်းလဲခြင်း မရှိပါ။"
+		}
+	]}
+/>
+
+### 4. training loop တစ်ခုတွင် batches များကို device သို့ ဘာကြောင့် ရွှေ့ရသလဲ။
+
+<Question
+	choices={[
+		{
+			text: "training ကို ပိုမိုမြန်ဆန်စေရန်။",
+			explain: "အရှိန်ကို ထိခိုက်စေနိုင်သော်လည်း၊ အဓိကအကြောင်းအရင်းမှာ လိုက်ဖက်မှုရှိခြင်း ဖြစ်သည်။"
+		},
+		{
+			text: "computation လုပ်ဆောင်ရန်အတွက် model နှင့် data ကို တူညီသော device (CPU/GPU) ပေါ်တွင် ရှိရမည်ဖြစ်သောကြောင့်။",
+			explain: "မှန်ပါသည်။ PyTorch သည် operation များ အလုပ်လုပ်ရန်အတွက် tensors များကို တူညီသော device ပေါ်တွင် ရှိရန် လိုအပ်သည်။",
+            correct: true
+		},
+		{
+			text: "memory ချွေတာရန်။",
+			explain: "device သို့ ရွှေ့ခြင်းသည် မူလအားဖြင့် memory ချွေတာခြင်း မရှိပါ။"
+		},
+        {
+			text: "DataLoader က လိုအပ်သောကြောင့်။",
+			explain: "DataLoader သည် သီးခြား device placement ကို မလိုအပ်ပါ။"
+		}
+	]}
+/>
+
+### 5. evaluation မတိုင်မီ `model.eval()` က ဘာလုပ်သလဲ။
+
+<Question
+	choices={[
+		{
+			text: "model parameters များကို freeze လုပ်ခြင်းဖြင့် ၎င်းတို့ကို update လုပ်လို့ မရအောင် တားဆီးသည်။",
+			explain: "model.eval() သည် parameters များကို freeze လုပ်ခြင်း မရှိပါ - ၎င်းကို requires_grad=False ဟု သတ်မှတ်ခြင်းဖြင့် လုပ်ဆောင်မည်။"
+		},
+		{
+			text: "dropout နှင့် batch normalization ကဲ့သို့သော layers များ၏ အပြုအမူကို inference အတွက် ပြောင်းလဲသည်။",
+			explain: "မှန်ပါသည်။ eval() mode သည် dropout ကို ပိတ်ကာ batch norm အတွက် running statistics များကို အသုံးပြုပြီး လက်ရှိ batch မှ တွက်ချက်ခြင်း မရှိပါ။",
+            correct: true
+		},
+		{
+			text: "evaluation metrics အတွက် gradient computation ကို ဖွင့်ပေးသည်။",
+			explain: "တကယ်တော့၊ evaluation လုပ်နေစဉ် gradient computation ကို ပိတ်ရန်အတွက် ကျွန်တော်တို့သည် များသောအားဖြင့် torch.no_grad() ကို အသုံးပြုသည်။"
+		},
+        {
+			text: "evaluation metrics များကို အလိုအလျောက် တွက်ချက်သည်။",
+			explain: "model.eval() သည် layer အပြုအမူကိုသာ ပြောင်းလဲသည် - metric တွက်ချက်မှုကို သင်ကိုယ်တိုင် အကောင်အထည်ဖော်ရန် လိုအပ်သေးသည်။"
+		}
+	]}
+/>
+
+### 6. evaluation လုပ်နေစဉ် `torch.no_grad()` ရဲ့ ရည်ရွယ်ချက်က ဘာလဲ။
+
+<Question
+	choices={[
+		{
+			text: "model က predictions တွေ မလုပ်နိုင်အောင် တားဆီးရန်။",
+			explain: "torch.no_grad() သည် predictions များကို တားဆီးခြင်း မရှိဘဲ gradient computation ကိုသာ တားဆီးသည်။"
+		},
+		{
+			text: "gradient tracking ကို ပိတ်ခြင်းဖြင့် memory ချွေတာရန်နှင့် computation ကို အရှိန်မြှင့်ရန်။",
+			explain: "မှန်ပါသည်။ evaluation အတွက် gradients မလိုအပ်သောကြောင့် ၎င်းတို့ကို ပိတ်ခြင်းသည် memory နှင့် computation ကို ချွေတာသည်။",
+            correct: true
+		},
+		{
+			text: "model အတွက် evaluation mode ကို ဖွင့်ရန်။",
+			explain: "Evaluation mode ကို model.eval() ဖြင့် ဖွင့်ပြီး torch.no_grad() ဖြင့် မဟုတ်ပါ။"
+		},
+        {
+			text: "run များတစ်လျှောက် တူညီသောရလဒ်များ ရရှိစေရန်။",
+			explain: "Reproducibility ကို random seeds များကို သတ်မှတ်ခြင်းဖြင့် ကိုင်တွယ်ပြီး torch.no_grad() ဖြင့် မဟုတ်ပါ။"
+		}
+	]}
+/>
+
+### 7. သင်၏ training loop တွင် 🤗 Accelerate ကို အသုံးပြုသောအခါ ဘာတွေ ပြောင်းလဲသွားသလဲ။
+
+<Question
+	choices={[
+		{
+			text: "သင်၏ training loop တစ်ခုလုံးကို အစမှ ပြန်ရေးရမည်။",
+			explain: "Accelerate သည် ရှိပြီးသား PyTorch code တွင် အနည်းငယ်သော အပြောင်းအလဲများသာ လိုအပ်သည်။"
+		},
+		{
+			text: "အဓိက objects များကို accelerator.prepare() ဖြင့် ထုပ်ပိုးပြီး loss.backward() အစား accelerator.backward() ကို အသုံးပြုရမည်။",
+			explain: "မှန်ပါသည်။ ဤအရာများသည် အဓိကအပြောင်းအလဲများဖြစ်သည် - သင်၏ objects များကို ပြင်ဆင်ပြီး မှန်ကန်သော distributed training အတွက် accelerator.backward() ကို အသုံးပြုပါ။",
+            correct: true
+		},
+		{
+			text: "သင်၏ code တွင် GPUs အရေအတွက်ကို သတ်မှတ်ရန် လိုအပ်သည်။",
+			explain: "Accelerate သည် ရရှိနိုင်သော hardware ကို အလိုအလျောက် detect လုပ်သည်။"
+		},
+        {
+			text: "သင်သည် မတူညီသော optimizer နှင့် scheduler ကို အသုံးပြုရမည်။",
+			explain: "သင်သည် Accelerate ဖြင့် တူညီသော optimizers နှင့် schedulers များကို အသုံးပြုနိုင်သည်။"
+		}
+	]}
+/>
+
+> [!TIP]
+> 💡 **အဓိက အချက်များ:**
+> - Manual training loops များသည် သင့်အား အပြည့်အဝ ထိန်းချုပ်ခွင့်ပေးသော်လည်း မှန်ကန်သော အစီအစဉ်ကို နားလည်ရန် လိုအပ်သည်- forward → backward → optimizer step → scheduler step → zero gradients။
+> - Weight decay ပါသော AdamW သည် transformer models များအတွက် အကြံပြုထားသော optimizer ဖြစ်သည်။
+> - မှန်ကန်သော အပြုအမူနှင့် ထိရောက်မှုအတွက် evaluation လုပ်နေစဉ် `model.eval()` နှင့် `torch.no_grad()` ကို အမြဲတမ်း အသုံးပြုပါ။
+> - 🤗 Accelerate သည် code အပြောင်းအလဲ အနည်းငယ်ဖြင့် distributed training ကို လက်လှမ်းမီစေသည်။
+> - Device management (tensors များကို GPU/CPU သို့ ရွှေ့ခြင်း) သည် PyTorch operation များအတွက် အရေးကြီးသည်။
+> - Mixed precision၊ gradient accumulation နှင့် gradient clipping ကဲ့သို့သော ခေတ်မီနည်းလမ်းများသည် training ထိရောက်မှုကို သိသိသာသာ တိုးတက်စေနိုင်သည်။
+
+## ဝေါဟာရ ရှင်းလင်းချက် (Glossary)
+
+*   **Training Loop**: AI (Artificial Intelligence) မော်ဒယ်တစ်ခုကို ဒေတာများဖြင့် အကြိမ်ကြိမ် လေ့ကျင့်ပေးသည့် လုပ်ငန်းစဉ်။
+*   **`Trainer` Class**: 🤗 Transformers library မှ model များကို လေ့ကျင့်ရန်နှင့် အကဲဖြတ်ရန်အတွက် အသုံးပြုသော class။
+*   **PyTorch**: Facebook (ယခု Meta) က ဖန်တီးထားတဲ့ open-source machine learning library တစ်ခုဖြစ်ပြီး deep learning မော်ဒယ်တွေ တည်ဆောက်ဖို့အတွက် အသုံးပြုပါတယ်။
+*   **Data Processing**: ဒေတာများကို model က နားလည်ပြီး လုပ်ဆောင်နိုင်တဲ့ ပုံစံအဖြစ် ပြောင်းလဲပြင်ဆင်ခြင်း လုပ်ငန်းစဉ်။
+*   **Dataloaders**: Datasets များမှ ဒေတာများကို batches အလိုက် ထုတ်ယူပေးသည့် PyTorch utility class။
+*   **Batch**: မတူညီသော input များစွာကို တစ်ပြိုင်နက်တည်း လုပ်ဆောင်နိုင်ရန် အုပ်စုဖွဲ့ခြင်း။
+*   **Postprocessing**: Preprocessing လုပ်ပြီးနောက် ဒေတာများကို ထပ်မံပြင်ဆင်ခြင်း လုပ်ငန်းစဉ်။
+*   **`tokenized_datasets`**: Tokenization ပြုလုပ်ပြီးသော dataset များ ပါဝင်သော object။
+*   **`remove_columns()` Method**: Dataset မှ မလိုအပ်သော columns များကို ဖယ်ရှားရန် အသုံးပြုသော method။
+*   **`rename_column()` Method**: Dataset ၏ column အမည်ကို ပြောင်းလဲရန် အသုံးပြုသော method။
+*   **`set_format("torch")` Method**: Dataset ၏ output format ကို PyTorch tensors အဖြစ် ပြောင်းလဲရန် သတ်မှတ်သော method။
+*   **PyTorch Tensors**: PyTorch framework မှာ data တွေကို ကိုယ်စားပြုသော multi-dimensional array များ။
+*   **`torch.utils.data.DataLoader`**: PyTorch မှာ dataloaders များကို ဖန်တီးရန် အသုံးပြုသော class။
+*   **`shuffle=True`**: `DataLoader` တွင် samples များကို training လုပ်နေစဉ် ကျပန်း (randomly) ရောနှောရန် သတ်မှတ်သော parameter။
+*   **`batch_size`**: batch တစ်ခုစီတွင် ပါဝင်မည့် samples အရေအတွက်။
+*   **`collate_fn`**: batch တစ်ခုအတွင်း samples များကို စုစည်းပေးသော function (ဥပမာ- `DataCollatorWithPadding`)။
+*   **`DataCollatorWithPadding`**: Hugging Face Transformers library မှ ပံ့ပိုးပေးသော class တစ်ခုဖြစ်ပြီး dynamic padding ကို အသုံးပြု၍ batch တစ်ခုအတွင်း samples များကို စုစည်းပေးသည်။
+*   **Model**: Artificial Intelligence (AI) နယ်ပယ်တွင် အချက်အလက်များကို လေ့လာပြီး ခန့်မှန်းချက်များ ပြုလုပ်ရန် ဒီဇိုင်းထုတ်ထားသော သင်္ချာဆိုင်ရာဖွဲ့စည်းပုံ။
+*   **`AutoModelForSequenceClassification`**: Hugging Face Transformers library မှာ ပါဝင်တဲ့ class တစ်ခုဖြစ်ပြီး sequence classification အတွက် pre-trained model ကို အလိုအလျောက် load လုပ်ပေးသည်။
+*   **`num_labels`**: Classification လုပ်ငန်းအတွက် label (အမျိုးအစား) အရေအတွက်။
+*   **`outputs = model(**batch)`**: Model ကို input batch ပေးပို့ပြီး output ရယူခြင်း။
+*   **`outputs.loss`**: Model ၏ output မှ ပြန်ပေးသော loss တန်ဖိုး။
+*   **`outputs.logits`**: Model ၏ output မှ ပြန်ပေးသော raw, unnormalized scores များ။
+*   **Optimizer**: Model ၏ parameters များကို လေ့ကျင့်နေစဉ် update လုပ်ရန် အသုံးပြုသော algorithm။
+*   **Learning Rate Scheduler**: Training လုပ်နေစဉ် learning rate ကို အချိန်ကြာလာသည်နှင့်အမျှ ပြောင်းလဲသွားစေရန် နည်းလမ်း။
+*   **`AdamW`**: `Adam` optimizer ၏ မူကွဲတစ်ခုဖြစ်ပြီး weight decay regularization ကို ပိုမိုထိရောက်စွာ လုပ်ဆောင်သည်။
+    *   **Adam (Adaptive Moment Estimation)**: Deep learning တွင် အသုံးများသော optimizer တစ်ခုဖြစ်ပြီး learning rate ကို အလိုအလျောက် ချိန်ညှိပေးသည်။
+    *   **Weight Decay Regularization**: model ၏ weights များကို သေးငယ်အောင် ထိန်းညှိခြင်းဖြင့် overfitting ကို လျှော့ချရန် အသုံးပြုသော နည်းလမ်း။
+    *   **Decoupled Weight Decay**: Weight decay ကို gradient update များနှင့် သီးခြားစီ လုပ်ဆောင်ခြင်း။
+*   **`model.parameters()`**: model ၏ လေ့ကျင့်နိုင်သော parameters (weights နှင့် biases) များကို ပြန်ပေးသော method။
+*   **`lr` (Learning Rate)**: Training လုပ်နေစဉ် model ၏ weights များကို update လုပ်ရာတွင် အသုံးပြုသော step size။
+*   **`get_scheduler()` Function**: Hugging Face Transformers library မှ learning rate scheduler တစ်ခုကို ဖန်တီးရန် အသုံးပြုသော function။
+*   **Linear Decay**: Learning rate ကို အချိန်ကြာလာသည်နှင့်အမျှ လိုင်းဖြောင့်အတိုင်း (linearly) လျှော့ချသွားသော scheduling နည်းလမ်း။
+*   **`num_warmup_steps`**: learning rate ကို တိုးမြှင့်မည့် training steps အရေအတွက်။
+*   **`num_training_steps`**: training လုပ်ငန်းစဉ်၏ စုစုပေါင်း steps အရေအတွက်။
+*   **`device`**: Model နှင့် data များကို ထားရှိမည့် computing device (CPU သို့မဟုတ် GPU)။
+*   **`torch.device("cuda")`**: GPU (CUDA enabled) ကို အသုံးပြုရန် သတ်မှတ်ခြင်း။
+*   **`torch.device("cpu")`**: CPU ကို အသုံးပြုရန် သတ်မှတ်ခြင်း။
+*   **`model.to(device)`**: Model ကို သတ်မှတ်ထားသော device သို့ ရွှေ့ပြောင်းခြင်း။
+*   **`tqdm` (Library)**: Python loop များအတွက် progress bars များကို ဖန်တီးရန် အသုံးပြုသော library။
+*   **`tqdm.auto.tqdm`**: `tqdm` library မှ progress bar class။
+*   **`progress_bar.update(1)`**: progress bar ကို တစ် step တိုးမြှင့်ခြင်း။
+*   **`model.train()` Method**: Model ကို training mode သို့ ပြောင်းလဲခြင်း။ ၎င်းသည် dropout နှင့် batch normalization ကဲ့သို့သော layers များကို training အတွက် သင့်လျော်သောအပြုအမူသို့ ပြောင်းလဲပေးသည်။
+*   **`batch = {k: v.to(device) for k, v in batch.items()}`**: batch ထဲရှိ tensors များကို သတ်မှတ်ထားသော device သို့ ရွှေ့ပြောင်းခြင်း။
+*   **`loss.backward()` Method**: PyTorch မှာ backpropagation ကို လုပ်ဆောင်ပြီး model ၏ parameters တွေအတွက် gradients များကို တွက်ချက်သော method။
+*   **`optimizer.step()` Method**: တွက်ချက်ထားသော gradients များကို အသုံးပြုပြီး model ၏ parameters များကို update လုပ်သော optimizer method။
+*   **`lr_scheduler.step()` Method**: Learning rate scheduler ကို update လုပ်သော method။
+*   **`optimizer.zero_grad()` Method**: Optimizer အတွင်းရှိ gradient များကို zero ပြန်လုပ်ခြင်း (နောက်ထပ် batch အတွက် gradient များကို စုပုံခြင်းမှ ကာကွယ်ရန်)။
+*   **Gradient Clipping**: Gradients များ၏ တန်ဖိုးကို ကန့်သတ်ခြင်းဖြင့် gradient exploding ပြဿနာကို ကာကွယ်သော နည်းလမ်း။
+*   **`torch.nn.utils.clip_grad_norm_`**: PyTorch function တစ်ခုဖြစ်ပြီး gradients များကို clip လုပ်ရန် အသုံးပြုသည်။
+*   **`max_norm`**: Gradient clipping လုပ်ရာတွင် သတ်မှတ်သော အများဆုံး norm တန်ဖိုး။
+*   **`torch.cuda.amp.autocast()`**: PyTorch တွင် mixed precision training ကို အသုံးပြုရန်အတွက် context manager။
+*   **`GradScaler`**: PyTorch တွင် mixed precision training အတွက် gradients များကို scale လုပ်ရန် အသုံးပြုသော class။
+*   **Gradient Accumulation**: GPU memory ကန့်သတ်ချက်ရှိသောအခါ ပိုကြီးမားသော batch sizes များကို အတုယူရန် batches အများအပြားပေါ်တွင် gradients များကို စုဆောင်းပြီးမှ update လုပ်ခြင်း။
+*   **Checkpointing**: Model parameters များကို အခါအားလျော်စွာ သိမ်းဆည်းထားခြင်း။
+*   **`model.eval()` Method**: Model ကို evaluation mode သို့ ပြောင်းလဲခြင်း။ ၎င်းသည် dropout နှင့် batch normalization ကဲ့သို့သော layers များကို inference အတွက် သင့်လျော်သောအပြုအမူသို့ ပြောင်းလဲပေးသည်။
+*   **`torch.no_grad()`**: PyTorch တွင် gradient တွက်ချက်မှုကို ပိတ်ရန်အတွက် context manager။ Evaluation လုပ်နေစဉ် memory ချွေတာရန်နှင့် အရှိန်မြှင့်ရန် အသုံးပြုသည်။
+*   **`torch.argmax(logits, dim=-1)`**: Logits များမှ အများဆုံးတန်ဖိုးရှိသော index ကို ယူခြင်းဖြင့် prediction ကို ရရှိစေသည်။ `dim=-1` ဆိုသည်မှာ နောက်ဆုံး dimension ကို ဆိုလိုသည်။
+*   **`metric.add_batch()` Method**: 🤗 Evaluate library ၏ metric object ၏ method ဖြစ်ပြီး predictions နှင့် references များကို batch အလိုက် စုဆောင်းပေးသည်။
+*   **`metric.compute()` Method**: စုဆောင်းထားသော predictions နှင့် references များမှ နောက်ဆုံး metric value ကို တွက်ချက်ရန် metric object ၏ method။
+*   **`tqdm` (Library)**: Python loop များအတွက် progress bars များကို ဖန်တီးရန် အသုံးပြုသော library။
+*   **`randomness`**: ကျပန်းသဘောတရား၊ ကြိုတင်ခန့်မှန်း၍မရသော အဖြစ်အပျက်များ။
+*   **SST-2 Dataset**: GLUE benchmark ထဲက sentiment analysis task တစ်ခုဖြစ်ပြီး single sentences တွေ ပါဝင်ပါတယ်။
+*   **🤗 Accelerate Library**: Hugging Face က ထုတ်လုပ်ထားတဲ့ library တစ်ခုဖြစ်ပြီး PyTorch training loops တွေကို code အပြောင်းအလဲ အနည်းငယ်နဲ့ distributed training (multiple GPUs, TPUs) မှာ run နိုင်အောင် ကူညီပေးပါတယ်။
+*   **`Accelerator` Object**: 🤗 Accelerate library မှ main object ဖြစ်ပြီး distributed setup ကို initialize လုပ်ပေးသည်။
+*   **`accelerator.prepare()` Method**: `Accelerator` object ၏ method ဖြစ်ပြီး dataloaders, model နှင့် optimizer များကို distributed training အတွက် သင့်လျော်သော container များအဖြစ် ထုပ်ပိုးပေးသည်။
+*   **`accelerator.device`**: `Accelerator` object မှ ဖော်ပြသော လက်ရှိအသုံးပြုနေသော device (CPU သို့မဟုတ် GPU)။
+*   **`accelerator.backward(loss)` Method**: `Accelerator` object မှ gradient များကို တွက်ချက်ရန် အသုံးပြုသော method ဖြစ်ပြီး distributed training အတွက် မှန်ကန်စွာ လုပ်ဆောင်ပေးသည်။
+*   **`accelerate config` Command**: 🤗 Accelerate ကို စတင်အသုံးပြုရန်အတွက် configuration file တစ်ခုကို ဖန်တီးရန် အသုံးပြုသော command line tool။
+*   **`accelerate launch train.py` Command**: `train.py` script ကို distributed setup တွင် run ရန် အသုံးပြုသော command line tool။
+*   **`notebook_launcher()` Function**: 🤗 Accelerate library မှ function တစ်ခုဖြစ်ပြီး Notebook environment တွင် distributed training function များကို run နိုင်စေသည်။
+*   **Production Use**: ဆော့ဖ်ဝဲလ် သို့မဟုတ် AI model တစ်ခုကို လက်တွေ့အသုံးချရန် အဆင့်။
+*   **Optuna / Ray Tune (Libraries)**: Hyperparameter optimization အတွက် အသုံးပြုသော library များ။
+*   **Hyperparameter Tuning**: Model ၏ စွမ်းဆောင်ရည်ကို အကောင်းဆုံးဖြစ်စေရန် hyperparameters များကို ရှာဖွေခြင်း လုပ်ငန်းစဉ်။
+*   **Model Monitoring**: Training metrics, learning curves နှင့် validation performance များကို အချိန်နှင့်တစ်ပြေးညီ စောင့်ကြည့်ခြင်း။
+*   **Learning Curves**: Training လုပ်နေစဉ် training loss နှင့် validation loss/metrics များကို ဂရပ်ဖြင့် ပြသထားခြင်း။
+*   **Parameter-efficient Fine-tuning (PEFT)**: Model ၏ အချို့သော parameters များကိုသာ fine-tune လုပ်ခြင်းဖြင့် memory နှင့် computation ကို ချွေတာသော နည်းလမ်းများ (ဥပမာ- LoRA, AdaLoRA)။
+    *   **LoRA (Low-Rank Adaptation)**: Pretrained model ၏ weights များကို freeze လုပ်ထားပြီး small, low-rank matrices များကိုသာ fine-tune လုပ်သော PEFT နည်းလမ်း။
+    *   **AdaLoRA**: LoRA ၏ မူကွဲတစ်ခုဖြစ်ပြီး adaptive rank selection ကို အသုံးပြုသည်။
+*   **Quantization**: Model ၏ parameters များကို floating-point မှ integer ကဲ့သို့သော ပိုမိုသေးငယ်သော data types များသို့ ပြောင်းလဲခြင်းဖြင့် memory အသုံးပြုမှုနှင့် computation ကို လျှော့ချသော နည်းလမ်း။
+*   **Gradient Checkpointing**: Computation graph ၏ အချို့သော အလယ်အလတ် activations များကိုသာ သိမ်းဆည်းခြင်းဖြင့် memory အသုံးပြုမှုကို လျှော့ချသော နည်းလမ်း (backward pass အတွက် လိုအပ်သောအခါ ၎င်းတို့ကို ပြန်လည်တွက်ချက်သည်)။
