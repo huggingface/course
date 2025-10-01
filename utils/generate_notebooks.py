@@ -1,11 +1,11 @@
 import argparse
 import os
 import re
-import nbformat
 import shutil
-import yaml
-
 from pathlib import Path
+
+import nbformat
+import yaml
 
 re_framework_test = re.compile(r"^{#if\s+fw\s+===\s+'([^']+)'}\s*$")
 re_framework_else = re.compile(r"^{:else}\s*$")
@@ -119,9 +119,17 @@ def convert_to_nb_cell(cell):
 
 def nb_cell(source, code=True):
     if not code:
-        return nbformat.notebooknode.NotebookNode({"cell_type": "markdown", "source": source, "metadata": {}})
+        return nbformat.notebooknode.NotebookNode(
+            {"cell_type": "markdown", "source": source, "metadata": {}}
+        )
     return nbformat.notebooknode.NotebookNode(
-        {"cell_type": "code", "metadata": {}, "source": source, "execution_count": None, "outputs": []}
+        {
+            "cell_type": "code",
+            "metadata": {},
+            "source": source,
+            "execution_count": None,
+            "outputs": [],
+        }
     )
 
 
@@ -188,21 +196,28 @@ def build_notebook(fname, title, output_dir="."):
             fnames.append(f"section{stem}_{key}.ipynb")
             section_names.append(f"{Path(fname).parent.stem}/{stem}_{key}")
 
-    for title, content, fname, section_name in zip(titles, contents, fnames, section_names):
+    for title, content, fname, section_name in zip(
+        titles, contents, fnames, section_names
+    ):
         cells = extract_cells(content)
         if len(cells) == 0:
             continue
 
         nb_cells = [
             nb_cell(f"# {title}", code=False),
-            nb_cell("Install the Transformers, Datasets, and Evaluate libraries to run this notebook.", code=False),
+            nb_cell(
+                "Install the Transformers, Datasets, and Evaluate libraries to run this notebook.",
+                code=False,
+            ),
         ]
 
         # Install cell
         installs = ["!pip install datasets evaluate transformers[sentencepiece]"]
         if section_name in sections_with_accelerate:
             installs.append("!pip install accelerate")
-            installs.append("# To run the training on TPU, you will need to uncomment the following line:")
+            installs.append(
+                "# To run the training on TPU, you will need to uncomment the following line:"
+            )
             installs.append(
                 "# !pip install cloud-tpu-client==0.10 torch==1.9.0 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.9-cp37-cp37m-linux_x86_64.whl"
             )
@@ -219,7 +234,8 @@ def build_notebook(fname, title, output_dir="."):
             nb_cells.extend(
                 [
                     nb_cell(
-                        "You will need to setup git, adapt your email and name in the following cell.", code=False
+                        "You will need to setup git, adapt your email and name in the following cell.",
+                        code=False,
                     ),
                     nb_cell(
                         '!git config --global user.email "you@example.com"\n!git config --global user.name "Your Name"'
@@ -228,12 +244,19 @@ def build_notebook(fname, title, output_dir="."):
                         "You will also need to be logged in to the Hugging Face Hub. Execute the following and enter your credentials.",
                         code=False,
                     ),
-                    nb_cell("from huggingface_hub import notebook_login\n\nnotebook_login()"),
+                    nb_cell(
+                        "from huggingface_hub import notebook_login\n\nnotebook_login()"
+                    ),
                 ]
             )
         nb_cells += [convert_to_nb_cell(cell) for cell in cells]
         metadata = {"colab": {"name": title, "provenance": []}}
-        nb_dict = {"cells": nb_cells, "metadata": metadata, "nbformat": 4, "nbformat_minor": 4}
+        nb_dict = {
+            "cells": nb_cells,
+            "metadata": metadata,
+            "nbformat": 4,
+            "nbformat_minor": 4,
+        }
         notebook = nbformat.notebooknode.NotebookNode(nb_dict)
         os.makedirs(output_dir, exist_ok=True)
         nbformat.write(notebook, os.path.join(output_dir, fname), version=4)
@@ -243,7 +266,9 @@ def get_titles(language):
     """
     Parse the _toctree.yml file to get the correspondence filename to title
     """
-    table = yaml.safe_load(open(os.path.join(f"chapters/{language}", "_toctree.yml"), "r"))
+    table = yaml.safe_load(
+        open(os.path.join(f"chapters/{language}", "_toctree.yml"), "r")
+    )
     result = {}
     for entry in table:
         for section in entry["sections"]:
