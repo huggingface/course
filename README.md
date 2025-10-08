@@ -104,7 +104,7 @@ This will build and render the course on [http://localhost:3000/](http://localho
 
 **🚀 Submit a pull request**
 
-If the translations look good locally, the final step is to prepare the content for a pull request. Here, the first think to check is that the files are formatted correctly. For that you can run:
+If the translations look good locally, the final step is to prepare the content for a pull request. Here, the first thing to check is that the files are formatted correctly. For that you can run:
 
 ```
 pip install -r requirements.txt
