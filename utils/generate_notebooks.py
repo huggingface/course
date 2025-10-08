@@ -250,7 +250,14 @@ def build_notebook(fname, title, output_dir="."):
                 ]
             )
         nb_cells += [convert_to_nb_cell(cell) for cell in cells]
-        metadata = {"colab": {"name": title, "provenance": []}}
+        metadata = {
+            "colab": {"name": title, "provenance": []},
+            "widgets": {
+                "application/vnd.jupyter.widget-state+json": {
+                    "state": {}
+                }
+            }
+        }
         nb_dict = {
             "cells": nb_cells,
             "metadata": metadata,
