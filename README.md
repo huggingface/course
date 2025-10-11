@@ -94,6 +94,13 @@ Once you're happy with your changes, you can preview how they'll look by first i
 pip install hf-doc-builder
 ```
 
+Common Error: ImportError: Please install watchdog
+
+If you encounter an ImportError when running the doc-builder preview command, it means the watchdog Python package is missing. You can resolve this by installing the package with the following command:
+```
+pip install watchdog
+```
+
 ```
 doc-builder preview course ../course/chapters/LANG-ID --not_python_module
 ```
