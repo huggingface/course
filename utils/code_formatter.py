@@ -1,8 +1,9 @@
 import argparse
-import black
 import os
 import re
 from pathlib import Path
+
+import black
 
 
 def blackify(filename, check_only=False):
@@ -26,7 +27,9 @@ def blackify(filename, check_only=False):
             # Deal with ! instructions
             code = re.sub(r"^!", r"## !", code, flags=re.MULTILINE)
 
-            code_samples.append({"start_index": start_index, "end_index": line_index - 1, "code": code})
+            code_samples.append(
+                {"start_index": start_index, "end_index": line_index - 1, "code": code}
+            )
             line_index += 1
         else:
             line_index += 1
@@ -35,7 +38,9 @@ def blackify(filename, check_only=False):
     delimiter = "\n\n### New cell ###\n"
     full_code = delimiter.join([sample["code"] for sample in code_samples])
     formatted_code = full_code.replace("\t", "    ")
-    formatted_code = black.format_str(formatted_code, mode=black.FileMode({black.TargetVersion.PY37}, line_length=90))
+    formatted_code = black.format_str(
+        formatted_code, mode=black.FileMode({black.TargetVersion.PY37}, line_length=90)
+    )
 
     # Black adds last new lines we don't want, so we strip individual code samples.
     cells = formatted_code.split(delimiter)
@@ -75,7 +80,9 @@ def format_all_files(check_only=False):
             raise
 
     if check_only and len(failures) > 0:
-        raise ValueError(f"{len(failures)} files need to be formatted, run `make style`.")
+        raise ValueError(
+            f"{len(failures)} files need to be formatted, run `make style`."
+        )
 
 
 if __name__ == "__main__":
