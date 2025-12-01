@@ -1,0 +1,236 @@
+<FrameworkSwitchCourse {fw} />
+# పూర్తి శిక్షణ లూప్[[a-full-training]]
+<CourseFloatingBanner
+  chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/te/chapter3/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/te/chapter3/section4.ipynb"},
+  ]}
+/>
+<Youtube id="Dh9CL8fyG80"/>
+
+ఇప్పుడు `Trainer` క్లాస్ ఉపయోగించకుండా, మునుపటి సెక్షన్‌లో చూపిన అదే ఫలితాలను సాధించే విధంగా పూర్తి శిక్షణ లూప్‌ను PyTorchలో అమలు చేద్దాం. మళ్లీ చెప్తున్నాం – మీరు సెక్షన్ 2లో డేటా ప్రాసెసింగ్ పూర్తి చేసి ఉన్నారని అనుకుంటున్నాం.
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### శిక్షణకు సిద్ధం చేయడం[[prepare-for-training]]
+
+`Trainer` ఆటోమేటిక్‌గా చేసే కొన్ని దశలను మనం మాన్యువల్‌గా చేయాలి:
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+
+tokenized_datasets["train"].column_names
+```
+
+```python out
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+ఇప్పుడు DataLoaderలు తయారు చేయవచ్చు:
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+ఒక బ్యాచ్ చూద్దాం:
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+మోడల్:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+టెస్ట్:
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+ఆప్టిమైజర్:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+లెర్నింగ్ రేట్ షెడ్యూలర్:
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+GPUకి తరలించడం:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+print(device)
+```
+
+```python out
+device(type='cuda')
+```
+
+### శిక్షణ లూప్[[the-training-loop]]
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+### ఎవాల్యుయేషన్ లూప్[[the-evaluation-loop]]
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+### 🤗 Accelerateతో శిక్షణ లూప్[[supercharge-your-training-loop-with-accelerate]]
+<Youtube id="s7dy8QRgjJ0" />
+
+```py
+from accelerate import Accelerator
+from transformers import get_scheduler
+from torch.optim import AdamW
+from tqdm.auto import tqdm
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps), disable=not accelerator.is_local_main_process)
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+ఈ కోడ్‌ను `train.py`లో సేవ్ చేసి కింది కమాండ్‌లతో రన్ చేయవచ్చు:
+
+```bash
+accelerate config
+accelerate launch train.py
+```
+
+Colabలో టెస్ట్ చేయాలంటే:
+
+```py
+from accelerate import notebook_launcher
+notebook_launcher(training_function)
+```
