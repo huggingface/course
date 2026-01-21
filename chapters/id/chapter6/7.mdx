@@ -1,0 +1,404 @@
+# Tokenisasi Unigram[[unigram-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section7.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section7.ipynb"},
+]} />
+
+Algoritma Unigram digunakan bersama dengan [SentencePiece](https://huggingface.co/papers/1808.06226), yaitu algoritma tokenisasi yang digunakan oleh model seperti AlBERT, T5, mBART, Big Bird, dan XLNet.
+
+SentencePiece menangani kenyataan bahwa tidak semua bahasa menggunakan spasi untuk memisahkan kata. Sebagai gantinya, SentencePiece memperlakukan masukan sebagai aliran data mentah dan menyertakan spasi dalam himpunan karakter yang digunakan. Kemudian SentencePiece menggunakan algoritma Unigram untuk membangun kosakata yang sesuai.
+
+<Youtube id="TGZfZVuF9Yc"/>
+
+<Tip>
+
+💡 Bagian ini membahas Unigram secara mendalam, termasuk hingga implementasi lengkapnya. Anda dapat langsung lompat ke bagian akhir jika hanya ingin gambaran umum algoritma ini.
+
+</Tip>
+
+## Algoritma Pelatihan[[training-algorithm]]
+
+Berbeda dengan BPE dan WordPiece, Unigram bekerja secara terbalik: ia memulai dari kosakata besar, kemudian menghapus token darinya hingga mencapai ukuran kosakata yang diinginkan. Ada beberapa cara untuk membangun kosakata awal ini: kita bisa mengambil substring paling umum dari kata-kata yang sudah di-pre-tokenisasi, atau menjalankan BPE terlebih dahulu dengan ukuran kosakata besar.
+
+Pada setiap langkah pelatihan, algoritma Unigram menghitung nilai _loss_ terhadap korpus berdasarkan kosakata saat ini. Kemudian, untuk setiap simbol dalam kosakata, algoritma menghitung seberapa besar peningkatan _loss_ jika simbol tersebut dihapus, dan mencari simbol-simbol dengan peningkatan terendah. Simbol-simbol ini memiliki dampak paling kecil terhadap keseluruhan _loss_, sehingga dianggap "paling tidak diperlukan" dan menjadi kandidat terbaik untuk dihapus.
+
+Ini adalah proses yang sangat mahal secara komputasi, jadi kita tidak hanya menghapus satu simbol dengan peningkatan _loss_ terendah, melainkan menghapus \\(p\\)% simbol (di mana \\(p\\) adalah _hyperparameter_, biasanya 10 atau 20) yang menyebabkan peningkatan terendah. Proses ini diulang hingga kosakata mencapai ukuran yang ditentukan.
+
+Perlu dicatat bahwa karakter dasar tidak pernah dihapus, untuk memastikan bahwa semua kata tetap dapat ditokenisasi.
+
+Sekarang, ini masih agak abstrak: bagian utama dari algoritma adalah menghitung _loss_ dan melihat bagaimana ia berubah jika kita menghapus token tertentu dari kosakata, tetapi kita belum menjelaskan bagaimana caranya. Langkah ini bergantung pada algoritma tokenisasi dari model Unigram, yang akan kita bahas selanjutnya.
+
+Kita akan menggunakan kembali korpus dari contoh sebelumnya:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+Untuk contoh ini, kita akan menggunakan semua substring ketat (strict substrings) sebagai kosakata awal:
+
+```
+["h", "u", "g", "hu", "ug", "p", "pu", "n", "un", "b", "bu", "s", "hug", "gs", "ugs"]
+```
+
+## Algoritma Tokenisasi[[tokenization-algorithm]]
+
+Model Unigram adalah jenis _language model_ yang menganggap setiap token tidak bergantung pada token sebelumnya. Ini adalah model bahasa paling sederhana, di mana probabilitas token X hanya bergantung pada seberapa sering token itu muncul. Jadi, jika kita menggunakan model Unigram untuk menghasilkan teks, ia akan selalu memprediksi token yang paling sering muncul.
+
+Probabilitas dari token tertentu dihitung berdasarkan frekuensinya (jumlah kemunculan dalam korpus), dibagi dengan jumlah total frekuensi semua token di kosakata (agar jumlah probabilitas menjadi 1). Sebagai contoh, `"ug"` muncul dalam `"hug"`, `"pug"`, dan `"hugs"`, jadi ia memiliki frekuensi 20 dalam korpus.
+
+Berikut adalah frekuensi dari semua sub-kata yang memungkinkan di kosakata:
+
+```
+("h", 15) ("u", 36) ("g", 20) ("hu", 15) ("ug", 20) ("p", 17) ("pu", 17) ("n", 16)
+("un", 16) ("b", 4) ("bu", 4) ("s", 5) ("hug", 15) ("gs", 5) ("ugs", 5)
+```
+
+Jumlah total frekuensi adalah 210, maka probabilitas dari sub-kata `"ug"` adalah 20/210.
+
+<Tip>
+
+✏️ **Sekarang giliran Anda!** Tulis kode untuk menghitung frekuensi di atas dan pastikan hasil serta total jumlahnya sesuai.
+
+</Tip>
+
+Untuk men-tokenisasi sebuah kata, kita melihat semua kemungkinan segmentasi ke dalam token dan menghitung probabilitas masing-masing berdasarkan model Unigram. Karena semua token dianggap independen, probabilitasnya hanya hasil perkalian dari masing-masing probabilitas token. Sebagai contoh, tokenisasi `["p", "u", "g"]` dari kata `"pug"` memiliki probabilitas:
+
+$$P(["p", "u", "g"]) = P("p") \times P("u") \times P("g") = \frac{5}{210} \times \frac{36}{210} \times \frac{20}{210} = 0.000389$$
+
+Sebaliknya, tokenisasi `["pu", "g"]` memiliki probabilitas:
+
+$$P(["pu", "g"]) = P("pu") \times P("g") = \frac{5}{210} \times \frac{20}{210} = 0.0022676$$
+
+Jadi, tokenisasi tersebut jauh lebih mungkin. Umumnya, tokenisasi dengan jumlah token paling sedikit akan memiliki probabilitas tertinggi (karena pembagian dengan 210 dilakukan untuk setiap token), yang sesuai dengan intuisi kita: memecah kata menjadi sesedikit mungkin token.
+
+Tokenisasi dari kata `"pug"` dengan model Unigram akan mengambil hasil dengan probabilitas tertinggi. Berikut adalah semua kemungkinan segmentasi dan probabilitasnya:
+
+```
+["p", "u", "g"] : 0.000389
+["p", "ug"] : 0.0022676
+["pu", "g"] : 0.0022676
+```
+
+Jadi `"pug"` akan ditokenisasi sebagai `["p", "ug"]` atau `["pu", "g"]`, tergantung segmentasi mana yang ditemui lebih dulu (meskipun dalam korpus besar, kasus seri seperti ini jarang terjadi).
+
+Dalam kasus ini, cukup mudah menemukan semua segmentasi dan menghitung probabilitasnya, tetapi secara umum ini bisa menjadi sulit. Kita dapat menggunakan algoritma klasik untuk ini, yang disebut *Viterbi algorithm*. Pada dasarnya, kita membangun sebuah grafik untuk mendeteksi semua segmentasi mungkin dari suatu kata, dengan mengatakan bahwa ada cabang dari karakter _a_ ke karakter _b_ jika substring dari _a_ ke _b_ terdapat dalam kosakata, dan cabang tersebut diberi bobot berupa probabilitas substring tersebut.
+
+Untuk menemukan jalur dengan skor terbaik, algoritma Viterbi menentukan, untuk setiap posisi dalam kata, segmentasi terbaik yang berakhir di posisi tersebut. Karena kita berjalan dari awal hingga akhir, skor terbaik bisa ditemukan dengan mengulang semua sub-kata yang berakhir di posisi tersebut dan menggunakan skor segmentasi terbaik dari posisi awal sub-kata tersebut. Kemudian, kita tinggal _trace back_ untuk menemukan jalur terbaik.
+
+Mari kita lihat contoh menggunakan kosakata dan kata `"unhug"`. Untuk setiap posisi karakter, sub-kata dengan skor terbaik yang berakhir di sana adalah:
+
+```
+Karakter 0 (u): "u" (skor 0.171429)
+Karakter 1 (n): "un" (skor 0.076191)
+Karakter 2 (h): "un" "h" (skor 0.005442)
+Karakter 3 (u): "un" "hu" (skor 0.005442)
+Karakter 4 (g): "un" "hug" (skor 0.005442)
+```
+
+Dengan demikian, `"unhug"` akan ditokenisasi menjadi `["un", "hug"]`.
+
+<Tip>
+
+✏️ **Sekarang giliran Anda!** Tentukan tokenisasi dari kata `"huggun"` dan hitung skornya.
+
+</Tip>
+
+## Kembali ke Pelatihan[[back-to-training]]
+
+Sekarang setelah kita melihat bagaimana tokenisasi bekerja, kita dapat menyelami lebih dalam tentang *loss* yang digunakan selama pelatihan. Pada setiap tahap, *loss* ini dihitung dengan men-tokenisasi setiap kata dalam korpus, menggunakan kosakata saat ini dan model Unigram yang ditentukan oleh frekuensi setiap token dalam korpus (seperti yang telah dijelaskan sebelumnya).
+
+Setiap kata dalam korpus memiliki skor, dan *loss* dihitung sebagai *negative log likelihood* dari skor-skor tersebut — yaitu, jumlah dari semua `-log(P(kata))` untuk semua kata dalam korpus.
+
+Mari kita kembali ke contoh kita dengan korpus berikut:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+Tokenisasi dari setiap kata beserta skornya:
+
+```
+"hug": ["hug"] (skor 0.071428)
+"pug": ["pu", "g"] (skor 0.007710)
+"pun": ["pu", "n"] (skor 0.006168)
+"bun": ["bu", "n"] (skor 0.001451)
+"hugs": ["hug", "s"] (skor 0.001701)
+```
+
+Jadi, *loss*-nya adalah:
+
+```
+10 * (-log(0.071428)) + 
+5 * (-log(0.007710)) + 
+12 * (-log(0.006168)) + 
+4 * (-log(0.001451)) + 
+5 * (-log(0.001701)) = 169.8
+```
+
+Sekarang kita perlu menghitung bagaimana menghapus setiap token memengaruhi *loss*. Ini cukup membosankan, jadi kita hanya akan menghitungnya untuk dua token dan sisanya akan dibantu dengan kode nantinya. Dalam kasus ini, kita punya dua tokenisasi yang setara untuk semua kata: seperti yang sudah kita lihat sebelumnya, misalnya `"pug"` bisa ditokenisasi sebagai `["p", "ug"]` dengan skor yang sama. Maka, menghapus token `"pu"` dari kosakata akan menghasilkan *loss* yang sama persis. Namun, menghapus `"hug"` akan memperburuk *loss*, karena tokenisasi dari `"hug"` dan `"hugs"` akan berubah menjadi:
+
+```
+"hug": ["hu", "g"] (skor 0.006802)
+"hugs": ["hu", "gs"] (skor 0.001701)
+```
+
+Perubahan ini menyebabkan *loss* meningkat sebesar:
+
+```
+- 10 * (-log(0.071428)) + 10 * (-log(0.006802)) = 23.5
+```
+
+Oleh karena itu, token `"pu"` kemungkinan besar akan dihapus dari kosakata, tetapi tidak dengan `"hug"`.
+
+## Implementasi Unigram[[implementing-unigram]]
+
+Sekarang mari kita implementasikan semua yang telah kita pelajari tentang algoritma Unigram ke dalam kode. Seperti halnya BPE dan WordPiece, ini bukan implementasi efisien (justru sebaliknya), tapi seharusnya membantu Anda memahami konsep ini lebih baik.
+
+Kita akan menggunakan korpus yang sama seperti sebelumnya:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+Kali ini, kita akan menggunakan model `xlnet-base-cased`:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("xlnet-base-cased")
+```
+
+Seperti sebelumnya, kita mulai dengan menghitung jumlah kemunculan setiap kata dalam korpus:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+Kemudian, kita inisialisasi kosakata kita dengan ukuran yang lebih besar dari ukuran akhir yang diinginkan. Kita harus menyertakan semua karakter dasar (jika tidak, kita tidak bisa men-tokenisasi semua kata), tetapi untuk substring yang lebih panjang kita hanya menyimpan yang paling sering muncul. Maka kita urutkan berdasarkan frekuensi:
+
+```python
+char_freqs = defaultdict(int)
+subwords_freqs = defaultdict(int)
+for word, freq in word_freqs.items():
+    for i in range(len(word)):
+        char_freqs[word[i]] += freq
+        # Loop untuk substring dengan panjang minimal 2
+        for j in range(i + 2, len(word) + 1):
+            subwords_freqs[word[i:j]] += freq
+
+# Urutkan sub-kata berdasarkan frekuensi
+sorted_subwords = sorted(subwords_freqs.items(), key=lambda x: x[1], reverse=True)
+sorted_subwords[:10]
+```
+
+```python out
+[('▁t', 7), ('is', 5), ('er', 5), ('▁a', 5), ('▁to', 4), ('to', 4), ('en', 4), ('▁T', 3), ('▁Th', 3), ('▁Thi', 3)]
+```
+
+Kita gabungkan karakter dasar dengan sub-kata paling umum untuk membentuk kosakata awal berukuran 300:
+
+```python
+token_freqs = list(char_freqs.items()) + sorted_subwords[: 300 - len(char_freqs)]
+token_freqs = {token: freq for token, freq in token_freqs}
+```
+Jika Anda ingin, saya bisa lanjutkan menerjemahkan bagian implementasi selanjutnya (Viterbi, loss, penghapusan token, dll). Ingin dilanjutkan?
+
+<Tip>
+
+💡 SentencePiece menggunakan algoritma yang lebih efisien bernama *Enhanced Suffix Array (ESA)* untuk membuat kosakata awal.
+
+</Tip>
+
+Selanjutnya, kita hitung jumlah total dari seluruh frekuensi, agar bisa mengubah frekuensi menjadi probabilitas. Untuk model kita, kita akan menyimpan *logaritma* dari probabilitas, karena ini lebih stabil secara numerik (lebih baik menjumlahkan log daripada mengalikan angka kecil), dan ini juga menyederhanakan perhitungan *loss* dari model:
+
+```python
+from math import log
+
+total_sum = sum([freq for token, freq in token_freqs.items()])
+model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+Fungsi utama berikutnya adalah fungsi yang melakukan tokenisasi kata menggunakan **algoritma Viterbi**. Seperti yang telah dibahas, algoritma ini menghitung segmentasi terbaik dari setiap substring dalam sebuah kata, dan kita simpan dalam variabel `best_segmentations`. Kita akan menyimpan satu dictionary per posisi karakter dalam kata (dari 0 hingga panjangnya), yang memiliki dua key: `start` (indeks awal token terakhir dalam segmentasi terbaik), dan `score` (skor segmentasi terbaik hingga posisi itu). Dengan informasi `start`, kita bisa membangun kembali seluruh tokenisasi setelah list selesai diisi.
+
+Mengisi daftar dilakukan hanya dengan dua perulangan: perulangan utama berjalan pada setiap posisi awal, dan perulangan kedua mencoba semua substring yang dimulai dari posisi awal tersebut. Jika substring tersebut ada dalam kosakata, maka kita memiliki segmentasi baru dari kata hingga posisi akhir tersebut, yang kemudian kita bandingkan dengan yang ada di `best_segmentations`.
+
+Setelah perulangan utama selesai, kita cukup mulai dari akhir dan melompat dari satu posisi awal ke posisi berikutnya, mencatat token saat kita berjalan, hingga kita mencapai awal kata.
+
+```python
+def encode_word(word, model):
+    # Inisialisasi segmentasi terbaik:
+    # Mulai dari indeks 0 dengan skor 1, sisanya None
+    best_segmentations = [{"start": 0, "score": 1}] + [
+        {"start": None, "score": None} for _ in range(len(word))
+    ]
+
+    # Perulangan utama: coba semua posisi awal
+    for start_idx in range(len(word)):
+        # Skor terbaik yang diketahui di posisi awal ini
+        best_score_at_start = best_segmentations[start_idx]["score"]
+
+        # Coba semua substring yang dimulai dari start_idx
+        for end_idx in range(start_idx + 1, len(word) + 1):
+            token = word[start_idx:end_idx]
+            # Jika token ada dalam model dan skor awal diketahui
+            if token in model and best_score_at_start is not None:
+                score = model[token] + best_score_at_start
+                # Jika segmentasi ini lebih baik, perbarui nilai
+                if (
+                    best_segmentations[end_idx]["score"] is None
+                    or best_segmentations[end_idx]["score"] > score
+                ):
+                    best_segmentations[end_idx] = {"start": start_idx, "score": score}
+
+    # Ambil hasil segmentasi terbaik di akhir kata
+    segmentation = best_segmentations[-1]
+    if segmentation["score"] is None:
+        # Jika tidak ditemukan segmentasi valid -> token tidak dikenal
+        return ["<unk>"], None
+
+    score = segmentation["score"]
+    start = segmentation["start"]
+    end = len(word)
+    tokens = []
+
+    # Rekonstruksi token dari belakang ke depan
+    while start != 0:
+        tokens.insert(0, word[start:end])
+        next_start = best_segmentations[start]["start"]
+        end = start
+        start = next_start
+
+    # Tambahkan token awal
+    tokens.insert(0, word[start:end])
+    return tokens, score
+```
+
+Kita bisa langsung mencoba fungsi ini pada beberapa kata:
+
+```python
+print(encode_word("Hopefully", model))
+print(encode_word("This", model))
+```
+
+```python out
+(['H', 'o', 'p', 'e', 'f', 'u', 'll', 'y'], 41.5157494601402)
+(['This'], 6.288267030694535)
+```
+
+Sekarang sangat mudah untuk menghitung *loss* dari model terhadap korpus:
+
+```python
+def compute_loss(model):
+    loss = 0
+    for word, freq in word_freqs.items():
+        _, word_loss = encode_word(word, model)
+        loss += freq * word_loss
+    return loss
+```
+
+Kita coba pada model awal kita:
+
+```python
+compute_loss(model)
+```
+
+```python out
+413.10377642940875
+```
+
+Menghitung skor untuk setiap token juga tidak sulit; kita hanya perlu menghitung *loss* jika setiap token dihapus satu per satu:
+
+```python
+import copy
+
+
+def compute_scores(model):
+    scores = {}
+    model_loss = compute_loss(model)
+    for token, score in model.items():
+        # Token panjang 1 selalu dipertahankan
+        if len(token) == 1:
+            continue
+        model_without_token = copy.deepcopy(model)
+        _ = model_without_token.pop(token)
+        scores[token] = compute_loss(model_without_token) - model_loss
+    return scores
+```
+
+Contoh penggunaannya:
+
+```python
+scores = compute_scores(model)
+print(scores["ll"])
+print(scores["his"])
+```
+
+Karena `"ll"` digunakan dalam tokenisasi `"Hopefully"`, dan jika dihapus maka akan digantikan oleh dua token `"l"`, kita perkirakan nilainya positif. Sementara `"his"` hanya muncul di `"This"` yang ditokenisasi sebagai satu token, jadi skor penghapusannya seharusnya 0:
+
+```python out
+6.376412403623874
+0.0
+```
+
+<Tip>
+
+💡 Pendekatan ini sangat tidak efisien, jadi SentencePiece menggunakan pendekatan *approximation*: alih-alih menghitung ulang dari awal, token X cukup digantikan dengan tokenisasi yang tersedia dari sisa kosakata. Dengan cara ini, seluruh skor bisa dihitung sekaligus bersamaan dengan *loss* model.
+
+</Tip>
+
+Dengan semua ini sudah siap, hal terakhir yang perlu kita lakukan adalah menambahkan token khusus yang digunakan oleh model ke dalam kosakata, lalu melakukan perulangan hingga kita memangkas cukup banyak token dari kosakata untuk mencapai ukuran yang diinginkan.
+
+```python
+percent_to_remove = 0.1
+while len(model) > 100:
+    scores = compute_scores(model)
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+    # Hapus token sebanyak percent_to_remove dengan skor terendah.
+    for i in range(int(len(model) * percent_to_remove)):
+        _ = token_freqs.pop(sorted_scores[i][0])
+
+    total_sum = sum([freq for token, freq in token_freqs.items()])
+    model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+Akhirnya, untuk men-tokenisasi teks apa pun, cukup lakukan pre-tokenisasi dan gunakan fungsi `encode_word()`:
+
+```python
+def tokenize(text, model):
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in words_with_offsets]
+    encoded_words = [encode_word(word, model)[0] for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+
+
+tokenize("This is the Hugging Face course.", model)
+```
+
+```python out
+['▁This', '▁is', '▁the', '▁Hugging', '▁Face', '▁', 'c', 'ou', 'r', 's', 'e', '.']
+```
+
+<Tip>
+
+Tokenizer XLNet menggunakan SentencePiece, itulah mengapa karakter `"_"` muncul. Untuk melakukan decoding, cukup gabungkan semua token dan ganti `"_"` dengan spasi.
+
+</Tip>
+
+Itulah seluruh proses dari algoritma Unigram! Semoga sekarang Anda merasa sudah benar-benar memahami semua jenis algoritma tokenisasi. Pada bagian selanjutnya, kita akan menjelajahi **komponen-komponen penyusun library 🤗 Tokenizers**, dan menunjukkan bagaimana Anda bisa membangun tokenizer Anda sendiri.

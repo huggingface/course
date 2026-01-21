@@ -1,0 +1,375 @@
+# Tokenisasi WordPiece[[wordpiece-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section6.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section6.ipynb"},
+]} />
+
+WordPiece adalah algoritma tokenisasi yang dikembangkan oleh Google untuk melakukan pretraining pada BERT. Sejak itu, algoritma ini digunakan kembali di beberapa model Transformer berbasis BERT, seperti DistilBERT, MobileBERT, Funnel Transformers, dan MPNET. Algoritma ini sangat mirip dengan BPE dalam hal pelatihan, tetapi proses tokenisasinya dilakukan dengan cara yang berbeda.
+
+<Youtube id="qpv6ms_t_1A"/>
+
+<Tip>
+
+💡 Bagian ini membahas WordPiece secara mendalam, bahkan hingga ke implementasi penuh. Anda bisa langsung lompat ke akhir jika hanya ingin gambaran umum tentang algoritma tokenisasi ini.
+
+</Tip>
+
+## Algoritma pelatihan[[training-algorithm]]
+
+<Tip warning={true}>
+
+⚠️ Google tidak pernah membuka kode sumber dari implementasi algoritma pelatihan WordPiece, jadi penjelasan berikut ini adalah perkiraan terbaik berdasarkan literatur yang tersedia. Bisa jadi tidak 100% akurat.
+
+</Tip>
+
+Seperti BPE, WordPiece dimulai dengan kosakata kecil yang mencakup token spesial yang digunakan oleh model dan alfabet awal. Karena ia mengidentifikasi sub-kata dengan menambahkan prefiks (seperti `##` untuk BERT), setiap kata awalnya dipecah dengan menambahkan prefiks tersebut ke semua karakter dalam kata. Contohnya, kata `"word"` dipecah seperti ini:
+
+```
+w ##o ##r ##d
+```
+
+Dengan demikian, alfabet awal mencakup semua karakter yang muncul di awal kata dan karakter dalam kata yang diawali dengan prefiks WordPiece.
+
+Kemudian, seperti BPE, WordPiece mempelajari aturan penggabungan. Perbedaan utamanya adalah cara pasangan yang akan digabung dipilih. Alih-alih memilih pasangan paling sering, WordPiece menghitung skor untuk setiap pasangan menggunakan rumus berikut:
+
+$$\mathrm{score} = (\mathrm{freq\_of\_pair}) / (\mathrm{freq\_of\_first\_element} \times \mathrm{freq\_of\_second\_element})$$
+
+Dengan membagi frekuensi pasangan dengan hasil kali frekuensi masing-masing elemen, algoritma memprioritaskan penggabungan pasangan di mana masing-masing bagian lebih jarang muncul dalam kosakata. Misalnya, algoritma tidak akan langsung menggabungkan `("un", "##able")` meskipun pasangan tersebut sering muncul, karena `"un"` dan `"##able"` kemungkinan besar muncul di banyak kata lain dan memiliki frekuensi tinggi. Sebaliknya, pasangan seperti `("hu", "##gging")` kemungkinan akan digabung lebih cepat (jika kata "hugging" sering muncul), karena `"hu"` dan `"##gging"` secara individu lebih jarang muncul.
+
+Mari kita lihat kosakata yang sama seperti pada contoh pelatihan BPE:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+Pemecahan awalnya akan menjadi:
+
+```
+("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##g" "##s", 5)
+```
+
+Jadi kosakata awal adalah `["b", "h", "p", "##g", "##n", "##s", "##u"]` (abaikan token spesial untuk saat ini). Pasangan paling sering adalah `("##u", "##g")` (muncul 20 kali), tetapi frekuensi `"##u"` sangat tinggi, jadi skornya tidak tertinggi (yaitu 1 / 36). Semua pasangan dengan `"##u"` memiliki skor yang sama (1 / 36), jadi skor terbaik dimiliki pasangan `("##g", "##s")` — satu-satunya yang tidak memiliki `"##u"` — dengan skor 1 / 20, dan penggabungan pertama yang dipelajari adalah `("##g", "##s") -> ("##gs")`.
+
+Perlu dicatat bahwa saat kita menggabungkan, kita menghapus `##` di antara dua token, jadi kita menambahkan `"##gs"` ke dalam kosakata dan menerapkan penggabungan ini pada kata-kata dalam korpus:
+
+```
+Kosakata: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs"]
+Korpus: ("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##gs", 5)
+```
+
+Pada titik ini, `"##u"` muncul di semua pasangan yang mungkin, jadi semuanya memiliki skor yang sama. Misalnya, jika pasangan pertama yang digabung adalah `("h", "##u") -> "hu"`, maka hasilnya:
+
+```
+Kosakata: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu"]
+Korpus: ("hu" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+Kemudian, skor terbaik berikutnya dimiliki oleh `("hu", "##g")` dan `("hu", "##gs")` (dengan 1/15, dibandingkan dengan 1/21 untuk pasangan lainnya), jadi pasangan pertama dengan skor tertinggi digabung:
+
+```
+Kosakata: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu", "hug"]
+Korpus: ("hug", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+dan proses ini berlanjut hingga mencapai ukuran kosakata yang diinginkan.
+
+<Tip>
+
+✏️ **Sekarang giliran Anda!** Apa aturan penggabungan berikutnya?
+
+</Tip>
+
+## Algoritma tokenisasi[[tokenization-algorithm]]
+
+Tokenisasi pada WordPiece berbeda dari BPE karena WordPiece hanya menyimpan kosakata akhir, bukan aturan penggabungan yang dipelajari. Dimulai dari kata yang akan ditokenisasi, WordPiece mencari sub-kata terpanjang yang ada dalam kosakata, lalu memotong berdasarkan itu. Misalnya, jika kita menggunakan kosakata yang dipelajari pada contoh di atas, untuk kata `"hugs"` sub-kata terpanjang dari awal yang ada dalam kosakata adalah `"hug"`, jadi kita memotong di situ dan mendapatkan `["hug", "##s"]`. Kemudian kita lanjutkan dengan `"##s"`, yang ada dalam kosakata, jadi tokenisasi dari `"hugs"` adalah `["hug", "##s"]`.
+
+Dengan BPE, kita akan menerapkan aturan penggabungan secara berurutan dan melakukan tokenisasi sebagai `["hu", "##gs"]`, sehingga hasil pengkodeannya berbeda.
+
+Sebagai contoh lain, mari kita lihat bagaimana kata `"bugs"` akan ditokenisasi. `"b"` adalah sub-kata terpanjang dari awal kata yang ada dalam kosakata, jadi kita memotong di situ dan mendapatkan `["b", "##ugs"]`. Lalu `"##u"` adalah sub-kata terpanjang dari awal `"##ugs"` yang ada dalam kosakata, jadi kita memotong di situ dan mendapatkan `["b", "##u", "##gs"]`. Terakhir, `"##gs"` ada dalam kosakata, jadi daftar terakhir ini adalah tokenisasi dari `"bugs"`.
+
+Saat tokenisasi mencapai tahap di mana tidak ada sub-kata dalam kosakata yang cocok, seluruh kata akan ditokenisasi sebagai tidak dikenal — jadi, misalnya, `"mug"` akan ditokenisasi sebagai `["[UNK]"]`, begitu juga dengan `"bum"` (meskipun kita bisa mulai dengan `"b"` dan `"##u"`, `"##m"` tidak ada dalam kosakata, dan hasil tokenisasinya hanya `["[UNK]"]`, bukan `["b", "##u", "[UNK]"]`). Ini adalah perbedaan lain dari BPE, yang hanya mengklasifikasikan karakter individual yang tidak ada dalam kosakata sebagai tidak dikenal.
+
+<Tip>
+
+✏️ **Sekarang giliran Anda!** Bagaimana kata `"pugs"` akan ditokenisasi?
+
+</Tip>
+
+## Implementasi WordPiece[[implementing-wordpiece]]
+
+Sekarang mari kita lihat implementasi algoritma WordPiece. Seperti pada BPE, ini hanya bersifat pedagogis, dan Anda tidak akan bisa menggunakannya pada korpus yang besar.
+
+Kita akan menggunakan korpus yang sama seperti pada contoh BPE:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+Pertama, kita perlu melakukan pra-tokenisasi korpus menjadi kata-kata. Karena kita meniru tokenizer WordPiece (seperti BERT), kita akan menggunakan tokenizer `bert-base-cased` untuk pra-tokenisasinya:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+```
+
+Lalu kita hitung frekuensi setiap kata dalam korpus saat melakukan pra-tokenisasi:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+```python out
+defaultdict(
+    int, {'This': 3, 'is': 2, 'the': 1, 'Hugging': 1, 'Face': 1, 'Course': 1, '.': 4, 'chapter': 1, 'about': 1,
+    'tokenization': 1, 'section': 1, 'shows': 1, 'several': 1, 'tokenizer': 1, 'algorithms': 1, 'Hopefully': 1,
+    ',': 1, 'you': 1, 'will': 1, 'be': 1, 'able': 1, 'to': 1, 'understand': 1, 'how': 1, 'they': 1, 'are': 1,
+    'trained': 1, 'and': 1, 'generate': 1, 'tokens': 1})
+```
+
+Seperti yang kita lihat sebelumnya, alfabet adalah himpunan unik dari semua huruf pertama dari kata-kata, dan huruf-huruf lainnya yang muncul dalam kata dengan prefiks `##`:
+
+```python
+alphabet = []
+for word in word_freqs.keys():
+    if word[0] not in alphabet:
+        alphabet.append(word[0])
+    for letter in word[1:]:
+        if f"##{letter}" not in alphabet:
+            alphabet.append(f"##{letter}")
+
+alphabet.sort()
+alphabet
+
+print(alphabet)
+```
+
+```python out
+['##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k', '##l', '##m', '##n', '##o', '##p', '##r', '##s',
+ '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u',
+ 'w', 'y']
+```
+
+Kita juga menambahkan token khusus yang digunakan oleh model di awal kosakata tersebut. Dalam kasus BERT, daftarnya adalah `["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]`:
+
+```python
+vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + alphabet.copy()
+```
+
+Selanjutnya, kita perlu memecah setiap kata, dengan semua huruf yang bukan huruf pertama diberi prefiks `##`:
+
+```python
+splits = {
+    word: [c if i == 0 else f"##{c}" for i, c in enumerate(word)]
+    for word in word_freqs.keys()
+}
+```
+
+Sekarang kita siap untuk pelatihan, mari kita buat fungsi untuk menghitung skor setiap pasangan. Kita akan menggunakan ini di setiap langkah pelatihan:
+
+```python
+def compute_pair_scores(splits):
+    letter_freqs = defaultdict(int)
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            letter_freqs[split[0]] += freq
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            letter_freqs[split[i]] += freq
+            pair_freqs[pair] += freq
+        letter_freqs[split[-1]] += freq
+
+    scores = {
+        pair: freq / (letter_freqs[pair[0]] * letter_freqs[pair[1]])
+        for pair, freq in pair_freqs.items()
+    }
+    return scores
+```
+
+Mari kita lihat sebagian isi dictionary setelah pemisahan awal:
+
+```python
+pair_scores = compute_pair_scores(splits)
+for i, key in enumerate(pair_scores.keys()):
+    print(f"{key}: {pair_scores[key]}")
+    if i >= 5:
+        break
+```
+
+```python out
+('T', '##h'): 0.125
+('##h', '##i'): 0.03409090909090909
+('##i', '##s'): 0.02727272727272727
+('i', '##s'): 0.1
+('t', '##h'): 0.03571428571428571
+('##h', '##e'): 0.011904761904761904
+```
+
+Sekarang, mencari pasangan dengan skor terbaik cukup dengan loop sederhana:
+
+```python
+best_pair = ""
+max_score = None
+for pair, score in pair_scores.items():
+    if max_score is None or max_score < score:
+        best_pair = pair
+        max_score = score
+
+print(best_pair, max_score)
+```
+
+```python out
+('a', '##b') 0.2
+```
+
+Jadi penggabungan pertama yang dipelajari adalah `('a', '##b') -> 'ab'`, dan kita tambahkan `'ab'` ke kosakata:
+
+```python
+vocab.append("ab")
+```
+
+Untuk melanjutkan, kita perlu menerapkan penggabungan tersebut pada dictionary `splits`. Mari kita tulis fungsi untuk ini:
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                merge = a + b[2:] if b.startswith("##") else a + b
+                split = split[:i] + [merge] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+Dan kita bisa melihat hasil dari penggabungan pertama:
+
+```py
+splits = merge_pair("a", "##b", splits)
+splits["about"]
+```
+
+```python out
+['ab', '##o', '##u', '##t']
+```
+
+Sekarang kita punya semua yang dibutuhkan untuk melakukan loop sampai kita mempelajari semua penggabungan yang diinginkan. Kita tetapkan target ukuran kosakata 70:
+
+```python
+vocab_size = 70
+while len(vocab) < vocab_size:
+    scores = compute_pair_scores(splits)
+    best_pair, max_score = "", None
+    for pair, score in scores.items():
+        if max_score is None or max_score < score:
+            best_pair = pair
+            max_score = score
+    splits = merge_pair(*best_pair, splits)
+    new_token = (
+        best_pair[0] + best_pair[1][2:]
+        if best_pair[1].startswith("##")
+        else best_pair[0] + best_pair[1]
+    )
+    vocab.append(new_token)
+```
+
+Kita kemudian bisa melihat kosakata yang dihasilkan:
+
+```py
+print(vocab)
+```
+
+```python out
+['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k',
+ '##l', '##m', '##n', '##o', '##p', '##r', '##s', '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H',
+ 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u', 'w', 'y', 'ab', '##fu', 'Fa', 'Fac', '##ct', '##ful', '##full', '##fully',
+ 'Th', 'ch', '##hm', 'cha', 'chap', 'chapt', '##thm', 'Hu', 'Hug', 'Hugg', 'sh', 'th', 'is', '##thms', '##za', '##zat',
+ '##ut']
+```
+
+Seperti yang kita lihat, dibandingkan dengan BPE, tokenizer ini mempelajari bagian kata sebagai token sedikit lebih cepat.
+
+<Tip>
+
+💡 Menggunakan `train_new_from_iterator()` pada korpus yang sama tidak akan menghasilkan kosakata yang persis sama. Ini karena pustaka 🤗 Tokenizers tidak mengimplementasikan WordPiece untuk pelatihan (karena kita tidak sepenuhnya yakin tentang detail internalnya), dan sebagai gantinya menggunakan BPE.
+
+</Tip>
+
+Untuk melakukan tokenisasi teks baru, kita pra-tokenisasi terlebih dahulu, lalu membagi, kemudian menerapkan algoritma tokenisasi pada setiap kata. Artinya, kita mencari sub-kata terpanjang dari awal kata yang ada dalam kosakata dan memotongnya, lalu ulangi proses tersebut pada bagian selanjutnya, dan seterusnya:
+
+```python
+def encode_word(word):
+    tokens = []
+    while len(word) > 0:
+        i = len(word)
+        while i > 0 and word[:i] not in vocab:
+            i -= 1
+        if i == 0:
+            return ["[UNK]"]
+        tokens.append(word[:i])
+        word = word[i:]
+        if len(word) > 0:
+            word = f"##{word}"
+    return tokens
+```
+
+Mari kita uji pada satu kata yang ada di kosakata, dan satu yang tidak:
+
+```python
+print(encode_word("Hugging"))
+print(encode_word("HOgging"))
+```
+
+```python out
+['Hugg', '##i', '##n', '##g']
+['[UNK]']
+```
+
+Sekarang, mari kita buat fungsi untuk melakukan tokenisasi pada teks:
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    encoded_words = [encode_word(word) for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+```
+
+Kita bisa mencobanya pada teks apa pun:
+
+```python
+tokenize("This is the Hugging Face course!")
+```
+
+```python out
+['Th', '##i', '##s', 'is', 'th', '##e', 'Hugg', '##i', '##n', '##g', 'Fac', '##e', 'c', '##o', '##u', '##r', '##s',
+ '##e', '[UNK]']
+```
+
+Selesai sudah untuk algoritma WordPiece! Sekarang mari kita lanjutkan ke Unigram.
+
