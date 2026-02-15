@@ -90,17 +90,31 @@ Once you have translated the `_toctree.yml` file, you can start translating the 
 
 Once you're happy with your changes, you can preview how they'll look by first installing the [`doc-builder`](https://github.com/huggingface/doc-builder) tool that we use for building all documentation at Hugging Face:
 
-```
-pip install hf-doc-builder
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "git+https://github.com/huggingface/doc-builder.git"
 ```
 
-```
-doc-builder preview course ../course/chapters/LANG-ID --not_python_module
+```bash
+doc-builder preview course ./chapters/LANG-ID --not_python_module
 ```
 
-**`preview` command does not work with Windows.
+If `LANG-ID` content is partial, make sure `_toctree.yml` only references files that exist in `chapters/LANG-ID`.
 
-This will build and render the course on [http://localhost:3000/](http://localhost:3000/). Although the content looks much nicer on the Hugging Face website, this step will still allow you to check that everything is formatted correctly.
+If preview starts but all routes return `404`, this might be a local `doc-builder` version mismatch between the Python package and the SvelteKit template:
+
+```bash
+python -m pip uninstall -y hf-doc-builder
+python -m pip install "git+https://github.com/huggingface/doc-builder.git"
+```
+
+Then restart `doc-builder preview`.
+
+> `preview` command does not work with Windows.
+
+This will build and render the course on [http://localhost:5173/](http://localhost:5173/). Although the content looks much nicer on the Hugging Face website, this step will still allow you to check that everything is formatted correctly.
 
 **🚀 Submit a pull request**
 
