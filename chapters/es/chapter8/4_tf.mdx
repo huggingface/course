@@ -1,0 +1,131 @@
+<FrameworkSwitchCourse {fw} />
+
+# Depurar el pipeline de entrenamiento[[debugging-the-training-pipeline]]
+
+<CourseFloatingBanner chapter={8}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/es/chapter8/section4_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/es/chapter8/section4_tf.ipynb"},
+]} />
+
+Has escrito un script para entrenar o hacer ajuste fino (fine-tuning) de un modelo con TensorFlow siguiendo el [Capítulo 7](/course/chapter7). Pero cuando lanzas `model.fit()`, algo sale mal: obtienes un error, o el entrenamiento termina pero el modelo aprende muy poco. En esta sección veremos una forma sistemática de depurar ese tipo de problemas.
+
+## Depurar el pipeline de entrenamiento[[debugging-the-training-pipeline]]
+
+<Youtube id="N9kO52itd0Q"/>
+
+Al igual que ocurría con `Trainer`, un error en `model.fit()` puede venir de varios lugares: los datos, el batching, el modelo, la función de pérdida o el optimizador. Por eso, la estrategia más útil suele ser recorrer el pipeline paso a paso y validar cada parte por separado.
+
+Usaremos como ejemplo un script que intenta ajustar DistilBERT en el [dataset MNLI](https://huggingface.co/datasets/glue):
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    TFAutoModelForSequenceClassification,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+
+train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["input_ids", "labels"], batch_size=16, shuffle=True
+)
+
+validation_dataset = tokenized_datasets["validation_matched"].to_tf_dataset(
+    columns=["input_ids", "labels"], batch_size=16, shuffle=True
+)
+
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+model.compile(loss="sparse_categorical_crossentropy", optimizer="adam")
+
+model.fit(train_dataset)
+```
+
+### Revisa tus datos[[check-your-data]]
+
+El primer paso es inspeccionar exactamente lo que sale del `tf.data.Dataset` que entra en el modelo:
+
+```py
+for batch in train_dataset:
+    break
+```
+
+Un caso como este puede verse correcto a primera vista, porque `input_ids`, `attention_mask` y `label` están presentes. Pero aquí hay un detalle importante: cuando especificas una pérdida en `compile()`, Keras espera que las etiquetas vayan separadas del diccionario de entrada. En cambio, los modelos de 🤗 Transformers pueden calcular internamente la pérdida si las etiquetas van dentro del diccionario.
+
+Ese desajuste es una fuente muy común de errores. La solución más sencilla aquí es dejar que el modelo calcule su propia pérdida:
+
+```py
+model.compile(optimizer="adam")
+```
+
+### Revisa el modelo[[check-your-model]]
+
+Si el entrenamiento arranca pero la pérdida aparece como `nan`, conviene ejecutar un solo batch directamente por el modelo:
+
+```py
+model(batch)
+```
+
+Si todo da `nan`, una buena forma de aislar el problema es reinstanciar el modelo desde el checkpoint y volver a probar sin haber hecho todavía actualizaciones de pesos:
+
+```py
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+model(batch)
+```
+
+Si ahora los logits ya no son `nan` pero algunas pérdidas sí lo son, eso suele indicar un problema con las etiquetas. En este ejemplo concreto, el problema es que el modelo cree que hay 2 clases, mientras que MNLI tiene 3. La corrección es:
+
+```py
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+model.compile(optimizer="adam")
+```
+
+### Revisa los hiperparámetros[[check-your-hyperparameters]]
+
+Puede ocurrir que el entrenamiento ya no falle, pero aprenda muy lentamente o se quede estancado. En TensorFlow, esto pasa mucho cuando usas cadenas como `"adam"` o el nombre de una pérdida: Keras toma todos los valores por defecto, y eso puede esconder configuraciones importantes.
+
+En este caso, el culpable típico es la tasa de aprendizaje. El valor por defecto de Adam, `1e-3`, suele ser demasiado alto para un Transformer. Conviene reemplazarlo por un optimizador configurado explícitamente:
+
+```py
+from tensorflow.keras.optimizers import Adam
+
+model = TFAutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+model.compile(optimizer=Adam(5e-5))
+```
+
+### Errores silenciosos[[debugging-silent-errors-during-training]]
+
+Si el código se ejecuta pero el modelo no aprende bien, las mismas preguntas de depuración siguen siendo útiles:
+
+- ¿Los datos tokenizados representan realmente lo que esperas?
+- ¿Las etiquetas son correctas?
+- ¿Hay clases muy desbalanceadas?
+- ¿La pérdida inicial es razonable?
+
+También es muy útil intentar sobreajustar un único batch. Si el modelo no puede aprender ni siquiera ese caso pequeño, el problema suele estar en los datos, en las etiquetas o en la configuración del entrenamiento.
+
+### Resumen práctico[[practical-summary]]
+
+Cuando algo falle en `model.fit()`, sigue este orden:
+
+1. Inspecciona el batch real que entra al modelo.
+2. Comprueba si las etiquetas están donde Keras o el modelo esperan encontrarlas.
+3. Ejecuta un solo batch por el modelo para aislar el error.
+4. Revisa `num_labels` y la forma de los tensores.
+5. Reinstancia el modelo si sospechas que ya se contaminó con valores `nan`.
+6. Ajusta explícitamente hiperparámetros como la tasa de aprendizaje.
+
+Ese recorrido suele ser suficiente para localizar la mayoría de los fallos en pipelines de entrenamiento con TensorFlow.

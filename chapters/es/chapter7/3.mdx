@@ -1,0 +1,182 @@
+<FrameworkSwitchCourse {fw} />
+
+# Ajuste de un modelo de lenguaje enmascarado[[fine-tuning-a-masked-language-model]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_tf.ipynb"},
+]} />
+
+{/if}
+
+En muchas aplicaciones de PLN, basta con tomar un modelo preentrenado y ajustarlo para una tarea concreta. Pero si tus datos pertenecen a un dominio muy específico, como textos legales o artículos científicos, suele ser útil adaptar primero el modelo de lenguaje a ese dominio.
+
+<Youtube id="mqElG5QJWUg"/>
+
+Este proceso se conoce como _adaptación de dominio_. En esta sección ajustaremos DistilBERT sobre el conjunto IMDb para crear un modelo de lenguaje enmascarado más cercano al dominio de las reseñas de películas.
+
+## Elegir un modelo base[[picking-a-pretrained-model-for-masked-language-modeling]]
+
+Usaremos [DistilBERT](https://huggingface.co/distilbert-base-uncased), que es más pequeño que BERT y, por tanto, más rápido de entrenar.
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoModelForMaskedLM
+
+model_checkpoint = "distilbert-base-uncased"
+model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+```py
+from transformers import TFAutoModelForMaskedLM
+
+model_checkpoint = "distilbert-base-uncased"
+model = TFAutoModelForMaskedLM.from_pretrained(model_checkpoint)
+```
+
+{/if}
+
+## El conjunto de datos IMDb[[the-dataset]]
+
+```py
+from datasets import load_dataset
+
+imdb_dataset = load_dataset("imdb")
+imdb_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['text', 'label'],
+        num_rows: 25000
+    })
+    test: Dataset({
+        features: ['text', 'label'],
+        num_rows: 25000
+    })
+    unsupervised: Dataset({
+        features: ['text', 'label'],
+        num_rows: 50000
+    })
+})
+```
+
+Nos interesan sobre todo los textos, ya que para modelado de lenguaje no necesitamos las etiquetas de sentimiento.
+
+## Preprocesamiento[[preprocessing-the-data]]
+
+Primero tokenizamos sin truncar para no perder información y, si el tokenizador lo permite, guardamos también `word_ids` para poder aplicar whole word masking:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def tokenize_function(examples):
+    result = tokenizer(examples["text"])
+    if tokenizer.is_fast:
+        result["word_ids"] = [result.word_ids(i) for i in range(len(result["input_ids"]))]
+    return result
+
+
+tokenized_datasets = imdb_dataset.map(
+    tokenize_function, batched=True, remove_columns=["text", "label"]
+)
+```
+
+Luego concatenamos todos los ejemplos y los dividimos en fragmentos de tamaño fijo:
+
+```py
+chunk_size = 128
+
+
+def group_texts(examples):
+    concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+    total_length = len(concatenated_examples["input_ids"])
+    total_length = (total_length // chunk_size) * chunk_size
+    result = {
+        k: [t[i : i + chunk_size] for i in range(0, total_length, chunk_size)]
+        for k, t in concatenated_examples.items()
+    }
+    return result
+
+
+lm_datasets = tokenized_datasets.map(group_texts, batched=True)
+```
+
+## Enmascarado dinámico[[data-collation]]
+
+Para MLM usamos `DataCollatorForLanguageModeling`, que aplica máscaras de forma aleatoria durante el entrenamiento:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+data_collator = DataCollatorForLanguageModeling(
+    tokenizer=tokenizer, mlm_probability=0.15, return_tensors="tf"
+)
+```
+
+{/if}
+
+## Entrenamiento[[fine-tuning-the-model]]
+
+{#if fw === 'pt'}
+
+En PyTorch podemos entrenar con `Trainer`, igual que en capítulos anteriores. La diferencia es que el modelo ahora predice los tokens enmascarados en lugar de una clase:
+
+```py
+from transformers import Trainer, TrainingArguments
+
+args = TrainingArguments(
+    output_dir="distilbert-base-uncased-finetuned-imdb",
+    evaluation_strategy="epoch",
+    learning_rate=2e-5,
+    weight_decay=0.01,
+)
+```
+
+{:else}
+
+En TensorFlow preparamos un `tf.data.Dataset` y entrenamos con `model.fit()`, apoyándonos en la pérdida interna del modelo:
+
+```py
+tf_train_dataset = model.prepare_tf_dataset(
+    lm_datasets["train"], collate_fn=data_collator, shuffle=True, batch_size=32
+)
+```
+
+{/if}
+
+## ¿Qué obtenemos?[[what-do-we-get]]
+
+Tras el ajuste, el modelo sustituye `[MASK]` por palabras más apropiadas para reseñas de películas que para el inglés general de Wikipedia. Esa es precisamente la idea de la adaptación de dominio: acercar el modelo al vocabulario y a los patrones reales de tu corpus.
+
+Si luego entrenas una tarea específica, por ejemplo clasificación de sentimiento, partirás de una base más adecuada al dominio.

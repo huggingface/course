@@ -1,32 +1,138 @@
-# Sesgos y limitaciones
+# Inferencia con LLMs[[inference-with-llms]]
 
-<CourseFloatingBanner chapter={1}
-  classNames="absolute z-10 right-0 top-0"
-  notebooks={[
-    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/es/chapter1/section8.ipynb"},
-    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/es/chapter1/section8.ipynb"},
-]} />
+<CourseFloatingBanner
+    chapter={1}
+    classNames="absolute z-10 right-0 top-0"
+/>
 
-Si tu intención es usar modelos preentrenados o una versión ajustada en producción, ten en cuenta que a pesar de ser herramientas poderosas, tienen limitaciones. La más importante de ellas es que, para permitir el preentrenamiento con grandes cantidades de datos, los investigadores suelen *raspar* (*scrape*) todo el contenido que puedan encontrar, tomando lo mejor y lo peor que está disponible en internet.
+<Youtube id="Xp2w1_LKZN4" />
 
-Para dar un ejemplo rápido, volvamos al caso del pipeline `fill-mask` con el modelo BERT:
+Hasta ahora hemos explorado la arquitectura Transformer en relación con varias tareas discretas, como clasificación de texto o resumen. Sin embargo, el uso más común de los Large Language Models es la generación de texto, y eso es lo que veremos aquí.
 
-```python
-from transformers import pipeline
+En esta página repasaremos los conceptos centrales de la inferencia con LLMs para entender cómo generan texto y qué componentes intervienen en el proceso.
 
-unmasker = pipeline("fill-mask", model="bert-base-uncased")
-result = unmasker("This man works as a [MASK].")
-print([r["token_str"] for r in result])
+## Entender lo básico
 
-result = unmasker("This woman works as a [MASK].")
-print([r["token_str"] for r in result])
-```
+La inferencia es el proceso de usar un LLM entrenado para generar texto parecido al humano a partir de un prompt. Los modelos del lenguaje usan el conocimiento aprendido durante el entrenamiento para formular respuestas una palabra, o mejor dicho un token, cada vez.
 
-```python out
-['lawyer', 'carpenter', 'doctor', 'waiter', 'mechanic']
-['nurse', 'waitress', 'teacher', 'maid', 'prostitute']
-```
+## El papel de la atención
 
-Cuando se le pide llenar la palabra faltante en estas dos oraciones, el modelo devuelve solo una respuesta agnóstica de género (*waiter/waitress*). Las otras son ocupaciones que se suelen asociar con un género específico -- y si, prostituta es una de las primeras 5 posibilidades que el modelo asocia con "mujer" y "trabajo". Esto sucede a pesar de que BERT es uno de los pocos modelos Transformers que no se construyeron basados en datos *raspados* de todo el internet, pero usando datos aparentemente neutrales (está entrenado con los conjuntos de datos de [Wikipedia en Inglés](https://huggingface.co/datasets/wikipedia) y [BookCorpus](https://huggingface.co/datasets/bookcorpus)).
+El mecanismo de atención es lo que da a los LLMs la capacidad de entender el contexto y generar respuestas coherentes. Al predecir la siguiente palabra, no todas las palabras de una oración pesan lo mismo.
 
-Cuando uses estas herramientas, debes tener en cuenta que el modelo original que estás usando puede muy fácilmente generar contenido sexista, racista u homófobo. Ajustar el modelo con tus datos no va a desaparecer este sesgo intrínseco.
+<img src="https://huggingface.co/datasets/agents-course/course-images/resolve/main/en/unit1/AttentionSceneFinal.gif" alt="Visualización del mecanismo de atención" width="60%">
+
+### Longitud de contexto y attention span
+
+La longitud de contexto se refiere al número máximo de tokens que el LLM puede procesar a la vez. Puedes pensar en ello como el tamaño de la memoria de trabajo del modelo.
+
+Estas capacidades están limitadas por:
+- la arquitectura y el tamaño del modelo.
+- los recursos computacionales disponibles.
+- la complejidad de la entrada y de la salida deseada.
+
+### El arte de escribir prompts
+
+Cuando pasamos información a un LLM, estructuramos la entrada de forma que guíe la generación hacia la salida deseada. A eso lo llamamos _prompting_. Entender cómo procesan la información los LLMs ayuda a diseñar mejores prompts.
+
+## El proceso de inferencia en dos fases
+
+La inferencia puede dividirse en dos fases principales: prefill y decode.
+
+### La fase de prefill
+
+La fase de prefill es la etapa de preparación. Incluye tres pasos:
+
+1. **Tokenización**: convertir el texto de entrada en tokens.
+2. **Conversión a embeddings**: transformar esos tokens en representaciones numéricas.
+3. **Procesamiento inicial**: pasar esas representaciones por la red para construir una comprensión rica del contexto.
+
+<iframe
+	src="https://agents-course-the-tokenizer-playground.static.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+### La fase de decode
+
+Después del prefill llega el decode, donde se genera realmente el texto. El modelo genera un token cada vez en un proceso autorregresivo.
+
+En cada nuevo token ocurren varios pasos:
+1. **Cálculo de atención**.
+2. **Cálculo de probabilidades**.
+3. **Selección del siguiente token**.
+4. **Comprobación de continuación o parada**.
+
+## Estrategias de muestreo
+
+Una vez entendido el mecanismo de generación, podemos estudiar cómo controlar ese proceso.
+
+<iframe
+	src="https://agents-course-decoding-visualizer.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+### De probabilidades a elecciones de tokens
+
+Cuando el modelo necesita elegir el siguiente token, parte de logits para todo el vocabulario. A partir de ahí se aplican distintas estrategias:
+
+1. **Raw logits**: la preferencia inicial del modelo por cada token.
+2. **Temperature**: ajusta creatividad y aleatoriedad.
+3. **Top-p (nucleus sampling)**: limita la elección a los tokens cuya probabilidad acumulada alcanza un umbral.
+4. **Top-k**: limita la elección a los `k` tokens más probables.
+
+### Gestionar la repetición
+
+Un problema frecuente es que los LLMs tienden a repetirse. Para mitigarlo pueden usarse dos penalizaciones:
+
+1. **Presence penalty**: penaliza cualquier token que ya haya aparecido.
+2. **Frequency penalty**: penaliza más a los tokens cuanto más veces hayan aparecido.
+
+### Controlar la longitud de generación
+
+También necesitamos controlar cuánto texto genera el modelo. Esto puede hacerse mediante:
+
+1. **Límites de tokens**.
+2. **Stop sequences**.
+3. **Detección natural del final de secuencia**.
+
+### Beam search
+
+Mientras que las estrategias anteriores toman decisiones token a token, beam search mantiene varias secuencias candidatas en paralelo y escoge la combinación más prometedora.
+
+<iframe
+	src="https://agents-course-beam-search-visualizer.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+## Desafíos prácticos y optimización
+
+### Métricas clave de rendimiento
+
+Cuando trabajas con LLMs, cuatro métricas suelen ser decisivas:
+
+1. **Time to First Token (TTFT)**.
+2. **Time Per Output Token (TPOT)**.
+3. **Throughput**.
+4. **VRAM Usage**.
+
+### El reto de la longitud de contexto
+
+Uno de los mayores desafíos de la inferencia con LLMs es gestionar bien la longitud del contexto. Un contexto más largo aporta más información, pero también eleva mucho el coste en memoria y tiempo de procesamiento.
+
+### La optimización con KV cache
+
+Para aliviar estos costes, una de las optimizaciones más potentes es la caché KV (Key-Value caching). Esta técnica almacena y reutiliza cálculos intermedios, lo que reduce trabajo repetido y acelera la generación, aunque a costa de usar más memoria.
+
+## Conclusión
+
+Entender la inferencia con LLMs es clave para desplegar y optimizar estos modelos. Hemos repasado:
+
+- el papel fundamental de la atención y el contexto.
+- el proceso de inferencia en dos fases.
+- distintas estrategias de muestreo.
+- desafíos prácticos y optimizaciones.

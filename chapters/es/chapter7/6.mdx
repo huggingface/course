@@ -1,0 +1,136 @@
+<FrameworkSwitchCourse {fw} />
+
+# Entrenar un modelo de lenguaje causal desde cero[[training-a-causal-language-model-from-scratch]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+Hasta ahora hemos partido de modelos preentrenados. En esta sección seguiremos el camino opuesto: entrenaremos desde cero un modelo de lenguaje causal para completar código Python.
+
+<Youtube id="Vpjb1lu0MDk"/>
+
+Nos centraremos en un subconjunto del stack de ciencia de datos en Python para construir una versión reducida de un modelo de autocompletado.
+
+## Recopilar los datos[[gathering-the-data]]
+
+Partimos de `codeparrot`, un gran corpus de código Python. Como el conjunto completo es enorme, lo filtramos para quedarnos con archivos que usen librerías como `pandas`, `sklearn`, `matplotlib` y `seaborn`.
+
+```py
+def any_keyword_in_string(string, keywords):
+    for keyword in keywords:
+        if keyword in string:
+            return True
+    return False
+```
+
+Luego cargamos el subconjunto ya filtrado:
+
+```py
+from datasets import load_dataset, DatasetDict
+
+ds_train = load_dataset("huggingface-course/codeparrot-ds-train", split="train")
+ds_valid = load_dataset("huggingface-course/codeparrot-ds-valid", split="validation")
+
+raw_datasets = DatasetDict({"train": ds_train, "valid": ds_valid})
+```
+
+## Preparar el conjunto de datos[[preparing-the-dataset]]
+
+Tokenizamos el código y lo dividimos en ventanas cortas de contexto:
+
+```py
+from transformers import AutoTokenizer
+
+context_length = 128
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+
+
+def tokenize(element):
+    outputs = tokenizer(
+        element["content"],
+        truncation=True,
+        max_length=context_length,
+        return_overflowing_tokens=True,
+        return_length=True,
+    )
+    input_batch = []
+    for length, input_ids in zip(outputs["length"], outputs["input_ids"]):
+        if length == context_length:
+            input_batch.append(input_ids)
+    return {"input_ids": input_batch}
+
+
+tokenized_datasets = raw_datasets.map(
+    tokenize, batched=True, remove_columns=raw_datasets["train"].column_names
+)
+```
+
+## Inicializar un modelo nuevo[[initializing-a-new-model]]
+
+Usaremos una configuración similar a GPT-2 pequeño:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import GPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+
+model = GPT2LMHeadModel(config)
+```
+
+{:else}
+
+```py
+from transformers import TFGPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+
+model = TFGPT2LMHeadModel(config)
+```
+
+{/if}
+
+## Data collator y entrenamiento[[training]]
+
+Para modelado causal usamos `DataCollatorForLanguageModeling` con `mlm=False`:
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+```
+
+En PyTorch puede entrenarse con `Trainer`; en TensorFlow, con `prepare_tf_dataset()` y `model.fit()`.
+
+La idea central es simple: el modelo aprende a predecir el siguiente token de código a partir del contexto anterior. Con suficientes datos y cómputo, este enfoque produce modelos capaces de autocompletar código con bastante utilidad práctica.

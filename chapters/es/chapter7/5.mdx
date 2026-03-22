@@ -1,0 +1,115 @@
+<FrameworkSwitchCourse {fw} />
+
+# Resumen[[summarization]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_tf.ipynb"},
+]} />
+
+{/if}
+
+El resumen de texto busca condensar documentos largos en resúmenes cortos que conserven la información esencial. Es una tarea difícil porque combina comprensión del contexto, selección de información relevante y generación coherente.
+
+<Youtube id="yHnr5Dk2zCI"/>
+
+En esta sección entrenaremos un modelo bilingüe inglés-español usando reseñas de Amazon y sus títulos como resúmenes objetivo.
+
+## Preparar un corpus multilingüe[[preparing-a-multilingual-corpus]]
+
+```py
+from datasets import load_dataset
+
+spanish_dataset = load_dataset("amazon_reviews_multi", "es")
+english_dataset = load_dataset("amazon_reviews_multi", "en")
+```
+
+Filtraremos las categorías relacionadas con libros para mantener el problema acotado y luego concatenaremos los datos en ambos idiomas:
+
+```py
+from datasets import concatenate_datasets, DatasetDict
+
+
+def filter_books(example):
+    return (
+        example["product_category"] == "book"
+        or example["product_category"] == "digital_ebook_purchase"
+    )
+
+
+spanish_books = spanish_dataset.filter(filter_books)
+english_books = english_dataset.filter(filter_books)
+
+books_dataset = DatasetDict()
+for split in english_books.keys():
+    books_dataset[split] = concatenate_datasets(
+        [english_books[split], spanish_books[split]]
+    ).shuffle(seed=42)
+```
+
+Como muchos títulos son demasiado cortos, también conviene eliminar los ejemplos con resúmenes de solo una o dos palabras.
+
+## Elegir un modelo[[models-for-text-summarization]]
+
+Los modelos más usados para resumen suelen ser de tipo encoder-decoder. Aquí usaremos mT5, una versión multilingüe de T5:
+
+```py
+from transformers import AutoTokenizer
+
+model_checkpoint = "google/mt5-small"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+## Preprocesamiento[[preprocessing-the-data]]
+
+Tenemos que truncar tanto la reseña como el título:
+
+```py
+max_input_length = 512
+max_target_length = 30
+
+
+def preprocess_function(examples):
+    model_inputs = tokenizer(
+        examples["review_body"], max_length=max_input_length, truncation=True
+    )
+    labels = tokenizer(
+        examples["review_title"], max_length=max_target_length, truncation=True
+    )
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
+
+
+tokenized_datasets = books_dataset.map(preprocess_function, batched=True)
+```
+
+## Métricas[[metrics-for-text-summarization]]
+
+En resumen se usa con frecuencia ROUGE. Esta familia de métricas compara el resumen generado con uno o varios resúmenes de referencia.
+
+```py
+!pip install rouge_score
+```
+
+```py
+import evaluate
+
+rouge_score = evaluate.load("rouge")
+```
+
+ROUGE no es perfecto, porque la calidad de un resumen no depende solo de compartir n-gramas, pero es una métrica estándar muy útil para comparar sistemas.
+
+Con este flujo tendrás un modelo multilingüe capaz de resumir reseñas tanto en inglés como en español.

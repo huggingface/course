@@ -1,0 +1,220 @@
+<FrameworkSwitchCourse {fw} />
+
+# Clasificación de tokens[[token-classification]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section2_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section2_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section2_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section2_tf.ipynb"},
+]} />
+
+{/if}
+
+La clasificación de tokens consiste en asignar una etiqueta a cada token de una secuencia. Esta formulación cubre tareas como:
+
+- **Reconocimiento de entidades nombradas (named entity recognition, NER)**
+- **Etiquetado gramatical (part-of-speech tagging, POS)**
+- **Chunking**
+
+<Youtube id="wVHdVlPScxA"/>
+
+En esta sección ajustaremos un modelo BERT sobre NER con el conjunto de datos CoNLL-2003.
+
+## Preparación de los datos[[preparing-the-data]]
+
+Usaremos el [conjunto de datos CoNLL-2003](https://huggingface.co/datasets/conll2003):
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("conll2003")
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['chunk_tags', 'id', 'ner_tags', 'pos_tags', 'tokens'],
+        num_rows: 14041
+    })
+    validation: Dataset({
+        features: ['chunk_tags', 'id', 'ner_tags', 'pos_tags', 'tokens'],
+        num_rows: 3250
+    })
+    test: Dataset({
+        features: ['chunk_tags', 'id', 'ner_tags', 'pos_tags', 'tokens'],
+        num_rows: 3453
+    })
+})
+```
+
+Cada ejemplo contiene una lista de palabras ya segmentadas y una secuencia de etiquetas. Para inspeccionar los nombres de las clases:
+
+```py
+ner_feature = raw_datasets["train"].features["ner_tags"]
+label_names = ner_feature.feature.names
+label_names
+```
+
+```python out
+['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
+```
+
+Estas etiquetas indican si un token está fuera de una entidad (`O`), al comienzo de una entidad (`B-...`) o dentro de ella (`I-...`).
+
+## Tokenización y alineación de etiquetas[[processing-the-data]]
+
+La principal dificultad en esta tarea es que una palabra puede dividirse en varias subpalabras. Eso implica que el número de tokens del modelo puede ser mayor que el número de etiquetas originales.
+
+```py
+from transformers import AutoTokenizer
+
+model_checkpoint = "bert-base-cased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(raw_datasets["train"][0]["tokens"], is_split_into_words=True)
+inputs.tokens()
+```
+
+```python out
+['[CLS]', 'EU', 'rejects', 'German', 'call', 'to', 'boycott', 'British', 'la', '##mb', '.', '[SEP]']
+```
+
+Para alinear etiquetas con subpalabras, usamos `word_ids()` y asignamos `-100` a los tokens especiales para que la pérdida los ignore:
+
+```py
+def align_labels_with_tokens(labels, word_ids):
+    new_labels = []
+    current_word = None
+    for word_id in word_ids:
+        if word_id != current_word:
+            current_word = word_id
+            label = -100 if word_id is None else labels[word_id]
+            new_labels.append(label)
+        elif word_id is None:
+            new_labels.append(-100)
+        else:
+            label = labels[word_id]
+            if label % 2 == 1:
+                label += 1
+            new_labels.append(label)
+    return new_labels
+```
+
+Luego aplicamos esto a todo el conjunto de datos:
+
+```py
+def tokenize_and_align_labels(examples):
+    tokenized_inputs = tokenizer(
+        examples["tokens"], truncation=True, is_split_into_words=True
+    )
+    all_labels = examples["ner_tags"]
+    new_labels = []
+    for i, labels in enumerate(all_labels):
+        word_ids = tokenized_inputs.word_ids(i)
+        new_labels.append(align_labels_with_tokens(labels, word_ids))
+
+    tokenized_inputs["labels"] = new_labels
+    return tokenized_inputs
+
+
+tokenized_datasets = raw_datasets.map(
+    tokenize_and_align_labels,
+    batched=True,
+    remove_columns=raw_datasets["train"].column_names,
+)
+```
+
+## Data collator[[data-collation]]
+
+Las etiquetas deben rellenarse igual que las entradas. Para eso usaremos `DataCollatorForTokenClassification`:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForTokenClassification
+
+data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForTokenClassification
+
+data_collator = DataCollatorForTokenClassification(
+    tokenizer=tokenizer, return_tensors="tf"
+)
+```
+
+{/if}
+
+## Modelo y entrenamiento[[fine-tuning-the-model]]
+
+{#if fw === 'pt'}
+
+Podemos usar `AutoModelForTokenClassification` con un mapeo correcto entre IDs y etiquetas:
+
+```py
+from transformers import AutoModelForTokenClassification
+
+id2label = {i: label for i, label in enumerate(label_names)}
+label2id = {v: k for k, v in id2label.items()}
+
+model = AutoModelForTokenClassification.from_pretrained(
+    model_checkpoint,
+    id2label=id2label,
+    label2id=label2id,
+)
+```
+
+Después entrenamos como en el capítulo 3, pero con el data collator y las métricas de clasificación de tokens.
+
+{:else}
+
+En TensorFlow usamos `TFAutoModelForTokenClassification` con el mismo mapeo:
+
+```py
+from transformers import TFAutoModelForTokenClassification
+
+id2label = {i: label for i, label in enumerate(label_names)}
+label2id = {v: k for k, v in id2label.items()}
+
+model = TFAutoModelForTokenClassification.from_pretrained(
+    model_checkpoint,
+    id2label=id2label,
+    label2id=label2id,
+)
+```
+
+{/if}
+
+## Métricas[[metrics]]
+
+La métrica habitual para esta tarea es [seqeval](https://github.com/chakki-works/seqeval), que calcula precisión, recall y F1 sobre secuencias etiquetadas:
+
+```py
+!pip install seqeval
+```
+
+```py
+import evaluate
+
+metric = evaluate.load("seqeval")
+```
+
+En la evaluación debemos ignorar los tokens con etiqueta `-100`, convertir las predicciones a nombres de etiquetas y pasar las secuencias resultantes a `seqeval`.
+
+Al terminar, tendrás un modelo capaz de extraer entidades nombradas token a token, que es la base de muchas aplicaciones de información estructurada en PLN.
