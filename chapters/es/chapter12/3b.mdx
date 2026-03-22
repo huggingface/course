@@ -1,0 +1,259 @@
+# Comprensión avanzada de Group Relative Policy Optimization (GRPO) en DeepSeekMath
+
+> [!TIP]
+> Esta sección profundiza en los detalles técnicos y matemáticos de GRPO. Fue escrita por <a href="https://huggingface.com/shirinyamani" target="_blank">Shirin Yamani</a>.
+
+Profundicemos en nuestra comprensión de GRPO para poder mejorar el proceso de entrenamiento de nuestro modelo.
+
+GRPO evalúa directamente las respuestas generadas por el modelo comparándolas dentro de grupos de generaciones para optimizar el modelo de política, en lugar de entrenar un modelo de valor separado. Este enfoque reduce de forma importante el coste computacional.
+
+GRPO puede aplicarse a cualquier tarea verificable en la que pueda determinarse si la respuesta es correcta. Por ejemplo, en razonamiento matemático, esa corrección puede verificarse comparando con la verdad de referencia.
+
+Antes de entrar en los detalles técnicos, visualicemos cómo funciona GRPO a alto nivel:
+
+![deep](https://huggingface.co/reasoning-course/images/resolve/main/grpo/16.png)
+
+Ahora que tenemos una visión general, desglosaremos GRPO paso a paso.
+
+## El algoritmo GRPO
+
+La innovación central de GRPO está en su forma de evaluar y aprender de múltiples respuestas generadas simultáneamente. En vez de depender de un reward model separado, compara salidas dentro del mismo grupo para decidir cuáles deben reforzarse.
+
+### Paso 1: muestreo de grupos
+
+El primer paso es generar varias respuestas posibles para cada pregunta. Esto crea un conjunto diverso de salidas que pueden compararse entre sí.
+
+Para cada pregunta \( q \), el modelo genera \( G \) salidas a partir de la política entrenada, donde \( G \) es el tamaño del grupo.
+
+#### Ejemplo
+
+Considera este problema aritmético sencillo:
+
+**Pregunta**
+
+\( q \): \( \text{Calculate}\space2 + 2 \times 6 \)
+
+**Salidas**
+
+\( G = 8 \): \( \{o_1:14 \text{ (correct)}, o_2:16 \text{ (wrong)}, o_3:10 \text{ (wrong)}, \ldots, o_8:14 \text{ (correct)}\} \)
+
+Observa que algunas respuestas son correctas y otras no. Esa diversidad es crucial para el siguiente paso.
+
+### Paso 2: cálculo de la ventaja
+
+Una vez que tenemos varias respuestas, necesitamos una forma de determinar cuáles son mejores que las demás.
+
+#### Distribución de recompensas
+
+Primero asignamos una puntuación de recompensa a cada respuesta generada. En este ejemplo usaremos un reward model, aunque también podría ser cualquier función que devuelva recompensas.
+
+Asignamos una recompensa \( r_i \) a cada respuesta y luego calculamos el siguiente valor de ventaja.
+
+#### Fórmula de la ventaja
+
+La idea clave de GRPO es que no necesitamos medidas absolutas de calidad; podemos comparar respuestas dentro del mismo grupo. Eso se hace mediante estandarización:
+
+$$A_i = \frac{r_i - \text{mean}(\{r_1, r_2, \ldots, r_G\})}{\text{std}(\{r_1, r_2, \ldots, r_G\})}$$
+
+#### Ejemplo
+
+Si tenemos 8 respuestas y 4 son correctas:
+
+| Métrica | Valor |
+|--------|-------|
+| Promedio del grupo | \( mean(r_i) = 0.5 \) |
+| Desviación estándar | \( std(r_i) = 0.53 \) |
+| Valor de ventaja para respuesta correcta | \( A_i = \frac{1 - 0.5}{0.53}= 0.94 \) |
+| Valor de ventaja para respuesta incorrecta | \( A_i = \frac{0 - 0.5}{0.53}= -0.94 \) |
+
+#### Interpretación
+
+Esta estandarización permite que el modelo evalúe el rendimiento relativo de cada respuesta. Si \( A_i > 0 \), la respuesta está por encima del promedio del grupo. Si \( A_i < 0 \), está por debajo.
+
+### Paso 3: actualización de la política
+
+El último paso consiste en usar esos valores de ventaja para actualizar el modelo y hacer más probable que genere buenas respuestas en el futuro.
+
+La función objetivo para actualizar la política es:
+
+$$J_{GRPO}(\theta) = \left[\frac{1}{G} \sum_{i=1}^{G} \min \left( \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)} A_i, \text{clip}\left( \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)}, 1 - \epsilon, 1 + \epsilon \right) A_i \right)\right] - \beta D_{KL}(\pi_{\theta} \|\| \pi_{ref})$$
+
+## Componentes clave de la función objetivo
+
+### 1. Cociente de probabilidad
+
+El cociente de probabilidad es:
+
+\( \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)} \)
+
+Compara cuánto cambia la probabilidad asignada por el nuevo modelo respecto del modelo anterior.
+
+### 2. Función de recorte
+
+La función de recorte es:
+
+\( \text{clip}\left( \frac{\pi_{\theta}(o_i|q)}{\pi_{\theta_{old}}(o_i|q)}, 1 - \epsilon, 1 + \epsilon\right) \)
+
+Limita el cociente al intervalo \( [1 - \epsilon, 1 + \epsilon] \) para evitar cambios demasiado bruscos.
+
+#### Ejemplo con \( \epsilon = 0.2 \)
+
+- Si el cociente es 1.8, se recorta a 1.2.
+- Si el cociente es 0.4, se recorta a 0.8.
+
+### 3. Divergencia KL
+
+El término de divergencia KL es:
+
+\( \beta D_{KL}(\pi_{\theta} \|\| \pi_{ref}) \)
+
+La penalización KL evita que el modelo se desvíe demasiado de su comportamiento original durante la optimización.
+
+La distancia KL se define así:
+
+$$D_{KL}(P \|\| Q) = \sum_{x \in X} P(x) \log \frac{P(x)}{Q(x)}$$
+
+El coeficiente \( \beta \) controla con qué fuerza imponemos esa restricción.
+
+## Ejemplo resuelto con GRPO
+
+Para afianzar la intuición, recorramos un ejemplo completo.
+
+### Problema de ejemplo
+
+$$\text{Q: Calculate}\space2 + 2 \times 6$$
+
+### Paso 1: muestreo de grupos
+
+Generamos \( G = 8 \) respuestas, de las cuales 4 son correctas y 4 incorrectas.
+
+### Paso 2: cálculo de la ventaja
+
+| Estadística | Valor |
+|-----------|-------|
+| Promedio del grupo | \( mean(r_i) = 0.5 \) |
+| Desviación estándar | \( std(r_i) = 0.53 \) |
+| Ventaja de respuesta correcta | \( A_i = \frac{1 - 0.5}{0.53}= 0.94 \) |
+| Ventaja de respuesta incorrecta | \( A_i = \frac{0 - 0.5}{0.53}= -0.94 \) |
+
+### Paso 3: actualización de la política
+
+Suponiendo que la política anterior asigna probabilidad 0.5 a una respuesta correcta y la nueva política la sube a 0.7:
+
+$$\text{Ratio}: \frac{0.7}{0.5} = 1.4 \rightarrow \text{after Clip}\space1.2 \space (\epsilon = 0.2)$$
+
+Entonces el modelo tenderá a reforzar esa salida correcta, mientras la divergencia KL limita cuánto se aleja de la política de referencia.
+
+## Ejemplo de implementación
+
+### 1. Cargar el modelo y generar respuestas
+
+```python
+import torch
+import torch.nn.functional as F
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Load the model and tokenizer
+model_name = "Qwen/Qwen2-Math-1.5B"
+model = AutoModelForCausalLM.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model.eval()
+
+# Move model to GPU if available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+
+# Input prompt
+prompt = "Solve y = 2x + 1 for x = 2, y = "  # Correct answer: 5
+inputs = tokenizer(prompt, return_tensors="pt", padding=True)
+input_ids = inputs["input_ids"].to(device)
+attention_mask = inputs["attention_mask"].to(device)
+
+# Step 1: Generate 8 responses (B = 2 groups, G = 4 responses per group)
+batch_size, num_generations = 2, 4
+outputs = model.generate(
+    input_ids=input_ids,
+    attention_mask=attention_mask,
+    max_new_tokens=1,
+    num_return_sequences=batch_size * num_generations,
+    do_sample=True,
+    top_k=10,
+    temperature=0.7,
+    pad_token_id=tokenizer.eos_token_id,
+    return_dict_in_generate=True,
+    output_scores=True,
+)
+```
+
+La generación inicial puede producir algo así:
+
+```text
+Output 1: 5.0
+Output 2: 6.0
+Output 3: 7.0
+Output 4: 5.0
+Output 5: 10.0
+Output 6: 2.0
+Output 7: 5.0
+Output 8: 5.0
+```
+
+### 2. Calcular recompensas
+
+```python
+reward_1 = [1, 0, 0, 1]
+reward_2 = [0, 0, 1, 1]
+
+rewards = torch.tensor([1, 0, 0, 1, 0, 0, 1, 1], dtype=torch.float32)
+num_generations = 4
+rewards_grouped = rewards.view(-1, num_generations)
+mean_grouped_rewards = rewards_grouped.mean(dim=1)
+std_grouped_rewards = rewards_grouped.std(dim=1)
+mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(num_generations, dim=0)
+std_grouped_rewards = std_grouped_rewards.repeat_interleave(num_generations, dim=0)
+
+advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-8)
+advantages = advantages.unsqueeze(1)
+```
+
+### 3. Actualizar la política
+
+```python
+ratio = torch.exp(
+    new_per_token_logps - per_token_logps
+)
+
+eps = self.cliprange
+pg_losses1 = -advantages * ratio
+pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - eps, 1.0 + eps)
+pg_loss_max = torch.max(pg_losses1, pg_losses2)
+per_token_loss = pg_loss_max + self.beta * per_token_kl
+```
+
+`per_token_kl` puede calcularse así:
+
+```python
+per_token_kl = F.kl_div(
+    F.log_softmax(new_per_token_logps, dim=-1),
+    F.softmax(per_token_logps, dim=-1),
+    reduction="none",
+).sum(dim=-1, keepdim=True)
+```
+
+Puedes encontrar un ejemplo completo [aquí](./basic_example.py). El equipo de TRL también implementó GRPO; revisa [TRL/GRPO_trainer](https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py) para más detalles.
+
+## Resumen y próximos pasos
+
+Ya has visto los elementos esenciales de Group Relative Policy Optimization:
+
+1. GRPO compara múltiples salidas dentro de un grupo.
+2. El cálculo de la ventaja estandariza las recompensas.
+3. La actualización de la política usa clipping y una penalización KL para mantener estabilidad.
+
+Este enfoque es especialmente útil en tareas verificables, como razonamiento matemático.
+
+## Referencias
+
+1. [RLHF Book by Nathan Lambert](https://github.com/natolambert/rlhf-book)
+2. [DeepSeek-V3 Technical Report](https://huggingface.co/papers/2412.19437)
+3. [DeepSeekMath](https://huggingface.co/papers/2402.03300)

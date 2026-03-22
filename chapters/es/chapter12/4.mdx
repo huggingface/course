@@ -1,0 +1,208 @@
+# Implementar GRPO en TRL
+
+En esta página aprenderemos a implementar Group Relative Policy Optimization (GRPO) usando la librería Transformer Reinforcement Learning (TRL). Nos centraremos en una implementación práctica con el mínimo código.
+
+Exploraremos los conceptos centrales de GRPO tal como aparecen en `GRPOTrainer` de TRL, usando fragmentos de la documentación oficial de TRL como guía.
+
+> [!TIP]
+> Este capítulo está orientado a quienes empiezan con TRL. Si ya tienes experiencia, quizá también te interese revisar la [implementación de Open R1](https://github.com/huggingface/open-r1/blob/main/src/open_r1/grpo.py) de GRPO.
+
+Primero, recordemos algunos conceptos importantes del algoritmo GRPO:
+
+- Formación de grupos: el modelo genera múltiples completions para cada prompt.
+- Aprendizaje por preferencias: el modelo aprende a partir de una función de recompensa que compara grupos de completions.
+- Configuración de entrenamiento: el modelo usa una configuración para controlar el proceso de entrenamiento.
+
+¿Qué necesitamos para implementarlo?
+
+- Definir un dataset de prompts.
+- Definir una función de recompensa que reciba una lista de completions y devuelva una lista de recompensas.
+- Configurar el entrenamiento con `GRPOConfig`.
+- Entrenar el modelo con `GRPOTrainer`.
+
+Aquí tienes un ejemplo mínimo:
+
+```python
+from trl import GRPOTrainer, GRPOConfig
+from datasets import load_dataset
+
+# 1. Load your dataset
+dataset = load_dataset("your_dataset", split="train")
+
+
+# 2. Define a simple reward function
+def reward_func(completions, **kwargs):
+    """Example: Reward longer completions"""
+    return [float(len(completion)) for completion in completions]
+
+
+# 3. Configure training
+training_args = GRPOConfig(
+    output_dir="output",
+    num_train_epochs=3,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=2,
+    logging_steps=10,
+)
+
+# 4. Initialize and train
+trainer = GRPOTrainer(
+    model="your_model",  # e.g. "Qwen/Qwen2-0.5B-Instruct"
+    args=training_args,
+    train_dataset=dataset,
+    reward_funcs=reward_func,
+)
+trainer.train()
+```
+
+## Componentes clave
+
+### 1. Formato del dataset
+
+Tu dataset debe contener prompts a los que el modelo responderá. `GRPOTrainer` generará múltiples completions para cada prompt y usará la función de recompensa para compararlas.
+
+### 2. Función de recompensa
+
+La función de recompensa es crucial: determina cómo aprende el modelo. Aquí tienes dos ejemplos prácticos:
+
+```python
+# Example 1: Reward based on completion length
+def reward_length(completions, **kwargs):
+    return [float(len(completion)) for completion in completions]
+
+
+# Example 2: Reward based on matching a pattern
+import re
+
+
+def reward_format(completions, **kwargs):
+    pattern = r"^<think>.*?</think><answer>.*?</answer>$"
+    return [1.0 if re.match(pattern, c) else 0.0 for c in completions]
+```
+
+### 3. Configuración del entrenamiento
+
+Parámetros clave a considerar en `GRPOConfig`:
+
+```python
+training_args = GRPOConfig(
+    output_dir="output",
+    num_train_epochs=3,
+    num_generation=4,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=2,
+    learning_rate=1e-5,
+    logging_steps=10,
+    use_vllm=True,
+)
+```
+
+El parámetro `num_generation` es especialmente importante porque define el tamaño del grupo.
+
+- Demasiado pequeño, por ejemplo 2 o 3, puede no aportar suficiente diversidad.
+- Recomendado, entre 4 y 16, suele dar un buen equilibrio entre diversidad y coste.
+- Valores más altos pueden mejorar el aprendizaje, pero incrementan bastante el coste computacional.
+
+## Consejos para tener éxito
+
+1. **Gestión de memoria**: ajusta `per_device_train_batch_size` y `gradient_accumulation_steps` según la memoria de tu GPU.
+2. **Velocidad**: activa `use_vllm=True` para acelerar la generación si tu modelo es compatible.
+3. **Monitorización**: observa métricas como `reward`, `reward_std` y `kl` durante el entrenamiento.
+
+## Diseño de funciones de recompensa
+
+El paper de DeepSeek R1 muestra varios enfoques eficaces que puedes adaptar.
+
+### 1. Recompensas basadas en longitud
+
+```python
+def reward_len(completions, **kwargs):
+    ideal_length = 20
+    return [-abs(ideal_length - len(completion)) for completion in completions]
+```
+
+Esta función penaliza completions demasiado cortas o demasiado largas y empuja al modelo hacia una longitud objetivo.
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_length.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+## 2. Recompensas basadas en reglas para tareas verificables
+
+```python
+def problem_reward(completions, answers, **kwargs):
+    """Reward function for math problems with verifiable answers
+    completions: list of completions to evaluate
+    answers: list of answers to the problems from the dataset
+    """
+
+    rewards = []
+    for completion, correct_answer in zip(completions, answers):
+        try:
+            answer = extract_final_answer(completion)
+            reward = 1.0 if answer == correct_answer else 0.0
+            rewards.append(reward)
+        except:
+            rewards.append(0.0)
+
+    return rewards
+```
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_math.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+## 3. Recompensas basadas en formato
+
+```python
+def format_reward(completions, **kwargs):
+    """Reward completions that follow the desired format"""
+    pattern = r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
+
+    rewards = []
+    for completion in completions:
+        match = re.search(pattern, completion, re.DOTALL)
+        if match:
+            think_content = match.group(1).strip()
+            answer_content = match.group(2).strip()
+
+            if len(think_content) > 20 and len(answer_content) > 0:
+                rewards.append(1.0)
+            else:
+                rewards.append(0.5)
+        else:
+            rewards.append(0.0)
+
+    return rewards
+```
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_format.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+Estos ejemplos muestran cómo puedes implementar funciones de recompensa inspiradas en el proceso de entrenamiento de DeepSeek R1.
+
+## ¡Eso es todo!
+
+En la siguiente sección seguirás un ejercicio para implementar GRPO en TRL.

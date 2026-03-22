@@ -1,0 +1,232 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter12/grpo_finetune.ipynb"},
+]} />
+
+# Ejercicio práctico: ajusta un modelo con GRPO
+
+Ahora que has visto la teoría, pongámosla en práctica. En este ejercicio, ajustarás un modelo con GRPO.
+
+> [!TIP]
+> Este ejercicio fue escrito por el experto en ajuste fino de LLM [@mlabonne](https://huggingface.co/mlabonne).
+
+## Instalar dependencias
+
+Primero, instalemos las dependencias para este ejercicio.
+
+```bash
+!pip install -qqq datasets==3.2.0 transformers==4.47.1 trl==0.14.0 peft==0.14.0 accelerate==1.2.1 bitsandbytes==0.45.2 wandb==0.19.7 --progress-bar off
+!pip install -qqq flash-attn --no-build-isolation --progress-bar off
+```
+
+Ahora importaremos las librerías necesarias.
+
+```python
+import torch
+from datasets import load_dataset
+from peft import LoraConfig, get_peft_model
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from trl import GRPOConfig, GRPOTrainer
+```
+
+## Importar e iniciar sesión en Weights & Biases
+
+Weights & Biases es una herramienta para registrar y monitorizar experimentos. La usaremos para registrar nuestro proceso de ajuste fino.
+
+```python
+import wandb
+
+wandb.login()
+```
+
+Puedes hacer este ejercicio sin iniciar sesión en Weights & Biases, pero es recomendable hacerlo para seguir tus experimentos e interpretar los resultados.
+
+## Cargar el dataset
+
+Usaremos el dataset [`mlabonne/smoltldr`](https://huggingface.co/datasets/mlabonne/smoltldr), que contiene una lista de historias cortas.
+
+```python
+dataset = load_dataset("mlabonne/smoltldr")
+print(dataset)
+```
+
+## Cargar el modelo
+
+Para este ejercicio usaremos [`SmolLM2-135M`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M).
+
+Es un modelo pequeño de 135M parámetros que funciona en hardware limitado. Eso lo hace ideal para aprender, aunque no sea el modelo más potente disponible. Si tienes acceso a mejor hardware, puedes probar con [`SmolLM2-1.7B`](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B).
+
+```python
+model_id = "HuggingFaceTB/SmolLM-135M-Instruct"
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    torch_dtype="auto",
+    device_map="auto",
+    attn_implementation="flash_attention_2",
+)
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+```
+
+## Cargar LoRA
+
+Ahora cargaremos la configuración de LoRA para reducir el número de parámetros entrenables y, con ello, la memoria necesaria para ajustar el modelo.
+
+Si no conoces LoRA, puedes leer más en el [Capítulo 11](https://huggingface.co/learn/course/en/chapter11/3).
+
+```python
+# Load LoRA
+lora_config = LoraConfig(
+    task_type="CAUSAL_LM",
+    r=16,
+    lora_alpha=32,
+    target_modules="all-linear",
+)
+model = get_peft_model(model, lora_config)
+print(model.print_trainable_parameters())
+```
+
+```sh
+Total trainable parameters: 135M
+```
+
+## Definir la función de recompensa
+
+Como mencionamos en la sección anterior, GRPO puede usar cualquier función de recompensa para mejorar el modelo. En este caso usaremos una función sencilla que anima al modelo a generar texto de 50 tokens.
+
+```python
+# Reward function
+ideal_length = 50
+
+
+def reward_len(completions, **kwargs):
+    return [-abs(ideal_length - len(completion)) for completion in completions]
+```
+
+## Definir los argumentos de entrenamiento
+
+Usaremos la clase `GRPOConfig` para definir los argumentos al estilo de `transformers`.
+
+Si es la primera vez que defines argumentos de entrenamiento, puedes consultar [TrainingArguments](https://huggingface.co/docs/transformers/en/main_classes/trainer#trainingarguments) o el [Capítulo 2](https://huggingface.co/learn/course/en/chapter2/1).
+
+```python
+# Training arguments
+training_args = GRPOConfig(
+    output_dir="GRPO",
+    learning_rate=2e-5,
+    per_device_train_batch_size=8,
+    gradient_accumulation_steps=2,
+    max_prompt_length=512,
+    max_completion_length=96,
+    num_generations=8,
+    optim="adamw_8bit",
+    num_train_epochs=1,
+    bf16=True,
+    report_to=["wandb"],
+    remove_unused_columns=False,
+    logging_steps=1,
+)
+```
+
+Ahora podemos inicializar el entrenador con el modelo, el dataset y los argumentos de entrenamiento, y empezar el ajuste.
+
+```python
+# Trainer
+trainer = GRPOTrainer(
+    model=model,
+    reward_funcs=[reward_len],
+    args=training_args,
+    train_dataset=dataset["train"],
+)
+
+# Train model
+wandb.init(project="GRPO")
+trainer.train()
+```
+
+El entrenamiento tarda alrededor de una hora en una sola GPU A10G, disponible en Google Colab o mediante Hugging Face Spaces.
+
+## Subir el modelo al Hub durante el entrenamiento
+
+Si configuramos `push_to_hub=True` y `model_id` con un nombre de modelo válido, el modelo se subirá a Hugging Face Hub mientras entrenamos.
+
+## Interpretar los resultados del entrenamiento
+
+`GRPOTrainer` registra la recompensa de tu función de recompensa, la pérdida y otras métricas.
+
+Nos centraremos en la recompensa y la pérdida.
+
+Como puedes ver, la recompensa se acerca a 0 a medida que el modelo aprende. Es una buena señal de que está aprendiendo a generar texto con la longitud correcta.
+
+![Reward from reward function](https://huggingface.co/reasoning-course/images/resolve/main/grpo/13.png)
+
+Puede que observes que la pérdida empieza en cero y luego aumenta durante el entrenamiento. Aunque parezca contraintuitivo, ese comportamiento es esperable en GRPO. La pérdida es proporcional a la divergencia KL respecto a la política original. A medida que el modelo aprende a optimizar mejor la función de recompensa, se aleja más de su política inicial y eso se refleja en la pérdida.
+
+![Loss](https://huggingface.co/reasoning-course/images/resolve/main/grpo/14.png)
+
+## Guardar y publicar el modelo
+
+Compartamos el modelo con la comunidad.
+
+```python
+merged_model = trainer.model.merge_and_unload()
+merged_model.push_to_hub(
+    "SmolGRPO-135M", private=False, tags=["GRPO", "Reasoning-Course"]
+)
+```
+
+## Generar texto
+
+Ya has ajustado un modelo con GRPO. Ahora generemos texto con él.
+
+Primero definiremos un documento largo.
+
+```python
+prompt = """
+# A long document about the Cat
+
+The cat (Felis catus), also referred to as the domestic cat or house cat, is a small 
+domesticated carnivorous mammal. It is the only domesticated species of the family Felidae.
+Advances in archaeology and genetics have shown that the domestication of the cat occurred
+in the Near East around 7500 BC. It is commonly kept as a pet and farm cat, but also ranges
+freely as a feral cat avoiding human contact. It is valued by humans for companionship and
+its ability to kill vermin. Its retractable claws are adapted to killing small prey species
+such as mice and rats. It has a strong, flexible body, quick reflexes, and sharp teeth,
+and its night vision and sense of smell are well developed. It is a social species,
+but a solitary hunter and a crepuscular predator. Cat communication includes
+vocalizations—including meowing, purring, trilling, hissing, growling, and grunting—as
+well as body language. It can hear sounds too faint or too high in frequency for human ears,
+such as those made by small mammals. It secretes and perceives pheromones.
+"""
+
+messages = [
+    {"role": "user", "content": prompt},
+]
+```
+
+Ahora podemos generar texto con el modelo.
+
+```python
+# Generate text
+from transformers import pipeline
+
+generator = pipeline("text-generation", model="SmolGRPO-135M")
+
+## Or use the model and tokenizer we defined earlier
+# generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+generate_kwargs = {
+    "max_new_tokens": 256,
+    "do_sample": True,
+    "temperature": 0.5,
+    "min_p": 0.1,
+}
+
+generated_text = generator(messages, generate_kwargs=generate_kwargs)
+
+print(generated_text)
+```
+
+# Conclusión
+
+En este capítulo hemos visto cómo ajustar un modelo con GRPO, interpretar los resultados del entrenamiento y generar texto con el modelo resultante.
