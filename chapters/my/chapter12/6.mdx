@@ -1,0 +1,453 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/HuggingFace%20Course-Gemma3_(1B)-GRPO.ipynb"},
+]} />
+
+# လက်တွေ့ လေ့ကျင့်ခန်း: Unsloth ဖြင့် GRPO
+
+ဒီလေ့ကျင့်ခန်းမှာ၊ သင်ဟာ model ရဲ့ reasoning စွမ်းရည်တွေကို မြှင့်တင်ဖို့ Unsloth ကို အသုံးပြုပြီး GRPO (Group Relative Policy Optimization) နဲ့ model တစ်ခုကို fine-tune လုပ်ပါလိမ့်မယ်။ GRPO အကြောင်းကို [Chapter 3](/course/chapter3/3) မှာ ကျွန်တော်တို့ ဖော်ပြခဲ့ပြီးပါပြီ။
+
+Unsloth က LLM fine-tuning ကို အရှိန်မြှင့်ပေးတဲ့ library တစ်ခုဖြစ်ပြီး models တွေကို ပိုမိုမြန်ဆန်စွာနဲ့ computational resources နည်းပါးစွာနဲ့ train လုပ်နိုင်စေပါတယ်။ Unsloth က TRL ထဲကို ပလပ်ထိုးထားတာဖြစ်လို့၊ ကျွန်တော်တို့ ယခင်အပိုင်းတွေမှာ သင်ယူခဲ့တာတွေကို ဆက်လက်တည်ဆောက်ပြီး Unsloth ရဲ့ သီးခြားအချက်အလက်တွေအတွက် ပြင်ဆင်ပါမယ်။
+
+> [!TIP]
+> ဒီလေ့ကျင့်ခန်းကို အခမဲ့ Google Colab T4 GPU မှာ run နိုင်ပါတယ်။ အကောင်းဆုံးအတွေ့အကြုံအတွက် အပေါ်က link ပေးထားတဲ့ notebook ကို လိုက်နာပြီး ကိုယ်တိုင် စမ်းကြည့်ပါ။
+
+## Dependencies တွေကို Install လုပ်ခြင်း
+
+ပထမဆုံး၊ လိုအပ်တဲ့ libraries တွေကို install လုပ်ကြရအောင်။ အရှိန်မြှင့် fine-tuning အတွက် Unsloth နဲ့ fast inference အတွက် vLLM လိုအပ်ပါလိမ့်မယ်။
+
+```bash
+pip install unsloth vllm
+pip install --upgrade pillow
+```
+
+## Unsloth ကို တည်ဆောက်ခြင်း
+
+Unsloth က transformers တွေကို Unsloth optimizations တွေနဲ့ ပေါင်းစပ်ထားတဲ့ class (`FastLanguageModel`) ကို ပံ့ပိုးပေးပါတယ်။ ဒါကို import လုပ်ကြရအောင်။
+
+```python
+from unsloth import FastLanguageModel
+```
+
+အခု၊ Google ရဲ့ Gemma 3 1B Instruct model ကို load လုပ်ပြီး fine-tuning အတွက် configure လုပ်ကြရအောင်။
+
+```python
+from unsloth import FastLanguageModel
+import torch
+
+max_seq_length = 1024  # ပိုရှည်တဲ့ reasoning traces တွေအတွက် တိုးနိုင်ပါတယ်
+lora_rank = 32  # rank ပိုကြီးလေ = ပိုစမတ်ကျလေ၊ ဒါပေမယ့် ပိုနှေးလေ
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="google/gemma-3-1b-it",
+    max_seq_length=max_seq_length,
+    load_in_4bit=True,  # LoRA 16bit အတွက် False
+    fast_inference=True,  # vLLM fast inference ကို ဖွင့်ပါ
+    max_lora_rank=lora_rank,
+    gpu_memory_utilization=0.6,  # memory မလုံလောက်ရင် လျှော့ပါ
+)
+
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=lora_rank,  # 0 ထက်ကြီးတဲ့ ဘယ်ဂဏန်းကိုမဆို ရွေးပါ! အကြံပြု 8, 16, 32, 64, 128
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],  # memory မလုံလောက်ရင် QKVO ကို ဖယ်ရှားပါ
+    lora_alpha=lora_rank,
+    use_gradient_checkpointing="unsloth",  # long context finetuning ကို ဖွင့်ပါ
+    random_state=3407,
+)
+```
+
+ဒီ code က model ကို memory ချွေတာဖို့ 4-bit quantization နဲ့ load လုပ်ပြီး ထိရောက်တဲ့ fine-tuning အတွက် LoRA (Low-Rank Adaptation) ကို အသုံးပြုပါတယ်။ `target_modules` parameter က model ရဲ့ ဘယ် layers တွေကို fine-tune လုပ်ရမယ်ဆိုတာကို သတ်မှတ်ပြီး၊ `use_gradient_checkpointing` က ပိုရှည်တဲ့ contexts တွေနဲ့ training ကို ဖွင့်ပေးပါတယ်။
+
+> [!TIP]
+> ဒီအခန်းမှာ LoRA အကြောင်း အသေးစိတ်ကို ကျွန်တော်တို့ ဖော်ပြမှာ မဟုတ်ပါဘူး၊ ဒါပေမယ့် [Chapter 11](/course/chapter11/3) မှာ ပိုမိုလေ့လာနိုင်ပါတယ်။
+
+## Data Preparation
+
+ဒီလေ့ကျင့်ခန်းအတွက်၊ ကျွန်တော်တို့ GSM8K dataset ကို အသုံးပြုပါမယ်။ ဒါက grade school math problems တွေပါဝင်ပါတယ်။ model ကို အဖြေမပေးခင် reasoning ကို ပြသဖို့ dataset ကို format လုပ်ပါမယ်။
+
+ပထမဆုံး၊ prompts နဲ့ answers တွေရဲ့ format ကို သတ်မှတ်ပါမယ်။
+
+```python
+# သတ်မှတ်ထားသော format ကို အသုံးပြုရန် model ကို ညွှန်ကြားသော system prompt ကို သတ်မှတ်ပါ
+SYSTEM_PROMPT = """
+အောက်ပါ format အတိုင်း တုံ့ပြန်ပါ။
+<reasoning>
+...
+</reasoning>
+<answer>
+...
+</answer>
+"""
+
+XML_COT_FORMAT = """\
+<reasoning>
+{reasoning}
+</reasoning>
+<answer>
+{answer}
+</answer>
+"""
+```
+
+အခု၊ dataset ကို ပြင်ဆင်ကြရအောင်။
+
+```python
+import re
+from datasets import load_dataset, Dataset
+
+
+# မတူညီသော formats များမှ answers များကို ထုတ်ယူရန် helper functions များ
+def extract_xml_answer(text: str) -> str:
+    answer = text.split("<answer>")[-1]
+    answer = answer.split("</answer>")[0]
+    return answer.strip()
+
+
+def extract_hash_answer(text: str) -> str | None:
+    if "####" not in text:
+        return None
+    return text.split("####")[1].strip()
+
+
+# GSM8K dataset ကို ပြင်ဆင်ရန် function
+def get_gsm8k_questions(split="train") -> Dataset:
+    data = load_dataset("openai/gsm8k", "main")[split]
+    data = data.map(
+        lambda x: {
+            "prompt": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": x["question"]},
+            ],
+            "answer": extract_hash_answer(x["answer"]),
+        }
+    )
+    return data
+
+
+dataset = get_gsm8k_questions()
+```
+
+dataset ကို dataset ကနေ answer ကို ထုတ်ယူပြီး string အဖြစ် format လုပ်ခြင်းဖြင့် ပြင်ဆင်ထားပါတယ်။
+
+## Reward Functions များကို သတ်မှတ်ခြင်း
+
+[ယခင်စာမျက်နှာ](/course/chapter13/4) မှာ ကျွန်တော်တို့ ဆွေးနွေးခဲ့တဲ့အတိုင်း၊ GRPO က model ရဲ့ သင်ယူမှုကို အလျားနဲ့ formatting လိုမျိုး စစ်ဆေးအတည်ပြုနိုင်တဲ့ criteria တွေအပေါ် အခြေခံပြီး လမ်းညွှန်ဖို့ reward functions တွေကို အသုံးပြုနိုင်ပါတယ်။
+
+ဒီလေ့ကျင့်ခန်းမှာ၊ ကောင်းမွန်တဲ့ reasoning ရဲ့ မတူညီတဲ့ ကဏ္ဍတွေကို အားပေးမယ့် reward functions အချို့ကို ကျွန်တော်တို့ သတ်မှတ်ပါမယ်။ ဥပမာ၊ model ကို integer answer ပေးတဲ့အတွက်နဲ့ strict format ကို လိုက်နာတဲ့အတွက် ကျွန်တော်တို့ ဆုချပါမယ်။
+
+```python
+# answer မှန်ကန်ခြင်းရှိမရှိ စစ်ဆေးသော Reward function
+def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+    responses = [completion[0]["content"] for completion in completions]
+    q = prompts[0][-1]["content"]
+    extracted_responses = [extract_xml_answer(r) for r in responses]
+    print(
+        "-" * 20,
+        f"Question:\n{q}",
+        f"\nAnswer:\n{answer[0]}",
+        f"\nResponse:\n{responses[0]}",
+        f"\nExtracted:\n{extracted_responses[0]}",
+    )
+    return [2.0 if r == a else 0.0 for r, a in zip(extracted_responses, answer)]
+
+
+# answer ဟာ integer ဖြစ်မဖြစ် စစ်ဆေးသော Reward function
+def int_reward_func(completions, **kwargs) -> list[float]:
+    responses = [completion[0]["content"] for completion in completions]
+    extracted_responses = [extract_xml_answer(r) for r in responses]
+    return [0.5 if r.isdigit() else 0.0 for r in extracted_responses]
+
+
+# completion က strict format ကို လိုက်နာခြင်းရှိမရှိ စစ်ဆေးသော Reward function
+def strict_format_reward_func(completions, **kwargs) -> list[float]:
+    pattern = r"^<reasoning>\n.*?\n</reasoning>\n<answer>\n.*?\n</answer>\n$"
+    responses = [completion[0]["content"] for completion in completions]
+    matches = [re.match(pattern, r) for r in responses]
+    return [0.5 if match else 0.0 for match in matches]
+
+
+# completion က ပိုမိုဖြေလျော့ထားသော format ကို လိုက်နာခြင်းရှိမရှိ စစ်ဆေးသော Reward function
+def soft_format_reward_func(completions, **kwargs) -> list[float]:
+    pattern = r"<reasoning>.*?</reasoning>\s*<answer>.*?</answer>"
+    responses = [completion[0]["content"] for completion in completions]
+    matches = [re.match(pattern, r) for r in responses]
+    return [0.5 if match else 0.0 for match in matches]
+
+
+# XML tags များကို ရေတွက်ပြီး extra content များကို ပြစ်ဒဏ်ပေးသော Reward function
+def count_xml(text) -> float:
+    count = 0.0
+    if text.count("<reasoning>\n") == 1:
+        count += 0.125
+    if text.count("\n</reasoning>\n") == 1:
+        count += 0.125
+    if text.count("\n<answer>\n") == 1:
+        count += 0.125
+        count -= len(text.split("\n</answer>\n")[-1]) * 0.001
+    if text.count("\n</answer>") == 1:
+        count += 0.125
+        count -= (len(text.split("\n</answer>")[-1]) - 1) * 0.001
+    return count
+
+
+def xmlcount_reward_func(completions, **kwargs) -> list[float]:
+    contents = [completion[0]["content"] for completion in completions]
+    return [count_xml(c) for c in contents]
+```
+
+ဒီ reward functions တွေက မတူညီတဲ့ ရည်ရွယ်ချက်တွေကို ဆောင်ရွက်ပါတယ်။
+
+| Reward Function | ရည်ရွယ်ချက် |
+|-----------------|---------|
+| `correctness_reward_func` | ၎င်း၏အဖြေသည် မှန်ကန်သောအဖြေနှင့် ကိုက်ညီသောအခါ model ကို ဆုချသည် |
+| `int_reward_func` | ဂဏန်းအဖြေတစ်ခုပေးသောအခါ model ကို ဆုချသည် |
+| `strict_format_reward_func` နှင့် `soft_format_reward_func` | သတ်မှတ်ထားသော format ကို လိုက်နာသောအခါ model ကို ဆုချသည် |
+| `xmlcount_reward_func` | မှန်ကန်သော XML tag အသုံးပြုမှုကို ဆုချပြီး closing tags များနောက်ရှိ extra content များကို ပြစ်ဒဏ်ပေးသည် |
+
+## GRPO ဖြင့် Training လုပ်ခြင်း
+
+အခု ကျွန်တော်တို့ GRPO trainer ကို ကျွန်တော်တို့ model, tokenizer, နဲ့ reward functions တွေနဲ့ တည်ဆောက်ပါမယ်။ ဒီအပိုင်းက [ယခင်လေ့ကျင့်ခန်း](/course/chapter12/5) နဲ့ တူညီတဲ့ နည်းလမ်းကို လိုက်နာပါတယ်။
+
+```python
+from trl import GRPOConfig, GRPOTrainer
+
+max_prompt_length = 256
+
+training_args = GRPOConfig(
+    learning_rate=5e-6,
+    adam_beta1=0.9,
+    adam_beta2=0.99,
+    weight_decay=0.1,
+    warmup_ratio=0.1,
+    lr_scheduler_type="cosine",
+    optim="paged_adamw_8bit",
+    logging_steps=1,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=1,  # ပိုမိုချောမွေ့သော training အတွက် 4 အထိ တိုးပါ
+    num_generations=6,  # memory မလုံလောက်ရင် လျှော့ပါ
+    max_prompt_length=max_prompt_length,
+    max_completion_length=max_seq_length - max_prompt_length,
+    # num_train_epochs = 1, # full training run အတွက် 1 သတ်မှတ်ပါ
+    max_steps=250,
+    save_steps=250,
+    max_grad_norm=0.1,
+    report_to="none",  # Weights & Biases ကို အသုံးပြုနိုင်သည်
+    output_dir="outputs",
+)
+
+trainer = GRPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    reward_funcs=[
+        xmlcount_reward_func,
+        soft_format_reward_func,
+        strict_format_reward_func,
+        int_reward_func,
+        correctness_reward_func,
+    ],
+    args=training_args,
+    train_dataset=dataset,
+)
+```
+
+`GRPOConfig` က training အတွက် hyperparameters အမျိုးမျိုးကို သတ်မှတ်ပါတယ်။
+- `use_vllm`: vLLM ဖြင့် မြန်ဆန်သော inference ကို ဖွင့်ပေးသည်။
+- `learning_rate`: model က မည်မျှမြန်ဆန်စွာ သင်ယူသည်ကို ထိန်းချုပ်သည်။
+- `num_generations`: prompt တစ်ခုစီအတွက် generate လုပ်ရမည့် completions အရေအတွက်။
+- `max_steps`: လုပ်ဆောင်ရမည့် training steps စုစုပေါင်းအရေအတွက်။
+
+အခု training ကို စတင်ကြရအောင်။
+
+```python
+trainer.train()
+```
+
+> [!WARNING]
+> Training လုပ်တာ အချိန်အနည်းငယ် ကြာနိုင်ပါတယ်။ rewards တွေ ချက်ချင်းတိုးလာတာကို သင်မတွေ့ရနိုင်ပါဘူး - တိုးတက်မှုတွေ စတင်မမြင်ရခင် 150-200 steps လောက် ကြာနိုင်ပါတယ်။ စိတ်ရှည်ပါ!
+
+## Model ကို စစ်ဆေးခြင်း
+
+Training ပြီးနောက်၊ model က ဘယ်လိုစွမ်းဆောင်တယ်ဆိုတာ ကြည့်ဖို့ ကျွန်တော်တို့ရဲ့ model ကို စမ်းသပ်ကြရအောင်။ ပထမဆုံး၊ LoRA weights တွေကို save လုပ်ပါမယ်။
+
+```python
+model.save_lora("grpo_saved_lora")
+```
+
+အခု၊ model ကို မေးခွန်းအသစ်တစ်ခုနဲ့ စမ်းသပ်ကြည့်ကြရအောင်။
+
+```python
+from vllm import SamplingParams
+
+text = tokenizer.apply_chat_template(
+    [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": "Calculate pi."},
+    ],
+    tokenize=False,
+    add_generation_prompt=True,
+)
+
+sampling_params = SamplingParams(
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=1024,
+)
+output = (
+    model.fast_generate(
+        text,
+        sampling_params=sampling_params,
+        lora_request=model.load_lora("grpo_saved_lora"),
+    )[0]
+    .outputs[0]
+    .text
+)
+
+print(output)
+```
+
+model က အဖြေမပေးခင် reasoning ကို ပြသရင်း သတ်မှတ်ထားတဲ့ format ကို လိုက်နာတာကို သင်တွေ့ရပါလိမ့်မယ်။
+
+## Model ကို Save လုပ်ခြင်း
+
+Unsloth က သင် fine-tune လုပ်ထားတဲ့ model ကို save လုပ်ဖို့ options အများအပြားကို ပံ့ပိုးပေးပါတယ်၊ ဒါပေမယ့် ကျွန်တော်တို့ အသုံးအများဆုံး နည်းလမ်းကိုပဲ အဓိကထားပါမယ်။
+
+```python
+# 16-bit precision နဲ့ Save လုပ်ပါ
+model.save_pretrained_merged("model", tokenizer, save_method="merged_16bit")
+```
+
+## Hugging Face Hub ကို Pushing လုပ်ခြင်း
+
+`push_to_hub_merged` method ကို အသုံးပြုပြီး model ကို Hugging Face Hub ကို push လုပ်ပါမယ်။ ဒီ method က model ကို quantization formats များစွာနဲ့ push လုပ်နိုင်စေပါတယ်။
+```python
+# Hugging Face Hub ကို Push လုပ်ပါ (token လိုအပ်သည်)
+model.push_to_hub_merged(
+    "your-username/model-name", tokenizer, save_method="merged_16bit", token="your-token"
+)
+```
+
+Unsloth က llama.cpp နဲ့ အသုံးပြုဖို့ GGUF format ကိုလည်း ထောက်ပံ့ပေးပါတယ်။
+
+```python
+model.push_to_hub_gguf(
+    "your-username/model-name",
+    tokenizer,
+    quantization_method=["q4_k_m", "q8_0", "q5_k_m"],
+    token="your-token",
+)
+```
+
+GGUF files တွေကို llama.cpp ဒါမှမဟုတ် Jan ဒါမှမဟုတ် Open WebUI လို UI-based systems တွေနဲ့ အသုံးပြုနိုင်ပါတယ်။
+
+## နိဂုံးချုပ်
+
+ဒီလေ့ကျင့်ခန်းမှာ၊ သင်ဟာ အောက်ပါတို့ကို သင်ယူခဲ့ပါပြီ။
+၁။ အရှိန်မြှင့် fine-tuning အတွက် Unsloth ကို တည်ဆောက်နည်း
+၂။ GRPO training အတွက် data ကို ပြင်ဆင်နည်း
+၃။ model ရဲ့ သင်ယူမှုကို လမ်းညွှန်ဖို့ custom reward functions တွေကို သတ်မှတ်နည်း
+၄။ GRPO ကို အသုံးပြုပြီး model တစ်ခုကို train လုပ်နည်း
+၅။ fine-tune လုပ်ထားတဲ့ model ကို စမ်းသပ်နည်း
+၆။ model ကို formats အမျိုးမျိုးနဲ့ save လုပ်နည်း
+
+GRPO ဟာ language models တွေကို သီးခြား behavior တွေနဲ့ ချိန်ညှိဖို့အတွက် အစွမ်းထက်တဲ့ နည်းလမ်းတစ်ခုဖြစ်ပြီး၊ Unsloth က hardware ကန့်သတ်ချက်ရှိရင်တောင် အဲဒါကို အသုံးပြုနိုင်စေပါတယ်။ reward functions များစွာကို ပေါင်းစပ်ခြင်းဖြင့်၊ သင်ဟာ model ကို သီးခြား format တစ်ခုကို လိုက်နာစေရင်း ၎င်းရဲ့ reasoning စွမ်းရည်တွေကိုလည်း မြှင့်တင်နိုင်ပါတယ်။
+
+နောက်ထပ် အချက်အလက်တွေနဲ့ resources တွေအတွက်၊ အောက်ပါတို့ကို ကြည့်ရှုပါ။
+- [Unsloth Documentation](https://docs.unsloth.ai/)
+- [Unsloth Discord](https://discord.gg/unsloth)
+- [Unsloth GitHub](https://github.com/unslothai/unsloth)
+
+---
+
+## ဝေါဟာရ ရှင်းလင်းချက် (Glossary)
+
+*   **GRPO (Group Relative Policy Optimization)**: Reinforcement Learning in LLMs (Language Models) တွင် အသုံးပြုသော Optimization Algorithm တစ်မျိုးဖြစ်ပြီး၊ model ၏ reasoning စွမ်းရည်များကို မြှင့်တင်ရန်နှင့် ၎င်း၏ responses များကို လိုချင်သော format များနှင့် ချိန်ညှိရန် ဒီဇိုင်းထုတ်ထားသည်။
+*   **Unsloth**: Large Language Models (LLMs) များကို fine-tune လုပ်ခြင်းကို အရှိန်မြှင့်ပေးသည့် Python library တစ်ခု။
+*   **Fine-tune**: ကြိုတင်လေ့ကျင့်ထားပြီးသား (pre-trained) မော်ဒယ်တစ်ခုကို သီးခြားလုပ်ငန်းတစ်ခု (specific task) အတွက် အနည်းငယ်သော ဒေတာနဲ့ ထပ်မံလေ့ကျင့်ပေးခြင်းကို ဆိုလိုပါတယ်။
+*   **Reasoning Capabilities**: model တစ်ခု၏ ဆင်ခြင်တွေးခေါ်နိုင်စွမ်း၊ ဥပမာ- ပြဿနာများကို ဖြေရှင်းခြင်း၊ ဆုံးဖြတ်ချက်များ ချမှတ်ခြင်း။
+*   **LLM (Large Language Model)**: လူသားဘာသာစကားကို နားလည်ပြီး ထုတ်လုပ်ပေးနိုင်တဲ့ အလွန်ကြီးမားတဲ့ Artificial Intelligence (AI) မော်ဒယ်တွေ ဖြစ်ပါတယ်။
+*   **Computational Resources**: ကွန်ပျူတာ၏ တွက်ချက်နိုင်စွမ်း၊ ဥပမာ- CPU, GPU, RAM။
+*   **TRL (Transformer Reinforcement Learning)**: Hugging Face မှ Reinforcement Learning (RL) ကို Transformer models များနှင့် အသုံးပြုရန်အတွက် library တစ်ခု။
+*   **Google Colab T4 GPU**: Google Colab မှ ပံ့ပိုးပေးသော NVIDIA T4 Graphics Processing Unit (GPU)။
+*   **Dependencies**: ဆော့ဖ်ဝဲလ်တစ်ခု သို့မဟုတ် library တစ်ခု အလုပ်လုပ်ရန် လိုအပ်သော အခြား library များနှင့် modules များ။
+*   **`pip`**: Python အတွက် package installer (package manager)။ Python packages များကို install လုပ်ရန်နှင့် စီမံခန့်ခွဲရန် အသုံးပြုသည်။
+*   **`vLLM`**: Large Language Models (LLMs) များအတွက် မြန်ဆန်သော inference ကို ပံ့ပိုးပေးသည့် library တစ်ခု။
+*   **`FastLanguageModel` Class**: Unsloth library မှ class တစ်ခုဖြစ်ပြီး Hugging Face Transformers models များကို Unsloth ၏ optimization များနှင့် ပေါင်းစပ်ပေးသည်။
+*   **`from_pretrained()` Method**: Pretrained model နှင့် tokenizer ကို load လုပ်ရန် method။
+*   **`model_name`**: Hugging Face Hub မှ model ၏ နာမည်။
+*   **Gemma 3 1B Instruct**: Google မှ ထုတ်လုပ်ထားသော 1 billion parameters ရှိသော instruction-tuned Large Language Model။
+*   **`max_seq_length`**: model က input အဖြစ် လက်ခံနိုင်သော sequence ၏ အများဆုံးအလျား။
+*   **LoRA (Low-Rank Adaptation)**: Large Language Models (LLMs) များကို Fine-tune လုပ်ရာတွင် memory နှင့် computational cost ကို လျှော့ချပေးသည့် နည်းလမ်း။
+*   **`lora_rank`**: LoRA matrix ၏ rank ကို သတ်မှတ်သည်။ rank ပိုကြီးလေ model က ပိုမိုသင်ယူနိုင်လေ ဖြစ်သော်လည်း computational cost ပိုများသည်။
+*   **`load_in_4bit`**: model ကို 4-bit quantization ဖြင့် load လုပ်မလား မလုပ်ဘူးလား သတ်မှတ်သည်။ memory ချွေတာရန် အသုံးပြုသည်။
+*   **`fast_inference`**: vLLM ဖြင့် မြန်ဆန်သော inference ကို ဖွင့်မလား ပိတ်မလား သတ်မှတ်သည်။
+*   **`max_lora_rank`**: အများဆုံး LoRA rank။
+*   **`gpu_memory_utilization`**: GPU memory ကို မည်မျှအသုံးပြုမည်ကို ရာခိုင်နှုန်းဖြင့် သတ်မှတ်သည်။
+*   **`get_peft_model()` Method**: LoRA ကို model တွင် အသုံးပြုရန် Unsloth မှ ပံ့ပိုးပေးသော method။
+*   **`r` (LoRA rank)**: LoRA rank ကို သတ်မှတ်သည်။
+*   **`target_modules`**: LoRA ကို အသုံးပြုမည့် model ၏ layers များ။
+*   **`lora_alpha`**: LoRA အတွက် scaling factor။
+*   **`use_gradient_checkpointing`**: Training လုပ်နေစဉ် memory အသုံးပြုမှုကို လျှော့ချရန် gradient checkpointing ကို ဖွင့်ပေးသည်။
+*   **`random_state`**: reproducible results များရရှိရန် random seed ကို သတ်မှတ်သည်။
+*   **4-bit Quantization**: model ၏ weights များကို 4-bit integer များအဖြစ် ပြောင်းလဲခြင်းဖြင့် memory အသုံးပြုမှုနှင့် computational cost ကို လျှော့ချသည့် နည်းလမ်း။
+*   **GSM8K Dataset**: Grade school math problems များပါဝင်သော dataset။
+*   **System Prompt**: Large Language Model (LLM) ကို မည်သည့်ပုံစံဖြင့် တုံ့ပြန်ရမည်ကို ညွှန်ကြားသော စာသား။
+*   **XML_COT_FORMAT**: XML tags များဖြင့် Chain-of-Thought (CoT) reasoning ကို ဖော်ပြရန် သတ်မှတ်ထားသော format။
+*   **`load_dataset()` Function**: Hugging Face Datasets library မှ dataset များကို load လုပ်ရန် function။
+*   **`openai/gsm8k`**: Hugging Face Hub တွင်ရှိသော GSM8K dataset ၏ identifier။
+*   **`map()` Method (Datasets)**: dataset ၏ element တစ်ခုစီ သို့မဟုတ် batch တစ်ခုစီပေါ်မှာ function တစ်ခုကို အသုံးပြုနိုင်စေသည်။
+*   **`extract_xml_answer()` Function**: XML format မှ answer ကို ထုတ်ယူရန် helper function။
+*   **`extract_hash_answer()` Function**: "####" သင်္ကေတဖြင့် ပိုင်းခြားထားသော answer ကို ထုတ်ယူရန် helper function။
+*   **Reward Functions**: Reinforcement Learning (RL) တွင် model ၏ behavior ကို လမ်းညွှန်ရန် အသုံးပြုသော functions များ။ ၎င်းတို့သည် model ၏ output ကို အကဲဖြတ်ပြီး ဆုလာဘ် (reward) ကို ပြန်ပေးသည်။
+*   **`isdigit()` Method**: string တစ်ခုသည် ဂဏန်းများသာ ပါဝင်ခြင်းရှိမရှိ စစ်ဆေးသော string method။
+*   **`re.match()`**: regular expression pattern တစ်ခုသည် string ၏ အစတွင် ကိုက်ညီခြင်းရှိမရှိ စစ်ဆေးသော function။
+*   **`GRPOConfig`**: TRL library မှ GRPO trainer ၏ configuration (hyperparameters) ကို သတ်မှတ်သော class။
+*   **`GRPOTrainer`**: TRL library မှ GRPO algorithm ကို အသုံးပြု၍ model ကို train လုပ်ရန် trainer class။
+*   **`learning_rate`**: Model က မည်မျှမြန်ဆန်စွာ သင်ယူသည်ကို ထိန်းချုပ်သော hyperparameter။
+*   **`adam_beta1`, `adam_beta2`**: Adam optimizer ၏ hyperparameters များ။
+*   **`weight_decay`**: overfitting ကို လျှော့ချရန် regularization term။
+*   **`warmup_ratio`**: training အစပိုင်းတွင် learning rate ကို ဖြည်းဖြည်းချင်း တိုးမြှင့်ရန် အချိုးအစား။
+*   **`lr_scheduler_type`**: learning rate scheduler ၏ အမျိုးအစား (ဥပမာ- "cosine")။
+*   **`optim`**: Optimizer အမျိုးအစား (ဥပမာ- "paged_adamw_8bit")။
+*   **`logging_steps`**: logs များကို မည်သည့် steps အရေအတွက်တိုင်းတွင် မှတ်တမ်းတင်ရမည်ကို သတ်မှတ်သည်။
+*   **`per_device_train_batch_size`**: device တစ်ခုစီရှိ training batch ၏ အရွယ်အစား။
+*   **`gradient_accumulation_steps`**: gradient များကို update မလုပ်မီ မည်သည့် steps အရေအတွက်တိုင်းတွင် စုဆောင်းရမည်ကို သတ်မှတ်သည်။
+*   **`num_generations`**: prompt တစ်ခုစီအတွက် model မှ generate လုပ်ရမည့် completions အရေအတွက်။
+*   **`max_prompt_length`**: prompt ၏ အများဆုံး token အလျား။
+*   **`max_completion_length`**: completion ၏ အများဆုံး token အလျား။
+*   **`max_steps`**: စုစုပေါင်း training steps အရေအတွက်။
+*   **`save_steps`**: model checkpoint များကို မည်သည့် steps အရေအတွက်တိုင်းတွင် save လုပ်ရမည်ကို သတ်မှတ်သည်။
+*   **`max_grad_norm`**: gradients များ၏ norm ကို ကန့်သတ်ရန်။
+*   **`report_to`**: training metrics များကို မည်သည့် reporting tool (ဥပမာ- Weights & Biases) သို့ ပေးပို့ရမည်ကို သတ်မှတ်သည်။
+*   **`output_dir`**: training outputs များကို သိမ်းဆည်းမည့် directory။
+*   **`processing_class`**: tokenizer class ကို ရည်ညွှန်းသည်။
+*   **`train()` Method**: Trainer class မှ training လုပ်ငန်းစဉ်ကို စတင်ရန် method။
+*   **`save_lora()` Method**: LoRA weights များကို save လုပ်ရန် Unsloth မှ ပံ့ပိုးပေးသော method။
+*   **`vllm.SamplingParams`**: vLLM library မှ text generation အတွက် sampling parameters များကို သတ်မှတ်သော class။
+*   **`temperature`**: generated text ၏ randomness ကို ထိန်းချုပ်သည်။
+*   **`top_p`**: generated text ၏ diversity ကို ထိန်းချုပ်သည်။
+*   **`max_tokens`**: generate လုပ်ရမည့် အများဆုံး tokens အရေအတွက်။
+*   **`apply_chat_template()`**: chat history ကို model ၏ input format အဖြစ် ပြောင်းလဲပေးသော tokenizer method။
+*   **`tokenize=False`**: output ကို token ID များအစား string အဖြစ် ပြန်ပေးရန် သတ်မှတ်သည်။
+*   **`add_generation_prompt=True`**: generation အတွက် prompt ကို ထည့်သွင်းပေးသည်။
+*   **`fast_generate()` Method**: Unsloth မှ vLLM ကို အသုံးပြု၍ မြန်ဆန်သော text generation ကို လုပ်ဆောင်ရန် method။
+*   **`lora_request`**: vLLM တွင် LoRA adapter ကို အသုံးပြုရန် တောင်းဆိုမှု။
+*   **`save_pretrained_merged()` Method**: model ကို LoRA weights များနှင့် ပေါင်းစပ်ပြီး (merged) save လုပ်ရန် Unsloth မှ ပံ့ပိုးပေးသော method။
+*   **`save_method="merged_16bit"`**: model ကို 16-bit precision ဖြင့် merged format ဖြင့် save လုပ်ရန် သတ်မှတ်သည်။
+*   **`push_to_hub_merged()` Method**: model ကို LoRA weights များနှင့် ပေါင်းစပ်ပြီး Hugging Face Hub သို့ push လုပ်ရန် Unsloth မှ ပံ့ပိုးပေးသော method။
+*   **`token`**: Hugging Face Hub authentication token။
+*   **GGUF Format**: llama.cpp ကဲ့သို့သော tools များနှင့် အသုံးပြုရန် Large Language Models (LLMs) ၏ weights များကို သိမ်းဆည်းရန်အတွက် format တစ်ခု။
+*   **`push_to_hub_gguf()` Method**: model ကို GGUF format ဖြင့် Hugging Face Hub သို့ push လုပ်ရန် Unsloth မှ ပံ့ပိုးပေးသော method။
+*   **`quantization_method`**: GGUF format ဖြင့် save လုပ်သောအခါ အသုံးပြုမည့် quantization နည်းလမ်းများ။
+*   **`llama.cpp`**: C/C++ ဖြင့် ရေးသားထားသော LLM inference library။
+*   **UI-based Systems (User Interface-based Systems)**: Graphical User Interface (GUI) ပါဝင်သော systems များ (ဥပမာ- Jan, Open WebUI)။
+*   **Aligning Language Models**: Language model ၏ behavior ကို လိုချင်သော စည်းကမ်းများ၊ format များ သို့မဟုတ် ethical guidelines များနှင့် ကိုက်ညီအောင် လုပ်ဆောင်ခြင်း။

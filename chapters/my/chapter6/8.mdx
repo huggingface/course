@@ -1,0 +1,683 @@
+# Tokenizer တစ်ခုကို အဆင့်ဆင့် တည်ဆောက်ခြင်း[[building-a-tokenizer-block-by-block]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section8.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section8.ipynb"},
+]} />
+
+ယခင်အပိုင်းတွေမှာ ကျွန်တော်တို့ တွေ့ခဲ့ရတဲ့အတိုင်း၊ tokenization မှာ အဆင့်များစွာ ပါဝင်ပါတယ်။
+
+-   Normalization (မလိုအပ်တဲ့ spaces တွေ ဒါမှမဟုတ် accents တွေ ဖယ်ရှားတာ၊ Unicode normalization စတာတွေလိုမျိုး လိုအပ်တယ်လို့ ယူဆရတဲ့ text ကို သန့်ရှင်းရေးလုပ်ခြင်း)
+-   Pre-tokenization (input ကို words တွေအဖြစ် ပိုင်းခြားခြင်း)
+-   inputs ကို model ကနေတစ်ဆင့် run ခြင်း (pre-tokenize လုပ်ထားတဲ့ words တွေကို အသုံးပြုပြီး tokens sequence တစ်ခု ထုတ်လုပ်ခြင်း)
+-   Post-processing (tokenizer ရဲ့ special tokens တွေ ထည့်သွင်းခြင်း၊ attention mask နဲ့ token type IDs တွေ ထုတ်လုပ်ခြင်း)
+
+သတိရစေရန်၊ ဒီမှာ overall process ကို ထပ်ကြည့်ရအောင်။
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="The tokenization pipeline.">
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="The tokenization pipeline.">
+</div>
+
+🤗 Tokenizers library ကို အဲဒီအဆင့်တစ်ခုစီအတွက် ရွေးချယ်စရာများစွာ ပံ့ပိုးပေးဖို့ တည်ဆောက်ထားပြီး၊ သင်ဟာ ဒါတွေကို ရောနှောပြီး ပေါင်းစပ်နိုင်ပါတယ်။ ဒီအပိုင်းမှာ ကျွန်တော်တို့ [အပိုင်း ၂](/course/chapter6/2) မှာ လုပ်ခဲ့သလိုဟောင်းနွမ်းတဲ့ tokenizer တစ်ခုကနေ tokenizer အသစ်တစ်ခုကို train လုပ်မယ့်အစား၊ tokenizer တစ်ခုကို အစကနေ ဘယ်လိုတည်ဆောက်နိုင်လဲဆိုတာ ကြည့်ရပါမယ်။ အဲဒီအခါ သင်စိတ်ကူးနိုင်တဲ့ မည်သည့် tokenizer အမျိုးအစားကိုမဆို တည်ဆောက်နိုင်ပါလိမ့်မယ်။
+
+<Youtube id="MR8tZm5ViWU"/>
+
+ပိုပြီးတိတိကျကျပြောရရင်၊ library ကို ဗဟိုချက်မဖြစ်တဲ့ `Tokenizer` class ကိုယ်တိုင်နဲ့ building blocks တွေကို submodule တွေအဖြစ် အုပ်စုဖွဲ့ထားပါတယ်။
+
+-   `normalizers` မှာ သင်အသုံးပြုနိုင်တဲ့ `Normalizer` အမျိုးအစားအားလုံး (အပြည့်အစုံကို [ဒီနေရာမှာ](https://huggingface.co/docs/tokenizers/api/normalizers) ကြည့်ပါ) ပါဝင်ပါတယ်။
+-   `pre_tokenizers` မှာ သင်အသုံးပြုနိုင်တဲ့ `PreTokenizer` အမျိုးအစားအားလုံး (အပြည့်အစုံကို [ဒီနေရာမှာ](https://huggingface.co/docs/tokenizers/api/pre-tokenizers) ကြည့်ပါ) ပါဝင်ပါတယ်။
+-   `models` မှာ `BPE`, `WordPiece`, နဲ့ `Unigram` လိုမျိုး သင်အသုံးပြုနိုင်တဲ့ `Model` အမျိုးအစားမျိုးစုံ (အပြည့်အစုံကို [ဒီနေရာမှာ](https://huggingface.co/docs/tokenizers/api/models) ကြည့်ပါ) ပါဝင်ပါတယ်။
+-   `trainers` မှာ သင် corpus တစ်ခုပေါ်မှာ model ကို train လုပ်ဖို့ အသုံးပြုနိုင်တဲ့ `Trainer` အမျိုးအစားအမျိုးမျိုး (model အမျိုးအစားတစ်ခုစီအတွက် တစ်ခုစီ၊ အပြည့်အစုံကို [ဒီနေရာမှာ](https://huggingface.co/docs/tokenizers/api/trainers) ကြည့်ပါ) ပါဝင်ပါတယ်။
+-   `post_processors` မှာ သင်အသုံးပြုနိုင်တဲ့ `PostProcessor` အမျိုးအစားမျိုးစုံ (အပြည့်အစုံကို [ဒီနေရာမှာ](https://huggingface.co/docs/tokenizers/api/post-processors) ကြည့်ပါ) ပါဝင်ပါတယ်။
+-   `decoders` မှာ tokenization ရဲ့ outputs တွေကို decode လုပ်ဖို့ သင်အသုံးပြုနိုင်တဲ့ `Decoder` အမျိုးအစားမျိုးစုံ (အပြည့်အစုံကို [ဒီနေရာမှာ](https://huggingface.co/docs/tokenizers/components#decoders) ကြည့်ပါ) ပါဝင်ပါတယ်။
+
+building blocks တွေရဲ့ စာရင်းအပြည့်အစုံကို [ဒီနေရာမှာ](https://huggingface.co/docs/tokenizers/components) ရှာတွေ့နိုင်ပါတယ်။
+
+## Corpus တစ်ခု ရယူခြင်း[[acquiring-a-corpus]]
+
+ကျွန်တော်တို့ရဲ့ tokenizer အသစ်ကို train လုပ်ဖို့အတွက်၊ သေးငယ်တဲ့ text corpus တစ်ခုကို အသုံးပြုပါမယ် (ဒါမှ ဥပမာတွေက မြန်မြန်ဆန်ဆန် run မှာပါ)။ corpus ရယူခြင်းအဆင့်တွေက [ဒီအခန်းရဲ့ အစပိုင်း](/course/chapter6/2) မှာ ကျွန်တော်တို့ လုပ်ခဲ့တဲ့အဆင့်တွေနဲ့ ဆင်တူပါတယ်။ ဒါပေမယ့် ဒီတစ်ကြိမ်မှာတော့ [WikiText-2](https://huggingface.co/datasets/wikitext) dataset ကို အသုံးပြုပါမယ်။
+
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("wikitext", name="wikitext-2-raw-v1", split="train")
+
+
+def get_training_corpus():
+    for i in range(0, len(dataset), 1000):
+        yield dataset[i : i + 1000]["text"]
+```
+
+`get_training_corpus()` function က batches of 1,000 texts တွေကို yield လုပ်မယ့် generator တစ်ခုဖြစ်ပြီး၊ ဒါတွေကို tokenizer ကို train ဖို့ ကျွန်တော်တို့ အသုံးပြုပါမယ်။
+
+🤗 Tokenizers တွေကို text files တွေပေါ်မှာ တိုက်ရိုက် train လုပ်နိုင်ပါတယ်။ WikiText-2 ကနေ inputs/texts တွေအားလုံး ပါဝင်တဲ့ text file တစ်ခုကို locally အသုံးပြုနိုင်အောင် ဘယ်လို generate လုပ်ရမလဲဆိုတာ ဒီမှာ ဖော်ပြထားပါတယ်။
+
+```python
+with open("wikitext-2.txt", "w", encoding="utf-8") as f:
+    for i in range(len(dataset)):
+        f.write(dataset[i]["text"] + "\n")
+```
+
+နောက်မှာတော့ သင့်ကိုယ်ပိုင် BERT, GPT-2, နဲ့ XLNet tokenizers တွေကို အဆင့်ဆင့် ဘယ်လိုတည်ဆောက်ရမလဲဆိုတာ ပြသပေးပါမယ်။ ဒါက ကျွန်တော်တို့ကို အဓိက tokenization algorithms သုံးခုဖြစ်တဲ့ WordPiece, BPE, နဲ့ Unigram တို့ရဲ့ ဥပမာတစ်ခုစီကို ပေးပါလိမ့်မယ်။ BERT နဲ့ စတင်ကြရအောင်။
+
+## အစကနေ WordPiece Tokenizer တစ်ခု တည်ဆောက်ခြင်း[[building-a-wordpiece-tokenizer-from-scratch]]
+
+🤗 Tokenizers library နဲ့ tokenizer တစ်ခုတည်ဆောက်ဖို့အတွက်၊ ကျွန်တော်တို့ဟာ `models` တစ်ခုနဲ့ `Tokenizer` object တစ်ခုကို instantiate လုပ်ခြင်းဖြင့် စတင်ပြီး၊ ၎င်းရဲ့ `normalizer`, `pre_tokenizer`, `post_processor`, နဲ့ `decoder` attributes တွေကို ကျွန်တော်တို့ လိုချင်တဲ့ တန်ဖိုးတွေဆီ သတ်မှတ်ပေးပါတယ်။
+
+ဒီဥပမာအတွက်၊ WordPiece model တစ်ခုနဲ့ `Tokenizer` တစ်ခုကို ကျွန်တော်တို့ ဖန်တီးပါမယ်။
+
+```python
+from tokenizers import (
+    decoders,
+    models,
+    normalizers,
+    pre_tokenizers,
+    processors,
+    trainers,
+    Tokenizer,
+)
+
+tokenizer = Tokenizer(models.WordPiece(unk_token="[UNK]"))
+```
+
+`unk_token` ကို သတ်မှတ်ပေးရမှာပါ။ ဒါမှ model က မမြင်ဖူးသေးတဲ့ characters တွေ ကြုံတွေ့ရတဲ့အခါ ဘာကို ပြန်ပေးရမလဲဆိုတာ သိမှာပါ။ ဒီနေရာမှာ ကျွန်တော်တို့ သတ်မှတ်နိုင်တဲ့ တခြား arguments တွေကတော့ model ရဲ့ `vocab` (ကျွန်တော်တို့ model ကို train မှာဖြစ်တဲ့အတွက် ဒါကို သတ်မှတ်ဖို့ မလိုအပ်ပါဘူး) နဲ့ `max_input_chars_per_word` (word တစ်ခုစီအတွက် အမြင့်ဆုံးအရှည်ကို သတ်မှတ်ပေးပြီး၊ ဒီတန်ဖိုးထက် ပိုရှည်တဲ့ words တွေကို ပိုင်းခြားပါလိမ့်မယ်) တို့ ပါဝင်ပါတယ်။
+
+tokenization ရဲ့ ပထမအဆင့်က normalization ဖြစ်တာကြောင့်၊ အဲဒါနဲ့ စတင်ကြပါစို့။ BERT ကို အများအားဖြင့် အသုံးပြုတဲ့အတွက် BERT အတွက် သတ်မှတ်နိုင်တဲ့ classic options တွေနဲ့ `BertNormalizer` တစ်ခုရှိပါတယ်၊ `lowercase` နဲ့ `strip_accents` က ရှင်းပြစရာမလိုပါဘူး၊ `clean_text` က control characters အားလုံးကို ဖယ်ရှားပြီး ထပ်နေတဲ့ spaces တွေကို တစ်ခုတည်းနဲ့ အစားထိုးပါတယ်၊ `handle_chinese_chars` က Chinese characters တွေပတ်ပတ်လည်မှာ spaces တွေ ထည့်ပေးပါတယ်။ `bert-base-uncased` tokenizer ကို ပြန်လည်ထုတ်လုပ်ဖို့၊ ဒီ normalizer ကို သတ်မှတ်ပေးနိုင်ပါတယ်။
+
+```python
+tokenizer.normalizer = normalizers.BertNormalizer(lowercase=True)
+```
+
+သို့သော်လည်း၊ အထွေထွေအားဖြင့်၊ tokenizer အသစ်တစ်ခု တည်ဆောက်တဲ့အခါ 🤗 Tokenizers library ထဲမှာ အကောင်အထည်ဖော်ထားပြီးသား ဒီလိုအသုံးဝင်တဲ့ normalizer ကို သင်ရရှိမှာ မဟုတ်ပါဘူး၊ ဒါကြောင့် BERT normalizer ကို ကိုယ်တိုင် ဘယ်လိုဖန်တီးရမလဲဆိုတာ ကြည့်ရအောင်။ library က `Lowercase` normalizer နဲ့ `StripAccents` normalizer ကို ပံ့ပိုးပေးပြီး၊ `Sequence` ကို အသုံးပြုပြီး normalizers များစွာကို ပေါင်းစပ်နိုင်ပါတယ်။
+
+```python
+tokenizer.normalizer = normalizers.Sequence(
+    [normalizers.NFD(), normalizers.Lowercase(), normalizers.StripAccents()]
+)
+```
+
+ကျွန်တော်တို့ `NFD` Unicode normalizer ကိုလည်း အသုံးပြုနေပါတယ်၊ ဘာလို့လဲဆိုတော့ မဟုတ်ရင် `StripAccents` normalizer က accented characters တွေကို မှန်ကန်စွာ မှတ်မိမှာ မဟုတ်ဘဲ ၎င်းတို့ကို ဖယ်ရှားနိုင်မှာ မဟုတ်ပါဘူး။
+
+အရင်က တွေ့ခဲ့ရတဲ့အတိုင်း၊ `normalizer` ရဲ့ `normalize_str()` method ကို အသုံးပြုပြီး ပေးထားတဲ့ text ပေါ်မှာ ဒါက ဘယ်လိုအကျိုးသက်ရောက်မှု ရှိလဲဆိုတာ ကြည့်နိုင်ပါတယ်။
+
+```python
+print(tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+```
+
+```python out
+hello how are u?
+```
+
+> [!TIP]
+> **ဆက်လက်လေ့လာရန်** ယခင် normalizers ၏ versions နှစ်ခုကို unicode character `u"\u0085"` ပါဝင်သော string တစ်ခုပေါ်တွင် စမ်းသပ်ပါက၊ ဤ normalizers နှစ်ခုသည် အတိအကျတူညီခြင်းမရှိသည်ကို သင်သတိထားမိပါလိမ့်မည်။
+> `normalizers.Sequence` ပါသော version ကို အလွန်အမင်း ရှုပ်ထွေးမှုမဖြစ်စေရန်၊ `clean_text` argument ကို `True` (၎င်းသည် default behavior ဖြစ်သည်) ဟု သတ်မှတ်ထားသောအခါ `BertNormalizer` လိုအပ်သည့် Regex replacements များကို ကျွန်ုပ်တို့ ထည့်သွင်းမထားပါ။ သို့သော် စိတ်မပူပါနှင့်၊ အသုံးဝင်သော `BertNormalizer` ကို အသုံးမပြုဘဲ `normalizers.Replace` နှစ်ခုကို normalizers sequence တွင် ထပ်ထည့်ခြင်းဖြင့် အတိအကျတူညီသော normalization ကို ရရှိနိုင်ပါသည်။
+
+နောက်တစ်ခုက pre-tokenization အဆင့်ပါ။ ထပ်မံပြီး၊ ကျွန်တော်တို့ အသုံးပြုနိုင်တဲ့ prebuilt `BertPreTokenizer` တစ်ခုရှိပါတယ်။
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+```
+
+ဒါမှမဟုတ် အစကနေ တည်ဆောက်နိုင်ပါတယ်။
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+```
+
+`Whitespace` pre-tokenizer က whitespace နဲ့ letters, digits, ဒါမှမဟုတ် underscore character မဟုတ်တဲ့ characters အားလုံးကို ပိုင်းခြားတာကြောင့်၊ ဒါက နည်းပညာအရ whitespace နဲ့ punctuation တွေပေါ်မှာ ပိုင်းခြားတယ်ဆိုတာ သတိပြုပါ။
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+အကယ်၍ သင်ဟာ whitespace ပေါ်မှာပဲ ပိုင်းခြားချင်တယ်ဆိုရင်၊ `WhitespaceSplit` pre-tokenizer ကို အစားအသုံးပြုသင့်ပါတယ်။
+
+```python
+pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[("Let's", (0, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre-tokenizer.', (14, 28))]
+```
+
+normalizers တွေနဲ့ တူတူပဲ၊ pre-tokenizers များစွာကို ပေါင်းစပ်ဖို့ `Sequence` ကို အသုံးပြုနိုင်ပါတယ်။
+
+```python
+pre_tokenizer = pre_tokenizers.Sequence(
+    [pre_tokenizers.WhitespaceSplit(), pre_tokenizers.Punctuation()]
+)
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+tokenization pipeline ရဲ့ နောက်တစ်ဆင့်က inputs တွေကို model ကနေတစ်ဆင့် run ခြင်းပါ။ ကျွန်တော်တို့ model ကို initialization မှာ သတ်မှတ်ထားပြီးသားဖြစ်ပေမယ့်၊ ဒါကို train လုပ်ဖို့တော့ လိုအပ်ပါသေးတယ်။ ဒါအတွက် `WordPieceTrainer` လိုအပ်ပါလိမ့်မယ်။ 🤗 Tokenizers မှာ trainer တစ်ခုကို instantiate လုပ်တဲ့အခါ မှတ်ထားရမယ့် အဓိကအချက်ကတော့ သင်အသုံးပြုဖို့ ရည်ရွယ်ထားတဲ့ special tokens အားလုံးကို ၎င်းဆီ ပေးဖို့ လိုအပ်ပါတယ် — မဟုတ်ရင် ၎င်းတို့ training corpus ထဲမှာ မပါဝင်တဲ့အတွက် vocabulary ထဲကို ထည့်သွင်းပေးမှာ မဟုတ်ပါဘူး။
+
+```python
+special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
+trainer = trainers.WordPieceTrainer(vocab_size=25000, special_tokens=special_tokens)
+```
+
+`vocab_size` နဲ့ `special_tokens` ကို သတ်မှတ်ခြင်းအပြင်၊ `min_frequency` (token တစ်ခု vocabulary ထဲမှာ ပါဝင်ဖို့ ဘယ်အကြိမ်ရေ အနည်းဆုံး ပေါ်လာရမလဲ) ကို သတ်မှတ်နိုင်ပါတယ် ဒါမှမဟုတ် `continuing_subword_prefix` ကို ပြောင်းလဲနိုင်ပါတယ် (ကျွန်တော်တို့ `##` နဲ့ မတူတာတစ်ခုကို အသုံးပြုချင်ရင်)။
+
+ကျွန်တော်တို့ အစောပိုင်းက သတ်မှတ်ခဲ့တဲ့ iterator ကို အသုံးပြုပြီး model ကို train လုပ်ဖို့အတွက်၊ ဒီ command ကို run ရုံပါပဲ။
+
+```python
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+ကျွန်တော်တို့ tokenizer ကို train လုပ်ဖို့ text files တွေကိုလည်း အသုံးပြုနိုင်ပါတယ်။ ဒါက အောက်ပါအတိုင်း ဖြစ်ပါလိမ့်မယ် (ကျွန်တော်တို့ model ကို အရင်ဆုံး empty `WordPiece` တစ်ခုနဲ့ reinitialize လုပ်ပါတယ်)-
+
+```python
+tokenizer.model = models.WordPiece(unk_token="[UNK]")
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+ကိစ္စနှစ်ခုလုံးမှာ၊ `encode()` method ကို ခေါ်ခြင်းဖြင့် tokenizer ကို text တစ်ခုပေါ်မှာ စမ်းသပ်နိုင်ပါတယ်။
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.']
+```
+
+ရရှိတဲ့ `encoding` ဟာ `Encoding` တစ်ခုဖြစ်ပြီး၊ ၎င်းရဲ့ attributes များစွာ ( `ids`, `type_ids`, `tokens`, `offsets`, `attention_mask`, `special_tokens_mask`, နဲ့ `overflowing`) ထဲမှာ tokenizer ရဲ့ လိုအပ်တဲ့ outputs အားလုံး ပါဝင်ပါတယ်။
+
+tokenization pipeline ရဲ့ နောက်ဆုံးအဆင့်က post-processing ပါ။ ကျွန်တော်တို့ `[CLS]` token ကို အစမှာ ထည့်သွင်းဖို့နဲ့ `[SEP]` token ကို အဆုံးမှာ ထည့်သွင်းဖို့ လိုအပ်ပါတယ် (ဒါမှမဟုတ် sentence pair ရှိရင် sentence တစ်ခုစီရဲ့ နောက်မှာ)။ ဒါအတွက် `TemplateProcessor` ကို ကျွန်တော်တို့ အသုံးပြုပါမယ်၊ ဒါပေမယ့် ပထမဆုံး vocabulary ထဲက `[CLS]` နဲ့ `[SEP]` tokens တွေရဲ့ IDs တွေကို သိဖို့ လိုအပ်ပါတယ်။
+
+```python
+cls_token_id = tokenizer.token_to_id("[CLS]")
+sep_token_id = tokenizer.token_to_id("[SEP]")
+print(cls_token_id, sep_token_id)
+```
+
+```python out
+(2, 3)
+```
+
+`TemplateProcessor` အတွက် template ကို ရေးဖို့၊ single sentence တစ်ခုနဲ့ sentence pair တစ်ခုကို ဘယ်လို ကိုင်တွယ်ရမယ်ဆိုတာ သတ်မှတ်ရပါမယ်။ နှစ်ခုလုံးအတွက်၊ ကျွန်တော်တို့ အသုံးပြုချင်တဲ့ special tokens တွေကို ရေးပါတယ်၊ ပထမ (သို့မဟုတ် single) sentence ကို `$A` နဲ့ ကိုယ်စားပြုပြီး၊ ဒုတိယ sentence (pair တစ်ခုကို encoding လုပ်ရင်) ကို `$B` နဲ့ ကိုယ်စားပြုပါတယ်။ ဒါတွေတစ်ခုစီ (special tokens နဲ့ sentences) အတွက်၊ colon နောက်မှာ သက်ဆိုင်ရာ token type ID ကိုလည်း သတ်မှတ်ပါတယ်။
+
+classic BERT template ကို အောက်ပါအတိုင်း သတ်မှတ်ပါတယ်။
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single=f"[CLS]:0 $A:0 [SEP]:0",
+    pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
+    special_tokens=[("[CLS]", cls_token_id), ("[SEP]", sep_token_id)],
+)
+```
+
+special tokens တွေရဲ့ IDs တွေကို ပေးပို့ဖို့ လိုအပ်တယ်ဆိုတာ သတိပြုပါ။ ဒါမှ tokenizer က ၎င်းတို့ကို ၎င်းတို့ရဲ့ IDs တွေအဖြစ် မှန်ကန်စွာ ပြောင်းလဲနိုင်မှာပါ။
+
+ဒါကို ထည့်သွင်းပြီးတာနဲ့၊ ကျွန်တော်တို့ရဲ့ ယခင်ဥပမာကို ပြန်ကြည့်မယ်ဆိုရင်။
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.', '[SEP]']
+```
+
+ပြီးတော့ sentence pair တစ်ခုပေါ်မှာဆိုရင်၊ မှန်ကန်တဲ့ ရလဒ်ကို ကျွန်တော်တို့ ရရှိပါတယ်။
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences.")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '...', '[SEP]', 'on', 'a', 'pair', 'of', 'sentences', '.', '[SEP]']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+```
+
+ဒီ tokenizer ကို အစကနေ တည်ဆောက်တာ နီးပါးပြီးစီးပါပြီ — နောက်ဆုံးအဆင့်က decoder တစ်ခု ထည့်သွင်းဖို့ပါ။
+
+```python
+tokenizer.decoder = decoders.WordPiece(prefix="##")
+```
+
+ကျွန်တော်တို့ရဲ့ ယခင် `encoding` ပေါ်မှာ စမ်းသပ်ကြည့်ရအောင်...
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+```python out
+"let's test this tokenizer... on a pair of sentences."
+```
+
+ကောင်းပါပြီ! ကျွန်တော်တို့ရဲ့ tokenizer ကို ဒီလို JSON file တစ်ခုတည်းမှာ သိမ်းဆည်းနိုင်ပါတယ်။
+
+```python
+tokenizer.save("tokenizer.json")
+```
+
+အဲဒီနောက် `from_file()` method နဲ့ `Tokenizer` object တစ်ခုထဲကို အဲဒီ file ကို ပြန်လည် load လုပ်နိုင်ပါတယ်။
+
+```python
+new_tokenizer = Tokenizer.from_file("tokenizer.json")
+```
+
+ဒီ tokenizer ကို 🤗 Transformers မှာ အသုံးပြုဖို့အတွက်၊ ကျွန်တော်တို့ဟာ ဒါကို `PreTrainedTokenizerFast` ထဲမှာ wrap လုပ်ရပါမယ်။ ကျွန်တော်တို့ဟာ generic class ကို အသုံးပြုနိုင်ပါတယ် ဒါမှမဟုတ် ကျွန်တော်တို့ရဲ့ tokenizer က လက်ရှိ model တစ်ခုနဲ့ ကိုက်ညီတယ်ဆိုရင် အဲဒီ class ကို အသုံးပြုနိုင်ပါတယ် (ဒီနေရာမှာ `BertTokenizerFast`)။ သင်ဟာ ဒီသင်ခန်းစာကို tokenizer အသစ်တစ်ခု တည်ဆောက်ဖို့ အသုံးပြုတယ်ဆိုရင်၊ ပထမ option ကို အသုံးပြုရပါလိမ့်မယ်။
+
+tokenizer ကို `PreTrainedTokenizerFast` ထဲမှာ wrap လုပ်ဖို့၊ ကျွန်တော်တို့ တည်ဆောက်ခဲ့တဲ့ tokenizer ကို `tokenizer_object` အဖြစ် ပေးနိုင်ပါတယ် ဒါမှမဟုတ် ကျွန်တော်တို့ သိမ်းဆည်းခဲ့တဲ့ tokenizer file ကို `tokenizer_file` အဖြစ် ပေးနိုင်ပါတယ်။ အဓိက မှတ်ထားရမယ့်အချက်ကတော့ ကျွန်တော်တို့ special tokens အားလုံးကို ကိုယ်တိုင် သတ်မှတ်ပေးရပါမယ်၊ ဘာလို့လဲဆိုတော့ အဲဒီ class က `tokenizer` object ကနေ ဘယ် token က mask token လဲ၊ `[CLS]` token လဲ စတာတွေကို မသိနိုင်လို့ပါ။
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    # tokenizer_file="tokenizer.json", # You can load from the tokenizer file, alternatively
+    unk_token="[UNK]",
+    pad_token="[PAD]",
+    cls_token="[CLS]",
+    sep_token="[SEP]",
+    mask_token="[MASK]",
+)
+```
+
+အကယ်၍ သင်ဟာ သီးခြား tokenizer class တစ်ခု (ဥပမာ - `BertTokenizerFast`) ကို အသုံးပြုနေတယ်ဆိုရင်၊ default tokens တွေနဲ့ ကွာခြားတဲ့ special tokens တွေကိုသာ သတ်မှတ်ပေးဖို့ လိုအပ်ပါလိမ့်မယ် (ဒီနေရာမှာတော့ မရှိပါဘူး)။
+
+```python
+from transformers import BertTokenizerFast
+
+wrapped_tokenizer = BertTokenizerFast(tokenizer_object=tokenizer)
+```
+
+အဲဒီနောက် ဒီ tokenizer ကို တခြား 🤗 Transformers tokenizer တွေလိုပဲ သင်အသုံးပြုနိုင်ပါတယ်။ `save_pretrained()` method နဲ့ သိမ်းဆည်းနိုင်ပါတယ် ဒါမှမဟုတ် `push_to_hub()` method နဲ့ Hub ကို upload လုပ်နိုင်ပါတယ်။
+
+ကျွန်တော်တို့ WordPiece tokenizer တစ်ခုကို ဘယ်လိုတည်ဆောက်ရမယ်ဆိုတာ မြင်တွေ့ခဲ့ရပြီဆိုတော့၊ BPE tokenizer တစ်ခုအတွက်လည်း အတူတူလုပ်ကြစို့။ သင်အဆင့်တွေအားလုံးကို သိပြီးသားဖြစ်တဲ့အတွက် နည်းနည်းပိုမြန်မြန် သွားပါမယ်၊ ခြားနားချက်တွေကိုပဲ မီးမောင်းထိုးပြပါမယ်။
+
+## အစကနေ BPE Tokenizer တစ်ခု တည်ဆောက်ခြင်း[[building-a-bpe-tokenizer-from-scratch]]
+
+အခု GPT-2 tokenizer တစ်ခု တည်ဆောက်ကြစို့။ BERT tokenizer အတွက်လိုပဲ၊ BPE model တစ်ခုနဲ့ `Tokenizer` တစ်ခုကို initialize လုပ်ခြင်းဖြင့် စတင်ပါမယ်။
+
+```python
+tokenizer = Tokenizer(models.BPE())
+```
+
+BERT အတွက်လိုပဲ၊ ကျွန်တော်တို့မှာ vocabulary ရှိရင် (ဒီကိစ္စမှာ `vocab` နဲ့ `merges` ကို ပေးဖို့ လိုပါလိမ့်မယ်) ဒီ model ကို vocabulary နဲ့ initialize လုပ်နိုင်ပါတယ်။ ဒါပေမယ့် ကျွန်တော်တို့ အစကနေ train မှာဖြစ်တဲ့အတွက်၊ ဒါကို လုပ်ဖို့မလိုအပ်ပါဘူး။ GPT-2 က byte-level BPE ကို အသုံးပြုပြီး ဒါက `unk_token` မလိုအပ်တဲ့အတွက် `unk_token` ကို သတ်မှတ်ပေးဖို့လည်း ကျွန်တော်တို့ မလိုအပ်ပါဘူး။
+
+GPT-2 က normalizer ကို အသုံးမပြုတာကြောင့်၊ အဲဒီအဆင့်ကို ကျော်ပြီး pre-tokenization ကို တိုက်ရိုက်သွားပါမယ်-
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+```
+
+ဒီနေရာမှာ `ByteLevel` ကို ကျွန်တော်တို့ ထည့်သွင်းခဲ့တဲ့ option က sentence အစမှာ space မထည့်ဖို့ပါပဲ (ဒါက default အားဖြင့် ထည့်ပါတယ်)။ အရင်ကလို ဥပမာ text တစ်ခုရဲ့ pre-tokenization ကို ကြည့်နိုင်ပါတယ်။
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test pre-tokenization!")
+```
+
+```python out
+[('Let', (0, 3)), ("'s", (3, 5)), ('Ġtest', (5, 10)), ('Ġpre', (10, 14)), ('-', (14, 15)),
+ ('tokenization', (15, 27)), ('!', (27, 28))]
+```
+
+နောက်တစ်ခုက training လိုအပ်တဲ့ model ပါ။ GPT-2 အတွက်၊ တစ်ခုတည်းသော special token က end-of-text token ပါ။
+
+```python
+trainer = trainers.BpeTrainer(vocab_size=25000, special_tokens=["<|endoftext|>"])
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+`WordPieceTrainer` နဲ့ တူတူပဲ၊ `vocab_size` နဲ့ `special_tokens` အပြင်၊ ကျွန်တော်တို့ လိုအပ်ရင် `min_frequency` ကို သတ်မှတ်နိုင်ပါတယ်၊ ဒါမှမဟုတ် end-of-word suffix ( `</w>` လိုမျိုး) ရှိရင် `end_of_word_suffix` နဲ့ သတ်မှတ်နိုင်ပါတယ်။
+
+ဒီ tokenizer ကို text files တွေပေါ်မှာလည်း train လုပ်နိုင်ပါတယ်။
+
+```python
+tokenizer.model = models.BPE()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+sample text တစ်ခုရဲ့ tokenization ကို ကြည့်ရအောင်-
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['L', 'et', "'", 's', 'Ġtest', 'Ġthis', 'Ġto', 'ken', 'izer', '.']
+```
+
+GPT-2 tokenizer အတွက် byte-level post-processing ကို အောက်ပါအတိုင်း ကျွန်တော်တို့ အသုံးပြုပါတယ်။
+
+```python
+tokenizer.post_processor = processors.ByteLevel(trim_offsets=False)
+```
+
+`trim_offsets = False` option က post-processor ကို 'Ġ' နဲ့ စတင်တဲ့ tokens တွေရဲ့ offsets တွေကို ရှိတဲ့အတိုင်း ထားဖို့ ညွှန်ပြပါတယ်။ ဒီနည်းနဲ့ offsets တွေရဲ့ အစက word ရဲ့ ပထမဆုံး character ကို ညွှန်ပြမယ့်အစား word ရဲ့ ရှေ့က space ကို ညွှန်ပြပါလိမ့်မယ် (space က နည်းပညာအရ token ရဲ့ အစိတ်အပိုင်းဖြစ်တာကြောင့်)။ ကျွန်တော်တို့ အခု encode လုပ်ခဲ့တဲ့ text နဲ့ ရလဒ်ကို ကြည့်ရအောင်။ `'Ġtest'` က index 4 မှာရှိတဲ့ token ဖြစ်ပါတယ်။
+
+```python
+sentence = "Let's test this tokenizer."
+encoding = tokenizer.encode(sentence)
+start, end = encoding.offsets[4]
+sentence[start:end]
+```
+
+```python out
+' test'
+```
+
+နောက်ဆုံးအနေနဲ့၊ byte-level decoder တစ်ခု ထည့်သွင်းပါတယ်။
+
+```python
+tokenizer.decoder = decoders.ByteLevel()
+```
+
+ပြီးတော့ ဒါက မှန်ကန်စွာ အလုပ်လုပ်လားဆိုတာ ထပ်မံစစ်ဆေးနိုင်ပါတယ်။
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+```python out
+"Let's test this tokenizer."
+```
+
+ကောင်းပါပြီ! အခု ပြီးစီးပြီဆိုတော့၊ tokenizer ကို အရင်လိုပဲ သိမ်းဆည်းနိုင်ပြီး၊ 🤗 Transformers မှာ အသုံးပြုချင်တယ်ဆိုရင် `PreTrainedTokenizerFast` ဒါမှမဟုတ် `GPT2TokenizerFast` ထဲမှာ wrap လုပ်နိုင်ပါတယ်။
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<|endoftext|>",
+    eos_token="<|endoftext|>",
+)
+```
+
+ဒါမှမဟုတ်:
+
+```python
+from transformers import GPT2TokenizerFast
+
+wrapped_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer)
+```
+
+နောက်ဆုံး ဥပမာအနေနဲ့၊ Unigram tokenizer တစ်ခုကို အစကနေ ဘယ်လိုတည်ဆောက်ရမလဲဆိုတာ ကျွန်တော်တို့ ပြသပေးပါမယ်။
+
+## အစကနေ Unigram Tokenizer တစ်ခု တည်ဆောက်ခြင်း[[building-a-unigram-tokenizer-from-scratch]]
+
+အခု XLNet tokenizer တစ်ခု တည်ဆောက်ကြစို့။ ယခင် tokenizers တွေအတွက်လိုပဲ၊ Unigram model တစ်ခုနဲ့ `Tokenizer` တစ်ခုကို initialize လုပ်ခြင်းဖြင့် စတင်ပါမယ်။
+
+```python
+tokenizer = Tokenizer(models.Unigram())
+```
+
+ထပ်မံပြီး၊ ကျွန်တော်တို့မှာ vocabulary ရှိရင် ဒီ model ကို vocabulary နဲ့ initialize လုပ်နိုင်ပါတယ်။
+
+normalization အတွက်၊ XLNet က replacements အနည်းငယ် (SentencePiece ကနေလာတာပါ) ကို အသုံးပြုပါတယ်။
+
+```python
+from tokenizers import Regex
+
+tokenizer.normalizer = normalizers.Sequence(
+    [
+        normalizers.Replace("``", '"'),
+        normalizers.Replace("''", '"'),
+        normalizers.NFKD(),
+        normalizers.StripAccents(),
+        normalizers.Replace(Regex(" {2,}"), " "),
+    ]
+)
+```
+
+ဒါက <code>``</code> နဲ့ <code>''</code> တွေကို <code>"</code> နဲ့ အစားထိုးပြီး spaces နှစ်ခု သို့မဟုတ် ထို့ထက်ပိုတဲ့ sequence တွေကို single space တစ်ခုနဲ့ အစားထိုးပါတယ်၊ ဒါ့အပြင် tokenize လုပ်မယ့် texts ထဲက accents တွေကို ဖယ်ရှားပါတယ်။
+
+မည်သည့် SentencePiece tokenizer အတွက်မဆို အသုံးပြုရမယ့် pre-tokenizer က `Metaspace` ပါ။
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
+```
+
+အရင်ကလို ဥပမာ text တစ်ခုရဲ့ pre-tokenization ကို ကြည့်နိုင်ပါတယ်။
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test the pre-tokenizer!")
+```
+
+```python out
+[(" Let's", (0, 5)), (' test', (5, 10)), (' the', (10, 14)), (' pre-tokenizer!', (14, 29))]
+```
+
+နောက်တစ်ခုက training လိုအပ်တဲ့ model ပါ။ XLNet မှာ special tokens တွေ အတော်လေး များပါတယ်။
+
+```python
+special_tokens = ["<cls>", "<sep>", "<unk>", "<pad>", "<mask>", "<s>", "</s>"]
+trainer = trainers.UnigramTrainer(
+    vocab_size=25000, special_tokens=special_tokens, unk_token="<unk>"
+)
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+`UnigramTrainer` အတွက် မမေ့မလျော့ ထည့်သွင်းရမယ့် အရေးကြီးတဲ့ argument တစ်ခုက `unk_token` ပါ။ ကျွန်တော်တို့ဟာ Unigram algorithm အတွက် သီးခြား arguments တွေဖြစ်တဲ့ tokens တွေ ဖယ်ရှားတဲ့ အဆင့်တစ်ခုစီအတွက် `shrinking_factor` (default က 0.75) ဒါမှမဟုတ် ပေးထားတဲ့ token တစ်ခုရဲ့ အမြင့်ဆုံးအရှည်ကို သတ်မှတ်ဖို့ `max_piece_length` (default က 16) တို့ကိုလည်း ပေးနိုင်ပါတယ်။
+
+ဒီ tokenizer ကို text files တွေပေါ်မှာလည်း train လုပ်နိုင်ပါတယ်။
+
+```python
+tokenizer.model = models.Unigram()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+sample text တစ်ခုရဲ့ tokenization ကို ကြည့်ရအောင်။
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+[' Let', "'", 's', ' test', ' this', ' to', 'ken', 'izer', '.']
+```
+
+XLNet ရဲ့ ထူးခြားချက်တစ်ခုကတော့ `<cls>` token ကို sentence ရဲ့ အဆုံးမှာ ထားပြီး၊ type ID ကို 2 (အခြား tokens တွေနဲ့ ကွဲပြားစေရန်) ပေးထားတာပါပဲ။ ရလဒ်အနေနဲ့ ဒါက ဘယ်ဘက်မှာ padding လုပ်တာပါ။ special tokens အားလုံးနဲ့ token type IDs တွေကို BERT အတွက်လို template တစ်ခုနဲ့ ကျွန်တော်တို့ ကိုင်တွယ်နိုင်ပါတယ်။ ဒါပေမယ့် ပထမဆုံး `<cls>` နဲ့ `<sep>` tokens တွေရဲ့ IDs တွေကို ရယူရပါမယ်။
+
+```python
+cls_token_id = tokenizer.token_to_id("<cls>")
+sep_token_id = tokenizer.token_to_id("<sep>")
+print(cls_token_id, sep_token_id)
+```
+
+```python out
+0 1
+```
+
+template က ဒီလိုမျိုး ဖြစ်ပါတယ်။
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single="$A:0 <sep>:0 <cls>:2",
+    pair="$A:0 <sep>:0 $B:1 <sep>:1 <cls>:2",
+    special_tokens=[("<sep>", sep_token_id), ("<cls>", cls_token_id)],
+)
+```
+
+ပြီးတော့ sentence pair တစ်ခုကို encode လုပ်ခြင်းဖြင့် ဒါက အလုပ်လုပ်လားဆိုတာ စမ်းသပ်နိုင်ပါတယ်။
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences!")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+```python out
+[' Let', "'", 's', ' test', ' this', ' to', 'ken', 'izer', '.', '.', '.', '<sep>', ' ', 'on', ' ', 'a', ' pair', 
+  ' of', ' sentence', 's', '!', '<sep>', '<cls>']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]
+```
+
+နောက်ဆုံးအနေနဲ့၊ `Metaspace` decoder တစ်ခု ထည့်သွင်းပါတယ်။
+
+```python
+tokenizer.decoder = decoders.Metaspace()
+```
+
+ပြီးတော့ ဒီ tokenizer နဲ့ ပြီးပါပြီ! ကျွန်တော်တို့ tokenizer ကို အရင်လိုပဲ သိမ်းဆည်းနိုင်ပြီး၊ 🤗 Transformers မှာ အသုံးပြုချင်တယ်ဆိုရင် `PreTrainedTokenizerFast` ဒါမှမဟုတ် `XLNetTokenizerFast` ထဲမှာ wrap လုပ်နိုင်ပါတယ်။ `PreTrainedTokenizerFast` ကို အသုံးပြုတဲ့အခါ သတိပြုရမယ့်အချက်တစ်ခုကတော့ special tokens တွေအပြင်၊ Hugging Face library ကို ဘယ်ဘက်ကနေ padding လုပ်ဖို့ ကျွန်တော်တို့ ပြောပြဖို့ လိုအပ်ပါတယ်။
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<s>",
+    eos_token="</s>",
+    unk_token="<unk>",
+    pad_token="<pad>",
+    cls_token="<cls>",
+    sep_token="<sep>",
+    mask_token="<mask>",
+    padding_side="left",
+)
+```
+
+ဒါမှမဟုတ်:
+
+```python
+from transformers import XLNetTokenizerFast
+
+wrapped_tokenizer = XLNetTokenizerFast(tokenizer_object=tokenizer)
+```
+
+existing tokenizers တွေကို တည်ဆောက်ရာမှာ building blocks အမျိုးမျိုးကို ဘယ်လိုအသုံးပြုလဲဆိုတာ သင်မြင်တွေ့ခဲ့ရပြီဆိုတော့၊ 🤗 Tokenizers library နဲ့ သင်လိုချင်တဲ့ မည်သည့် tokenizer ကိုမဆို ရေးနိုင်ပြီး 🤗 Transformers မှာ အသုံးပြုနိုင်ပါလိမ့်မယ်။
+
+
+## ဝေါဟာရ ရှင်းလင်းချက် (Glossary)
+
+*   **Tokenization**: စာသား (သို့မဟုတ် အခြားဒေတာ) ကို AI မော်ဒယ်များ စီမံဆောင်ရွက်နိုင်ရန် tokens တွေအဖြစ် ပိုင်းခြားပေးသည့် လုပ်ငန်းစဉ်။
+*   **Normalization**: စာသားကို သန့်ရှင်းရေးလုပ်ခြင်း (ဥပမာ- needless whitespace ဖယ်ရှားခြင်း၊ lowercasing, accents ဖယ်ရှားခြင်း)။
+*   **Pre-tokenization**: Subword tokenization မလုပ်ဆောင်မီ စာသားကို ပိုမိုသေးငယ်သော entities (ဥပမာ- words) အဖြစ် အကြိုပိုင်းခြားခြင်း။
+*   **Tokens Sequence**: စာသားကို ပိုင်းခြားပြီးနောက် ရရှိသော tokens များ၏ အစဉ်လိုက်။
+*   **Post-processing**: Model ၏ output များကို နောက်ဆုံးအသုံးပြုမှုအတွက် ပြင်ဆင်ခြင်း လုပ်ငန်းစဉ်။
+*   **Special Tokens**: Tokenizer သို့မဟုတ် model အတွက် သီးခြားအဓိပ္ပာယ်ရှိသော tokens များ (ဥပမာ- `[CLS]`, `[SEP]`, `[PAD]`)။
+*   **Attention Mask**: မော်ဒယ်ကို အာရုံစိုက်သင့်သည့် tokens များနှင့် လျစ်လျူရှုသင့်သည့် (padding) tokens များကို ခွဲခြားပေးသည့် binary mask။
+*   **Token Type IDs**: Sentence pair လုပ်ငန်းများတွင် input sequence တစ်ခုစီမှ token တစ်ခုစီသည် မည်သည့် sentence (ပထမ သို့မဟုတ် ဒုတိယ) နှင့် သက်ဆိုင်သည်ကို ဖော်ပြပေးသော IDs များ။
+*   **🤗 Tokenizers Library**: Rust ဘာသာနဲ့ ရေးသားထားတဲ့ Hugging Face library တစ်ခုဖြစ်ပြီး မြန်ဆန်ထိရောက်တဲ့ tokenization ကို လုပ်ဆောင်ပေးသည်။
+*   **`Tokenizer` Class**: 🤗 Tokenizers library မှ အဓိက tokenizer class။
+*   **`normalizers` Submodule**: Normalization building blocks များ ပါဝင်သော submodule။
+*   **`Normalizer`**: Normalization logic ကို အကောင်အထည်ဖော်ထားသော class။
+*   **`pre_tokenizers` Submodule**: Pre-tokenization building blocks များ ပါဝင်သော submodule။
+*   **`PreTokenizer`**: Pre-tokenization logic ကို အကောင်အထည်ဖော်ထားသော class။
+*   **`models` Submodule**: Subword tokenization models များ (BPE, WordPiece, Unigram) ပါဝင်သော submodule။
+*   **`Model`**: Subword tokenization algorithm ကို အကောင်အထည်ဖော်ထားသော class။
+*   **BPE (Byte-Pair Encoding)**: Subword tokenization algorithm တစ်မျိုး။
+*   **WordPiece**: Subword tokenization algorithm တစ်မျိုး။
+*   **Unigram**: Subword tokenization algorithm တစ်မျိုး။
+*   **`trainers` Submodule**: Model training အတွက် trainers များ ပါဝင်သော submodule။
+*   **`Trainer`**: Model ကို corpus တစ်ခုပေါ်တွင် train လုပ်ရန် အသုံးပြုသော class။
+*   **Corpus**: စာသား (သို့မဟုတ် အခြားဒေတာ) အစုအဝေးကြီးတစ်ခု။
+*   **`post_processors` Submodule**: Post-processing building blocks များ ပါဝင်သော submodule။
+*   **`PostProcessor`**: Post-processing logic ကို အကောင်အထည်ဖော်ထားသော class။
+*   **`decoders` Submodule**: Tokenization outputs များကို decode လုပ်ရန် decoders များ ပါဝင်သော submodule။
+*   **`Decoder`**: Decoding logic ကို အကောင်အထည်ဖော်ထားသော class။
+*   **`get_training_corpus()` Function**: Tokenizer ကို လေ့ကျင့်ရန်အတွက် batches of texts များကို yield လုပ်သော generator function။
+*   **Generator**: Python တွင် iteration လုပ်နိုင်သော object တစ်ခုဖြစ်ပြီး ၎င်းသည် အရာအားလုံးကို memory ထဲသို့ တစ်ပြိုင်နက်တည်း သိမ်းဆည်းမထားဘဲ လိုအပ်သလို တန်ဖိုးများကို ထုတ်ပေးသည်။
+*   **WikiText-2 Dataset**: ဘာသာစကား model များကို လေ့ကျင့်ရန် အသုံးပြုသော dataset တစ်ခု။
+*   **Text Files**: စာသားအချက်အလက်များသာ ပါဝင်သော ဖိုင်များ။
+*   **BERT Tokenizer**: BERT model အတွက် အသုံးပြုသော tokenizer။
+*   **GPT-2 Tokenizer**: GPT-2 model အတွက် အသုံးပြုသော tokenizer။
+*   **XLNet Tokenizer**: XLNet model အတွက် အသုံးပြုသော tokenizer။
+*   **`models.WordPiece(unk_token="[UNK]")`**: Unknown token အဖြစ် `[UNK]` ကို အသုံးပြုသော WordPiece model ကို ဖန်တီးခြင်း။
+*   **`unk_token`**: Model က မသိသော tokens များကို ကိုယ်စားပြုသော special token။
+*   **`vocab`**: Model ၏ vocabulary (သိရှိသော tokens များစာရင်း)။
+*   **`max_input_chars_per_word`**: word တစ်ခုအတွက် အမြင့်ဆုံး character အရေအတွက်။
+*   **`BertNormalizer`**: BERT tokenizer အတွက် အကြိုတည်ဆောက်ထားသော normalizer class။
+*   **`lowercase`**: စာလုံးများကို အသေးစာလုံးများအဖြစ် ပြောင်းလဲခြင်း။
+*   **`strip_accents`**: စာလုံးများပေါ်ရှိ accents များကို ဖယ်ရှားခြင်း။
+*   **`clean_text`**: Control characters များကို ဖယ်ရှားခြင်းနှင့် ထပ်နေသော spaces များကို တစ်ခုတည်းဖြင့် အစားထိုးခြင်း။
+*   **`handle_chinese_chars`**: Chinese characters များပတ်ပတ်လည်တွင် spaces တွေ ထည့်သွင်းခြင်း။
+*   **`bert-base-uncased`**: BERT model ၏ base version အတွက် checkpoint identifier (uncased version)။
+*   **`normalizers.Sequence`**: normalizers များစွာကို ပေါင်းစပ်ရန် အသုံးပြုသော class။
+*   **`normalizers.NFD()`**: Unicode normalization form D (Canonical Decomposition) ကို အသုံးပြုသော normalizer။
+*   **`normalizers.Lowercase()`**: စာလုံးများကို အသေးစာလုံးများအဖြစ် ပြောင်းလဲသော normalizer။
+*   **`normalizers.StripAccents()`**: accents များကို ဖယ်ရှားသော normalizer။
+*   **`normalize_str()` Method**: Normalizer object မှ string တစ်ခုကို normalize လုပ်သော method။
+*   **`BertPreTokenizer`**: BERT tokenizer အတွက် အကြိုတည်ဆောက်ထားသော pre-tokenizer class။
+*   **`pre_tokenizers.Whitespace()`**: whitespace နှင့် punctuation ဖြင့် ပိုင်းခြားသော pre-tokenizer။
+*   **`pre_tokenizers.WhitespaceSplit()`**: whitespace ဖြင့်သာ ပိုင်းခြားသော pre-tokenizer။
+*   **`pre_tokenizers.Punctuation()`**: punctuation ဖြင့် ပိုင်းခြားသော pre-tokenizer။
+*   **`pre_tokenize_str()` Method**: Pre-tokenizer object မှ string တစ်ခုကို pre-tokenize လုပ်သော method။
+*   **`WordPieceTrainer`**: WordPiece model ကို train လုပ်ရန်အတွက် trainer class။
+*   **`vocab_size`**: vocabulary ၏ အမြင့်ဆုံးအရွယ်အစား။
+*   **`special_tokens`**: Model ၏ special tokens များ။
+*   **`min_frequency`**: token တစ်ခု vocabulary ထဲမှာ ပါဝင်ဖို့ ဘယ်အကြိမ်ရေ အနည်းဆုံး ပေါ်လာရမလဲ။
+*   **`continuing_subword_prefix`**: subword တစ်ခု ဆက်နေကြောင်း ဖော်ပြသော prefix (ဥပမာ- `##`)။
+*   **`train_from_iterator()` Method**: iterator မှ data ကို အသုံးပြုပြီး tokenizer ကို train လုပ်သော method။
+*   **`train()` Method**: text files များမှ data ကို အသုံးပြုပြီး tokenizer ကို train လုပ်သော method။
+*   **`encode()` Method**: စာသားကို tokens ID များအဖြစ် ပြောင်းလဲပေးသော tokenizer method။
+*   **`Encoding` Object**: `encode()` method မှ ပြန်ပေးသော object ဖြစ်ပြီး encoded inputs အားလုံး ပါဝင်သည်။
+*   **`ids`**: Encoded tokens များ၏ ID များ။
+*   **`type_ids`**: Token type IDs များ။
+*   **`tokens`**: Tokenized string များ၏ list။
+*   **`offsets`**: Offset mapping များ။
+*   **`attention_mask`**: Attention mask။
+*   **`special_tokens_mask`**: Special tokens mask။
+*   **`overflowing`**: Truncate လုပ်ထားသော tokens များ။
+*   **`token_to_id()` Method**: Token string ကို ၎င်း၏ ID သို့ ပြောင်းလဲပေးသော tokenizer method။
+*   **`TemplateProcessing`**: Post-processing အတွက် template ကို အသုံးပြုသော processor class။
+*   **`single`**: single sentence အတွက် template။
+*   **`pair`**: sentence pair အတွက် template။
+*   **`$A`**: ပထမ sentence ကို ကိုယ်စားပြုသော placeholder။
+*   **`$B`**: ဒုတိယ sentence ကို ကိုယ်စားပြုသော placeholder။
+*   **`WordPiece Decoder`**: WordPiece tokens များကို text အဖြစ် ပြန်ပြောင်းပေးသော decoder။
+*   **`prefix="##"`**: WordPiece decoder အတွက် subword prefix။
+*   **`decode()` Method**: Token IDs များကို text အဖြစ် ပြန်ပြောင်းပေးသော tokenizer method။
+*   **JSON File**: JavaScript Object Notation format ဖြင့် သိမ်းဆည်းထားသော ဖိုင်။
+*   **`save("tokenizer.json")`**: Tokenizer ကို JSON file အဖြစ် သိမ်းဆည်းသော method။
+*   **`from_file("tokenizer.json")`**: JSON file မှ tokenizer ကို load လုပ်သော method။
+*   **`PreTrainedTokenizerFast`**: 🤗 Transformers library မှ generic fast tokenizer class။
+*   **`BertTokenizerFast`**: BERT model အတွက် သီးခြား fast tokenizer class။
+*   **`tokenizer_object`**: `PreTrainedTokenizerFast` သို့ ပေးပို့သော tokenizer object။
+*   **`tokenizer_file`**: `PreTrainedTokenizerFast` သို့ ပေးပို့သော tokenizer file ၏ path။
+*   **`bos_token` (Beginning Of Sentence Token)**: Sentence ၏ အစကို ကိုယ်စားပြုသော special token။
+*   **`eos_token` (End Of Sentence Token)**: Sentence ၏ အဆုံးကို ကိုယ်စားပြုသော special token။
+*   **`pad_token` (Padding Token)**: Sequence များကို တူညီသောအရှည်ဖြစ်အောင် ဖြည့်စွက်ရန် အသုံးပြုသော special token။
+*   **`cls_token`**: BERT model တွင် sequence ၏ အစကို ကိုယ်စားပြုသော special token။
+*   **`sep_token`**: BERT model တွင် sentence တစ်ခု၏ အဆုံး သို့မဟုတ် sentence နှစ်ခုကြား ပိုင်းခြားရန် အသုံးပြုသော special token။
+*   **`mask_token`**: Masked Language Modeling (MLM) တွင် စကားလုံးများကို ဝှက်ထားရန် အသုံးပြုသော special token။
+*   **`save_pretrained()` Method**: `PreTrainedTokenizerFast` ကို pretrained model အဖြစ် သိမ်းဆည်းသော method။
+*   **`push_to_hub()` Method**: `PreTrainedTokenizerFast` ကို Hugging Face Hub သို့ upload လုပ်သော method။
+*   **`models.BPE()`**: BPE model ကို ဖန်တီးခြင်း။
+*   **`merges`**: BPE model တွင် token merge rules များ။
+*   **Byte-level BPE**: BPE tokenization တစ်မျိုးဖြစ်ပြီး bytes များကို အခြေခံ၍ လုပ်ဆောင်သည်။
+*   **`pre_tokenizers.ByteLevel()`**: Byte-level pre-tokenization ကို လုပ်ဆောင်သော pre-tokenizer။
+*   **`add_prefix_space=False`**: ByteLevel pre-tokenizer အတွက် sentence အစတွင် space မထည့်ရန် သတ်မှတ်ခြင်း။
+*   **`BpeTrainer`**: BPE model ကို train လုပ်ရန်အတွက် trainer class။
+*   **`end_of_word_suffix`**: word ၏ အဆုံးကို ကိုယ်စားပြုသော suffix (ဥပမာ- `</w>`)။
+*   **`Ġ` Symbol**: GPT-2 tokenizer တွင် space ကို ကိုယ်စားပြုသော symbol။
+*   **`processors.ByteLevel(trim_offsets=False)`**: Byte-level post-processing ကို လုပ်ဆောင်သော processor။ `trim_offsets=False` က offsets များကို ပြင်ဆင်မွမ်းမံခြင်း မပြုလုပ်စေပါ။
+*   **`decoders.ByteLevel()`**: Byte-level tokens များကို text အဖြစ် ပြန်ပြောင်းပေးသော decoder။
+*   **`models.Unigram()`**: Unigram model ကို ဖန်တီးခြင်း။
+*   **`tokenizers.Regex`**: Regex (Regular Expression) ကို အသုံးပြုရန် class။
+*   **`normalizers.Replace("``", '"')`**: ````` ကို `"` ဖြင့် အစားထိုးသော normalizer။
+*   **`normalizers.Replace("''", '"')`**: `''` ကို `"` ဖြင့် အစားထိုးသော normalizer။
+*   **`normalizers.NFKD()`**: Unicode normalization form KD (Compatibility Decomposition) ကို အသုံးပြုသော normalizer။
+*   **`normalizers.Replace(Regex(" {2,}"), " ")`**: spaces နှစ်ခု သို့မဟုတ် ထို့ထက်ပိုသော sequence များကို single space တစ်ခုဖြင့် အစားထိုးသော normalizer။
+*   **`pre_tokenizers.Metaspace()`**: Metaspace pre-tokenization ကို လုပ်ဆောင်သော pre-tokenizer။ (spaces များကို special character ဖြင့် အစားထိုးသည်)။
+*   **`UnigramTrainer`**: Unigram model ကို train လုပ်ရန်အတွက် trainer class။
+*   **`shrinking_factor`**: Unigram training တွင် vocabulary မှ tokens များကို ဖယ်ရှားသည့်အခါ အသုံးပြုသော factor။
+*   **`max_piece_length`**: token တစ်ခု၏ အမြင့်ဆုံးအရှည်။
+*   **`<cls>` Token**: XLNet model တွင် sequence ၏ အဆုံးကို ကိုယ်စားပြုသော special token (token type ID 2 ဖြင့်)။
+*   **`<sep>` Token**: XLNet model တွင် sentence တစ်ခု၏ အဆုံးကို ကိုယ်စားပြုသော special token။
+*   **`padding_side="left"`**: Padding ကို sequence ၏ ဘယ်ဘက်ခြမ်းတွင် လုပ်ဆောင်ရန် သတ်မှတ်ခြင်း။
+*   **`XLNetTokenizerFast`**: XLNet model အတွက် သီးခြား fast tokenizer class။
