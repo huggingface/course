@@ -1,0 +1,132 @@
+<FrameworkSwitchCourse {fw} />
+
+# Traducción[[translation]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section4_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section4_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section4_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section4_tf.ipynb"},
+]} />
+
+{/if}
+
+La traducción es una tarea de secuencia a secuencia: recibimos una secuencia en un idioma y generamos otra secuencia en un idioma distinto.
+
+<Youtube id="1JvfrvZgi6c"/>
+
+En esta sección ajustaremos un modelo Marian de inglés a francés sobre el conjunto KDE4.
+
+## El conjunto de datos KDE4[[the-kde4-dataset]]
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
+split_datasets = raw_datasets["train"].train_test_split(train_size=0.9, seed=20)
+split_datasets["validation"] = split_datasets.pop("test")
+```
+
+Cada ejemplo contiene un diccionario `translation` con la frase origen y la frase destino.
+
+## Tokenización de entradas y objetivos[[processing-the-data]]
+
+La diferencia importante respecto a otras tareas es que debemos tokenizar tanto las entradas como los objetivos:
+
+```py
+from transformers import AutoTokenizer
+
+model_checkpoint = "Helsinki-NLP/opus-mt-en-fr"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, return_tensors="pt")
+
+max_length = 128
+
+
+def preprocess_function(examples):
+    inputs = [ex["en"] for ex in examples["translation"]]
+    targets = [ex["fr"] for ex in examples["translation"]]
+    model_inputs = tokenizer(
+        inputs, text_target=targets, max_length=max_length, truncation=True
+    )
+    return model_inputs
+
+
+tokenized_datasets = split_datasets.map(
+    preprocess_function,
+    batched=True,
+    remove_columns=split_datasets["train"].column_names,
+)
+```
+
+## Data collator[[data-collation]]
+
+Usaremos `DataCollatorForSeq2Seq`, que rellena entradas y etiquetas y además prepara los `decoder_input_ids` cuando el modelo lo necesita:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=None)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=None, return_tensors="tf")
+```
+
+{/if}
+
+## Ajuste del modelo[[fine-tuning-the-model]]
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoModelForSeq2SeqLM
+
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+En PyTorch, el flujo natural es usar `Seq2SeqTrainer`, que sabe evaluar con `generate()`.
+
+{:else}
+
+```py
+from transformers import TFAutoModelForSeq2SeqLM
+
+model = TFAutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, from_pt=True)
+```
+
+En TensorFlow, preparamos `tf.data.Dataset` y entrenamos con `model.fit()`.
+
+{/if}
+
+## Métricas[[metrics]]
+
+La métrica clásica para traducción es BLEU, y hoy en día suele preferirse [SacreBLEU](https://github.com/mjpost/sacrebleu), que normaliza la tokenización:
+
+```py
+!pip install sacrebleu
+```
+
+```py
+import evaluate
+
+metric = evaluate.load("sacrebleu")
+```
+
+Para calcular la métrica, decodificamos las secuencias generadas y las comparamos con las referencias. BLEU no mide comprensión semántica profunda, pero sigue siendo una referencia útil para comparar modelos de traducción.

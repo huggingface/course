@@ -1,310 +1,857 @@
-<FrameworkSwitchCourse {fw} />
+# Despliegue de inferencia optimizado
 
-<!-- DISABLE-FRONTMATTER-SECTIONS -->
+En esta sección vamos a explorar frameworks avanzados para optimizar despliegues de LLM: Text Generation Inference (TGI), vLLM y llama.cpp. Estas aplicaciones se usan sobre todo en entornos de producción para servir LLM a usuarios. Esta sección se centra en cómo desplegar estos frameworks en producción, no en cómo usarlos para inferencia en una sola máquina.
 
-# Quiz de final de capítulo
+Veremos cómo estas herramientas maximizan la eficiencia de inferencia y simplifican los despliegues en producción de Large Language Models.
 
-<CourseFloatingBanner
-    chapter={2}
-    classNames="absolute z-10 right-0 top-0"
-/>
+## Guía para elegir framework
 
-### 1. ¿Cuál es el orden del pipeline de modelado del lenguaje?
+TGI, vLLM y llama.cpp sirven para cosas parecidas, pero tienen características distintas que los hacen más adecuados para casos de uso diferentes. Veamos las diferencias clave entre ellos, con foco en rendimiento e integración.
 
-<Question
-	choices={[
-		{
-			text: "Primero, el modelo que maneja el texto y devuelve las peticiones sin procesar. El tokenizador luego da sentido a estas predicciones y las convierte nuevamente en texto cuando es necesario.",
-			explain: "¡El modelo no puede entender texto! El tokenizador primero debe tokenizar el texto y convertirlo a IDs para que así sea comprensible por el modelo."
-		},
-		{
-			text: "Primero, el tokenizador, que maneja el texto y regresa IDs. El modelo maneja estos IDs y produce una predicción, la cual puede ser algún texto.",
-			explain: "La predicción del modelo no puede ser texto de forma directa. ¡El tokenizador tiene que ser usado de tal forma que convierta la predicción de vuelta a texto!"
-		},
-		{
-			text: "El tokenizador maneja texto y regresa IDs. El modelo maneja estos IDs y produce una predicción. El tokenizador puede luego ser usado de nuevo para convertir estas predicciones de vuelta a texto.",
-			explain: "¡Correcto! El tokenizador puede ser usado tanto para tokenizar como des-tokenizar.",
-            correct: true
-		}
-	]}
-/>
+### Gestión de memoria y rendimiento
 
-### 2. ¿Cuántas dimensiones tiene el tensor producido por el modelo base de Transformer y cuáles son?
+**TGI** está diseñado para ser estable y predecible en producción, usando longitudes de secuencia fijas para mantener un uso de memoria consistente. TGI gestiona la memoria con Flash Attention 2 y técnicas de continuous batching. Esto significa que puede procesar los cálculos de atención de forma muy eficiente y mantener la GPU ocupada alimentándola constantemente con trabajo. El sistema puede mover partes del modelo entre CPU y GPU cuando hace falta, lo que ayuda a manejar modelos más grandes.
 
-<Question
-	choices={[
-		{
-			text: "1: La longitud de secuencia y el tamaño del lote",
-			explain: "¡Falso! El tensor producido por el modelo tiene una tercer dimensión: tamaño oculto."
-		},
-		{
-			text: "2: La longitud de secuencia y el tamaño oculto",
-			explain: "¡Falso! All Todos los modelos Transformer manejan lotes, aún con una sola secuencia; lo cual sería un lote de tamaño 1!"
-		},
-		{
-			text: "3: La longitud de secuencia, el tamaño de lote y el tamaño oculto",
-			explain: "¡Correcto!",
-            correct: true
-		}
-	]}
-/>
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/tgi/flash-attn.png" alt="Flash Attention" />
 
-### 3. ¿Cuál de los siguientes es un ejemplo de tokenización de subpalabras?
+<Tip title="Cómo funciona Flash Attention">
 
-<Question
-	choices={[
-		{
-			text: "WordPiece",
-			explain: "¡Sí ese es un ejemplo de tokenización de subpalabras!",
-            correct: true
-		},
-		{
-			text: "Tokenización basada en caracteres",
-			explain: "La tokenización basada en caracteres no es un tipo de tokenización de subpalabras."
-		},
-		{
-			text: "División por espacios en blanco y puntuación",
-			explain: "¡Ese es un esquema de tokenización basado en palabras!"
-		},
-		{
-			text: "BPE",
-			explain: "¡Sí ese es un ejemplo de tokenización de subpalabras!",
-            correct: true
-        },
-		{
-			text: "Unigrama",
-			explain: "¡Sí ese es un ejemplo de tokenización de subpalabras!",
-            correct: true
-        },
-		{
-			text: "Ninguno de los anteriores",
-			explain: "¡Incorrecto!"
-        }
-	]}
-/>
+Flash Attention es una técnica que optimiza el mecanismo de atención en modelos transformer al atacar los cuellos de botella del ancho de banda de memoria. Como vimos antes en [Capítulo 1.8](/course/chapter1/8), el mecanismo de atención tiene complejidad y uso de memoria cuadráticos, así que se vuelve ineficiente con secuencias largas.
 
-### 4. ¿Qué es una cabeza del modelo?
+La innovación clave está en cómo gestiona las transferencias de memoria entre la High Bandwidth Memory (HBM) y la caché SRAM, que es más rápida. La atención tradicional transfiere datos repetidamente entre HBM y SRAM, creando cuellos de botella y dejando la GPU ociosa. Flash Attention carga los datos una sola vez en SRAM y hace todos los cálculos ahí, minimizando las transferencias de memoria costosas.
 
-<Question
-	choices={[
-		{
-			text: "Un componente de la red de Transformer base que redirecciona los tensores a sus capas correctas",
-			explain: "¡Incorrecto! No hay tal componente."
-		},
-		{
-			text: "También conocido como el mecanismo de autoatención, adapta la representación de un token de acuerdo a los otros tokens de la secuencia", 
-			explain: "¡Incorrecto! La capa de autoatención contiene \"cabezas\", pero éstas no son cabezas de adaptación."
-		},
-		{
-			text: "Un componente adicional, compuesto usualmente de una o unas pocas capas, para convertir las predicciones del Transformer a una salida específica de la tarea",
-			explain: "Así es, Las cabezas de adaptación, también conocidas simplemente como cabezas, vienen en diferentes formas: cabezas de modelado de lenguaje, cabezas de respuesta a preguntas, cabezas de clasificación de secuencia... ",
-			correct: true
-		} 
-	]}
-/>
+Aunque sus beneficios son más notorios durante el entrenamiento, el menor uso de VRAM y la mayor eficiencia de Flash Attention también la hacen valiosa para inferencia, ya que permite servir LLM de forma más rápida y escalable.
 
-{#if fw === 'pt'}
-### 5. ¿Qué es un AutoModel?
+</Tip>
 
-<Question
-	choices={[
-		{
-			text: "Un modelo que entrena automáticamente en tus datos",
-			explain: "Incorrecto. ¿Estás confundiendo esto con nuestro producto <a href='https://huggingface.co/autotrain'>AutoTrain</a>?"
-		},
-		{
-			text: "Un objeto que devuelve la arquitectura correcta basado en el punto de control",
-			explain: "Exacto: el <code>AutoModel</code> sólo necesita conocer el punto de control desde el cual inicializar para devolver la arquitectura correcta.",
-			correct: true
-		},
-		{
-			text: "Un modelo que detecta automáticamente el lenguaje usado por sus entradas para cargar los pesos correctos",
-			explain: "Incorrecto; aunque algunos puntos de control y modelos son capaces de manejar varios lenguajes, no hay herramientas integradas para la selección automática de punto de control de acuerdo al lenguaje. ¡Deberías dirigirte a <a href='https://huggingface.co/models'>Model Hub</a> para encontrar el mejor punto de control para tu tarea!"
-		} 
-	]}
-/>
+**vLLM** toma otro enfoque usando PagedAttention. Igual que una computadora gestiona su memoria en páginas, vLLM divide la memoria del modelo en bloques más pequeños. Este sistema inteligente le permite manejar solicitudes de distinto tamaño con más flexibilidad y no desperdicia espacio de memoria. Es especialmente bueno compartiendo memoria entre solicitudes distintas y reduce la fragmentación, lo que vuelve más eficiente todo el sistema.
 
-{:else}
-### 5. ¿Qué es un TFAutoModel?
+<Tip title="Cómo funciona PagedAttention">
 
-<Question
-	choices={[
-		{
-			text: "Un modelo que entrena automáticamente en tus datos",
-			explain: "Incorrecto. ¿Estás confundiendo esto con nuestro producto <a href='https://huggingface.co/autotrain'>AutoTrain</a>?"
-		},
-		{
-			text: "Un objeto que devuelve la arquitectura correcta basado en el punto de control",
-			explain: "Exacto: el <code>TFAutoModel</code> sólo necesita conocer el punto de control desde el cual inicializar para devolver la arquitectura correcta.",
-			correct: true
-		},
-		{
-			text: "Un modelo que detecta automáticamente el lenguaje usado por sus entradas para cargar los pesos correctos",
-			explain: "Incorrecto; aunque algunos puntos de control y modelos son capaces de manejar varios lenguajes, no hay herramientas integradas para la selección automática de punto de control de acuerdo al lenguaje. ¡Deberías dirigirte a <a href='https://huggingface.co/models'>Model Hub</a> para encontrar el mejor punto de control para tu tarea!"
-		} 
-	]}
-/>
+PagedAttention es una técnica que resuelve otro cuello de botella crítico en la inferencia de LLM: la gestión de memoria de la KV cache. Como vimos en [Capítulo 1.8](/course/chapter1/8), durante la generación de texto el modelo almacena las keys y values de atención (KV cache) de cada token generado para reducir cómputos redundantes. La KV cache puede volverse enorme, sobre todo con secuencias largas o múltiples solicitudes concurrentes.
 
-{/if}
+La innovación clave de vLLM está en cómo gestiona esta caché:
 
-### 6. ¿Cuáles son las técnicas a tener en cuenta al realizar batching de secuencias de diferentes longitudes juntas?
+1. **Memory Paging**: En vez de tratar la KV cache como un solo bloque grande, la divide en "pages" de tamaño fijo, parecidas a la memoria virtual en los sistemas operativos.
+2. **Non-contiguous Storage**: Las pages no tienen que almacenarse de forma contigua en la memoria de la GPU, lo que permite una asignación más flexible.
+3. **Page Table Management**: Una page table rastrea qué pages pertenecen a cada secuencia, lo que permite búsquedas y acceso eficientes.
+4. **Memory Sharing**: En operaciones como parallel sampling, las pages que almacenan la KV cache del prompt pueden compartirse entre múltiples secuencias.
 
-<Question
-	choices={[
-		{
-			text: "Truncado",
-			explain: "Sí, el truncamiento es una forma correcta de emparejar secuencias de modo que se ajusten a una forma rectangular. ¿Aunque, es la única?",
-			correct: true
-		},
-		{
-			text: "Returning tensors",
-			explain: "Mientras las otras técnicas te permiten devolver tensores rectangulares, returning tensors no es útil cuando se hace batching en secuencias juntas."
-		},
-		{
-			text: "Relleno",
-			explain: "Sí, el relleno es una forma correcta de emparejar secuencias de modo que se ajusten a una forma rectangular. ¿Aunque, es la única?",
-			correct: true
-		}, 
-		{
-			text: "Enmascarado de atención",
-			explain: "¡Absolutamente! Las máscaras de atención son de primera importancia cuando se manejan secuencias de diferentes longitudes. Sin embargo, no es la única técnica a tener en cuenta.",
-			correct: true
-		} 
-	]}
-/>
+El enfoque de PagedAttention puede dar hasta 24x más throughput que los métodos tradicionales, así que cambia por completo el despliegue de LLM en producción. Si quieres profundizar mucho más en cómo funciona PagedAttention, puedes leer [la guía de la documentación de vLLM](https://docs.vllm.ai/en/latest/design/kernel/paged_attention.html).
 
-### 7. ¿Cuál es el punto de aplicar una función SoftMax a las salidas logits por un modelo de clasificación de secuencias?
+</Tip>
 
-<Question
-	choices={[
-		{
-			text: "Suaviza los logits para que sean más fiables.",
-			explain: "No, la función SoftMax no afecta en la fiabilidad de los resultados."
-		},
-		{
-			text: "Aplica un límite inferior y superior de modo que sean comprensibles.",
-			explain: "¡Correcto! Los valores resultantes están limitados entre 0 y 1. Aunque, no es la única razón por la cual usamos una función SoftMax.",
-            correct: true
-		},
-		{
-			text: "La suma total de la salida es entonces 1, dando como resultado una posible interpretación probabilística.",
-			explain: "¡Correcto! Aunque, esa no es la única razón por la que usamos una función SoftMax.",
-            correct: true
-		}
-	]}
-/>
+**llama.cpp** es una implementación en C/C++ muy optimizada, diseñada originalmente para ejecutar modelos LLaMA en hardware de consumo. Se centra en la eficiencia en CPU con aceleración opcional por GPU y es ideal para entornos con recursos limitados. llama.cpp usa técnicas de quantization para reducir el tamaño del modelo y sus requisitos de memoria manteniendo un buen rendimiento. Implementa kernels optimizados para varias arquitecturas de CPU y soporta gestión básica de KV cache para una generación eficiente de tokens.
 
-### 8. ¿En qué método se centra la mayor parte de la API del tokenizador?
+<Tip title="Cómo funciona la quantization en llama.cpp">
 
-<Question
-	choices={[
-		{
-			text: "<code>encode</code>, ya que puede codificar texto en IDs e IDs en predicciones",
-			explain: "¡Incorrecto! Aunque el método <code>encode</code> existe en los tokenizadores, no existe en los modelos." 
-		},
-		{
-			text: "Llamar al objeto tokenizador directamente.",
-			explain: "¡Exactamente! El método <code>__call__</code> del tokenizador es un método muy poderoso el cual puede manejar casi cualquier cosa.También es el método usado para recuperar las predicciones de un modelo.",
-			correct: true
-		},
-		{
-			text: "<code>pad</code>",
-			explain: "¡Incorrecto! El relleno es muy útil, pero es solo una parte de la API tokenizador."
-		},
-		{
-			text: "<code>tokenize</code>",
-			explain: "El método <code>tokenize</code> es posiblemente uno de los métodos más útiles, pero no es el núcleo de la API tokenizador."
-		}
-	]}
-/>
+La quantization en llama.cpp reduce la precisión de los pesos del modelo de floating point de 32 o 16 bits a formatos de menor precisión como enteros de 8 bits (INT8), 4 bits o incluso menos. Esto reduce mucho el uso de memoria y mejora la velocidad de inferencia con una pérdida mínima de calidad.
 
-### 9. ¿Qué contiene la variable `result` en este código de ejemplo?
+Las funciones clave de quantization en llama.cpp incluyen:
+1. **Multiple Quantization Levels**: Soporta quantization de 8 bits, 4 bits, 3 bits e incluso 2 bits.
+2. **GGML/GGUF Format**: Usa formatos de tensores personalizados optimizados para inferencia con quantization.
+3. **Mixed Precision**: Puede aplicar distintos niveles de quantization a distintas partes del modelo.
+4. **Hardware-Specific Optimizations**: Incluye rutas de código optimizadas para varias arquitecturas de CPU, como AVX2, AVX-512 y NEON.
 
-```py
-from transformers import AutoTokenizer
+Este enfoque permite ejecutar modelos de miles de millones de parámetros en hardware de consumo con memoria limitada, así que es perfecto para despliegues locales y dispositivos edge.
 
-tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-result = tokenizer.tokenize("Hello!")
+</Tip>
+
+### Despliegue e integración
+
+Ahora pasemos a las diferencias de despliegue e integración entre los frameworks.
+
+**TGI** destaca en despliegues de nivel empresarial con sus funciones listas para producción. Viene con soporte integrado para Kubernetes e incluye todo lo que necesitas para ejecutar en producción, como monitorización con Prometheus y Grafana, escalado automático y funciones de seguridad completas. El sistema también incluye logging de nivel empresarial y varias medidas de protección, como filtrado de contenido y rate limiting, para mantener tu despliegue seguro y estable.
+
+**vLLM** adopta un enfoque más flexible y amigable para desarrolladores. Está construido con Python en su núcleo y puede sustituir fácilmente la API de OpenAI en tus aplicaciones existentes. El framework se centra en ofrecer rendimiento puro y puede personalizarse para adaptarse a tus necesidades concretas. Funciona especialmente bien con Ray para gestionar clústeres, así que es una gran opción cuando necesitas alto rendimiento y capacidad de adaptación.
+
+**llama.cpp** prioriza la simplicidad y la portabilidad. Su implementación de servidor es ligera y puede ejecutarse en una amplia gama de hardware, desde servidores potentes hasta portátiles de consumo e incluso algunos dispositivos móviles de gama alta. Con dependencias mínimas y un núcleo simple en C/C++, es fácil de desplegar en entornos donde instalar frameworks de Python sería complicado. El servidor ofrece una API compatible con OpenAI mientras mantiene una huella de recursos mucho menor que otras soluciones.
+
+## Primeros pasos
+
+Exploremos cómo usar estos frameworks para desplegar LLM, empezando por la instalación y la configuración básica.
+
+### Instalación y configuración básica
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI es fácil de instalar y usar, con una integración profunda en el ecosistema de Hugging Face.
+
+Primero, lanza el servidor TGI con Docker:
+
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct
 ```
 
-<Question
-	choices={[
-		{
-			text: "Una lista de strings, cada string es un token",
-			explain: "¡Por supuesto! ¡Convierte esto a IDs, y los envía a los modelos!",
-            correct: true
-		},
-		{
-			text: "Una lista de IDs",
-			explain: "Incorrecto; ¡para eso están los métodos <code>__call__</code> o <code>convert_tokens_to_ids</code>!"
-		},
-		{
-			text: "Una cadena que contiene todos los tokens",
-			explain: "Esto sería subóptimo, ya que el objetivo es dividir la cadena en varios tokens."
-		}
-	]}
-/>
+Luego interactúa con él usando InferenceClient de Hugging Face:
 
-{#if fw === 'pt'}
-### 10. ¿Hay algo mal con el siguiente código?
+```python
+from huggingface_hub import InferenceClient
 
-```py
-from transformers import AutoTokenizer, AutoModel
+# Initialize client pointing to TGI endpoint
+client = InferenceClient(
+    model="http://localhost:8080",  # URL to the TGI server
+)
 
-tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-model = AutoModel.from_pretrained("gpt2")
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+    stop_sequences=[],
+)
+print(response.generated_text)
 
-encoded = tokenizer("Hey!", return_tensors="pt")
-result = model(**encoded)
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
 ```
 
-<Question
-	choices={[
-		{
-			text: "No, parece correcto.",
-			explain: "Desafortunadamente, acoplar un modelo con un tokenizador que fue entrenado con un punto de control distinto raramente es una buena idea. El modelo no fue entrenado para dar sentido a la salida de este tokenizador, así la salida del modelo (¡si es que puede correr!) no tendrá ningún sentido."
-		},
-		{
-			text: "El tokenizador y el modelo siempre deben ser del mismo punto de control.",
-			explain: "¡Correcto!",
-            correct: true
-		},
-		{
-			text: "Es una buena práctica rellenar y truncar con el tokenizador ya que cada entrada es un lote.",
-			explain: "Es cierto que cada entrada de modelo necesita ser un lote. Sin embargo, truncar o rellenar esta secuencia no necesariamente hace sentido ya que sólo hay una, y esas son técnicas para juntar una lista de oraciones."
-		}
-	]}
-/>
+Como alternativa, puedes usar el cliente de OpenAI:
 
-{:else}
-### 10. ¿Hay algo mal con el siguiente código?
+```python
+from openai import OpenAI
 
-```py
-from transformers import AutoTokenizer, TFAutoModel
+# Initialize client pointing to TGI endpoint
+client = OpenAI(
+    base_url="http://localhost:8080/v1",  # Make sure to include /v1
+    api_key="not-needed",  # TGI doesn't require an API key by default
+)
 
-tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-model = TFAutoModel.from_pretrained("gpt2")
-
-encoded = tokenizer("Hey!", return_tensors="pt")
-result = model(**encoded)
+# Chat completion
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
 ```
 
-<Question
-	choices={[
-		{
-			text: "No, parece correcto.",
-			explain: "Desafortunadamente, acoplar un modelo con un tokenizador que fue entrenado con un punto de control distinto raramente es una buena idea. El modelo no fue entrenado para dar sentido a la salida de este tokenizador, así la salida del modelo (¡si es que puede correr!) no tendrá ningún sentido."
-		},
-		{
-			text: "El tokenizador y el modelo siempre deben ser del mismo punto de control.",
-			explain: "¡Correcto!",
-            correct: true
-		},
-		{
-			text: "Es una buena práctica rellenar y truncar con el tokenizador ya que cada entrada es un lote.",
-			explain: "Es cierto que cada entrada de modelo necesita ser un lote. Sin embargo, truncar o rellenar esta secuencia no necesariamente hace sentido ya que sólo hay una, y esas son técnicas para juntar una lista de oraciones."
-		}
-	]}
-/>
+</hfoption>
 
-{/if}
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp es fácil de instalar y usar, requiere dependencias mínimas y soporta inferencia tanto en CPU como en GPU.
+
+Primero, instala y compila llama.cpp:
+
+```sh
+# Clone the repository
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Build the project
+make
+
+# Download the SmolLM2-1.7B-Instruct-GGUF model
+curl -L -O https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct.Q4_K_M.gguf
+```
+
+Luego lanza el servidor, con compatibilidad con la API de OpenAI:
+
+```sh
+# Start the server
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \
+    --n-gpu-layers 0  # Set to a higher number to use GPU
+```
+
+Interactúa con el servidor usando InferenceClient de Hugging Face:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to llama.cpp server
+client = InferenceClient(
+    model="http://localhost:8080/v1",  # URL to the llama.cpp server
+    token="sk-no-key-required",  # llama.cpp server requires this placeholder
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Como alternativa, puedes usar el cliente de OpenAI:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to llama.cpp server
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-no-key-required",  # llama.cpp server requires this placeholder
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",  # Model identifier can be anything as server only loads one model
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM es fácil de instalar y usar, con compatibilidad con la API de OpenAI y también con una interfaz nativa de Python.
+
+Primero, lanza el servidor compatible con OpenAI de vLLM:
+
+```sh
+python -m vllm.entrypoints.openai.api_server \
+    --model HuggingFaceTB/SmolLM2-360M-Instruct \
+    --host 0.0.0.0 \
+    --port 8000
+```
+
+Luego interactúa con él usando InferenceClient de Hugging Face:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to vLLM endpoint
+client = InferenceClient(
+    model="http://localhost:8000/v1",  # URL to the vLLM server
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+Como alternativa, puedes usar el cliente de OpenAI:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to vLLM endpoint
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed",  # vLLM doesn't require an API key by default
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### Generación de texto básica
+
+Veamos ejemplos de generación de texto con estos frameworks:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+Primero, despliega TGI con parámetros avanzados:
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --max-total-tokens 4096 \
+    --max-input-length 3072 \
+    --max-batch-total-tokens 8192 \
+    --waiting-served-ratio 1.2
+```
+
+Usa InferenceClient para una generación de texto flexible:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Raw text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    do_sample=True,
+    details=True,
+)
+print(response.generated_text)
+```
+
+O usa el cliente de OpenAI:
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # Higher for more creativity
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+Para llama.cpp, puedes configurar parámetros avanzados al lanzar el servidor:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \            # Context size
+    --threads 8 \        # CPU threads to use
+    --batch-size 512 \   # Batch size for prompt evaluation
+    --n-gpu-layers 0     # GPU layers (0 = CPU only)
+```
+
+Usa InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080/v1", token="sk-no-key-required")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# For direct text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    details=True,
+)
+print(response.generated_text)
+```
+
+O usa el cliente de OpenAI para generar con control sobre los parámetros de sampling:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="sk-no-key-required")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Nucleus sampling probability
+    frequency_penalty=0.5,  # Reduce repetition of frequent tokens
+    presence_penalty=0.5,  # Reduce repetition by penalizing tokens already present
+    max_tokens=200,  # Maximum generation length
+)
+print(response.choices[0].message.content)
+```
+
+También puedes usar la librería nativa de llama.cpp para tener aún más control:
+
+```python
+# Using llama-cpp-python package for direct model access
+from llama_cpp import Llama
+
+# Load the model
+llm = Llama(
+    model_path="smollm2-1.7b-instruct.Q4_K_M.gguf",
+    n_ctx=4096,  # Context window size
+    n_threads=8,  # CPU threads
+    n_gpu_layers=0,  # GPU layers (0 = CPU only)
+)
+
+# Format prompt according to the model's expected format
+prompt = """<|im_start|>system
+You are a creative storyteller.
+<|im_end|>
+<|im_start|>user
+Write a creative story
+<|im_end|>
+<|im_start|>assistant
+"""
+
+# Generate response with precise parameter control
+output = llm(
+    prompt,
+    max_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    frequency_penalty=0.5,
+    presence_penalty=0.5,
+    stop=["<|im_end|>"],
+)
+
+print(output["choices"][0]["text"])
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+Para un uso avanzado con vLLM, puedes usar InferenceClient:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8000/v1")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# For direct text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+```
+
+También puedes usar el cliente de OpenAI:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+```
+
+vLLM también ofrece una interfaz nativa de Python con control fino:
+
+```python
+from vllm import LLM, SamplingParams
+
+# Initialize the model with advanced parameters
+llm = LLM(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    max_num_seqs=256,
+    block_size=16,
+)
+
+# Configure sampling parameters
+sampling_params = SamplingParams(
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    max_tokens=100,  # Maximum length
+    presence_penalty=1.1,  # Reduce repetition
+    frequency_penalty=1.1,  # Reduce repetition
+    stop=["\n\n", "###"],  # Stop sequences
+)
+
+# Generate text
+prompt = "Write a creative story"
+outputs = llm.generate(prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+
+# For chat-style interactions
+chat_prompt = [
+    {"role": "system", "content": "You are a creative storyteller."},
+    {"role": "user", "content": "Write a creative story"},
+]
+formatted_prompt = llm.get_chat_template()(chat_prompt)  # Uses model's chat template
+outputs = llm.generate(formatted_prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## Control avanzado de la generación
+
+### Selección de tokens y sampling
+
+El proceso de generar texto consiste en seleccionar el siguiente token en cada paso. Este proceso de selección puede controlarse con varios parámetros:
+
+1. **Raw Logits**: Las probabilidades de salida iniciales para cada token.
+2. **Temperature**: Controla la aleatoriedad en la selección, cuanto más alta, más creatividad.
+3. **Top-p (Nucleus) Sampling**: Filtra los tokens principales que suman X% de la masa de probabilidad.
+4. **Top-k Filtering**: Limita la selección a los `k` tokens más probables.
+
+Así puedes configurar estos parámetros:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Write a creative story",
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    top_k=50,  # Consider top 50 tokens
+    max_new_tokens=100,  # Maximum length
+    repetition_penalty=1.1,  # Reduce repetition
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API compatibility
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",  # Model name (can be any string for llama.cpp server)
+    prompt="Write a creative story",
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    frequency_penalty=1.1,  # Reduce repetition
+    presence_penalty=0.1,  # Reduce repetition
+    max_tokens=100,  # Maximum length
+)
+
+# Via llama-cpp-python direct access
+output = llm(
+    "Write a creative story",
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=100,
+    repeat_penalty=1.1,
+)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    top_k=50,  # Consider top 50 tokens
+    max_tokens=100,  # Maximum length
+    presence_penalty=0.1,  # Reduce repetition
+)
+llm.generate("Write a creative story", sampling_params=params)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### Cómo controlar la repetición
+
+Estos frameworks ofrecen formas de evitar la generación de texto repetitivo:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Write a varied text",
+    repetition_penalty=1.1,  # Penalize repeated tokens
+    no_repeat_ngram_size=3,  # Prevent 3-gram repetition
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Write a varied text",
+    frequency_penalty=1.1,  # Penalize frequent tokens
+    presence_penalty=0.8,  # Penalize tokens already present
+)
+
+# Via direct library
+output = llm(
+    "Write a varied text",
+    repeat_penalty=1.1,  # Penalize repeated tokens
+    frequency_penalty=0.5,  # Additional frequency penalty
+    presence_penalty=0.5,  # Additional presence penalty
+)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    presence_penalty=0.1,  # Penalize token presence
+    frequency_penalty=0.1,  # Penalize token frequency
+)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### Control de longitud y stop sequences
+
+Puedes controlar la longitud de la generación y especificar cuándo debe detenerse:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Generate a short paragraph",
+    max_new_tokens=100,
+    min_new_tokens=10,
+    stop_sequences=["\n\n", "###"],
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Generate a short paragraph",
+    max_tokens=100,
+    stop=["\n\n", "###"],
+)
+
+# Via direct library
+output = llm("Generate a short paragraph", max_tokens=100, stop=["\n\n", "###"])
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    max_tokens=100,
+    min_tokens=10,
+    stop=["###", "\n\n"],
+    ignore_eos=False,
+    skip_special_tokens=True,
+)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## Gestión de memoria
+
+Estos frameworks implementan técnicas avanzadas de gestión de memoria para una inferencia eficiente.
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI usa Flash Attention 2 y continuous batching:
+
+```sh
+# Docker deployment with memory optimization
+docker run --gpus all -p 8080:80 \
+    --shm-size 1g \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct \
+    --max-batch-total-tokens 8192 \
+    --max-input-length 4096
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp usa quantization y una disposición de memoria optimizada:
+
+```sh
+# Server with memory optimizations
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 2048 \               # Context size
+    --threads 4 \           # CPU threads
+    --n-gpu-layers 32 \     # Use more GPU layers for larger models
+    --mlock \               # Lock memory to prevent swapping
+    --cont-batching         # Enable continuous batching
+```
+
+Para modelos demasiado grandes para tu GPU, puedes usar CPU offloading:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --n-gpu-layers 20 \     # Keep first 20 layers on GPU
+    --threads 8             # Use more CPU threads for CPU layers
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM usa PagedAttention para una gestión de memoria óptima:
+
+```python
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16,
+)
+
+llm = LLM(engine_args=engine_args)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## Recursos
+
+- [Text Generation Inference Documentation](https://huggingface.co/docs/text-generation-inference)
+- [TGI GitHub Repository](https://github.com/huggingface/text-generation-inference)
+- [vLLM Documentation](https://vllm.readthedocs.io/)
+- [vLLM GitHub Repository](https://github.com/vllm-project/vllm)
+- [PagedAttention Paper](https://arxiv.org/abs/2309.06180)
+- [llama.cpp GitHub Repository](https://github.com/ggerganov/llama.cpp)
+- [llama-cpp-python Repository](https://github.com/abetlen/llama-cpp-python)

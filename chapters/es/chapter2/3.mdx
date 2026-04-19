@@ -1,0 +1,296 @@
+<FrameworkSwitchCourse {fw} />
+
+# Modelos[[the-models]]
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/es/chapter2/section3_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/es/chapter2/section3_pt.ipynb"},
+]} />
+
+<Youtube id="AhChOFRegn4"/>
+
+En esta sección veremos más de cerca cómo crear y usar modelos. Usaremos la clase `AutoModel`, que viene muy bien cuando quieres instanciar cualquier modelo a partir de un checkpoint.
+
+## Crear un Transformer[[creating-a-transformer]]
+
+Empecemos examinando qué pasa cuando instanciamos un `AutoModel`:
+
+```py
+from transformers import AutoModel
+
+model = AutoModel.from_pretrained("bert-base-cased")
+```
+
+Igual que con el tokenizador, el método `from_pretrained()` descargará y almacenará en caché los datos del modelo desde Hugging Face Hub. Como mencionamos antes, el nombre del checkpoint corresponde a una arquitectura y unos pesos concretos; en este caso, un modelo BERT con una arquitectura básica (12 capas, hidden size de 768, 12 attention heads) y entradas que distinguen mayúsculas y minúsculas (es decir, la diferencia entre mayúsculas y minúsculas importa). Hay muchos checkpoints disponibles en el Hub; puedes explorarlos [aquí](https://huggingface.co/models).
+
+La clase `AutoModel` y sus equivalentes son en realidad wrappers simples pensados para recuperar la arquitectura de modelo apropiada para un checkpoint dado. Es una clase "auto", lo que significa que intentará adivinar por ti la arquitectura de modelo adecuada e instanciar la clase correcta. Aun así, si sabes qué tipo de modelo quieres usar, puedes usar directamente la clase que define su arquitectura:
+
+```py
+from transformers import BertModel
+
+model = BertModel.from_pretrained("bert-base-cased")
+```
+
+## Cargar y guardar[[loading-and-saving]]
+
+Guardar un modelo es tan sencillo como guardar un tokenizador. De hecho, los modelos tienen el mismo método `save_pretrained()`, que guarda los pesos del modelo y la configuración de su arquitectura:
+
+```py
+model.save_pretrained("directory_on_my_computer")
+```
+
+Esto guardará dos archivos en tu disco:
+
+```
+ls directory_on_my_computer
+
+config.json model.safetensors
+```
+
+Si miras dentro del archivo *config.json*, verás todos los atributos necesarios para construir la arquitectura del modelo. Este archivo también contiene algunos metadatos, como de dónde salió el checkpoint y qué versión de 🤗 Transformers estabas usando la última vez que guardaste el checkpoint.
+
+El archivo *pytorch_model.safetensors* se conoce como state dictionary; contiene todos los pesos de tu modelo. Los dos archivos trabajan juntos: el archivo de configuración es necesario para conocer la arquitectura del modelo, mientras que los pesos del modelo son los parámetros del modelo.
+
+Para reutilizar un modelo guardado, vuelve a usar el método `from_pretrained()`:
+
+```py
+from transformers import AutoModel
+
+model = AutoModel.from_pretrained("directory_on_my_computer")
+```
+
+Una gran característica de la librería 🤗 Transformers es la posibilidad de compartir fácilmente modelos y tokenizadores con la comunidad. Para hacerlo, asegúrate de tener una cuenta en [Hugging Face](https://huggingface.co). Si estás usando un notebook, puedes iniciar sesión fácilmente con esto:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+Si no, ejecuta en tu terminal:
+
+```bash
+huggingface-cli login
+```
+
+Después puedes subir el modelo al Hub con el método `push_to_hub()`:
+
+```py
+model.push_to_hub("my-awesome-model")
+```
+
+Esto subirá los archivos del modelo al Hub, en un repositorio bajo tu namespace llamado *my-awesome-model*. Después, cualquiera podrá cargar tu modelo con el método `from_pretrained()`.
+
+```py
+from transformers import AutoModel
+
+model = AutoModel.from_pretrained("your-username/my-awesome-model")
+```
+
+Puedes hacer mucho más con la API del Hub:
+- Subir un modelo desde un repositorio local
+- Actualizar archivos concretos sin volver a subirlo todo
+- Añadir model cards para documentar las capacidades del modelo, sus limitaciones, sesgos conocidos, etc.
+
+Consulta [la documentación](https://huggingface.co/docs/huggingface_hub/how-to-upstream) para ver un tutorial completo sobre esto, o echa un vistazo al [Capítulo 4](/course/chapter4), más avanzado.
+
+## Codificar texto[[encoding-text]]
+
+Los modelos Transformer manejan texto convirtiendo las entradas en números. Aquí vamos a ver exactamente qué pasa cuando el tokenizador procesa tu texto. Ya vimos en el [Capítulo 1](/course/chapter1) que los tokenizadores dividen el texto en tokens y luego convierten esos tokens en números. Podemos ver esa conversión con un tokenizador sencillo:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+
+encoded_input = tokenizer("Hello, I'm a single sentence!")
+print(encoded_input)
+```
+
+```python out
+{'input_ids': [101, 8667, 117, 1000, 1045, 1005, 1049, 2235, 17662, 12172, 1012, 102], 
+ 'token_type_ids': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+ 'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]}
+```
+
+Obtenemos un diccionario con los siguientes campos:
+- input_ids: representaciones numéricas de tus tokens
+- token_type_ids: le indican al modelo qué parte de la entrada es la frase A y cuál es la frase B (hablaremos más de esto en la siguiente sección)
+- attention_mask: indica a qué tokens se les debe prestar atención y a cuáles no (enseguida lo veremos)
+
+Podemos decodificar los IDs de entrada para recuperar el texto original:
+
+```py
+tokenizer.decode(encoded_input["input_ids"])
+```
+
+```python out
+"[CLS] Hello, I'm a single sentence! [SEP]"
+```
+
+Verás que el tokenizador ha añadido tokens especiales, `[CLS]` y `[SEP]`, que el modelo necesita. No todos los modelos necesitan tokens especiales; se usan cuando el modelo fue preentrenado con ellos, y en ese caso el tokenizador tiene que añadirlos porque el modelo espera esos tokens.
+
+Puedes codificar varias frases a la vez, ya sea agrupándolas en un batch (de esto hablaremos pronto) o pasando una lista:
+
+```py
+encoded_input = tokenizer("How are you?", "I'm fine, thank you!")
+print(encoded_input)
+```
+
+```python out
+{'input_ids': [[101, 1731, 1132, 1128, 136, 102], [101, 1045, 1005, 1049, 2503, 117, 5763, 1128, 136, 102]], 
+ 'token_type_ids': [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], 
+ 'attention_mask': [[1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]}
+```
+
+Fíjate en que, al pasar varias frases, el tokenizador devuelve una lista para cada frase en cada valor del diccionario. También podemos pedirle al tokenizador que devuelva tensores de PyTorch directamente:
+
+```py
+encoded_input = tokenizer("How are you?", "I'm fine, thank you!", return_tensors="pt")
+print(encoded_input)
+```
+
+```python out
+{'input_ids': tensor([[  101,  1731,  1132,  1128,   136,   102],
+         [  101,  1045,  1005,  1049,  2503,   117,  5763,  1128,   136,   102]]), 
+ 'token_type_ids': tensor([[0, 0, 0, 0, 0, 0],
+         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]), 
+ 'attention_mask': tensor([[1, 1, 1, 1, 1, 1],
+         [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])}
+```
+
+Pero hay un problema: las dos listas no tienen la misma longitud. Los arrays y los tensores tienen que ser rectangulares, así que no podemos convertir sin más estas listas en un tensor de PyTorch (o un array de NumPy). El tokenizador ofrece una opción para eso: el relleno.
+
+### Rellenar entradas[[padding-inputs]]
+
+Si le pedimos al tokenizador que rellene las entradas, hará que todas las frases tengan la misma longitud añadiendo un token especial de relleno a las frases que sean más cortas que la más larga:
+
+```py
+encoded_input = tokenizer(
+    ["How are you?", "I'm fine, thank you!"], padding=True, return_tensors="pt"
+)
+print(encoded_input)
+```
+
+```python out
+{'input_ids': tensor([[  101,  1731,  1132,  1128,   136,   102,     0,     0,     0,     0],
+         [  101,  1045,  1005,  1049,  2503,   117,  5763,  1128,   136,   102]]), 
+ 'token_type_ids': tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]), 
+ 'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+         [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])}
+```
+
+Ahora sí tenemos tensores rectangulares. Fíjate en que los tokens de relleno se han codificado en `input_ids` con el ID 0, y también tienen un valor 0 en la máscara de atención. Esto pasa porque esos tokens de relleno no deberían ser analizados por el modelo: no forman parte de la frase real.
+
+### Truncar entradas[[truncating-inputs]]
+
+Los tensores pueden llegar a ser demasiado grandes para que el modelo los procese. Por ejemplo, BERT solo se preentrenó con secuencias de hasta 512 tokens, así que no puede procesar secuencias más largas. Si tienes secuencias más largas de lo que el modelo puede manejar, tendrás que truncarlas con el parámetro `truncation`:
+
+```py
+encoded_input = tokenizer(
+    "This is a very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very long sentence.",
+    truncation=True,
+)
+print(encoded_input["input_ids"])
+```
+
+```python out
+[101, 1188, 1110, 170, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1505, 1179, 5650, 119, 102]
+```
+
+Combinando los argumentos de relleno y truncado, puedes asegurarte de que tus tensores tengan exactamente el tamaño que necesitas:
+
+```py
+encoded_input = tokenizer(
+    ["How are you?", "I'm fine, thank you!"],
+    padding=True,
+    truncation=True,
+    max_length=5,
+    return_tensors="pt",
+)
+print(encoded_input)
+```
+
+```python out
+{'input_ids': tensor([[  101,  1731,  1132,  1128,   102],
+         [  101,  1045,  1005,  1049,   102]]), 
+ 'token_type_ids': tensor([[0, 0, 0, 0, 0],
+         [0, 0, 0, 0, 0]]), 
+ 'attention_mask': tensor([[1, 1, 1, 1, 1],
+         [1, 1, 1, 1, 1]])}
+```
+
+### Añadir tokens especiales
+
+Los tokens especiales, o al menos el concepto de ellos, son especialmente importantes para BERT y los modelos derivados. Estos tokens se añaden para representar mejor los límites de las frases, como el comienzo de una frase (`[CLS]`) o el separador entre frases (`[SEP]`). Veamos un ejemplo sencillo:
+
+```py
+encoded_input = tokenizer("How are you?")
+print(encoded_input["input_ids"])
+tokenizer.decode(encoded_input["input_ids"])
+```
+
+```python out
+[101, 1731, 1132, 1128, 136, 102]
+'[CLS] How are you? [SEP]'
+```
+
+Estos tokens especiales se añaden automáticamente con el tokenizador. No todos los modelos los necesitan; se usan principalmente cuando un modelo fue preentrenado con ellos, y en ese caso el tokenizador los añadirá porque el modelo los espera.
+
+### ¿Por qué hace falta todo esto?
+
+Aquí tienes un ejemplo concreto. Considera estas secuencias codificadas:
+
+```py
+sequences = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "I hate this so much!",
+]
+```
+
+Una vez tokenizadas, tenemos:
+
+```python
+encoded_sequences = [
+    [
+        101,
+        1045,
+        1005,
+        2310,
+        2042,
+        3403,
+        2005,
+        1037,
+        17662,
+        12172,
+        2607,
+        2026,
+        2878,
+        2166,
+        1012,
+        102,
+    ],
+    [101, 1045, 5223, 2023, 2061, 2172, 999, 102],
+]
+```
+
+Esto es una lista de secuencias codificadas: una lista de listas. Los tensores solo aceptan formas rectangulares, piensa en matrices. Este "array" ya tiene una forma rectangular, así que convertirlo a tensor es fácil:
+
+```py
+import torch
+
+model_inputs = torch.tensor(encoded_sequences)
+```
+
+### Usar los tensores como entradas del modelo[[using-the-tensors-as-inputs-to-the-model]]
+
+Usar estos tensores con el modelo es extremadamente sencillo: basta con llamar al modelo con las entradas:
+
+```py
+output = model(model_inputs)
+```
+
+Aunque el modelo acepta muchos argumentos distintos, solo los input IDs son necesarios. Más adelante explicaremos qué hacen los otros argumentos y cuándo hacen falta, pero antes tenemos que mirar más de cerca los tokenizadores que construyen las entradas que un modelo Transformer puede entender.

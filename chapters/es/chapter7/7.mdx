@@ -1,0 +1,94 @@
+<FrameworkSwitchCourse {fw} />
+
+# Respuesta a preguntas[[question-answering]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section7_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section7_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section7_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section7_tf.ipynb"},
+]} />
+
+{/if}
+
+En respuesta a preguntas extractiva, el objetivo es localizar dentro de un contexto el fragmento de texto que responde a una pregunta.
+
+<Youtube id="ajPx5LwJD-I"/>
+
+En esta sección ajustaremos BERT sobre [SQuAD](https://rajpurkar.github.io/SQuAD-explorer/).
+
+## El conjunto de datos SQuAD[[the-squad-dataset]]
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("squad")
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'title', 'context', 'question', 'answers'],
+        num_rows: 87599
+    })
+    validation: Dataset({
+        features: ['id', 'title', 'context', 'question', 'answers'],
+        num_rows: 10570
+    })
+})
+```
+
+Cada ejemplo tiene un `context`, una `question` y un diccionario `answers` con el texto de la respuesta y el índice de carácter donde empieza.
+
+## Preprocesamiento de entrenamiento[[processing-the-training-data]]
+
+Primero cargamos el tokenizador:
+
+```py
+from transformers import AutoTokenizer
+
+model_checkpoint = "bert-base-cased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+La dificultad principal está en contextos largos. Cuando la pareja pregunta-contexto supera la longitud máxima, debemos crear varias features con una ventana deslizante:
+
+```py
+inputs = tokenizer(
+    raw_datasets["train"][0]["question"],
+    raw_datasets["train"][0]["context"],
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+```
+
+Después usamos `offset_mapping` y `overflow_to_sample_mapping` para convertir la respuesta en caracteres a posiciones de tokens `start_positions` y `end_positions`.
+
+## Idea de las etiquetas[[labels]]
+
+Si la respuesta está dentro del fragmento de contexto, la etiqueta es el token inicial y el token final de la respuesta. Si no está dentro del fragmento, usamos `(0, 0)`, que corresponde al token especial `[CLS]`.
+
+Ese detalle es importante porque una sola muestra puede generar varias features y no todas contendrán la respuesta.
+
+## Entrenamiento y evaluación[[training-and-evaluation]]
+
+Una vez tokenizados los datos, podemos usar `AutoModelForQuestionAnswering` o `TFAutoModelForQuestionAnswering` según el framework. El modelo aprende a producir un logit de inicio y un logit de fin para cada token.
+
+En evaluación, el posprocesamiento combina las predicciones de todas las features que vienen de una misma muestra original y selecciona la mejor respuesta posible dentro del contexto.
+
+Este patrón de trabajo, dividir contextos largos, mapear respuestas a offsets y recomponer las predicciones, es la parte esencial de la respuesta a preguntas extractiva con Transformers.

@@ -1,32 +1,269 @@
-# Sesgos y limitaciones
+# Inferencia con LLMs[[inference-with-llms]]
 
-<CourseFloatingBanner chapter={1}
-  classNames="absolute z-10 right-0 top-0"
-  notebooks={[
-    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/es/chapter1/section8.ipynb"},
-    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/es/chapter1/section8.ipynb"},
-]} />
+<CourseFloatingBanner
+	chapter={1}
+	classNames="absolute z-10 right-0 top-0"
+/>
 
-Si tu intención es usar modelos preentrenados o una versión ajustada en producción, ten en cuenta que a pesar de ser herramientas poderosas, tienen limitaciones. La más importante de ellas es que, para permitir el preentrenamiento con grandes cantidades de datos, los investigadores suelen *raspar* (*scrape*) todo el contenido que puedan encontrar, tomando lo mejor y lo peor que está disponible en internet.
+<Youtube id="Xp2w1_LKZN4" />
 
-Para dar un ejemplo rápido, volvamos al caso del pipeline `fill-mask` con el modelo BERT:
+Hasta ahora hemos explorado la arquitectura Transformer en relación con una serie de tareas discretas, como clasificación de texto o resumen. Sin embargo, el uso más habitual de los Large Language Models es la generación de texto, y eso es lo que exploraremos en este capítulo.
 
-```python
-from transformers import pipeline
+En esta página veremos los conceptos centrales detrás de la inferencia con LLM, con una explicación más completa de cómo generan texto estos modelos y de cuáles son los componentes clave que intervienen en el proceso.
 
-unmasker = pipeline("fill-mask", model="bert-base-uncased")
-result = unmasker("This man works as a [MASK].")
-print([r["token_str"] for r in result])
+## Entender lo básico
 
-result = unmasker("This woman works as a [MASK].")
-print([r["token_str"] for r in result])
-```
+Empecemos por los fundamentos. La inferencia es el proceso de usar un LLM entrenado para generar texto parecido al humano a partir de un prompt de entrada. Los modelos de lenguaje usan el conocimiento adquirido durante el entrenamiento para formular respuestas un token cada vez.
 
-```python out
-['lawyer', 'carpenter', 'doctor', 'waiter', 'mechanic']
-['nurse', 'waitress', 'teacher', 'maid', 'prostitute']
-```
+El modelo aprovecha probabilidades aprendidas a partir de miles de millones de parámetros para predecir y generar el siguiente token de una secuencia. Esa generación secuencial es lo que permite a los LLM producir texto coherente y relevante en contexto.
 
-Cuando se le pide llenar la palabra faltante en estas dos oraciones, el modelo devuelve solo una respuesta agnóstica de género (*waiter/waitress*). Las otras son ocupaciones que se suelen asociar con un género específico -- y si, prostituta es una de las primeras 5 posibilidades que el modelo asocia con "mujer" y "trabajo". Esto sucede a pesar de que BERT es uno de los pocos modelos Transformers que no se construyeron basados en datos *raspados* de todo el internet, pero usando datos aparentemente neutrales (está entrenado con los conjuntos de datos de [Wikipedia en Inglés](https://huggingface.co/datasets/wikipedia) y [BookCorpus](https://huggingface.co/datasets/bookcorpus)).
+## El papel de la atención
 
-Cuando uses estas herramientas, debes tener en cuenta que el modelo original que estás usando puede muy fácilmente generar contenido sexista, racista u homófobo. Ajustar el modelo con tus datos no va a desaparecer este sesgo intrínseco.
+El mecanismo de atención es lo que da a los LLM la capacidad de entender el contexto y generar respuestas coherentes. Cuando el modelo predice la siguiente palabra, no todas las palabras de una frase tienen el mismo peso. Por ejemplo, en la frase *"La capital de Francia es ..."*, las palabras "Francia" y "capital" son decisivas para inferir que la siguiente palabra debería ser "París". Esa capacidad de centrarse en la información relevante es lo que llamamos atención.
+
+<img src="https://huggingface.co/datasets/agents-course/course-images/resolve/main/en/unit1/AttentionSceneFinal.gif" alt="Visualización del mecanismo de atención" width="60%">
+
+Este proceso de identificar las palabras más relevantes para predecir el siguiente token ha demostrado ser extremadamente efectivo. Aunque el principio básico del entrenamiento de LLM, predecir el siguiente token, se ha mantenido razonablemente constante desde BERT y GPT-2, ha habido avances importantes en cómo escalar redes neuronales y en cómo hacer que el mecanismo de atención funcione con secuencias cada vez más largas y a costes cada vez menores.
+
+> [!TIP]
+> En resumen, el mecanismo de atención es la clave de que los LLM puedan generar texto coherente y sensible al contexto. Es una de las diferencias fundamentales entre los LLM modernos y generaciones anteriores de modelos de lenguaje.
+
+### Longitud de contexto y span de atención
+
+Ahora que entendemos la atención, veamos cuánto contexto puede manejar realmente un LLM. Eso nos lleva a la longitud de contexto, o el "span de atención" del modelo.
+
+La longitud de contexto se refiere al número máximo de tokens, ya sean palabras completas o fragmentos de palabras, que el LLM puede procesar de una vez. Puedes pensar en ello como el tamaño de la memoria de trabajo del modelo.
+
+Estas capacidades están limitadas por varios factores prácticos:
+
+- La arquitectura y el tamaño del modelo.
+- Los recursos computacionales disponibles.
+- La complejidad de la entrada y de la salida que queremos generar.
+
+En un mundo ideal, podríamos pasar al modelo un contexto ilimitado, pero las limitaciones de hardware y los costes computacionales lo vuelven impracticable. Por eso distintos modelos se diseñan con longitudes de contexto diferentes para equilibrar capacidad y eficiencia.
+
+> [!TIP]
+> La longitud de contexto es el número máximo de tokens que el modelo puede tener en cuenta al mismo tiempo cuando genera una respuesta.
+
+### El arte del prompting
+
+Cuando pasamos información a un LLM, estructuramos la entrada de una forma que guíe la generación hacia la salida deseada. A eso lo llamamos _prompting_.
+
+Entender cómo procesan la información los LLM nos ayuda a construir mejores prompts. Como la tarea principal del modelo es predecir el siguiente token analizando la importancia de cada token de entrada, la redacción exacta de la secuencia de entrada se vuelve crucial.
+
+> [!TIP]
+> Diseñar con cuidado el prompt facilita **guiar la generación del LLM hacia la salida que queremos obtener**.
+
+## El proceso de inferencia en dos fases
+
+Ahora que entendemos los componentes básicos, veamos cómo generan texto realmente los LLM. El proceso puede dividirse en dos fases principales: prefill y decode. Puedes pensar en ellas como una cadena de montaje en la que cada fase cumple un papel clave para producir texto coherente.
+
+### La fase de prefill
+
+La fase de prefill es como la etapa de preparación en una cocina: es donde se procesan todos los ingredientes iniciales y se dejan listos. Esta fase incluye tres pasos importantes:
+
+1. **Tokenización**: convertir el texto de entrada en tokens, que son las unidades básicas que entiende el modelo.
+2. **Conversión a embeddings**: transformar esos tokens en representaciones numéricas que capturan su significado.
+3. **Procesamiento inicial**: pasar esos embeddings por las redes neuronales del modelo para construir una comprensión rica del contexto.
+
+Esta fase es intensiva en cómputo porque necesita procesar todos los tokens de entrada a la vez. Es parecido a leer y comprender un párrafo completo antes de empezar a redactar una respuesta.
+
+Puedes experimentar con diferentes tokenizadores en el playground interactivo de abajo:
+
+<iframe
+	src="https://agents-course-the-tokenizer-playground.static.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+### La fase de decode
+
+Una vez que la fase de prefill ha procesado la entrada, pasamos a la fase de decode, que es donde ocurre la generación real de texto. El modelo genera un token cada vez en un proceso autorregresivo, es decir, cada token nuevo depende de todos los tokens anteriores.
+
+La fase de decode incluye varios pasos que se repiten para cada nuevo token:
+
+1. **Cálculo de atención**: mirar hacia atrás a todos los tokens previos para entender el contexto.
+2. **Cálculo de probabilidades**: determinar la probabilidad de cada posible siguiente token.
+3. **Selección del token**: elegir el siguiente token basándose en esas probabilidades.
+4. **Comprobación de continuación**: decidir si la generación debe seguir o detenerse.
+
+Esta fase es intensiva en memoria porque el modelo necesita conservar el rastro de todos los tokens generados anteriormente y de sus relaciones.
+
+## Estrategias de muestreo
+
+Ahora que entendemos cómo genera texto el modelo, podemos explorar distintas maneras de controlar ese proceso. Igual que una persona que escribe puede optar por ser más creativa o más precisa, nosotros también podemos ajustar cómo el modelo selecciona tokens.
+
+Puedes interactuar tú mismo con el proceso básico de decodificación con SmolLM2 en este Space. Recuerda que el modelo decodifica hasta llegar al token de fin de secuencia, que para este modelo es **<|im_end|>**:
+
+<iframe
+	src="https://agents-course-decoding-visualizer.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+### De probabilidades a elecciones de tokens
+
+Cuando el modelo necesita elegir el siguiente token, empieza con probabilidades sin normalizar, llamadas logits, para cada palabra de su vocabulario. ¿Cómo convertimos esas probabilidades en una elección concreta? Veámoslo paso a paso:
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/1.png)
+
+1. **Raw logits**: puedes pensar en ellos como la intuición inicial del modelo sobre qué palabra debería venir después.
+2. **Temperature**: actúa como un control de creatividad. Valores altos, mayores que 1.0, hacen las elecciones más aleatorias y creativas; valores bajos, menores que 1.0, las hacen más deterministas y enfocadas.
+3. **Top-p (nucleus sampling)**: en lugar de considerar todas las palabras posibles, solo se consideran las más probables hasta alcanzar un umbral de probabilidad acumulada, por ejemplo el 90%.
+4. **Top-k**: es una alternativa en la que solo se tienen en cuenta las `k` palabras más probables.
+
+### Gestionar la repetición: mantener la salida fresca
+
+Un reto frecuente de los LLM es su tendencia a repetirse, un poco como una persona que vuelve una y otra vez al mismo punto. Para evitarlo, se usan dos tipos de penalizaciones:
+
+1. **Presence penalty**: aplica una penalización fija a cualquier token que ya haya aparecido antes, independientemente de cuántas veces haya aparecido.
+2. **Frequency penalty**: aplica una penalización creciente según la frecuencia de aparición de ese token. Cuantas más veces aparece una palabra, menos probable es que vuelva a elegirse.
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/2.png)
+
+Estas penalizaciones se aplican pronto en el proceso de selección del token, ajustando las probabilidades iniciales antes de aplicar otras estrategias de muestreo. Puedes pensar en ellas como pequeños empujones para animar al modelo a explorar vocabulario nuevo.
+
+### Controlar la longitud de generación: poner límites
+
+Igual que una buena historia necesita un ritmo y una longitud adecuados, necesitamos mecanismos para controlar cuánto texto genera un LLM. Esto es importante en aplicaciones reales, tanto si queremos una respuesta del tamaño de un tuit como una entrada completa de blog.
+
+Podemos controlar la longitud de varias formas:
+
+1. **Límites de tokens**: definir mínimos y máximos de tokens.
+2. **Secuencias de parada**: definir patrones específicos que indiquen el final de la generación.
+3. **Detección de fin de secuencia**: dejar que el modelo cierre de forma natural su respuesta.
+
+Por ejemplo, si queremos generar un solo párrafo, podríamos fijar un máximo de 100 tokens y usar `"\n\n"` como secuencia de parada. Así la salida se mantiene acotada y adecuada a su propósito.
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/3.png)
+
+### Beam search: mirar por adelantado para ganar coherencia
+
+Mientras que las estrategias anteriores toman decisiones token a token, beam search adopta una visión más global. En vez de comprometerse con una sola opción en cada paso, explora varios caminos posibles a la vez, como una persona jugando ajedrez que piensa varias jugadas por adelantado.
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/4.png)
+
+Así es como funciona:
+
+1. En cada paso se mantienen varias secuencias candidatas, normalmente entre 5 y 10.
+2. Para cada candidata se calculan las probabilidades del siguiente token.
+3. Solo se conservan las combinaciones más prometedoras de secuencias y siguientes tokens.
+4. El proceso continúa hasta alcanzar la longitud deseada o una condición de parada.
+5. Al final se selecciona la secuencia con mayor probabilidad global.
+
+Puedes explorar beam search de forma visual aquí:
+
+<iframe
+	src="https://agents-course-beam-search-visualizer.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+Este enfoque suele producir texto más coherente y gramaticalmente correcto, aunque requiere más recursos computacionales que métodos más simples.
+
+## Desafíos prácticos y optimización
+
+Ahora que cerramos esta exploración de la inferencia con LLM, veamos los desafíos prácticos que aparecen al desplegar estos modelos y cómo medir y optimizar su rendimiento.
+
+### Métricas clave de rendimiento
+
+Cuando trabajas con LLM, hay cuatro métricas críticas que condicionan muchas decisiones de implementación:
+
+1. **Time to First Token (TTFT)**: cuánto tarda en llegar el primer token. Es crucial para la experiencia de usuario y depende principalmente de la fase de prefill.
+2. **Time Per Output Token (TPOT)**: cuán rápido se generan los tokens posteriores. Determina la velocidad global de generación.
+3. **Throughput**: cuántas peticiones puedes atender simultáneamente. Afecta tanto a la escalabilidad como a la eficiencia de costes.
+4. **VRAM Usage**: cuánta memoria de GPU necesitas. En muchas aplicaciones reales, este acaba siendo el principal cuello de botella.
+
+### El reto de la longitud de contexto
+
+Uno de los mayores desafíos de la inferencia con LLM es gestionar bien la longitud de contexto. Los contextos largos aportan más información, pero vienen acompañados de costes importantes:
+
+- **Uso de memoria**: crece de forma cuadrática con la longitud del contexto.
+- **Velocidad de procesamiento**: disminuye a medida que crece el contexto.
+- **Asignación de recursos**: exige equilibrar con cuidado el uso de VRAM.
+
+Modelos recientes como [Qwen2.5-1M](https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-1M) ofrecen ventanas de contexto de hasta 1 millón de tokens, pero a costa de tiempos de inferencia mucho más lentos. La clave está en encontrar el equilibrio correcto para tu caso de uso.
+
+<div style="max-width: 800px; margin: 20px auto; padding: 20px;
+font-family: system-ui;">
+	<div style="border: 2px solid #ddd; border-radius: 8px;
+	padding: 20px; margin-bottom: 20px;">
+		<div style="display: flex; align-items: center;
+		margin-bottom: 15px;">
+			<div style="flex: 1; text-align: center; padding:
+			10px; background: #f0f0f0; border-radius: 4px;">
+				Texto de entrada (en bruto)
+			</div>
+			<div style="margin: 0 10px;">→</div>
+			<div style="flex: 1; text-align: center; padding:
+			10px; background: #e1f5fe; border-radius: 4px;">
+				Entrada tokenizada
+			</div>
+		</div>
+		<div style="display: flex; margin-bottom: 15px;">
+			<div style="flex: 1; border: 1px solid #ccc;
+			padding: 10px; margin: 5px; background: #e8f5e9;
+			border-radius: 4px; text-align: center;">
+				Ventana de contexto<br/>(por ejemplo, 4K tokens)
+				<div style="display: flex; margin-top: 10px;">
+					<div style="flex: 1; background: #81c784;
+					margin: 2px; height: 20px; border-radius:
+					2px;"></div>
+					<div style="flex: 1; background: #81c784;
+					margin: 2px; height: 20px; border-radius:
+					2px;"></div>
+					<div style="flex: 1; background: #81c784;
+					margin: 2px; height: 20px; border-radius:
+					2px;"></div>
+					<div style="flex: 1; background: #81c784;
+					margin: 2px; height: 20px; border-radius:
+					2px;"></div>
+				</div>
+			</div>
+		</div>
+		<div style="display: flex; justify-content:
+		space-between; text-align: center; font-size: 0.9em;
+		color: #666;">
+			<div style="flex: 1;">
+				<div style="border: 1px solid #ffcc80; padding:
+				8px; margin: 5px; background: #fff3e0;
+				border-radius: 4px;">
+					Uso de memoria<br/>∝ Longitud²
+				</div>
+			</div>
+			<div style="flex: 1;">
+				<div style="border: 1px solid #90caf9; padding:
+				8px; margin: 5px; background: #e3f2fd;
+				border-radius: 4px;">
+					Tiempo de procesamiento<br/>∝ Longitud
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+### La optimización con caché KV
+
+Para afrontar estos desafíos, una de las optimizaciones más potentes es la caché KV (Key-Value cache). Esta técnica mejora mucho la velocidad de inferencia al almacenar y reutilizar cálculos intermedios. En la práctica:
+
+- Reduce cálculos repetidos.
+- Mejora la velocidad de generación.
+- Hace viable la generación con contextos largos.
+
+La contrapartida es un mayor uso de memoria, pero normalmente la mejora de rendimiento compensa con creces ese coste.
+
+## Conclusión
+
+Entender la inferencia con LLM es clave para desplegar y optimizar estos modelos de manera efectiva. Hemos cubierto:
+
+- El papel fundamental de la atención y del contexto.
+- El proceso de inferencia en dos fases.
+- Distintas estrategias de muestreo para controlar la generación.
+- Desafíos prácticos y optimizaciones.
+
+Al dominar estos conceptos, estarás mejor preparado para construir aplicaciones que aprovechen los LLM de forma eficaz y eficiente.
+
+Recuerda que el campo de la inferencia con LLM evoluciona rápidamente, con nuevas técnicas y optimizaciones apareciendo con frecuencia. Merece la pena seguir experimentando para encontrar qué funciona mejor en cada caso de uso.
