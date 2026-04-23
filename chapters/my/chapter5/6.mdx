@@ -1,0 +1,589 @@
+<FrameworkSwitchCourse {fw} />
+
+# FAISS ဖြင့် Semantic Search ပြုလုပ်ခြင်း[[semantic-search-with-faiss]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+[အခန်း ၅](/course/chapter5/5) မှာ ကျွန်တော်တို့ 🤗 Datasets repository ကနေ GitHub issues နဲ့ comments တွေရဲ့ dataset တစ်ခုကို ဖန်တီးခဲ့ပါတယ်။ ဒီအပိုင်းမှာတော့ ဒီအချက်အလက်တွေကို အသုံးပြုပြီး library နဲ့ ပတ်သက်တဲ့ ကျွန်တော်တို့ရဲ့ အရေးအကြီးဆုံး မေးခွန်းတွေရဲ့ အဖြေတွေကို ရှာဖွေနိုင်မယ့် search engine တစ်ခုကို တည်ဆောက်သွားမှာပါ။
+
+<Youtube id="OATCgQtNX2o"/>
+
+## Semantic Search အတွက် Embeddings များကို အသုံးပြုခြင်း[[using-embeddings-for-semantic-search]]
+
+[Chapter 1](/course/chapter1) မှာ ကျွန်တော်တို့ မြင်ခဲ့ရတဲ့အတိုင်း၊ Transformer-based language models တွေက စာသားအပိုင်းအစတစ်ခုထဲက token တစ်ခုစီကို _embedding vector_ အဖြစ် ကိုယ်စားပြုပါတယ်။ တစ်ခါတစ်ရံမှာ sentences တွေ၊ paragraphs တွေ ဒါမှမဟုတ် (အချို့ကိစ္စတွေမှာ) documents တွေအတွက် vector representation တစ်ခု ဖန်တီးဖို့ individual embeddings တွေကို "pool" လုပ်နိုင်ပါတယ်။ ထို့နောက် ဤ embeddings များကို dot-product similarity (သို့မဟုတ် အခြား similarity metric တစ်ခုခု) ကို တွက်ချက်ခြင်းဖြင့် corpus ထဲရှိ ဆင်တူသော documents များကို ရှာဖွေနိုင်ပြီး အတူဆုံးသော documents များကို ပြန်ပေးနိုင်ပါတယ်။
+
+ဒီအပိုင်းမှာတော့ embeddings တွေကို အသုံးပြုပြီး semantic search engine တစ်ခုကို ကျွန်တော်တို့ တည်ဆောက်သွားမှာပါ။ ဒီ search engines တွေက query ထဲက keywords တွေကို documents တွေနဲ့ ကိုက်ညီအောင် လုပ်ဆောင်တဲ့ ရိုးရာနည်းလမ်းတွေထက် အားသာချက်များစွာကို ပေးစွမ်းပါတယ်။
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search.svg" alt="Semantic search."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search-dark.svg" alt="Semantic search."/>
+</div>
+
+## Dataset ကို Loading လုပ်ပြီး ပြင်ဆင်ခြင်း[[loading-and-preparing-the-dataset]]
+
+ပထမဆုံး ကျွန်တော်တို့ လုပ်ရမယ့်အရာက GitHub issues တွေရဲ့ dataset ကို download လုပ်ဖို့ပါပဲ၊ ဒါကြောင့် ပုံမှန်အတိုင်း `load_dataset()` function ကို အသုံးပြုရအောင်။
+
+```py
+from datasets import load_dataset
+
+issues_dataset = load_dataset("lewtun/github-issues", split="train")
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 2855
+})
+```
+
+ဒီနေရာမှာ ကျွန်တော်တို့ `load_dataset()` မှာ default `train` split ကို သတ်မှတ်ထားတာကြောင့် `DatasetDict` အစား `Dataset` ကို ပြန်ပေးပါတယ်။ ပထမဦးဆုံး လုပ်ရမယ့်အရာက pull requests တွေကို စစ်ထုတ်ပစ်ဖို့ပါပဲ၊ ဘာလို့လဲဆိုတော့ ဒါတွေက user queries တွေကို ဖြေဖို့အတွက် ရှားရှားပါးပါး အသုံးပြုတာကြောင့် search engine မှာ noise တွေ ဖြစ်ပေါ်စေပါလိမ့်မယ်။ အခုဆို ရင်းနှီးနေပြီဖြစ်တဲ့အတိုင်း၊ ကျွန်တော်တို့ dataset ထဲက ဒီ rows တွေကို ဖယ်ထုတ်ဖို့ `Dataset.filter()` function ကို အသုံးပြုနိုင်ပါတယ်။ အဲဒါကို လုပ်နေရင်းနဲ့၊ user queries တွေအတွက် အဖြေမပေးနိုင်တဲ့ comments မရှိတဲ့ rows တွေကိုလည်း စစ်ထုတ်ပစ်ရအောင်။
+
+```py
+issues_dataset = issues_dataset.filter(
+    lambda x: (x["is_pull_request"] == False and len(x["comments"]) > 0)
+)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 771
+})
+```
+
+ကျွန်တော်တို့ dataset မှာ columns တွေ အများကြီးပါတာကို တွေ့ရပါတယ်။ ဒါတွေထဲက အများစုကို search engine တည်ဆောက်ဖို့ ကျွန်တော်တို့ မလိုအပ်ပါဘူး။ search ရှုထောင့်ကကြည့်မယ်ဆိုရင်၊ အချက်အလက်အများဆုံး columns တွေက `title`၊ `body` နဲ့ `comments` တွေဖြစ်ပြီး၊ `html_url` ကတော့ ကျွန်တော်တို့ကို source issue ကို ပြန်လည်ညွှန်ပြတဲ့ link ကို ပေးပါတယ်။ ကျန်တာတွေကို ဖယ်ရှားဖို့ `Dataset.remove_columns()` function ကို အသုံးပြုရအောင်။
+
+```py
+columns = issues_dataset.column_names
+columns_to_keep = ["title", "body", "html_url", "comments"]
+columns_to_remove = set(columns_to_keep).symmetric_difference(columns)
+issues_dataset = issues_dataset.remove_columns(columns_to_remove)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 771
+})
+```
+
+ကျွန်တော်တို့ရဲ့ embeddings တွေ ဖန်တီးဖို့အတွက် issue ရဲ့ title နဲ့ body ကို comment တစ်ခုစီတိုင်းမှာ ပေါင်းထည့်ပါမယ်၊ ဘာလို့လဲဆိုတော့ ဒီ fields တွေက မကြာခဏဆိုသလို အသုံးဝင်တဲ့ context information တွေ ပါဝင်လို့ပါ။ ကျွန်တော်တို့ရဲ့ `comments` column က လက်ရှိမှာ issue တစ်ခုစီအတွက် comments တွေရဲ့ list တစ်ခုဖြစ်နေတာကြောင့်၊ row တစ်ခုစီမှာ `(html_url, title, body, comment)` tuple တစ်ခုပါဝင်အောင် column ကို "explode" လုပ်ဖို့ လိုအပ်ပါတယ်။ Pandas မှာ ဒါကို [`DataFrame.explode()` function](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html) နဲ့ လုပ်ဆောင်နိုင်ပါတယ်။ ဒါက list-like column တစ်ခုစီမှာ element တစ်ခုစီအတွက် new row တစ်ခု ဖန်တီးပေးပြီး ကျန်တဲ့ column values တွေအားလုံးကို ပွားပေးပါတယ်။ ဒါကို လက်တွေ့မြင်ရဖို့၊ ပထမဆုံး Pandas `DataFrame` format သို့ ပြောင်းရအောင်။
+
+```py
+issues_dataset.set_format("pandas")
+df = issues_dataset[:]
+```
+
+ဒီ `DataFrame` ထဲက ပထမဆုံး row ကို စစ်ဆေးကြည့်မယ်ဆိုရင် ဒီ issue နဲ့ ဆက်စပ်နေတဲ့ comments လေးခုရှိတာကို တွေ့ရပါတယ်-
+
+```py
+df["comments"][0].tolist()
+```
+
+```python out
+['the bug code locate in ：\r\n    if data_args.task_name is not None:\r\n        # Downloading and loading a dataset from the hub.\r\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
+ 'Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com\r\n\r\nNormally, it should work if you wait a little and then retry.\r\n\r\nCould you please confirm if the problem persists?',
+ 'cannot connect，even by Web browser，please check that  there is some  problems。',
+ 'I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...']
+```
+
+ကျွန်တော်တို့ `df` ကို explode လုပ်တဲ့အခါ၊ ဒီ comments တစ်ခုစီအတွက် row တစ်ခုရရှိဖို့ မျှော်လင့်ပါတယ်။ ဒါဟုတ်မဟုတ် စစ်ကြည့်ရအောင်။
+
+```py
+comments_df = df.explode("comments", ignore_index=True)
+comments_df.head(4)
+```
+
+<table border="1" class="dataframe" style="table-layout: fixed; word-wrap:break-word; width: 100%;">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>html_url</th>
+      <th>title</th>
+      <th>comments</th>
+      <th>body</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>the bug code locate in ：\r\n    if data_args.task_name is not None...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>cannot connect，even by Web browser，please check that  there is some  problems。</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+  </tbody>
+</table>
+
+ကောင်းပါပြီ၊ rows တွေ ပွားနေတာကို တွေ့ရပြီး `comments` column မှာ individual comments တွေ ပါဝင်တာကို မြင်ရပါတယ်။ Pandas နဲ့ ကျွန်တော်တို့ လုပ်ဆောင်တာ ပြီးစီးသွားပြီဆိုတော့ `DataFrame` ကို memory ထဲမှာ loading လုပ်ခြင်းဖြင့် `Dataset` သို့ လျင်မြန်စွာ ပြန်ပြောင်းနိုင်ပါတယ်။
+
+```py
+from datasets import Dataset
+
+comments_dataset = Dataset.from_pandas(comments_df)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 2842
+})
+```
+
+ကောင်းပါပြီ၊ ဒါက ကျွန်တော်တို့ကို အလုပ်လုပ်ဖို့ comments အနည်းငယ် ထောင်ချီပြီး ပေးထားပါတယ်။
+
+> [!TIP]
+> ✏️ **စမ်းသပ်ကြည့်ပါ။** Pandas ကို အသုံးမပြုဘဲ `issues_dataset` ရဲ့ `comments` column ကို explode လုပ်ဖို့ `Dataset.map()` ကို အသုံးပြုနိုင်မလား ကြည့်ပါ။ ဒါက နည်းနည်းလေး ခက်ပါတယ်၊ ဒီ task အတွက် 🤗 Datasets documentation ရဲ့ ["Batch mapping"](https://huggingface.co/docs/datasets/about_map_batch#batch-mapping) အပိုင်းက အထောက်အကူ ဖြစ်နိုင်ပါတယ်။
+
+အခု row တစ်ခုစီမှာ comment တစ်ခုစီ ရှိပြီဆိုတော့၊ comment တစ်ခုစီမှာရှိတဲ့ စကားလုံးအရေအတွက် ပါဝင်တဲ့ `comments_length` column အသစ်တစ်ခု ဖန်တီးရအောင်။
+
+```py
+comments_dataset = comments_dataset.map(
+    lambda x: {"comment_length": len(x["comments"].split())}
+)
+```
+
+ဒီ column အသစ်ကို အသုံးပြုပြီး "cc @lewtun" ဒါမှမဟုတ် "Thanks!" လိုမျိုး search engine နဲ့ မသက်ဆိုင်တဲ့ တိုတိုတောင်းတောင်း comments တွေကို ဖယ်ရှားနိုင်ပါတယ်။ filter အတွက် သတ်မှတ်ထားတဲ့ နံပါတ်မရှိပေမယ့်၊ စကားလုံး ၁၅ လုံးဝန်းကျင်က ကောင်းမွန်တဲ့ အစတစ်ခု ဖြစ်ပါလိမ့်မယ်။
+
+```py
+comments_dataset = comments_dataset.filter(lambda x: x["comment_length"] > 15)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body', 'comment_length'],
+    num_rows: 2098
+})
+```
+
+ကျွန်တော်တို့ dataset ကို နည်းနည်း သန့်ရှင်းရေး လုပ်ပြီးပြီဆိုတော့၊ issue title၊ description နဲ့ comments တွေကို `text` column အသစ်တစ်ခုထဲမှာ ပေါင်းစပ်လိုက်ရအောင်။ ပုံမှန်အတိုင်းပဲ၊ `Dataset.map()` ကို ပေးပို့နိုင်မယ့် ရိုးရှင်းတဲ့ function တစ်ခုကို ကျွန်တော်တို့ ရေးပါမယ်။
+
+```py
+def concatenate_text(examples):
+    return {
+        "text": examples["title"]
+        + " \n "
+        + examples["body"]
+        + " \n "
+        + examples["comments"]
+    }
+
+
+comments_dataset = comments_dataset.map(concatenate_text)
+```
+
+နောက်ဆုံးတော့ embeddings တွေ ဖန်တီးဖို့ အဆင်သင့်ဖြစ်ပါပြီ။ ကြည့်ရအောင်။
+
+## Text Embeddings များ ဖန်တီးခြင်း[[creating-text-embeddings]]
+
+[Chapter 2](/course/chapter2) မှာ `AutoModel` class ကို အသုံးပြုပြီး token embeddings တွေရနိုင်တယ်ဆိုတာ ကျွန်တော်တို့ တွေ့ခဲ့ရပါတယ်။ ကျွန်တော်တို့ လုပ်ဖို့လိုတာက model ကို load လုပ်ဖို့ သင့်လျော်တဲ့ checkpoint တစ်ခုကို ရွေးချယ်ဖို့ပါပဲ။ ကံကောင်းစွာနဲ့ပဲ၊ embeddings တွေ ဖန်တီးဖို့အတွက် သီးသန့် library တစ်ခုဖြစ်တဲ့ `sentence-transformers` ရှိပါတယ်။ library ရဲ့ [documentation](https://www.sbert.net/examples/applications/semantic-search/README.html#symmetric-vs-asymmetric-semantic-search) မှာ ဖော်ပြထားတဲ့အတိုင်း၊ ကျွန်တော်တို့ရဲ့ use case က _asymmetric semantic search_ ရဲ့ ဥပမာတစ်ခုပါပဲ၊ ဘာလို့လဲဆိုတော့ ကျွန်တော်တို့မှာ တိုတောင်းတဲ့ query တစ်ခုရှိပြီး အဲဒီ query ရဲ့ အဖြေကို issue comment လိုမျိုး ပိုရှည်တဲ့ document တစ်ခုထဲမှာ ရှာဖွေလိုတာကြောင့်ပါ။ documentation ထဲက အသုံးဝင်တဲ့ [model overview table](https://www.sbert.net/docs/pretrained_models.html#model-overview) က `multi-qa-mpnet-base-dot-v1` checkpoint ဟာ semantic search အတွက် အကောင်းဆုံး စွမ်းဆောင်ရည် ရှိတယ်လို့ ညွှန်ပြထားတာကြောင့် ကျွန်တော်တို့ application အတွက် ဒါကို အသုံးပြုပါမယ်။ tokenizer ကိုလည်း အလားတူ checkpoint ကို အသုံးပြုပြီး load လုပ်ပါမယ်။
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, AutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = AutoModel.from_pretrained(model_ckpt)
+```
+
+embedding လုပ်ငန်းစဉ်ကို မြန်ဆန်စေဖို့၊ model နဲ့ inputs တွေကို GPU device ပေါ်မှာ ထားတာက အထောက်အကူဖြစ်စေပါတယ်၊ ဒါကြောင့် အခုပဲ လုပ်ရအောင်။
+
+```py
+import torch
+
+device = torch.device("cuda")
+model.to(device)
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFAutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = TFAutoModel.from_pretrained(model_ckpt, from_pt=True)
+```
+
+`from_pretrained()` method ရဲ့ argument အဖြစ် `from_pt=True` ကို ကျွန်တော်တို့ သတ်မှတ်ထားတာကို သတိပြုပါ။ ဒါက `multi-qa-mpnet-base-dot-v1` checkpoint မှာ PyTorch weights တွေပဲ ရှိတာကြောင့် `from_pt=True` ကို သတ်မှတ်ခြင်းက ၎င်းတို့ကို ကျွန်တော်တို့အတွက် TensorFlow format သို့ အလိုအလျောက် ပြောင်းပေးပါလိမ့်မယ်။ သင်တွေ့ရတဲ့အတိုင်း၊ 🤗 Transformers မှာ frameworks တွေကြား ပြောင်းလဲတာက အလွန်ရိုးရှင်းပါတယ်။
+
+{/if}
+
+ကျွန်တော်တို့ အစောပိုင်းက ဖော်ပြခဲ့တဲ့အတိုင်း၊ ကျွန်တော်တို့ရဲ့ GitHub issues corpus ထဲက entry တစ်ခုစီကို single vector အဖြစ် ကိုယ်စားပြုချင်တာကြောင့်၊ ကျွန်တော်တို့ token embeddings တွေကို နည်းလမ်းတစ်ခုခုနဲ့ "pool" သို့မဟုတ် average လုပ်ဖို့ လိုအပ်ပါတယ်။ လူကြိုက်များတဲ့ နည်းလမ်းတစ်ခုကတော့ model ရဲ့ outputs တွေပေါ်မှာ *CLS pooling* ကို လုပ်ဆောင်တာပါပဲ၊ ဒီနေရာမှာ ကျွန်တော်တို့ဟာ special `[CLS]` token အတွက် last hidden state ကို ရိုးရှင်းစွာ စုဆောင်းပါတယ်။ အောက်ပါ function က ကျွန်တော်တို့အတွက် လုပ်ဆောင်ပေးပါတယ်။
+
+```py
+def cls_pooling(model_output):
+    return model_output.last_hidden_state[:, 0]
+```
+
+နောက်ထပ်အနေနဲ့၊ documents တွေရဲ့ list တစ်ခုကို tokenize လုပ်ပေးမယ့်၊ tensors တွေကို GPU ပေါ်မှာ ထားပေးမယ့်၊ model ကို feed လုပ်ပေးမယ့်၊ ပြီးတော့ နောက်ဆုံးမှာ outputs တွေကို CLS pooling လုပ်ပေးမယ့် helper function တစ်ခုကို ကျွန်တော်တို့ ဖန်တီးပါမယ်။
+
+{#if fw === 'pt'}
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="pt"
+    )
+    encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+function က အလုပ်ဖြစ်မဖြစ် စစ်ဆေးဖို့အတွက် ကျွန်တော်တို့ corpus ထဲက ပထမဆုံး text entry ကို feed လုပ်ပြီး output shape ကို စစ်ဆေးနိုင်ပါတယ်။
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+ကောင်းပါပြီ၊ ကျွန်တော်တို့ corpus ထဲက ပထမဆုံး entry ကို 768-dimensional vector တစ်ခုအဖြစ် ပြောင်းလဲခဲ့ပါပြီ။ ကျွန်တော်တို့ရဲ့ `get_embeddings()` function ကို corpus ထဲက row တစ်ခုစီတိုင်းမှာ အသုံးပြုဖို့ `Dataset.map()` ကို အသုံးပြုနိုင်တာကြောင့်၊ အောက်ပါအတိုင်း `embeddings` column အသစ်တစ်ခု ဖန်တီးရအောင်။
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).detach().cpu().numpy()[0]}
+)
+```
+
+{:else}
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="tf"
+    )
+    encoded_input = {k: v for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+function က အလုပ်ဖြစ်မဖြစ် စစ်ဆေးဖို့အတွက် ကျွန်တော်တို့ corpus ထဲက ပထမဆုံး text entry ကို feed လုပ်ပြီး output shape ကို စစ်ဆေးနိုင်ပါတယ်။
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+TensorShape([1, 768])
+```
+
+ကောင်းပါပြီ၊ ကျွန်တော်တို့ corpus ထဲက ပထမဆုံး entry ကို 768-dimensional vector တစ်ခုအဖြစ် ပြောင်းလဲခဲ့ပါပြီ။ ကျွန်တော်တို့ရဲ့ `get_embeddings()` function ကို corpus ထဲက row တစ်ခုစီတိုင်းမှာ အသုံးပြုဖို့ `Dataset.map()` ကို အသုံးပြုနိုင်တာကြောင့်၊ အောက်ပါအတိုင်း `embeddings` column အသစ်တစ်ခု ဖန်တီးရအောင်။
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).numpy()[0]}
+)
+```
+
+{/if}
+
+embeddings တွေကို NumPy arrays တွေအဖြစ် ပြောင်းလဲထားတာကို သတိပြုပါ။ ဒါက 🤗 Datasets က ၎င်းတို့ကို FAISS နဲ့ index လုပ်ဖို့ ကြိုးစားတဲ့အခါ ဒီ format ကို လိုအပ်လို့ပါ။ ဒါကို နောက်တစ်ဆင့်မှာ ကျွန်တော်တို့ လုပ်ဆောင်ပါမယ်။
+
+## FAISS ကို အသုံးပြု၍ ထိရောက်သော Similarity Search[[using-faiss-for-efficient-similarity-search]]
+
+အခု ကျွန်တော်တို့မှာ embeddings တွေရဲ့ dataset တစ်ခုရှိပြီဆိုတော့ ၎င်းတို့ပေါ်မှာ search လုပ်ဖို့ နည်းလမ်းတစ်ခု လိုအပ်ပါတယ်။ ဒါကိုလုပ်ဖို့၊ 🤗 Datasets မှာ _FAISS index_ လို့ခေါ်တဲ့ အထူး data structure တစ်ခုကို ကျွန်တော်တို့ အသုံးပြုပါမယ်။ [FAISS](https://faiss.ai/) (Facebook AI Similarity Search ရဲ့ အတိုကောက်) က embedding vectors တွေကို လျင်မြန်စွာ ရှာဖွေပြီး cluster လုပ်ဖို့ ထိရောက်တဲ့ algorithms တွေကို ပံ့ပိုးပေးတဲ့ library တစ်ခုပါ။
+
+FAISS ရဲ့ အခြေခံသဘောတရားက input embedding တစ်ခုနဲ့ ဆင်တူတဲ့ embeddings တွေကို ရှာဖွေနိုင်စေမယ့် _index_ လို့ခေါ်တဲ့ အထူး data structure တစ်ခုကို ဖန်တီးဖို့ပါပဲ။ 🤗 Datasets မှာ FAISS index တစ်ခု ဖန်တီးတာက ရိုးရှင်းပါတယ် — ကျွန်တော်တို့ `Dataset.add_faiss_index()` function ကို အသုံးပြုပြီး ကျွန်တော်တို့ dataset ထဲက ဘယ် column ကို index လုပ်ချင်တယ်ဆိုတာ သတ်မှတ်ပေးရုံပါပဲ။
+
+```py
+embeddings_dataset.add_faiss_index(column="embeddings")
+```
+
+အခု ကျွန်တော်တို့ `Dataset.get_nearest_examples()` function နဲ့ nearest neighbor lookup လုပ်ခြင်းဖြင့် ဒီ index ပေါ်မှာ queries တွေ လုပ်ဆောင်နိုင်ပါပြီ။ ဒါကို ပထမဆုံး မေးခွန်းတစ်ခုကို အောက်ပါအတိုင်း embedding လုပ်ခြင်းဖြင့် စမ်းကြည့်ရအောင်။
+
+{#if fw === 'pt'}
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).cpu().detach().numpy()
+question_embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+{:else}
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).numpy()
+question_embedding.shape
+```
+
+```python out
+(1, 768)
+```
+
+{/if}
+
+documents တွေနဲ့အတူတူပဲ၊ ကျွန်တော်တို့မှာ အခု query ကို ကိုယ်စားပြုတဲ့ 768-dimensional vector တစ်ခု ရှိပါတယ်။ ဒါကို အတူဆုံး embeddings တွေကို ရှာဖွေဖို့ corpus တစ်ခုလုံးနဲ့ နှိုင်းယှဉ်နိုင်ပါတယ်။
+
+```py
+scores, samples = embeddings_dataset.get_nearest_examples(
+    "embeddings", question_embedding, k=5
+)
+```
+
+`Dataset.get_nearest_examples()` function က query နဲ့ document ကြား တူညီမှုအဆင့်ကို အဆင့်သတ်မှတ်ပေးတဲ့ scores တွေရဲ့ tuple တစ်ခုနဲ့ သက်ဆိုင်ရာ samples အစုအဝေးတစ်ခု (ဒီနေရာမှာတော့ အကောင်းဆုံး ကိုက်ညီမှု ၅ ခု) ကို ပြန်ပေးပါတယ်။ ဒါတွေကို `pandas.DataFrame` ထဲမှာ စုဆောင်းပြီး အလွယ်တကူ စီစဉ်နိုင်အောင် လုပ်ရအောင်။
+
+```py
+import pandas as pd
+
+samples_df = pd.DataFrame.from_dict(samples)
+samples_df["scores"] = scores
+samples_df.sort_values("scores", ascending=False, inplace=True)
+```
+
+အခု ကျွန်တော်တို့ query က ရရှိနိုင်တဲ့ comments တွေနဲ့ ဘယ်လောက် ကောင်းကောင်း ကိုက်ညီလဲဆိုတာကို ကြည့်ဖို့ ပထမဆုံး rows အနည်းငယ်ကို iterate လုပ်နိုင်ပါပြီ။
+
+```py
+for _, row in samples_df.iterrows():
+    print(f"COMMENT: {row.comments}")
+    print(f"SCORE: {row.scores}")
+    print(f"TITLE: {row.title}")
+    print(f"URL: {row.html_url}")
+    print("=" * 50)
+    print()
+```
+
+```python out
+"""
+COMMENT: Requiring online connection is a deal breaker in some cases unfortunately so it'd be great if offline mode is added similar to how `transformers` loads models offline fine.
+
+@mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+SCORE: 25.505046844482422
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: The local dataset builders (csv, text , json and pandas) are now part of the `datasets` package since #1726 :)
+You can now use them offline
+\`\`\`python
+datasets = load_dataset("text", data_files=data_files)
+\`\`\`
+
+We'll do a new release soon
+SCORE: 24.555509567260742
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: I opened a PR that allows to reload modules that have already been loaded once even if there's no internet.
+
+Let me know if you know other ways that can make the offline mode experience better. I'd be happy to add them :)
+
+I already note the "freeze" modules option, to prevent local modules updates. It would be a cool feature.
+
+----------
+
+> @mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+
+Indeed `load_dataset` allows to load remote dataset script (squad, glue, etc.) but also you own local ones.
+For example if you have a dataset script at `./my_dataset/my_dataset.py` then you can do
+\`\`\`python
+load_dataset("./my_dataset")
+\`\`\`
+and the dataset script will generate your dataset once and for all.
+
+----------
+
+About I'm looking into having `csv`, `json`, `text`, `pandas` dataset builders already included in the `datasets` package, so that they are available offline by default, as opposed to the other datasets that require the script to be downloaded.
+cf #1724
+SCORE: 24.14896583557129
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: > here is my way to load a dataset offline, but it **requires** an online machine
+>
+> 1. (online machine)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_dataset(...)
+>
+> data.save_to_disk(/YOUR/DATASET/DIR)
+>
+> ```
+>
+> 2. copy the dir from online to the offline machine
+>
+> 3. (offline machine)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_from_disk(/SAVED/DATA/DIR)
+>
+> ```
+>
+>
+>
+> HTH.
+
+
+SCORE: 22.893993377685547
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: here is my way to load a dataset offline, but it **requires** an online machine
+1. (online machine)
+\`\`\`
+import datasets
+data = datasets.load_dataset(...)
+data.save_to_disk(/YOUR/DATASET/DIR)
+\`\`\`
+2. copy the dir from online to the offline machine
+3. (offline machine)
+\`\`\`
+import datasets
+data = datasets.load_from_disk(/SAVED/DATA/DIR)
+\`\`\`
+
+HTH.
+SCORE: 22.406635284423828
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+"""
+```
+
+မဆိုးပါဘူး! ကျွန်တော်တို့ရဲ့ ဒုတိယ hit က query နဲ့ ကိုက်ညီပုံရပါတယ်။
+
+> [!TIP]
+> ✏️ **စမ်းသပ်ကြည့်ပါ။** သင့်ကိုယ်ပိုင် query တစ်ခုကို ဖန်တီးပြီး ပြန်လည်ရရှိထားတဲ့ documents တွေထဲမှာ အဖြေရှာနိုင်မလား ကြည့်ပါ။ search ကို ပိုမိုကျယ်ပြန့်စေဖို့ `Dataset.get_nearest_examples()` မှာရှိတဲ့ `k` parameter ကို တိုးမြှင့်ရပါလိမ့်မယ်။
+
+## ဝေါဟာရ ရှင်းလင်းချက် (Glossary)
+
+*   **FAISS (Facebook AI Similarity Search)**: embedding vectors များကို လျင်မြန်စွာ ရှာဖွေပြီး cluster လုပ်ရန်အတွက် ထိရောက်သော algorithms များကို ပံ့ပိုးပေးသော library တစ်ခု။
+*   **Semantic Search**: အဓိပ္ပာယ်ကို နားလည်ပြီး query တစ်ခု၏ ရည်ရွယ်ချက်နှင့် ကိုက်ညီသော documents များကို ရှာဖွေပေးသည့် search engine အမျိုးအစား။
+*   **Embeddings**: စာသား (သို့မဟုတ် အခြားဒေတာ) ကို multi-dimensional vector space ထဲရှိ ဂဏန်းများအဖြစ် ကိုယ်စားပြုခြင်း။
+*   **GitHub Issues**: GitHub repository များတွင် ပြဿနာများ၊ bug များ သို့မဟုတ် အင်္ဂါရပ် တောင်းဆိုမှုများကို မှတ်တမ်းတင်ရန် အသုံးပြုသော အင်္ဂါရပ်။
+*   **Comments**: GitHub issue တစ်ခု သို့မဟုတ် pull request တစ်ခုအောက်တွင် အသုံးပြုသူများက ပေါင်းထည့်သော စာသားမှတ်ချက်များ။
+*   **Search Engine**: အသုံးပြုသူ၏ query နှင့် ကိုက်ညီသော အချက်အလက်များကို ရှာဖွေပေးသည့် စနစ်။
+*   **Transformer-based Language Models**: Transformer architecture ပေါ်တွင် အခြေခံထားသော language models များ။
+*   **Embedding Vector**: စာသားအပိုင်းအစတစ်ခု (token, sentence, paragraph) ကို ဂဏန်းတန်ဖိုးများဖြင့် ကိုယ်စားပြုထားသော vector။
+*   **Pooling**: individual embeddings များကို ပေါင်းစပ်ပြီး ပိုကြီးသော text unit (ဥပမာ- sentence, document) အတွက် single vector representation တစ်ခု ဖန်တီးခြင်း။
+*   **Corpus**: သုတေသနပြုရန်အတွက် အသုံးပြုသော စာသားအစုအဝေးကြီး။
+*   **Dot-product Similarity**: vectors နှစ်ခုကြားရှိ similarity ကို တွက်ချက်သော metric တစ်ခု။
+*   **Similarity Metric**: အရာဝတ္ထုနှစ်ခု (ဥပမာ- embeddings) မည်မျှတူညီသည်ကို တိုင်းတာသော နည်းလမ်း။
+*   **Query**: search engine သို့မဟုတ် database မှ အချက်အလက်များ တောင်းဆိုခြင်း။
+*   **Conventional Approaches**: ရိုးရာ သို့မဟုတ် သမားရိုးကျ နည်းလမ်းများ။
+*   **Keywords**: Search query တွင် အသုံးပြုသော အဓိကစကားလုံးများ။
+*   **`load_dataset()` Function**: Hugging Face Datasets library မှ dataset များကို download လုပ်ပြီး cache လုပ်ရန် အသုံးပြုသော function။
+*   **`split="train"`**: `load_dataset()` function တွင် training split ကို ရွေးချယ်ရန်အတွက် argument။
+*   **`Dataset` Object**: Hugging Face Datasets library မှ dataset တစ်ခုကို ကိုယ်စားပြုသော object။
+*   **`DatasetDict` Object**: Training set, validation set, နှင့် test set ကဲ့သို့သော dataset အများအပြားကို dictionary ပုံစံဖြင့် သိမ်းဆည်းထားသော object။
+*   **Pull Requests**: GitHub တွင် code အပြောင်းအလဲများကို project ၏ main branch သို့ ပေါင်းစည်းရန် တောင်းဆိုခြင်း။
+*   **`Dataset.filter()` Function**: Dataset မှ သတ်မှတ်ထားသော အခြေအနေများနှင့် မကိုက်ညီသော rows များကို ဖယ်ရှားရန် အသုံးပြုသော function။
+*   **`is_pull_request`**: GitHub issue တစ်ခုသည် pull request ဟုတ်မဟုတ်ကို ဖော်ပြသော feature (boolean value)။
+*   **`len(x["comments"]) > 0`**: comment list ၏ အရှည်သည် သုညထက် ကြီးမားခြင်းရှိမရှိ စစ်ဆေးခြင်း။
+*   **`title` Column**: Issue ၏ ခေါင်းစဉ်ကို သိမ်းဆည်းထားသော column။
+*   **`body` Column**: Issue ၏ ဖော်ပြချက်ကို သိမ်းဆည်းထားသော column။
+*   **`comments` Column**: Issue နှင့် သက်ဆိုင်သော comments များကို သိမ်းဆည်းထားသော column (list of strings)။
+*   **`html_url` Column**: Issue ၏ GitHub URL ကို သိမ်းဆည်းထားသော column။
+*   **`Dataset.remove_columns()` Function**: Dataset မှ မလိုအပ်သော columns များကို ဖယ်ရှားရန် အသုံးပြုသော function။
+*   **`set()`**: Python တွင် item များကို စုစည်းသိမ်းဆည်းထားသော unordered collection ဖြစ်ပြီး duplicate များ မပါဝင်ပါ။
+*   **`symmetric_difference()`**: set နှစ်ခုကြားရှိ မတူညီသော items များကို ရှာဖွေသော method။
+*   **Contextual Information**: အခြေအနေတစ်ခု သို့မဟုတ် စာသားတစ်ခု၏ အဓိပ္ပာယ်ကို နားလည်ရန် ကူညီပေးသော နောက်ခံအချက်အလက်များ။
+*   **"Explode" a Column**: Pandas DataFrame တွင် list-like column တစ်ခုရှိ element တစ်ခုစီအတွက် new row တစ်ခု ဖန်တီးခြင်း။
+*   **Pandas `DataFrame`**: Python တွင် tabular data (ဇယားပုံစံဒေတာ) ကို ကိုင်တွယ်ရန် အသုံးပြုသော two-dimensional data structure။
+*   **`DataFrame.explode()` Function**: Pandas မှ list-like column တစ်ခုရှိ element တစ်ခုစီအတွက် new row တစ်ခု ဖန်တီးပေးသော function။
+*   **`issues_dataset.set_format("pandas")`**: Dataset ကို Pandas DataFrame format သို့ ပြောင်းလဲခြင်း။
+*   **`issues_dataset[:]`**: Dataset တစ်ခုလုံးကို (Pandas format တွင်) selection လုပ်ခြင်း။
+*   **`comments_df.head(4)`**: DataFrame ၏ ပထမဆုံး rows လေးခုကို ပြသခြင်း။
+*   **`ignore_index=True`**: `explode()` function တွင် original index ကို မထိန်းသိမ်းဘဲ new index ကို ဖန်တီးရန် argument။
+*   **`Dataset.from_pandas()`**: Pandas DataFrame တစ်ခုမှ Hugging Face Dataset object တစ်ခုကို ဖန်တီးသော method။
+*   **`comments_length` Column**: Comment တစ်ခုစီရှိ စကားလုံးအရေအတွက်ကို သိမ်းဆည်းထားသော column။
+*   **`x["comments"].split()`**: Comment စာသားကို စကားလုံးများအဖြစ် ပိုင်းခြားခြင်း။
+*   **`Dataset.map()`**: 🤗 Datasets library မှာ ပါဝင်တဲ့ method တစ်ခုဖြစ်ပြီး dataset ရဲ့ element တစ်ခုစီ ဒါမှမဟုတ် batch တစ်ခုစီပေါ်မှာ function တစ်ခုကို အသုံးပြုနိုင်စေသည်။
+*   **`AutoModel` Class**: Hugging Face Transformers library မှ မော်ဒယ်အမည်ကို အသုံးပြုပြီး သက်ဆိုင်ရာ model class ကို အလိုအလျောက် load လုပ်ပေးသော class။
+*   **Checkpoint**: မော်ဒယ်၏ weights များနှင့် အခြားဖွဲ့စည်းပုံများ (configuration) ကို သတ်မှတ်ထားသော အချိန်တစ်ခုတွင် သိမ်းဆည်းထားခြင်း။
+*   **`sentence-transformers` Library**: Sentence embeddings များ ဖန်တီးရန်အတွက် ဒီဇိုင်းထုတ်ထားသော Python library။
+*   **Asymmetric Semantic Search**: query သည် တိုတောင်းပြီး document သည် ရှည်လျားသော semantic search အမျိုးအစား (ဥပမာ- မေးခွန်းတစ်ခုကို အဖြေရှာခြင်း)။
+*   **`multi-qa-mpnet-base-dot-v1`**: Semantic search အတွက် စွမ်းဆောင်ရည်ကောင်းမွန်သော sentence-transformer model checkpoint။
+*   **`AutoTokenizer`**: Hugging Face Transformers library မှာ ပါဝင်တဲ့ class တစ်ခုဖြစ်ပြီး မော်ဒယ်အမည်ကို အသုံးပြုပြီး သက်ဆိုင်ရာ tokenizer ကို အလိုအလျောက် load လုပ်ပေးသည်။
+*   **GPU (Graphics Processing Unit)**: ဂရပ်ဖစ်လုပ်ဆောင်မှုအတွက် အထူးဒီဇိုင်းထုတ်ထားသော processor တစ်မျိုးဖြစ်သော်လည်း AI/ML လုပ်ငန်းများတွင် အရှိန်မြှင့်ရန် အသုံးများသည်။
+*   **`torch.device("cuda")`**: PyTorch တွင် GPU device ကို ရည်ညွှန်းသည်။
+*   **`model.to(device)`**: PyTorch model ကို သတ်မှတ်ထားသော device (GPU) သို့ ရွှေ့ပြောင်းခြင်း။
+*   **`TFAutoModel`**: TensorFlow framework အတွက် `AutoModel` နှင့် တူညီသော လုပ်ဆောင်ချက်များရှိသည်။
+*   **`from_pt=True`**: `TFAutoModel.from_pretrained()` တွင် PyTorch weights များကို TensorFlow format သို့ အလိုအလျောက် ပြောင်းလဲရန် argument။
+*   **CLS Pooling**: Transformer model ၏ output မှ `[CLS]` token ၏ last hidden state ကို အသုံးပြု၍ text sequence အတွက် single vector representation တစ်ခု ဖန်တီးခြင်း။
+*   **`[CLS]` Token**: BERT model တွင် sequence ၏ အစကို ကိုယ်စားပြုသော special token။
+*   **Last Hidden State**: Transformer model ၏ နောက်ဆုံး layer မှ output embeddings များ။
+*   **`encoded_input`**: Tokenizer မှ ထုတ်ပေးသော input IDs, attention masks စသည်တို့ ပါဝင်သော dictionary။
+*   **`padding=True`**: Tokenization လုပ်ရာတွင် sequence အရှည်များ ကွဲပြားပါက အရှည်ဆုံး sequence အရှည်အတိုင်း ဖြည့်ပေးခြင်း။
+*   **`truncation=True`**: sequence အရှည်သည် model ၏ အများဆုံး input အရှည်ထက် ရှည်လျားပါက ဖြတ်တောက်ခြင်း။
+*   **`return_tensors="pt"`**: PyTorch tensors များအဖြစ် output ပြန်ပေးရန် argument။
+*   **`encoded_input.items()`**: dictionary မှ key-value pairs များကို ရယူခြင်း။
+*   **`k: v.to(device)`**: dictionary comprehension ဖြင့် input tensors များကို GPU သို့ ရွှေ့ခြင်း။
+*   **`model(**encoded_input)`**: model ကို encoded inputs များဖြင့် run ခြင်း။
+*   **`embedding.shape`**: embedding vector ၏ ပုံသဏ္ဍာန် (dimensions) ကို ပြသခြင်း။
+*   **768-dimensional Vector**: dimensions ၇၆၈ ခုပါဝင်သော vector။
+*   **`detach().cpu().numpy()[0]`**: PyTorch tensor ကို detach (computation graph မှ ဖြတ်တောက်) ပြီး CPU သို့ ရွှေ့၊ ထို့နောက် NumPy array အဖြစ် ပြောင်းလဲခြင်း။
+*   **NumPy Arrays**: Python တွင် ဂဏန်းဆိုင်ရာ တွက်ချက်မှုများအတွက် အသုံးပြုသော array object။
+*   **FAISS Index**: FAISS library မှ efficient similarity search အတွက် အသုံးပြုသော data structure။
+*   **`Dataset.add_faiss_index()` Function**: Hugging Face Dataset တွင် FAISS index တစ်ခုကို ထည့်သွင်းရန် အသုံးပြုသော function။
+*   **Nearest Neighbor Lookup**: input query နှင့် အတူဆုံးသော item များကို ရှာဖွေခြင်း။
+*   **`Dataset.get_nearest_examples()` Function**: Dataset ၏ FAISS index ကို အသုံးပြုပြီး query နှင့် အတူဆုံးသော examples များကို ပြန်ပေးသော function။
+*   **`question_embedding`**: Query စာသား၏ embedding vector။
+*   **`k` Parameter**: `get_nearest_examples()` function တွင် အနီးဆုံး examples အရေအတွက် (k) ကို သတ်မှတ်ရန် အသုံးပြုသော parameter။
+*   **`pd.DataFrame.from_dict()`**: dictionary တစ်ခုမှ Pandas DataFrame တစ်ခုကို ဖန်တီးသော method။
+*   **`samples_df.sort_values("scores", ascending=False, inplace=True)`**: DataFrame ကို `scores` column အလိုက် အများဆုံးမှ အနည်းဆုံးသို့ စီစဉ်ခြင်း။
+*   **`iterrows()`**: DataFrame ၏ rows များကို iterate လုပ်ရန် အသုံးပြုသော method။

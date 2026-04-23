@@ -1,0 +1,406 @@
+<FrameworkSwitchCourse {fw} />
+
+# WordPiece Tokenization[[wordpiece-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section6.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section6.ipynb"},
+]} />
+
+WordPiece ဟာ Google က BERT ကို pretrain လုပ်ဖို့ ဖန်တီးခဲ့တဲ့ tokenization algorithm တစ်ခုပါ။ ဒါကို BERT ပေါ် အခြေခံထားတဲ့ DistilBERT, MobileBERT, Funnel Transformers, နဲ့ MPNET လို Transformer models အများအပြားမှာ ပြန်လည်အသုံးပြုခဲ့ပါတယ်။ training လုပ်ပုံနဲ့ ပတ်သက်ရင် BPE နဲ့ အလွန်ဆင်တူပေမယ့်၊ လက်တွေ့ tokenization လုပ်ပုံကတော့ ကွဲပြားပါတယ်။
+
+<Youtube id="qpv6ms_t_1A"/>
+
+> [!TIP]
+> 💡 ဒီအပိုင်းက WordPiece ကို အသေးစိတ်ဖော်ပြပြီး၊ full implementation အထိပါ ပြသထားပါတယ်။ tokenization algorithm ရဲ့ အထွေထွေ overview ကိုပဲ လိုချင်တယ်ဆိုရင် အဆုံးထိ ကျော်သွားနိုင်ပါတယ်။
+
+## Training Algorithm[[training-algorithm]]
+
+> [!WARNING]
+> ⚠️ Google က WordPiece ရဲ့ training algorithm ရဲ့ implementation ကို open-source မလုပ်ခဲ့ပါဘူး၊ ဒါကြောင့် အောက်မှာဖော်ပြထားတာတွေက ထုတ်ဝေထားတဲ့ စာပေတွေပေါ် အခြေခံပြီး ကျွန်တော်တို့ရဲ့ အကောင်းဆုံး ခန့်မှန်းချက်ပါပဲ။ ဒါဟာ ၁၀၀% မှန်ကန်နိုင်မှာ မဟုတ်ပါဘူး။
+
+BPE လိုပဲ၊ WordPiece က model က အသုံးပြုတဲ့ special tokens တွေနဲ့ initial alphabet ပါဝင်တဲ့ small vocabulary တစ်ခုကနေ စတင်ပါတယ်။ ဒါက subwords တွေကို prefix တစ်ခု (BERT အတွက် `##` လိုမျိုး) ထည့်ခြင်းဖြင့် ခွဲခြားသိမြင်တာကြောင့်၊ စကားလုံးတစ်ခုစီကို အစပိုင်းမှာ အဲဒီ prefix ကို စကားလုံးထဲက characters အားလုံးမှာ ထည့်ခြင်းဖြင့် ပိုင်းခြားပါတယ်။ ဒါကြောင့်၊ ဥပမာအားဖြင့် `"word"` ကို ဒီလိုပိုင်းခြားပါတယ်။
+
+```
+w ##o ##r ##d
+```
+
+ဒါကြောင့်၊ initial alphabet မှာ word ရဲ့ အစမှာရှိတဲ့ characters အားလုံးနဲ့ WordPiece prefix နဲ့ ရှေ့ဆက်ထားတဲ့ word ထဲမှာရှိတဲ့ characters တွေ အားလုံးပါဝင်ပါတယ်။
+
+အဲဒီနောက်၊ BPE လိုပဲ၊ WordPiece က merge rules တွေကို သင်ယူပါတယ်။ အဓိကကွာခြားချက်က merge လုပ်မယ့် pair ကို ရွေးချယ်တဲ့ နည်းလမ်းပါ။ အများဆုံး frequent ဖြစ်တဲ့ pair ကို ရွေးချယ်မယ့်အစား၊ WordPiece က pair တစ်ခုစီအတွက် score ကို အောက်ပါ formula ကို အသုံးပြုပြီး တွက်ချက်ပါတယ်။
+
+$$\mathrm{score} = (\mathrm{freq\_of\_pair}) / (\mathrm{freq\_of\_first\_element} \times \mathrm{freq\_of\_second\_element})$$
+
+pair ရဲ့ frequency ကို ၎င်းရဲ့ အစိတ်အပိုင်းတစ်ခုစီရဲ့ frequencies ရဲ့ မြှောက်လဒ်နဲ့ စားခြင်းဖြင့်၊ algorithm က individual parts တွေ vocabulary ထဲမှာ less frequent ဖြစ်တဲ့ pairs တွေကို merge လုပ်တာကို ဦးစားပေးပါတယ်။ ဥပမာ၊ `"un"` နဲ့ `"##able"` pairs တွေဟာ တခြား words အများအပြားမှာ ပါဝင်နိုင်ပြီး frequency မြင့်မားနိုင်တာကြောင့်၊ အဲဒီ pair က အလွန် frequent ဖြစ်နေရင်တောင် `("un", "##able")` ကို မလိုအပ်ဘဲ merge လုပ်မှာ မဟုတ်ပါဘူး။ ဆန့်ကျင်ဘက်အားဖြင့်၊ `("hu", "##gging")` လို pair တစ်ခုကို ပိုမြန်မြန် merge လုပ်နိုင်ပါတယ် ( "hugging" ဆိုတဲ့ စကားလုံးက vocabulary ထဲမှာ မကြာခဏ ပေါ်လာတယ်ဆိုပါစို့) ဘာလို့လဲဆိုတော့ `"hu"` နဲ့ `"##gging"` တွေက တစ်ခုချင်းစီအနေနဲ့ less frequent ဖြစ်နိုင်လို့ပါပဲ။
+
+BPE training ဥပမာမှာ ကျွန်တော်တို့ အသုံးပြုခဲ့တဲ့ vocabulary တူတူကို ကြည့်ရအောင်...
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+ဒီနေရာမှာ splits တွေကတော့...
+
+```
+("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##g" "##s", 5)
+```
+
+ဒါကြောင့် initial vocabulary က `["b", "h", "p", "##g", "##n", "##s", "##u"]` ဖြစ်ပါလိမ့်မယ် (special tokens တွေကို ခဏမေ့ထားမယ်ဆိုရင်)။ အများဆုံး frequent ဖြစ်တဲ့ pair က `("##u", "##g")` (၂၀ ကြိမ် ပါဝင်ပါတယ်)၊ ဒါပေမယ့် `"##u"` ရဲ့ individual frequency က အလွန်မြင့်မားတာကြောင့် ၎င်းရဲ့ score က အမြင့်ဆုံး မဟုတ်ပါဘူး (ဒါက ၁ / ၃၆ ပါ)။ `"##u"` ပါဝင်တဲ့ pairs အားလုံးမှာ အမှန်တကယ်တော့ တူညီတဲ့ score (၁ / ၃၆) ရှိတာကြောင့်၊ အကောင်းဆုံး score က `("##g", "##s")` ( `"##u"` မပါဝင်တဲ့ တစ်ခုတည်းသော pair) ကို ၁ / ၂၀ နဲ့ ရရှိပြီး၊ ပထမဆုံး သင်ယူရတဲ့ merge က `("##g", "##s") -> ("##gs")` ဖြစ်ပါတယ်။
+
+ကျွန်တော်တို့ merge လုပ်တဲ့အခါ၊ tokens နှစ်ခုကြားက `##` ကို ဖယ်ရှားတာကြောင့်၊ `"##gs"` ကို vocabulary ထဲကို ထည့်သွင်းပြီး corpus ထဲက words တွေမှာ merge ကို အသုံးပြုတယ်ဆိုတာ သတိပြုပါ။
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs"]
+Corpus: ("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##gs", 5)
+```
+
+ဒီအဆင့်မှာ၊ `"##u"` က ဖြစ်နိုင်ခြေရှိတဲ့ pairs အားလုံးမှာ ပါဝင်တာကြောင့်၊ ၎င်းတို့အားလုံးမှာ တူညီတဲ့ score တွေ ရရှိပါတယ်။ ဒီကိစ္စမှာ၊ ပထမဆုံး pair ကို merge လုပ်တယ်လို့ ဆိုကြပါစို့၊ ဒါကြောင့် `("h", "##u") -> "hu"` ဖြစ်ပါတယ်။ ဒါက ကျွန်တော်တို့ကို ဒီအခြေအနေကို ပို့ဆောင်ပါတယ်။
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu"]
+Corpus: ("hu" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+အဲဒီနောက် အကောင်းဆုံး score က `("hu", "##g")` နဲ့ `("hu", "##gs")` တို့နဲ့ တူညီစွာ ရရှိပါတယ် (တခြား pairs အားလုံးအတွက် ၁/၂၁ နဲ့ နှိုင်းယှဉ်ရင် ၁/၁၅ နဲ့)၊ ဒါကြောင့် အကြီးဆုံး score ရှိတဲ့ ပထမဆုံး pair ကို merge လုပ်ပါတယ်။
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu", "hug"]
+Corpus: ("hug", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+ပြီးတော့ ကျွန်တော်တို့ လိုချင်တဲ့ vocabulary size ကို ရောက်တဲ့အထိ ဒီလို ဆက်လုပ်သွားပါတယ်။
+
+> [!TIP]
+> ✏️ **အခု သင့်အလှည့်!** နောက်ထပ် merge rule က ဘာဖြစ်မလဲ။
+
+## Tokenization Algorithm[[tokenization-algorithm]]
+
+WordPiece နဲ့ BPE မှာ tokenization က ကွာခြားချက်ကတော့ WordPiece က သင်ယူခဲ့တဲ့ merge rules တွေကို မသိမ်းဆည်းဘဲ final vocabulary ကိုပဲ သိမ်းဆည်းထားတာပါ။ tokenize လုပ်မယ့် word ကနေ စတင်ပြီး၊ WordPiece က vocabulary ထဲမှာရှိတဲ့ အရှည်ဆုံး subword ကို ရှာဖွေပြီး၊ အဲဒီနေရာမှာ ပိုင်းခြားပါတယ်။ ဥပမာ၊ အထက်ပါဥပမာမှာ သင်ယူခဲ့တဲ့ vocabulary ကို အသုံးပြုမယ်ဆိုရင်၊ `"hugs"` ဆိုတဲ့ word အတွက် vocabulary ထဲမှာရှိတဲ့ အရှည်ဆုံး subword က `"hug"` ဖြစ်တာကြောင့်၊ အဲဒီနေရာမှာ ပိုင်းခြားပြီး `["hug", "##s"]` ကို ရရှိပါတယ်။ အဲဒီနောက် `"##s"` ကို ဆက်လုပ်ပါတယ်၊ ဒါက vocabulary ထဲမှာရှိတာကြောင့် `"hugs"` ရဲ့ tokenization က `["hug", "##s"]` ဖြစ်ပါတယ်။
+
+BPE နဲ့ဆိုရင်၊ ကျွန်တော်တို့ သင်ယူခဲ့တဲ့ merges တွေကို အစဉ်လိုက် အသုံးပြုပြီး ဒါကို `["hu", "##gs"]` အဖြစ် tokenize လုပ်မှာဖြစ်တာကြောင့် encoding က ကွဲပြားပါတယ်။
+
+နောက်ထပ်ဥပမာတစ်ခုအနေနဲ့၊ `"bugs"` ဆိုတဲ့ word ကို ဘယ်လို tokenize လုပ်မလဲဆိုတာ ကြည့်ရအောင်။ `"b"` က word ရဲ့ အစမှာရှိပြီး vocabulary ထဲမှာရှိတဲ့ အရှည်ဆုံး subword ဖြစ်တာကြောင့်၊ အဲဒီနေရာမှာ ပိုင်းခြားပြီး `["b", "##ugs"]` ကို ရရှိပါတယ်။ အဲဒီနောက် `"##u"` က `"##ugs"` ရဲ့ အစမှာရှိပြီး vocabulary ထဲမှာရှိတဲ့ အရှည်ဆုံး subword ဖြစ်တာကြောင့်၊ အဲဒီနေရာမှာ ပိုင်းခြားပြီး `["b", "##u, "##gs"]` ကို ရရှိပါတယ်။ နောက်ဆုံးအနေနဲ့၊ `"##gs"` က vocabulary ထဲမှာရှိတာကြောင့် ဒီနောက်ဆုံး list က `"bugs"` ရဲ့ tokenization ဖြစ်ပါတယ်။
+
+tokenization က vocabulary ထဲမှာ subword တစ်ခုကို ရှာမတွေ့နိုင်တဲ့ အဆင့်ကို ရောက်တဲ့အခါ၊ word တစ်ခုလုံးကို unknown အဖြစ် tokenize လုပ်ပါတယ် — ဒါကြောင့်၊ ဥပမာအားဖြင့် `"mug"` ကို `["[UNK]"]` အဖြစ် tokenize လုပ်မှာဖြစ်သလို `"bum"` ကိုလည်း ( `b` နဲ့ `##u` နဲ့ စတင်နိုင်ပေမယ့်၊ `##m` က vocabulary ထဲမှာ မရှိတာကြောင့်၊ ရလဒ် tokenization က `["[UNK]"]` ပဲ ဖြစ်ပြီး၊ `["b", "##u", "[UNK]"]` မဟုတ်ပါဘူး)။ ဒါက BPE နဲ့ တခြားကွာခြားချက်တစ်ခုဖြစ်ပြီး၊ BPE က vocabulary ထဲမှာ မပါဝင်တဲ့ individual characters တွေကိုပဲ unknown အဖြစ် ခွဲခြားသတ်မှတ်ပါလိမ့်မယ်။
+
+> [!TIP]
+> ✏️ **အခု သင့်အလှည့်!** `"pugs"` ဆိုတဲ့ word ကို ဘယ်လို tokenize လုပ်မလဲ။
+
+## WordPiece ကို Implement လုပ်ခြင်း[[implementing-wordpiece]]
+
+အခု WordPiece algorithm ရဲ့ implementation တစ်ခုကို ကြည့်ရအောင်။ BPE နဲ့တူတူပဲ၊ ဒါက pedagogical (ပညာရေးဆိုင်ရာ) သက်သက်ဖြစ်ပြီး၊ သင်ဟာ ဒါကို big corpus တစ်ခုပေါ်မှာ အသုံးပြုနိုင်မှာ မဟုတ်ပါဘူး။
+
+BPE ဥပမာမှာ အသုံးပြုခဲ့တဲ့ corpus တူတူကို ကျွန်တော်တို့ အသုံးပြုပါမယ်။
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+ပထမဆုံး၊ corpus ကို words တွေအဖြစ် pre-tokenize လုပ်ဖို့ လိုအပ်ပါတယ်။ ကျွန်တော်တို့ WordPiece tokenizer (BERT လိုမျိုး) ကို ပြန်လည်ထုတ်လုပ်နေတာကြောင့်၊ pre-tokenization အတွက် `bert-base-cased` tokenizer ကို ကျွန်တော်တို့ အသုံးပြုပါမယ်-
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+```
+
+အဲဒီနောက် corpus ထဲက word တစ်ခုစီရဲ့ frequencies တွေကို pre-tokenization လုပ်နေစဉ် တွက်ချက်ပါတယ်။
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+```python out
+defaultdict(
+    int, {'This': 3, 'is': 2, 'the': 1, 'Hugging': 1, 'Face': 1, 'Course': 1, '.': 4, 'chapter': 1, 'about': 1,
+    'tokenization': 1, 'section': 1, 'shows': 1, 'several': 1, 'tokenizer': 1, 'algorithms': 1, 'Hopefully': 1,
+    ',': 1, 'you': 1, 'will': 1, 'be': 1, 'able': 1, 'to': 1, 'understand': 1, 'how': 1, 'they': 1, 'are': 1,
+    'trained': 1, 'and': 1, 'generate': 1, 'tokens': 1})
+```
+
+ကျွန်တော်တို့ အရင်က တွေ့ခဲ့ရတဲ့အတိုင်း၊ alphabet က words တွေရဲ့ ပထမဆုံး စာလုံးအားလုံးနဲ့ `##` နဲ့ ရှေ့ဆက်ထားတဲ့ words တွေထဲမှာ ပါဝင်တဲ့ အခြားစာလုံးများအားလုံးနဲ့ ဖွဲ့စည်းထားတဲ့ unique set ပါပဲ။
+
+```python
+alphabet = []
+for word in word_freqs.keys():
+    if word[0] not in alphabet:
+        alphabet.append(word[0])
+    for letter in word[1:]:
+        if f"##{letter}" not in alphabet:
+            alphabet.append(f"##{letter}")
+
+alphabet.sort()
+alphabet
+
+print(alphabet)
+```
+
+```python out
+['##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k', '##l', '##m', '##n', '##o', '##p', '##r', '##s',
+ '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u',
+ 'w', 'y']
+```
+
+model က အသုံးပြုတဲ့ special tokens တွေကိုလည်း vocabulary ရဲ့ အစမှာ ထည့်သွင်းပါတယ် (BERT ရဲ့ ကိစ္စမှာတော့ `["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]` list ဖြစ်ပါတယ်)-
+
+```python
+vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + alphabet.copy()
+```
+
+နောက်တစ်ခုကတော့ စာလုံးတစ်ခုစီကို ပိုင်းခြားဖို့ လိုအပ်ပါတယ်၊ ပထမဆုံး စာလုံးမဟုတ်တဲ့ ကျန်တဲ့ စာလုံးအားလုံးကို `##` နဲ့ ရှေ့ဆက်ထားပါတယ်။
+
+```python
+splits = {
+    word: [c if i == 0 else f"##{c}" for i, c in enumerate(word)]
+    for word in word_freqs.keys()
+}
+```
+
+အခု training အတွက် အဆင်သင့်ဖြစ်ပြီဆိုတော့၊ pair တစ်ခုစီရဲ့ score ကို တွက်ချက်တဲ့ function တစ်ခု ရေးကြရအောင်။ ဒါကို training ရဲ့ အဆင့်တစ်ခုစီမှာ အသုံးပြုဖို့ လိုပါလိမ့်မယ်။
+
+```python
+def compute_pair_scores(splits):
+    letter_freqs = defaultdict(int)
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            letter_freqs[split[0]] += freq
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            letter_freqs[split[i]] += freq
+            pair_freqs[pair] += freq
+        letter_freqs[split[-1]] += freq
+
+    scores = {
+        pair: freq / (letter_freqs[pair[0]] * letter_freqs[pair[1]])
+        for pair, freq in pair_freqs.items()
+    }
+    return scores
+```
+
+initial splits ပြီးနောက် ဒီ dictionary ရဲ့ အစိတ်အပိုင်းတစ်ခုကို ကြည့်ရအောင်...
+
+```python
+pair_scores = compute_pair_scores(splits)
+for i, key in enumerate(pair_scores.keys()):
+    print(f"{key}: {pair_scores[key]}")
+    if i >= 5:
+        break
+```
+
+```python out
+('T', '##h'): 0.125
+('##h', '##i'): 0.03409090909090909
+('##i', '##s'): 0.02727272727272727
+('i', '##s'): 0.1
+('t', '##h'): 0.03571428571428571
+('##h', '##e'): 0.011904761904761904
+```
+
+အခု၊ အကောင်းဆုံး score ရှိတဲ့ pair ကို ရှာဖွေတာက မြန်ဆန်တဲ့ loop တစ်ခုပဲ လိုပါတယ်။
+
+```python
+best_pair = ""
+max_score = None
+for pair, score in pair_scores.items():
+    if max_score is None or max_score < score:
+        best_pair = pair
+        max_score = score
+
+print(best_pair, max_score)
+```
+
+```python out
+('a', '##b') 0.2
+```
+
+ဒါကြောင့် ပထမဆုံး သင်ယူရမယ့် merge က `('a', '##b') -> 'ab'` ဖြစ်ပြီး၊ `'ab'` ကို vocabulary ထဲကို ထည့်သွင်းပါတယ်။
+
+```python
+vocab.append("ab")
+```
+
+ဆက်လက်လုပ်ဆောင်ဖို့၊ ကျွန်တော်တို့ `splits` dictionary ထဲမှာ အဲဒီ merge ကို အသုံးပြုဖို့ လိုအပ်ပါတယ်။ ဒါအတွက် နောက်ထပ် function တစ်ခု ရေးကြရအောင်။
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                merge = a + b[2:] if b.startswith("##") else a + b
+                split = split[:i] + [merge] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+ပြီးတော့ ပထမဆုံး merge ရဲ့ ရလဒ်ကို ကြည့်နိုင်ပါတယ်။
+
+```py
+splits = merge_pair("a", "##b", splits)
+splits["about"]
+```
+
+```python out
+['ab', '##o', '##u', '##t']
+```
+
+အခု ကျွန်တော်တို့ လိုချင်တဲ့ merges တွေအားလုံးကို သင်ယူပြီးတဲ့အထိ loop လုပ်ဖို့ လိုအပ်တာတွေ အားလုံးရှိပါပြီ။ vocab size 70 ကို ရည်ရွယ်ကြစို့။
+
+```python
+vocab_size = 70
+while len(vocab) < vocab_size:
+    scores = compute_pair_scores(splits)
+    best_pair, max_score = "", None
+    for pair, score in scores.items():
+        if max_score is None or max_score < score:
+            best_pair = pair
+            max_score = score
+    splits = merge_pair(*best_pair, splits)
+    new_token = (
+        best_pair[0] + best_pair[1][2:]
+        if best_pair[1].startswith("##")
+        else best_pair[0] + best_pair[1]
+    )
+    vocab.append(new_token)
+```
+
+အဲဒီနောက် ထုတ်လုပ်ထားတဲ့ vocabulary ကို ကြည့်နိုင်ပါတယ်။
+
+```py
+print(vocab)
+```
+
+```python out
+['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k',
+ '##l', '##m', '##n', '##o', '##p', '##r', '##s', '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H',
+ 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u', 'w', 'y', 'ab', '##fu', 'Fa', 'Fac', '##ct', '##ful', '##full', '##fully',
+ 'Th', 'ch', '##hm', 'cha', 'chap', 'chapt', '##thm', 'Hu', 'Hug', 'Hugg', 'sh', 'th', 'is', '##thms', '##za', '##zat',
+ '##ut']
+```
+
+ကျွန်တော်တို့ မြင်တွေ့ရတဲ့အတိုင်း၊ BPE နဲ့ နှိုင်းယှဉ်ရင် ဒီ tokenizer က words ရဲ့ အစိတ်အပိုင်းတွေကို tokens အဖြစ် ပိုမိုမြန်မြန် သင်ယူပါတယ်။
+
+> [!TIP]
+> 💡 တူညီတဲ့ corpus ပေါ်မှာ `train_new_from_iterator()` ကို အသုံးပြုတာက တိကျတဲ့ vocabulary ကို ရရှိစေမှာ မဟုတ်ပါဘူး။ ဒါက 🤗 Tokenizers library က WordPiece ကို training အတွက် implement မလုပ်ထားလို့ပါ (၎င်းရဲ့ အတွင်းပိုင်းတွေကို ကျွန်တော်တို့ လုံးဝမသေချာလို့ပါ)၊ ဒါပေမယ့် BPE ကို အစားအသုံးပြုပါတယ်။
+
+text အသစ်တစ်ခုကို tokenize လုပ်ဖို့၊ ဒါကို pre-tokenize လုပ်၊ ပိုင်းခြား၊ ပြီးတော့ word တစ်ခုစီပေါ်မှာ tokenization algorithm ကို အသုံးပြုပါတယ်။ ဆိုလိုတာက၊ ပထမဆုံး word ရဲ့ အစမှာ စတင်တဲ့ အကြီးဆုံး subword ကို ရှာပြီး ပိုင်းခြား၊ ပြီးတော့ ဒုတိယအပိုင်းကို အဲဒီလုပ်ငန်းစဉ်အတိုင်း ထပ်လုပ်၊ ပြီးတော့ အဲဒီ word ရဲ့ ကျန်တာအတွက်နဲ့ text ထဲက နောက်ဆက်တွဲ words တွေအတွက် ဆက်လုပ်တာပါ။
+
+```python
+def encode_word(word):
+    tokens = []
+    while len(word) > 0:
+        i = len(word)
+        while i > 0 and word[:i] not in vocab:
+            i -= 1
+        if i == 0:
+            return ["[UNK]"]
+        tokens.append(word[:i])
+        word = word[i:]
+        if len(word) > 0:
+            word = f"##{word}"
+    return tokens
+```
+
+vocabulary ထဲမှာရှိတဲ့ word တစ်လုံးနဲ့ မရှိတဲ့ word တစ်လုံးပေါ်မှာ စမ်းသပ်ကြည့်ရအောင်။
+
+```python
+print(encode_word("Hugging"))
+print(encode_word("HOgging"))
+```
+
+```python out
+['Hugg', '##i', '##n', '##g']
+['[UNK]']
+```
+
+အခု text တစ်ခုကို tokenize လုပ်တဲ့ function တစ်ခု ရေးကြရအောင်။
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    encoded_words = [encode_word(word) for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+```
+
+မည်သည့် text ပေါ်မှာမဆို စမ်းသပ်ကြည့်နိုင်ပါတယ်။
+
+```python
+tokenize("This is the Hugging Face course!")
+```
+
+```python out
+['Th', '##i', '##s', 'is', 'th', '##e', 'Hugg', '##i', '##n', '##g', 'Fac', '##e', 'c', '##o', '##u', '##r', '##s',
+ '##e', '[UNK]']
+```
+
+WordPiece algorithm အတွက်တော့ ဒီလောက်ပါပဲ! အခု Unigram ကို ကြည့်ရအောင်။
+
+## ဝေါဟာရ ရှင်းလင်းချက် (Glossary)
+
+*   **WordPiece**: Subword tokenization algorithm တစ်မျိုးဖြစ်ပြီး Google က BERT ကို pretrain လုပ်ဖို့ ဖန်တီးခဲ့သည်။
+*   **BERT**: Bidirectional Encoder Representations from Transformers၊ Google က ဖန်တီးခဲ့သော အစွမ်းထက်သည့် Natural Language Processing (NLP) model။
+*   **Pretrain**: Model တစ်ခုကို အကြီးစားဒေတာများဖြင့် အစောပိုင်းကတည်းက လေ့ကျင့်ထားခြင်း။
+*   **Transformer Models**: Natural Language Processing (NLP) မှာ အောင်မြင်မှုများစွာရရှိခဲ့တဲ့ deep learning architecture တစ်မျိုးပါ။
+*   **DistilBERT**: BERT ၏ distilled (သေးငယ်အောင် လုပ်ထားသော) version။
+*   **MobileBERT**: Mobile devices များအတွက် ပိုမိုပေါ့ပါးသော BERT version။
+*   **Funnel Transformers**: Transformer model ၏ architecture ကို optimized လုပ်ထားသော ပုံစံ။
+*   **MPNET**: BERT နှင့် XLNet တို့၏ အကောင်းဆုံး အင်္ဂါရပ်များကို ပေါင်းစပ်ထားသော model။
+*   **BPE (Byte-Pair Encoding)**: Subword tokenization algorithm တစ်မျိုး။
+*   **Training (Algorithm)**: Model သို့မဟုတ် tokenizer ကို အချက်အလက်များမှ သင်ယူစေသော လုပ်ငန်းစဉ်။
+*   **Tokenization**: စာသား (သို့မဟုတ် အခြားဒေတာ) ကို AI မော်ဒယ်များ စီမံဆောင်ရွက်နိုင်ရန် tokens တွေအဖြစ် ပိုင်းခြားပေးသည့် လုပ်ငန်းစဉ်။
+*   **Open-sourced**: ဆော့ဖ်ဝဲလ်တစ်ခု၏ source code ကို အများပြည်သူအား လွတ်လပ်စွာ အသုံးပြု၊ ပြင်ဆင်၊ ဖြန့်ဝေနိုင်စေရန် ထုတ်ပြန်ခြင်း။
+*   **Implementation**: algorithm သို့မဟုတ် စနစ်တစ်ခုကို code ဖြင့် လက်တွေ့အကောင်အထည်ဖော်ခြင်း။
+*   **Vocabulary**: tokenizer သို့မဟုတ် model တစ်ခုက သိရှိနားလည်ပြီး ကိုင်တွယ်နိုင်သော ထူးခြားသည့် tokens များ စုစုပေါင်း။
+*   **Special Tokens**: Tokenizer သို့မဟုတ် model အတွက် သီးခြားအဓိပ္ပာယ်ရှိသော tokens များ (ဥပမာ- `[PAD]`, `[UNK]`, `[CLS]`, `[SEP]`, `[MASK]`)။
+*   **Initial Alphabet**: WordPiece training အစတွင် vocabulary တွင်ပါဝင်သော တစ်ခုတည်းသော characters များ။
+*   **Subwords**: စကားလုံးများကို ပိုင်းခြားထားသော သေးငယ်သည့် အစိတ်အပိုင်းများ။
+*   **Prefix**: စကားလုံးတစ်ခု၏ အရှေ့တွင် ထည့်သွင်းထားသော အစိတ်အပိုင်း (ဥပမာ- `##` in WordPiece)။
+*   **`##`**: WordPiece tokenization တွင် subword တစ်ခုသည် စကားလုံး၏ အစမဟုတ်ကြောင်း ဖော်ပြရန် အသုံးပြုသော prefix။
+*   **Merge Rules**: WordPiece algorithm တွင် tokens များကို ပေါင်းစပ်ရန် သင်ယူထားသော စည်းမျဉ်းများ။
+*   **Frequency**: အကြိမ်ရေ၊ တစ်ခုခု ဖြစ်ပေါ်သည့် အကြိမ်အရေအတွက်။
+*   **Score**: WordPiece တွင် pair များကို merge လုပ်ရန်အတွက် တွက်ချက်သော တန်ဖိုး။
+*   **`freq_of_pair`**: pair တစ်ခု ဖြစ်ပေါ်သည့် အကြိမ်အရေအတွက်။
+*   **`freq_of_first_element`**: pair ၏ ပထမဆုံး element ဖြစ်ပေါ်သည့် အကြိမ်အရေအတွက်။
+*   **`freq_of_second_element`**: pair ၏ ဒုတိယ element ဖြစ်ပေါ်သည့် အကြိမ်အရေအတွက်။
+*   **Prioritizes**: ဦးစားပေးခြင်း။
+*   **Less Frequent**: ဖြစ်ပေါ်မှု အကြိမ်ရေ နည်းခြင်း။
+*   **Pedagogical**: ပညာရေးဆိုင်ရာ ရည်ရွယ်ချက်အတွက်။
+*   **Corpus**: စာသား (သို့မဟုတ် အခြားဒေတာ) အစုအဝေးကြီးတစ်ခု။
+*   **`collections.defaultdict(int)`**: Python dictionary ၏ subclass တစ်ခုဖြစ်ပြီး key အသစ်တစ်ခုကို ဝင်ရောက်ကြည့်ရှုသောအခါ default value အဖြစ် `int()` (0) ကို ထည့်သွင်းပေးသည်။
+*   **`word_freqs`**: corpus ထဲရှိ စကားလုံးများ၏ frequencies များကို သိမ်းဆည်းထားသော dictionary။
+*   **`tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)`**: underlying tokenizer မှ text ကို pre-tokenize လုပ်ပြီး words များနှင့် ၎င်းတို့၏ offsets များကို ပြန်ပေးသော method။
+*   **`alphabet`**: vocabulary ကို တည်ဆောက်ရန်အတွက် အသုံးပြုသော ထူးခြားသည့် characters များ၏ စာရင်း။
+*   **`vocab`**: tokenizer ၏ အပြီးသတ် vocabulary။
+*   **`splits`**: word တစ်ခုစီကို ၎င်း၏ subword components များအဖြစ် ပိုင်းခြားထားသော dictionary။
+*   **`compute_pair_scores(splits)` Function**: WordPiece algorithm တွင် merge လုပ်နိုင်သော pair တစ်ခုစီအတွက် score များကို တွက်ချက်သော function။
+*   **`merge_pair(a, b, splits)` Function**: WordPiece algorithm တွင် သတ်မှတ်ထားသော pair `(a, b)` ကို merge လုပ်ပြီး `splits` dictionary ကို update လုပ်သော function။
+*   **`vocab_size`**: လိုချင်သော vocabulary ၏ အမြင့်ဆုံး အရွယ်အစား။
+*   **`train_new_from_iterator()`**: 🤗 Tokenizers library မှ tokenizer အသစ်တစ်ခုကို iterator (ဥပမာ- corpus) ကနေ လေ့ကျင့်ပေးသော method။
+*   **`encode_word(word)` Function**: WordPiece algorithm ကို အသုံးပြု၍ word တစ်ခုကို tokens များအဖြစ် ပြောင်းလဲပေးသော function။
+*   **`[UNK]` (Unknown Token)**: tokenizer ၏ vocabulary ထဲတွင် မပါဝင်သော word သို့မဟုတ် subword များကို ကိုယ်စားပြုသော special token။
+*   **`tokenize(text)` Function**: text တစ်ခုလုံးကို WordPiece algorithm ကို အသုံးပြု၍ tokens များအဖြစ် ပြောင်းလဲပေးသော function။
