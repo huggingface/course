@@ -1,5 +1,5 @@
-import re
 import argparse
+import re
 from pathlib import Path
 
 PATTERN_TIMESTAMP = re.compile(
@@ -35,7 +35,9 @@ def convert(input_file, output_file):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--input_language_folder", type=str, help="Folder with input bilingual SRT files to be converted"
+        "--input_language_folder",
+        type=str,
+        help="Folder with input bilingual SRT files to be converted",
     )
     parser.add_argument(
         "--output_language_folder",
@@ -50,4 +52,6 @@ if __name__ == "__main__":
     input_files = Path(args.input_language_folder).glob("*.srt")
     for input_file in input_files:
         convert(input_file, output_path / input_file.name)
-    print(f"Succesfully converted {len(list(input_files))} files to {args.output_language_folder} folder")
+    print(
+        f"Succesfully converted {len(list(input_files))} files to {args.output_language_folder} folder"
+    )

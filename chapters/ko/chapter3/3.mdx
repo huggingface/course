@@ -1,0 +1,372 @@
+<FrameworkSwitchCourse {fw} />
+
+# Trainer API로 모델 미세 조정하기[[fine-tuning-a-model-with-the-trainer-api]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section3.ipynb"},
+]} />
+
+<Youtube id="nvBXf7s7vTI"/>
+
+🤗 Transformers는 `Trainer` 클래스를 제공합니다. 이 클래스를 사용하면 사전 학습된 모델을 여러분의 데이터셋에 맞춰 최신 기법으로 쉽게 미세 조정할 수 있습니다. 이전 섹션에서 데이터 전처리 작업을 모두 마쳤다면 이제 몇 단계만 거치면 `Trainer`를 정의할 수 있습니다. 가장 어려운 부분은 `Trainer.train()`을 실행할 환경을 준비하는 과정일 수 있습니다. 이 작업은 CPU에서 매우 느리게 실행되기 때문입니다. 만약 GPU가 없다면 [Google Colab](https://colab.research.google.com/)에서 무료로 제공하는 GPU나 TPU를 이용할 수 있습니다.
+
+> [!TIP]
+> 📚 **훈련 리소스**: 훈련을 시작하기 전에 포괄적인 [🤗 Transformers 훈련 가이드](https://huggingface.co/docs/transformers/main/en/training)를 숙지하고 [미세 조정 쿡북](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu)의 실용적인 예제를 살펴보세요.
+
+아래 코드 예시는 이전 섹션의 코드를 모두 실행했다는 가정하에 작동합니다. 즉, 다음 사항들이 필요합니다.
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### 훈련[[training]]
+
+`Trainer`를 정의하기 전 첫 번째 단계는 `Trainer`가 훈련 및 평가에 사용할 모든 하이퍼파라미터를 담을`TrainingArguments` 클래스를 정의하는 것입니다. 필수로 제공해야 하는 유일한 인수는 훈련된 모델과 중간 체크포인트가 저장될 디렉토리입니다. 나머지는 기본값으로 둘 수 있으며, 기본적인 미세 조정 작업에는 충분한 설정입니다.
+
+```py
+from transformers import TrainingArguments
+
+training_args = TrainingArguments("test-trainer")
+```
+
+훈련 중에 모델을 Hub에 자동으로 업로드하려면 `TrainingArguments`에서 `push_to_hub=True`를 전달하세요. 이 기능에 대해서는 [Chapter 4](/course/chapter4/3)에서 자세히 알아보겠습니다.
+
+> [!TIP]
+> 🚀 **고급 설정**: 사용 가능한 모든 훈련 인수와 최적화 전략에 대한 자세한 정보는 [TrainingArguments 문서](https://huggingface.co/docs/transformers/main/en/main_classes/trainer#transformers.TrainingArguments)와 [훈련 구성 쿡북](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu)을 참고하세요.
+
+두 번째 단계는 모델을 정의하는 것입니다. [이전 챕터](/course/chapter2)에서와 같이 두 개의 라벨과 함께 `AutoModelForSequenceClassification` 클래스를 사용하겠습니다.
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+[Chapter 2](/course/chapter2)와 달리 이 사전 훈련된 모델을 인스턴스화하면  경고 메시지가 나타나는 것을 확인할 수 있습니다. 이는 BERT가 문장 쌍 분류를 위해 사전 훈련되지 않았기 때문에, 사전 훈련된 모델의 헤드가 제거되고 시퀀스 분류에 적합한 새로운 헤드가 추가되었기 때문입니다. 경고는 일부 가중치(제거된 사전 훈련 헤드에 해당하는 가중치)가 사용되지 않았고, 일부 다른 가중치(새로운 헤드용)가 무작위로 초기화되었다는 것을 나타냅니다. 마지막으로 모델을 훈련시키라는 메시지가 나오는데, 바로 지금부터 그 작업을 시작하겠습니다.
+
+모델이 준비되면, 지금까지 구성한 모든 객체(`model`, `training_args`, 훈련 및 검증 데이터셋, `data_collator`, `processing_class`)를 전달하여 `Trainer`를 정의할 수 있습니다. `processing_class` 매개변수는 비교적 최근에 추가된 기능으로, `Trainer`에게 어떤 토크나이저를 사용해 데이터를 처리할지 알려줍니다.
+
+```py
+from transformers import Trainer
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    processing_class=tokenizer,
+)
+```
+
+`processing_class`에 토크나이저를 전달하면, `Trainer`가 기본적으로 `DataCollatorWithPadding`을 `data_collator`로 사용합니다. 따라서 이 경우에는 `data_collator=data_collator` 줄을 생략할 수 있지만, 데이터 처리 파이프라인의 중요한 부분을 보여드리기 위해 코드에 포함했습니다.
+
+> [!TIP]
+> 📖 **더 자세히 알아보기**: Trainer 클래스와 그 매개변수에 대한 자세한 내용은 [Trainer API 문서](https://huggingface.co/docs/transformers/main/en/main_classes/trainer)를 방문하고 [훈련 쿡북 레시피](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu)에서 고급 사용 패턴을 살펴보세요.
+
+데이터셋에서 모델을 미세 조정하려면 `Trainer`의 `train()` 메소드를 호출하기만 하면 됩니다.
+
+```py
+trainer.train()
+```
+
+이렇게 하면 미세 조정이 시작됩니다(GPU에서는 몇 분 정도 소요됩니다). 500단계마다 훈련 손실이 출력되지만, 모델의 성능이 얼마나 좋은지(또는 나쁜지)는 알려주지 않습니다. 그 이유는 다음과 같습니다.
+
+1. `TrainingArguments`에서 `eval_strategy`를 `"steps"` (매 `eval_steps`마다 평가) 또는 `"epoch"` (각 에포크 종료 시 평가)로 설정하지 않았습니다.
+2. 평가 중에 메트릭을 계산하기 위한 `compute_metrics()` 함수를 `Trainer`에 제공하지 않았습니다. 이 함수가 없으면 평가에서 손실 값만 출력되는데, 이 값만으로는 성능을 파악하기 어렵습니다.
+
+
+### 평가[[evaluation]]
+
+이제 유용한 `compute_metrics()` 함수를 어떻게 만들고 다음 훈련 시 사용할 수 있는지 알아보겠습니다. 이 함수는 `EvalPrediction` 객체(`predictions` 필드와 `label_ids` 필드를 갖는 명명된 튜플)를 입력받습니다. 그리고 각 메트릭의 이름을 키(문자열)로, 성능을 값(부동소수점)으로 갖는 딕셔너리를 반환해야 합니다. 모델의 예측값을 얻기 위해 `Trainer.predict()`를 사용할 수 있습니다.
+
+```py
+predictions = trainer.predict(tokenized_datasets["validation"])
+print(predictions.predictions.shape, predictions.label_ids.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+
+`predict()` 메소드의 출력은 `predictions`, `label_ids`, `metrics` 세 개의 필드가 있는 또 다른 명명된 튜플입니다. `metrics` 필드에는 전달된 데이터셋에 대한 손실 값과 시간 관련 메트릭(총 예측 시간, 평균 예측 시간)만 포함됩니다. 하지만 `compute_metrics()` 함수를 완성하여 `Trainer`에 전달하면, 이 필드에 `compute_metrics()`가 반환하는 메트릭들도 함께 포함됩니다.
+
+보시다시피, `predictions`는 408 x 2 모양의 2차원 배열입니다 (408은 predict()에 전달한 데이터셋의 샘플 개수입니다). 이 값들은 `predict()`에 전달한 데이터셋의 각 샘플에 대한 로짓입니다 ([이전 챕터](/course/chapter2)에서 보았듯이 모든 Transformer 모델은 로짓을 반환합니다). 이 로짓을 우리가 가진 레이블과 비교할 수 있는 예측값으로 변환하려면, 두 번째 축에서 최댓값을 가진 인덱스를 구해야 합니다.
+
+```py
+import numpy as np
+
+preds = np.argmax(predictions.predictions, axis=-1)
+```
+
+이제 이 `preds`를 라벨과 비교할 수 있습니다. `compute_metric()` 함수를 빌드하기 위해 🤗 [Evaluate](https://github.com/huggingface/evaluate/) 라이브러리의 메트릭을 활용하겠습니다. 데이터셋을 로드했던 것처럼, MRPC 데이터셋과 관련된 메트릭도 `evaluate.load()` 함수로 쉽게 로드할 수 있습니다. 반환된 객체의 `compute()` 메서드를 사용해 메트릭을 계산할 수 있습니다.
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+metric.compute(predictions=preds, references=predictions.label_ids)
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+> [!TIP]
+> 다양한 평가 메트릭과 전략에 대해 알아보려면 [🤗 Evaluate 문서](https://huggingface.co/docs/evaluate/)를 참고하세요.
+
+모델 헤드의 가중치가 무작위로 초기화되기 때문에 얻게 되는 결과는 조금씩 다를 수 있습니다. 결과를 보면 우리 모델이 검증 세트에서 85.78%의 정확도와 89.97%의 F1 점수를 달성했음을 볼 수 있습니다. 이 두 가지는 GLUE 벤치마크의 MRPC 데이터셋에서 결과를 평가하는 데 사용되는 메트릭입니다. [BERT 논문](https://arxiv.org/pdf/1810.04805.pdf)에서는 기본 모델의 F1 점수를 88.9로 보고하였습니다. 당시에는 `uncased` 모델을 사용했지만, 우리는 현재 `cased` 모델을 사용하고 있기 때문에 더 나은 결과가 나온 것입니다.
+
+이 모든 것을 종합하면, 다음처럼 `compute_metrics()` 함수를 다음과 같이 정의할 수 있습니다.
+
+```py
+def compute_metrics(eval_preds):
+    metric = evaluate.load("glue", "mrpc")
+    logits, labels = eval_preds
+    predictions = np.argmax(logits, axis=-1)
+    return metric.compute(predictions=predictions, references=labels)
+```
+
+각 에폭이 끝날 때마다 메트릭이 출력되도록, 이 `compute_metrics()` 함수가 포함하여 `Trainer`를 새로 정의해 보겠습니다.
+
+```py
+training_args = TrainingArguments("test-trainer", eval_strategy="epoch")
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    processing_class=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+참고로, 우리는 `eval_strategy`를 `"epoch"`으로 설정한 새로운 `TrainingArguments`와 새로운 모델을 생성합니다. 이렇게 하지 않으면 이미 훈련된 모델의 훈련을 계속하게 될 겁니다. 새로운 훈련을 시작하려면 다음을 실행하세요.
+
+```py
+trainer.train()
+```
+
+이번에는 훈련 손실 외에도 각 에폭이 끝날 때마다 검증 손실과 메트릭이 함께 출력될 겁니다. 앞서 말했듯이 모델 헤드의 무작위 초기화 때문에 여러분이 얻는 정확도/F1 점수는 우리가 얻은 결과와 약간 다를 수 있지만, 비슷한 범위에 있을 겁니다.
+
+### 고급 훈련 기능[[advanced-training-features]]
+
+`Trainer`는 현대 딥러닝의 모범 사례들을 쉽게 활용할 수 있도록 다양한 내장 기능을 제공합니다.
+
+**혼합 정밀도 훈련**: 더 빠른 훈련과 메모리 사용량 감소를 위해 훈련 인수에서 `fp16=True`를 설정하세요.
+
+```py
+training_args = TrainingArguments(
+    "test-trainer",
+    eval_strategy="epoch",
+    fp16=True,  # 혼합 정밀도 활성화
+)
+```
+
+**그레이디언트 누적**: GPU 메모리가 부족할 때 더 큰 배치 크기로 학습하는 효과를 낼 수 있습니다.
+
+```py
+training_args = TrainingArguments(
+    "test-trainer",
+    eval_strategy="epoch",
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,  # 유효 배치 크기 = 4 * 4 = 16
+)
+```
+
+**학습률 스케줄링**: Trainer는 기본적으로 선형 감소 방식을 사용하지만, 사용자 맞춤 설정이 가능합니다.
+
+```py
+training_args = TrainingArguments(
+    "test-trainer",
+    eval_strategy="epoch",
+    learning_rate=2e-5,
+    lr_scheduler_type="cosine",  # 다른 스케줄러 시도
+)
+```
+
+> [!TIP]
+> 🎯 **성능 최적화**: 분산 훈련, 메모리 최적화, 하드웨어별 최적화를 포함한 고급 훈련 기술에 대해서는 [🤗 Transformers 성능 가이드](https://huggingface.co/docs/transformers/main/en/performance)를 살펴보세요.
+
+`Trainer`는 여러 GPU 또는 TPU에서 즉시 작동하며 분산 훈련을 위한 많은 옵션을 제공합니다. 이와 관련된 모든 내용은 Chapter 10에서 다루겠습니다.
+
+이것으로 `Trainer` API를 사용한 미세 조정 소개를 마칩니다. 대부분의 일반적인 NLP 작업에 대한 예제는 [Chapter 7](/course/chapter7)에서 다룰 예정이며, 다음으로는 순수 PyTorch 코드로 동일한 작업을 수행하는 방법을 살펴보겠습니다.
+
+> [!TIP]
+> 📝 **더 많은 예제**: [🤗 Transformers 노트북](https://huggingface.co/docs/transformers/main/en/notebooks)에 있는 방대한 자료를 확인해 보세요.
+
+## 섹션 퀴즈[[section-quiz]]
+
+Trainer API와 미세 조정 개념에 대한 이해를 테스트해보세요.
+
+### 1. `Trainer`에서 <code>processing_class</code> 매개변수의 목적은 무엇인가요?
+
+<Question
+	choices={[
+		{
+			text: "사용할 모델 아키텍처를 지정합니다.",
+			explain: "모델 아키텍처는 모델을 로드할 때 지정되며, Trainer에서 지정하지 않습니다."
+		},
+		{
+			text: "데이터 처리에 사용할 토크나이저를 Trainer에 알려줍니다.",
+			explain: "processing_class 매개변수는 사용할 토크나이저를 Trainer가 알 수 있도록 도와주는 최신 추가 사항입니다.",
+            correct: true
+		},
+		{
+			text: "훈련을 위한 배치 크기를 결정합니다.",
+			explain: "배치 크기는 processing_class가 아닌 TrainingArguments에서 설정됩니다."
+		},
+        {
+			text: "평가 빈도를 제어합니다.",
+			explain: "평가 빈도는 TrainingArguments의 eval_strategy로 제어됩니다."
+		}
+	]}
+/>
+
+### 2. 훈련 중 평가가 얼마나 자주 발생하는지를 제어하는 TrainingArguments 매개변수는 무엇인가요?
+
+<Question
+	choices={[
+		{
+			text: "eval_frequency",
+			explain: "TrainingArguments에는 eval_frequency 매개변수가 없습니다."
+		},
+		{
+			text: "eval_strategy",
+			explain: "eval_strategy는 평가 타이밍을 제어하기 위해 'epoch', 'steps', 또는 'no'로 설정할 수 있습니다.",
+            correct: true
+		},
+		{
+			text: "evaluation_steps",
+			explain: "eval_steps는 평가 사이의 단계 수를 설정하지만, eval_strategy가 평가 발생 여부/시기를 결정합니다."
+		},
+        {
+			text: "do_eval",
+			explain: "최신 TrainingArguments에는 do_eval 매개변수가 없습니다."
+		}
+	]}
+/>
+
+### 3. TrainingArguments에서 <code>fp16=True</code>는 무엇을 활성화하나요?
+
+<Question
+	choices={[
+		{
+			text: "더 빠른 훈련을 위한 16비트 정수 정밀도",
+			explain: "fp16은 정수 정밀도가 아닌 부동소수점 정밀도를 의미합니다."
+		},
+		{
+			text: "더 빠른 훈련과 메모리 사용량 감소를 위한 16비트 부동소수점 수를 사용한 혼합 정밀도 훈련",
+			explain: "혼합 정밀도 훈련은 순전파에는 16비트 플로트를, 그레이디언트에는 32비트를 사용하여 속도를 향상시키고 메모리 사용량을 줄입니다.",
+            correct: true
+		},
+		{
+			text: "정확히 16 에포크 동안 훈련",
+			explain: "fp16은 에포크 수와 관련이 없습니다."
+		},
+        {
+			text: "분산 훈련을 위한 16개 GPU 사용",
+			explain: "GPU 수는 fp16 매개변수로 제어되지 않습니다."
+		}
+	]}
+/>
+
+### 4. Trainer에서 <code>compute_metrics</code> 함수의 역할은 무엇인가요?
+
+<Question
+	choices={[
+		{
+			text: "훈련 중 손실을 계산합니다.",
+			explain: "손실 계산은 compute_metrics가 아닌 모델에서 자동으로 처리됩니다."
+		},
+		{
+			text: "로짓을 예측으로 변환하고 정확도 및 F1과 같은 평가 메트릭을 계산합니다.",
+			explain: "compute_metrics는 예측과 라벨을 받아서 평가를 위한 메트릭을 반환합니다.",
+            correct: true
+		},
+		{
+			text: "사용할 옵티마이저를 결정합니다.",
+			explain: "옵티마이저 선택은 compute_metrics로 처리되지 않습니다."
+		},
+        {
+			text: "훈련 데이터를 전처리합니다.",
+			explain: "데이터 전처리는 훈련 전에 수행되며, 평가 중 compute_metrics로 수행되지 않습니다."
+		}
+	]}
+/>
+
+### 5. Trainer에 <code>eval_dataset</code>을 제공하지 않으면 어떻게 되나요?
+
+<Question
+	choices={[
+		{
+			text: "훈련이 오류와 함께 실패합니다.",
+			explain: "eval_dataset 없이도 훈련을 진행할 수 있지만, 평가 메트릭은 얻을 수 없습니다."
+		},
+		{
+			text: "Trainer가 자동으로 훈련 데이터를 평가용으로 분할합니다.",
+			explain: "Trainer는 자동으로 검증 분할을 생성하지 않습니다."
+		},
+		{
+			text: "훈련 중 평가 메트릭을 얻을 수 없지만 훈련은 여전히 작동합니다.",
+			explain: "평가는 선택사항입니다 - 평가 없이도 훈련할 수 있지만 검증 메트릭은 볼 수 없습니다.",
+            correct: true
+		},
+        {
+			text: "모델이 평가를 위해 훈련 데이터를 사용합니다.",
+			explain: "Trainer는 자동으로 평가를 위해 훈련 데이터를 사용하지 않습니다 - 단순히 평가하지 않습니다."
+		}
+	]}
+/>
+
+### 6. 그레이디언트 누적이란 무엇이며 어떻게 활성화하나요?
+
+<Question
+	choices={[
+		{
+			text: "그레이디언트를 디스크에 저장하는 것으로, save_gradients=True로 활성화됩니다.",
+			explain: "그레이디언트 누적은 그레이디언트를 디스크에 저장하는 것과 관련이 없습니다."
+		},
+		{
+			text: "업데이트 전에 여러 배치에 걸쳐 그레이디언트를 누적하는 것으로, gradient_accumulation_steps로 활성화됩니다.",
+			explain: "이를 통해 여러 순전파에 걸쳐 그레이디언트를 누적하여 더 큰 배치 크기를 시뮬레이션할 수 있습니다.",
+            correct: true
+		},
+		{
+			text: "그레이디언트 계산을 가속화하는 것으로, fp16과 함께 자동으로 활성화됩니다.",
+			explain: "fp16이 훈련을 가속화할 수 있지만, 그레이디언트 누적은 별도의 기술입니다."
+		},
+        {
+			text: "그레이디언트 오버플로우를 방지하는 것으로, gradient_clipping=True로 활성화됩니다.",
+			explain: "이는 그레이디언트 누적이 아닌 그레이디언트 클리핑을 설명합니다."
+		}
+	]}
+/>
+
+> [!TIP]
+> 💡 **핵심 요점:**
+> - `Trainer` API는 대부분의 훈련 복잡성을 처리하는 높은 수준의 인터페이스를 제공합니다.
+> - `processing_class`는 적절한 데이터 처리를 위해 토크나이저를 저장하는 데 사용됩니다.
+> - `TrainingArguments`는 학습률, 배치 크기, 평가 전략, 최적화 등 훈련의 모든 측면을 제어합니다.
+> - `compute_metrics`를 사용하면 훈련 손실 외에 사용자 정의 평가 메트릭을 활용할 수 있습니다.
+> - 혼합 정밀도(`fp16=True`)와 그레이디언트 누적과 같은 최신 기능은 훈련 효율성을 크게 향상시킬 수 있습니다.
+

@@ -1,0 +1,897 @@
+<FrameworkSwitchCourse {fw} />
+
+# Training Pipeline ကို Debug လုပ်ခြင်း[[debugging-the-training-pipeline]]
+
+<CourseFloatingBanner chapter={8}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter8/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter8/section4.ipynb"},
+]} />
+
+[Chapter 7](/course/chapter7) က အကြံပြုချက်တွေကို လိုက်နာပြီး သတ်မှတ်ထားတဲ့ task တစ်ခုပေါ်မှာ model တစ်ခုကို train ဒါမှမဟုတ် fine-tune လုပ်ဖို့အတွက် လှပတဲ့ script တစ်ခုကို သင်ရေးခဲ့ပါပြီ။ ဒါပေမယ့် `trainer.train()` command ကို run လိုက်တဲ့အခါ ဆိုးဝါးတဲ့အရာတစ်ခု ဖြစ်သွားပါတယ်- သင် error ရပါပြီ 😱! ဒါမှမဟုတ် ပိုဆိုးတာကတော့၊ အရာအားလုံး အဆင်ပြေနေပြီး training က error မရှိဘဲ run နေပေမယ့်၊ ရရှိလာတဲ့ model က အသုံးမဝင်ပါဘူး။ ဒီအပိုင်းမှာ၊ ဒီလိုပြဿနာတွေကို debug လုပ်ဖို့ ဘာတွေလုပ်ဆောင်နိုင်လဲဆိုတာ ကျွန်တော်တို့ ပြသပေးပါမယ်။
+
+## Training Pipeline ကို Debug လုပ်ခြင်း[[debugging-the-training-pipeline]]
+
+<Youtube id="L-WSwUWde1U"/>
+
+`trainer.train()` မှာ error ကြုံတွေ့ရတဲ့အခါ ပြဿနာက source မျိုးစုံကနေ လာနိုင်ပါတယ်။ ဘာလို့လဲဆိုတော့ `Trainer` က အများအားဖြင့် အရာများစွာကို ပေါင်းစပ်ထားလို့ပါပဲ။ ၎င်းက datasets တွေကို dataloaders တွေအဖြစ် ပြောင်းလဲပေးတာကြောင့်၊ ပြဿနာက သင့် dataset မှာ တစ်ခုခု မှားယွင်းတာ ဒါမှမဟုတ် datasets ရဲ့ elements တွေကို batch လုပ်တဲ့အခါ ပြဿနာတစ်ခုခု ဖြစ်နေတာ ဖြစ်နိုင်ပါတယ်။ ပြီးရင် data batch တစ်ခုကို ယူပြီး model ကို ပေးပို့တဲ့အခါ၊ ပြဿနာက model code ထဲမှာ ဖြစ်နိုင်ပါတယ်။ အဲဒီနောက်၊ gradients တွေကို တွက်ချက်ပြီး optimization step ကို လုပ်ဆောင်တာကြောင့်၊ ပြဿနာက သင့် optimizer ထဲမှာလည်း ဖြစ်နိုင်ပါတယ်။ ပြီးတော့ training အတွက် အရာအားလုံး အဆင်ပြေသွားရင်တောင်၊ သင့် metric မှာ ပြဿနာရှိရင် evaluation လုပ်နေစဉ် တစ်ခုခု မှားယွင်းသွားနိုင်ပါသေးတယ်။
+
+`trainer.train()` မှာ ပေါ်လာတဲ့ error တစ်ခုကို debug လုပ်ဖို့ အကောင်းဆုံးနည်းလမ်းကတော့ အရာတွေ ဘယ်နေရာမှာ မှားယွင်းသွားလဲဆိုတာ သိဖို့ ဒီ pipeline တစ်ခုလုံးကို ကိုယ်တိုင်ဖြတ်သန်းကြည့်ဖို့ပါပဲ။ အဲဒီအခါ error က မကြာခဏဆိုသလို အလွန်လွယ်ကူစွာ ဖြေရှင်းနိုင်ပါတယ်။
+
+ဒါကို သရုပ်ပြဖို့အတွက်၊ [MNLI dataset](https://huggingface.co/datasets/glue) ပေါ်မှာ DistilBERT model တစ်ခုကို fine-tune လုပ်ဖို့ ကြိုးစားတဲ့ အောက်ပါ script ကို ကျွန်တော်တို့ အသုံးပြုပါမယ်။
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=raw_datasets["train"],
+    eval_dataset=raw_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+သင် ဒါကို run ဖို့ ကြိုးစားရင်၊ နားမလည်နိုင်တဲ့ error တစ်ခုနဲ့ ကြုံတွေ့ရပါလိမ့်မယ်။
+
+```python out
+'ValueError: You have to specify either input_ids or inputs_embeds'
+```
+
+### သင့် Data ကို စစ်ဆေးပါ[[check-your-data]]
+
+ဒါက ပြောစရာမလိုပါဘူး၊ ဒါပေမယ့် သင့် data က ပျက်စီးနေတယ်ဆိုရင်၊ `Trainer` က batches တွေ ဖန်တီးနိုင်မှာ မဟုတ်ပါဘူး၊ သင့် model ကို train လုပ်ဖို့ဆို ဝေးသေးတာပေါ့။ ဒါကြောင့် ပထမဆုံးအနေနဲ့၊ သင့် training set ထဲမှာ ဘာတွေပါလဲဆိုတာ ကြည့်ရပါမယ်။
+
+bug ရဲ့ source မဟုတ်တဲ့အရာတစ်ခုကို ပြင်ဆင်ဖို့ ကြိုးစားရင်း အချိန်တွေ အများကြီး မကုန်စေဖို့၊ သင့်စစ်ဆေးမှုတွေအတွက် `trainer.train_dataset` ကိုပဲ အသုံးပြုဖို့ ကျွန်တော်တို့ အကြံပြုပါတယ်။ ဒါကြောင့် ဒီနေရာမှာ လုပ်ကြည့်ရအောင်။
+
+```py
+trainer.train_dataset[0]
+```
+
+```python out
+{'hypothesis': 'Product and geography are what make cream skimming work. ',
+ 'idx': 0,
+ 'label': 1,
+ 'premise': 'Conceptually cream skimming has two basic dimensions - product and geography.'}
+```
+
+တစ်ခုခု မှားယွင်းနေတာကို သတိထားမိပါသလား။ ဒါက `input_ids` ပျောက်ဆုံးနေတာနဲ့ ပတ်သက်တဲ့ error message နဲ့ ပေါင်းစပ်လိုက်တဲ့အခါ၊ ဒါတွေက text တွေဖြစ်ပြီး model က နားလည်နိုင်တဲ့ ဂဏန်းတွေ မဟုတ်ဘူးဆိုတာ သင်သိလာပါလိမ့်မယ်။ ဒီနေရာမှာ၊ မူရင်း error က အလွန်ထင်ယောင်ထင်မှားဖြစ်စေပါတယ်။ ဘာလို့လဲဆိုတော့ `Trainer` က model signature (ဆိုလိုတာက model က မျှော်လင့်ထားတဲ့ arguments) နဲ့ မကိုက်ညီတဲ့ columns တွေကို အလိုအလျောက် ဖယ်ရှားလိုက်လို့ပါပဲ။ ဒါက ဒီနေရာမှာ labels တွေကလွဲပြီး ကျန်တာအားလုံး ဖယ်ရှားခံခဲ့ရတယ်လို့ ဆိုလိုပါတယ်။ ဒါကြောင့် batches တွေ ဖန်တီးရာမှာ ပြဿနာမရှိခဲ့ဘဲ၊ ပြီးမှ model ကို ပေးပို့တဲ့အခါ model က သင့်လျော်တဲ့ input ကို မရရှိခဲ့ဘူးလို့ ညည်းညူခဲ့တာပါ။
+
+Data ကို ဘာကြောင့် processing မလုပ်ခဲ့တာလဲ။ ကျွန်တော်တို့ `Dataset.map()` method ကို datasets တွေပေါ်မှာ sample တစ်ခုစီမှာ tokenizer ကို အသုံးပြုဖို့ လုပ်ခဲ့ပါတယ်။ ဒါပေမယ့် code ကို သေချာကြည့်မယ်ဆိုရင်၊ training နဲ့ evaluation sets တွေကို `Trainer` ကို ပေးတဲ့အခါ အမှားလုပ်မိခဲ့တာကို တွေ့ရပါလိမ့်မယ်။ ဒီနေရာမှာ `tokenized_datasets` ကို အသုံးပြုမယ့်အစား၊ `raw_datasets` ကို ကျွန်တော်တို့ အသုံးပြုခဲ့ပါတယ် 🤦။ ဒါကြောင့် ဒါကို ပြင်ဆင်လိုက်ရအောင်!
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+ဒီ code အသစ်က အခုဆိုရင် မတူညီတဲ့ error တစ်ခု ပေးပါလိမ့်မယ် (တိုးတက်မှုပါပဲ!)
+
+```python out
+'ValueError: expected sequence of length 43 at dim 1 (got 37)'
+```
+
+traceback ကို ကြည့်လိုက်တဲ့အခါ၊ error က data collation step မှာ ဖြစ်ပေါ်နေတာကို ကျွန်တော်တို့ တွေ့နိုင်ပါတယ်။
+
+```python out
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+```
+
+ဒါကြောင့်၊ အဲဒီကို ဆက်သွားသင့်ပါတယ်။ ဒါပေမယ့် မလုပ်ခင်မှာ၊ ကျွန်တော်တို့ data ကို စစ်ဆေးတာကို အမှန်တကယ် မှန်ကန်ကြောင်း ၁၀၀% သေချာစေဖို့ အဆုံးသတ်လိုက်ကြပါစို့။
+
+training session တစ်ခုကို debug လုပ်တဲ့အခါ သင်အမြဲလုပ်သင့်တာက သင့် model ရဲ့ decoded inputs တွေကို ကြည့်ဖို့ပါပဲ။ ကျွန်တော်တို့ ပေးပို့တဲ့ ဂဏန်းတွေကို တိုက်ရိုက်နားမလည်နိုင်တာကြောင့်၊ အဲဒီဂဏန်းတွေက ဘာကို ကိုယ်စားပြုလဲဆိုတာ ကြည့်သင့်ပါတယ်။ ဥပမာ၊ computer vision မှာ၊ ဒါက သင်ပေးပို့တဲ့ pixels တွေရဲ့ decoded pictures တွေကို ကြည့်တာကို ဆိုလိုပါတယ်၊ speech မှာဆိုရင် decoded audio samples တွေကို နားထောင်တာကို ဆိုလိုပါတယ်၊ ပြီးတော့ ကျွန်တော်တို့ရဲ့ NLP ဥပမာမှာ ဒါက ကျွန်တော်တို့ရဲ့ tokenizer ကို အသုံးပြုပြီး inputs တွေကို decode လုပ်တာကို ဆိုလိုပါတယ်။
+
+```py
+tokenizer.decode(trainer.train_dataset[0]["input_ids"])
+```
+
+```python out
+'[CLS] conceptually cream skimming has two basic dimensions - product and geography. [SEP] product and geography are what make cream skimming work. [SEP]'
+```
+
+ဒါကြောင့် ဒါက မှန်ကန်ပုံရပါတယ်။ inputs ထဲက keys အားလုံးအတွက် ဒါကို လုပ်ဆောင်သင့်ပါတယ်။
+
+```py
+trainer.train_dataset[0].keys()
+```
+
+```python out
+dict_keys(['attention_mask', 'hypothesis', 'idx', 'input_ids', 'label', 'premise'])
+```
+
+model က လက်ခံတဲ့ inputs နဲ့ မကိုက်ညီတဲ့ keys တွေကို အလိုအလျောက် ဖယ်ရှားပစ်မှာဖြစ်တာကြောင့်၊ ဒီနေရာမှာ ကျွန်တော်တို့ `input_ids`, `attention_mask` နဲ့ `label` (ဒါကို `labels` လို့ နာမည်ပြောင်းပါလိမ့်မယ်) တွေကိုပဲ ထားရှိမှာပါ။ model signature ကို ထပ်မံစစ်ဆေးဖို့အတွက်၊ သင့် model ရဲ့ class ကို print ထုတ်ပြီး ၎င်းရဲ့ documentation ကို သွားစစ်ဆေးနိုင်ပါတယ်။
+
+```py
+type(trainer.model)
+```
+
+```python out
+transformers.models.distilbert.modeling_distilbert.DistilBertForSequenceClassification
+```
+
+ဒါကြောင့် ကျွန်တော်တို့ရဲ့ ကိစ္စမှာ၊ [ဒီစာမျက်နှာ](https://huggingface.co/transformers/model_doc/distilbert.html#distilbertforsequenceclassification) မှာ လက်ခံတဲ့ parameters တွေကို စစ်ဆေးနိုင်ပါတယ်။ `Trainer` က ဖယ်ရှားနေတဲ့ columns တွေကိုလည်း log လုပ်ပါလိမ့်မယ်။
+
+input IDs တွေ မှန်ကန်ကြောင်း decoded လုပ်ခြင်းဖြင့် စစ်ဆေးခဲ့ပါပြီ။ နောက်တစ်ခုကတော့ `attention_mask` ပါ။
+
+```py
+trainer.train_dataset[0]["attention_mask"]
+```
+
+```python out
+[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+ကျွန်တော်တို့ preprocessing မှာ padding ကို အသုံးပြုမထားတာကြောင့်၊ ဒါက လုံးဝပုံမှန်ပါပဲ။ အဲဒီ attention mask မှာ ပြဿနာမရှိကြောင်း သေချာစေဖို့၊ ကျွန်တော်တို့ input IDs တွေနဲ့ အရှည်တူညီလားဆိုတာ စစ်ဆေးကြည့်ရအောင်။
+
+```py
+len(trainer.train_dataset[0]["attention_mask"]) == len(
+    trainer.train_dataset[0]["input_ids"]
+)
+```
+
+```python out
+True
+```
+
+ဒါကောင်းပါပြီ! နောက်ဆုံးအနေနဲ့၊ ကျွန်တော်တို့ရဲ့ label ကို စစ်ဆေးကြည့်ရအောင်။
+
+```py
+trainer.train_dataset[0]["label"]
+```
+
+```python out
+1
+```
+
+input IDs တွေလိုပဲ၊ ဒါကလည်း သူ့ဘာသာသူ အဓိပ္ပာယ်မရှိတဲ့ ဂဏန်းတစ်ခုပါ။ ကျွန်တော်တို့ အရင်က တွေ့ခဲ့ရတဲ့အတိုင်း၊ integers တွေနဲ့ label names တွေကြားက map ကို dataset ရဲ့ သက်ဆိုင်ရာ *feature* ရဲ့ `names` attribute ထဲမှာ သိမ်းဆည်းထားပါတယ်။
+
+```py
+trainer.train_dataset.features["label"].names
+```
+
+```python out
+['entailment', 'neutral', 'contradiction']
+```
+
+ဒါကြောင့် `1` က `neutral` ကို ဆိုလိုပါတယ်၊ ဆိုလိုတာက အပေါ်မှာ ကျွန်တော်တို့ တွေ့ခဲ့ရတဲ့ စာကြောင်းနှစ်ကြောင်းက contradiction မဟုတ်ဘဲ၊ ပထမစာကြောင်းက ဒုတိယစာကြောင်းကို အဓိပ္ပာယ်မဆောင်ပါဘူး။ ဒါက မှန်ကန်ပုံရပါတယ်!
+
+ဒီနေရာမှာ token type IDs တွေ မရှိပါဘူး၊ ဘာလို့လဲဆိုတော့ DistilBERT က ၎င်းတို့ကို မျှော်လင့်မထားလို့ပါ။ သင့် model မှာ ဒါတွေရှိတယ်ဆိုရင်၊ ၎င်းတို့က input မှာ ပထမနဲ့ ဒုတိယစာကြောင်းတွေ ဘယ်နေရာမှာ ရှိလဲဆိုတာကို မှန်ကန်စွာ ကိုက်ညီမှုရှိမရှိလည်း သေချာစစ်ဆေးသင့်ပါတယ်။
+
+> [!TIP]
+> ✏️ **သင့်အလှည့်!** training dataset ရဲ့ ဒုတိယ element နဲ့ အရာအားလုံး မှန်ကန်ပုံရမလားဆိုတာ စစ်ဆေးပါ။
+
+ကျွန်တော်တို့ training set ပေါ်မှာပဲ စစ်ဆေးတာဖြစ်ပေမယ့်၊ validation နဲ့ test sets တွေကိုလည်း ဒီအတိုင်းပဲ ထပ်မံစစ်ဆေးသင့်ပါတယ်။
+
+ကျွန်တော်တို့ datasets တွေ ကောင်းမွန်ကြောင်း သိပြီဆိုတော့၊ training pipeline ရဲ့ နောက်တစ်ဆင့်ကို စစ်ဆေးဖို့ အချိန်တန်ပါပြီ။
+
+### Datasets တွေကနေ Dataloaders တွေဆီသို့[[from-datasets-to-dataloaders]]
+
+training pipeline မှာ မှားယွင်းနိုင်တဲ့ နောက်တစ်ချက်ကတော့ `Trainer` က training ဒါမှမဟုတ် validation set ကနေ batches တွေ ဖန်တီးဖို့ ကြိုးစားတဲ့အခါပါပဲ။ `Trainer` ရဲ့ datasets တွေ မှန်ကန်ကြောင်း သင်သေချာပြီဆိုတာနဲ့၊ အောက်ပါအတိုင်း run ခြင်းဖြင့် batch တစ်ခုကို ကိုယ်တိုင်ဖန်တီးဖို့ ကြိုးစားနိုင်ပါတယ် (`train` ကို validation dataloader အတွက် `eval` နဲ့ အစားထိုးပါ)။
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+ဒီ code က training dataloader ကို ဖန်တီးပြီး၊ ပြီးရင် ၎င်းကို iteration လုပ်ပြီး ပထမဆုံး iteration မှာ ရပ်တန့်ပါတယ်။ code က error မရှိဘဲ run တယ်ဆိုရင်၊ သင်စစ်ဆေးနိုင်တဲ့ ပထမဆုံး training batch ကို ရရှိမှာဖြစ်ပြီး၊ code က error ဖြစ်ရင်တော့ ပြဿနာက dataloader ထဲမှာ အမှန်တကယ်ရှိနေတယ်ဆိုတာ သင်သေချာသိနိုင်ပါတယ်။ ဒီနေရာမှာလည်း ဒီလိုပါပဲ။
+
+```python out
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+
+ValueError: expected sequence of length 45 at dim 1 (got 76)
+```
+
+traceback ရဲ့ နောက်ဆုံး frame ကို စစ်ဆေးတာက သင့်ကို clue တစ်ခုပေးဖို့ လုံလောက်သင့်ပေမယ့်၊ နည်းနည်းထပ်တူးဆွကြည့်ရအောင်။ batch creation လုပ်နေစဉ် ပြဿနာအများစုက examples တွေကို single batch အဖြစ် collation လုပ်ခြင်းကြောင့် ဖြစ်ပေါ်တာကြောင့်၊ သံသယရှိတဲ့အခါ စစ်ဆေးသင့်တဲ့ ပထမဆုံးအရာကတော့ သင့် `DataLoader` က ဘယ် `collate_fn` ကို အသုံးပြုနေလဲဆိုတာပါပဲ။
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+data_collator
+```
+
+```python out
+<function transformers.data.data_collator.default_data_collator(features: List[InputDataClass], return_tensors='pt') -> Dict[str, Any]>
+```
+
+ဒါကြောင့် ဒါက `default_data_collator` ဖြစ်ပါတယ်။ ဒါပေမယ့် ဒီကိစ္စမှာ ကျွန်တော်တို့ လိုချင်တာ မဟုတ်ပါဘူး။ ကျွန်တော်တို့ရဲ့ examples တွေကို batch ထဲက အရှည်ဆုံး sentence အထိ padding လုပ်ချင်တာဖြစ်ပြီး၊ ဒါကို `DataCollatorWithPadding` collator က လုပ်ဆောင်ပေးပါတယ်။ ပြီးတော့ ဒီ data collator ကို `Trainer` က default အားဖြင့် အသုံးပြုသင့်တာကြောင့်၊ ဘာကြောင့် ဒီနေရာမှာ မသုံးတာလဲ။
+
+အဖြေကတော့ ကျွန်တော်တို့ `tokenizer` ကို `Trainer` ကို မပေးခဲ့လို့ပါပဲ၊ ဒါကြောင့် ကျွန်တော်တို့ လိုချင်တဲ့ `DataCollatorWithPadding` ကို ဖန်တီးနိုင်ခြင်းမရှိခဲ့ပါဘူး။ လက်တွေ့မှာတော့၊ ဒီလို error မျိုးတွေ မဖြစ်စေဖို့အတွက် သင်အသုံးပြုချင်တဲ့ data collator ကို အမြဲတမ်း ရှင်းရှင်းလင်းလင်း ပေးပို့ဖို့ တုံ့ဆိုင်းမနေသင့်ပါဘူး။ ဒါကို လုပ်ဆောင်ဖို့အတွက် ကျွန်တော်တို့ရဲ့ code ကို လိုက်လျောညီထွေဖြစ်အောင် ပြင်ဆင်လိုက်ရအောင်။
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+သတင်းကောင်းလား? ကျွန်တော်တို့ အရင်လို error တူတူ မရတော့ပါဘူး၊ ဒါက တိုးတက်မှု အမှန်ပါပဲ။ သတင်းဆိုးလား? ကျွန်တော်တို့ နာမည်ဆိုးနဲ့ ကျော်ကြားတဲ့ CUDA error တစ်ခုကို ရပါပြီ။
+
+```python out
+RuntimeError: CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`
+```
+
+ဒါက မကောင်းပါဘူး၊ ဘာလို့လဲဆိုတော့ CUDA errors တွေကို debug လုပ်ရတာ ယေဘုယျအားဖြင့် အလွန်ခက်ခဲလို့ပါပဲ။ ဒီပြဿနာကို ဘယ်လိုဖြေရှင်းရမလဲဆိုတာ တစ်မိနစ်အတွင်းမှာ ကျွန်တော်တို့ ကြည့်ရမှာဖြစ်ပေမယ့်၊ ပထမဆုံး batch creation ရဲ့ ကျွန်တော်တို့ရဲ့ ခွဲခြမ်းစိတ်ဖြာမှုကို အဆုံးသတ်လိုက်ရအောင်။
+
+သင့် data collator က မှန်ကန်တယ်ဆိုတာ သင်သေချာပြီဆိုရင်၊ သင့် dataset ရဲ့ samples အချို့ပေါ်မှာ အဲဒါကို အသုံးပြုကြည့်သင့်ပါတယ်။
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+batch = data_collator([trainer.train_dataset[i] for i in range(4)])
+```
+
+ဒီ code က အလုပ်လုပ်မှာ မဟုတ်ပါဘူး၊ ဘာလို့လဲဆိုတော့ `train_dataset` မှာ string columns တွေ ပါဝင်ပြီး ဒါတွေကို `Trainer` က ပုံမှန်အားဖြင့် ဖယ်ရှားလိုက်လို့ပါပဲ။ သင်ကိုယ်တိုင် ဖယ်ရှားနိုင်ပါတယ်၊ ဒါမှမဟုတ် `Trainer` က နောက်ကွယ်မှာ ဘာလုပ်နေလဲဆိုတာကို အတိအကျ ပုံတူကူးချင်တယ်ဆိုရင်၊ ဒါကို လုပ်ဆောင်ပေးတဲ့ private `Trainer._remove_unused_columns()` method ကို ခေါ်နိုင်ပါတယ်။
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+actual_train_set = trainer._remove_unused_columns(trainer.train_dataset)
+batch = data_collator([actual_train_set[i] for i in range(4)])
+```
+
+error က ဆက်ရှိနေသေးတယ်ဆိုရင် data collator ထဲမှာ ဘာတွေဖြစ်ပျက်နေလဲဆိုတာကို ကိုယ်တိုင် debug လုပ်နိုင်ပါလိမ့်မယ်။
+
+batch creation လုပ်ငန်းစဉ်ကို debug လုပ်ပြီးပြီဆိုတော့၊ model ထဲကို တစ်ခု ပေးပို့ဖို့ အချိန်တန်ပါပြီ!
+
+### Model ကို ဖြတ်သန်းခြင်း[[going-through-the-model]]
+
+အောက်ပါ command ကို run ခြင်းဖြင့် batch တစ်ခုကို ရရှိနိုင်ပါလိမ့်မယ်။
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+သင် ဒီ code ကို notebook တစ်ခုမှာ run နေတယ်ဆိုရင်၊ ကျွန်တော်တို့ အရင်က တွေ့ခဲ့ရတဲ့ error နဲ့ ဆင်တူတဲ့ CUDA error တစ်ခု ရနိုင်ပါတယ်။ ဒီလိုဖြစ်ရင် သင့် notebook ကို restart လုပ်ပြီး `trainer.train()` line မပါဘဲ နောက်ဆုံး snippet ကို ပြန် run ဖို့ လိုအပ်ပါတယ်။ ဒါက CUDA errors တွေရဲ့ ဒုတိယအ annoying ဆုံးအရာပါပဲ- ၎င်းတို့က သင့် kernel ကို ပြန်ပြင်လို့ မရအောင် ပျက်စီးစေပါတယ်။ အ annoyance ဆုံးအရာကတော့ ဒါတွေကို debug လုပ်ရတာ ခက်ခဲတာပါပဲ။
+
+ဘာကြောင့်လဲ? ဒါက GPUs တွေ အလုပ်လုပ်ပုံနဲ့ ဆက်စပ်နေပါတယ်။ ၎င်းတို့ဟာ operations များစွာကို တစ်ပြိုင်နက်တည်း လုပ်ဆောင်ရာမှာ အလွန်ထိရောက်ပါတယ်၊ ဒါပေမယ့် အားနည်းချက်ကတော့ အဲဒီ instructions တွေထဲက တစ်ခုခုက error ဖြစ်သွားတဲ့အခါ၊ သင်ချက်ချင်း မသိနိုင်ပါဘူး။ program က GPU ပေါ်ရှိ multiple processes တွေကို synchronization လုပ်ဖို့ ခေါ်ဆိုတဲ့အခါမှ တစ်ခုခု မှားယွင်းသွားတယ်ဆိုတာ သိမှာဖြစ်တာကြောင့်၊ error က အမှန်တကယ်တော့ ဒါကို ဖန်တီးတဲ့အရာနဲ့ လုံးဝမသက်ဆိုင်တဲ့ နေရာမှာ ပေါ်လာတာပါ။ ဥပမာ၊ ကျွန်တော်တို့ရဲ့ ယခင် traceback ကို ကြည့်ရင်၊ error က backward pass မှာ ပေါ်လာခဲ့ပါတယ်၊ ဒါပေမယ့် ဒါက forward pass ကနေ အမှန်တကယ် ပေါက်ဖွားလာတယ်ဆိုတာ တစ်မိနစ်အတွင်းမှာ ကျွန်တော်တို့ တွေ့ရပါလိမ့်မယ်။
+
+ဒါဆို ဒီ errors တွေကို ဘယ်လို debug လုပ်မလဲ? အဖြေက လွယ်ပါတယ်- ကျွန်တော်တို့ မလုပ်ပါဘူး။ သင့် CUDA error က out-of-memory error (ဆိုလိုတာက သင့် GPU မှာ memory မလုံလောက်ခြင်း) မဟုတ်ရင်၊ ဒါကို debug လုပ်ဖို့အတွက် CPU ကို အမြဲတမ်း ပြန်သွားသင့်ပါတယ်။
+
+ဒီကိစ္စမှာ ဒါကိုလုပ်ဖို့၊ ကျွန်တော်တို့ model ကို CPU ပေါ်ကို ပြန်တင်ပြီး ကျွန်တော်တို့ရဲ့ batch ပေါ်မှာ ခေါ်လိုက်ရုံပါပဲ — `DataLoader` က ပြန်ပေးတဲ့ batch ကို GPU ကို မရွှေ့ရသေးပါဘူး။
+
+```python
+outputs = trainer.model.cpu()(**batch)
+```
+
+```python out
+~/.pyenv/versions/3.7.9/envs/base/lib/python3.7/site-packages/torch/nn/functional.py in nll_loss(input, target, weight, size_average, ignore_index, reduce, reduction)
+   2386         )
+   2387     if dim == 2:
+-> 2388         ret = torch._C._nn.nll_loss(input, target, weight, _Reduction.get_enum(reduction), ignore_index)
+   2389     elif dim == 4:
+   2390         ret = torch._C._nn.nll_loss2d(input, target, weight, _Reduction.get_enum(reduction), ignore_index)
+
+IndexError: Target 2 is out of bounds.
+```
+
+ဒါဆို ပုံက ပိုရှင်းလာပါပြီ။ CUDA error ရမယ့်အစား၊ အခု ကျွန်တော်တို့ loss computation မှာ `IndexError` ရပါပြီ (ဒါကြောင့် အရင်က ပြောခဲ့သလို backward pass နဲ့ ဘာမှမဆိုင်ပါဘူး)။ ပိုတိကျစွာပြောရရင်၊ target 2 က error ကို ဖန်တီးတာကို တွေ့ရပါတယ်၊ ဒါကြောင့် ဒါက ကျွန်တော်တို့ model ရဲ့ labels အရေအတွက်ကို စစ်ဆေးဖို့ အလွန်ကောင်းတဲ့အချိန်ပါပဲ။
+
+```python
+trainer.model.config.num_labels
+```
+
+```python out
+2
+```
+
+labels နှစ်ခုနဲ့ဆိုရင်၊ targets အနေနဲ့ 0s နဲ့ 1s တွေကိုပဲ ခွင့်ပြုပါတယ်။ ဒါပေမယ့် error message အရ ကျွန်တော်တို့ 2 ကို ရရှိခဲ့ပါတယ်။ 2 ကို ရတာက တကယ်တော့ ပုံမှန်ပါပဲ- ကျွန်တော်တို့ အရင်က ထုတ်ယူခဲ့တဲ့ label names တွေကို မှတ်မိရင်၊ သုံးခုရှိခဲ့တာကြောင့် ကျွန်တော်တို့ dataset မှာ indices 0, 1, နဲ့ 2 ရှိပါတယ်။ ပြဿနာကတော့ ကျွန်တော်တို့ model ကို ဒါကို မပြောခဲ့တာပါ၊ ဒါကို labels သုံးခုနဲ့ ဖန်တီးခဲ့သင့်ပါတယ်။ ဒါကြောင့် ဒါကို ပြင်ဆင်လိုက်ရအောင်!
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+`trainer.train()` line ကို ကျွန်တော်တို့ မထည့်သေးပါဘူး၊ အရာအားလုံး အဆင်ပြေလားဆိုတာ စစ်ဆေးဖို့ အချိန်ယူထားတာပါ။ batch တစ်ခုကို တောင်းခံပြီး ကျွန်တော်တို့ model ကို ပေးပို့လိုက်တဲ့အခါ၊ အခုဆိုရင် error မရှိဘဲ အလုပ်လုပ်ပါပြီ။
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+outputs = trainer.model.cpu()(**batch)
+```
+
+နောက်တစ်ဆင့်ကတော့ GPU ကို ပြန်သွားပြီး အရာအားလုံး ဆက်အလုပ်လုပ်လားဆိုတာ စစ်ဆေးဖို့ပါပဲ။
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+batch = {k: v.to(device) for k, v in batch.items()}
+
+outputs = trainer.model.to(device)(**batch)
+```
+
+error ဆက်ရနေသေးတယ်ဆိုရင်၊ သင့် notebook ကို restart လုပ်ပြီး script ရဲ့ နောက်ဆုံး version ကိုပဲ run ဖို့ သေချာပါစေ။
+
+### Optimization Step တစ်ခု လုပ်ဆောင်ခြင်း[[performing-one-optimization-step]]
+
+အခုဆိုရင် model ကို အမှန်တကယ် ဖြတ်သန်းနိုင်တဲ့ batches တွေ တည်ဆောက်နိုင်ပြီဆိုတာ သိပြီဖြစ်လို့၊ training pipeline ရဲ့ နောက်တစ်ဆင့်ဖြစ်တဲ့ gradients တွေ တွက်ချက်ခြင်းနဲ့ optimization step တစ်ခု လုပ်ဆောင်ခြင်းအတွက် အဆင်သင့်ပါပဲ။
+
+ပထမအပိုင်းကတော့ loss ပေါ်မှာ `backward()` method ကို ခေါ်လိုက်ရုံပါပဲ။
+
+```py
+loss = outputs.loss
+loss.backward()
+```
+
+ဒီအဆင့်မှာ error ရတာ ရှားပါတယ်၊ ဒါပေမယ့် ရခဲ့တယ်ဆိုရင်တော့ အထောက်အကူဖြစ်မယ့် error message တစ်ခုရဖို့ CPU ကို ပြန်သွားဖို့ သေချာပါစေ။
+
+optimization step ကို လုပ်ဆောင်ဖို့အတွက်၊ ကျွန်တော်တို့ `optimizer` ကို ဖန်တီးပြီး ၎င်းရဲ့ `step()` method ကို ခေါ်လိုက်ရုံပါပဲ။
+
+```py
+trainer.create_optimizer()
+trainer.optimizer.step()
+```
+
+ထပ်မံပြီးတော့၊ `Trainer` မှာ default optimizer ကို အသုံးပြုနေတယ်ဆိုရင်၊ ဒီအဆင့်မှာ error မရသင့်ပါဘူး။ ဒါပေမယ့် သင့်မှာ custom optimizer ရှိတယ်ဆိုရင်၊ ဒီနေရာမှာ debug လုပ်စရာ ပြဿနာအချို့ ရှိနိုင်ပါတယ်။ ဒီအဆင့်မှာ ထူးဆန်းတဲ့ CUDA error တစ်ခုရခဲ့ရင် CPU ကို ပြန်သွားဖို့ မမေ့ပါနဲ့။ CUDA errors တွေအကြောင်း ပြောရရင်၊ အရင်က ကျွန်တော်တို့ special case တစ်ခုကို ပြောခဲ့ပါတယ်။ အခု ဒါကို ကြည့်ရအောင်။
+
+### CUDA Out-of-Memory Errors များကို ကိုင်တွယ်ဖြေရှင်းခြင်း[[dealing-with-cuda-out-of-memory-errors]]
+
+`RuntimeError: CUDA out of memory` နဲ့ စတင်တဲ့ error message တစ်ခုခု ရတဲ့အခါ၊ ဒါက သင့် GPU memory ကုန်သွားပြီဆိုတာကို ညွှန်ပြပါတယ်။ ဒါက သင့် code နဲ့ တိုက်ရိုက်ဆက်စပ်တာ မဟုတ်ဘဲ၊ ကောင်းကောင်း run နိုင်တဲ့ script တစ်ခုမှာလည်း ဖြစ်နိုင်ပါတယ်။ ဒီ error က သင့် GPU ရဲ့ internal memory ထဲကို ပစ္စည်းအများကြီး ထည့်ဖို့ ကြိုးစားခဲ့ပြီး၊ ဒါက error ဖြစ်ပေါ်လာတယ်လို့ ဆိုလိုပါတယ်။ တခြား CUDA errors တွေလိုပဲ၊ သင့် training ကို ပြန် run နိုင်ဖို့ သင့် kernel ကို restart လုပ်ဖို့ လိုအပ်ပါလိမ့်မယ်။
+
+ဒီပြဿနာကို ဖြေရှင်းဖို့အတွက်၊ သင် GPU space နည်းနည်းပဲ အသုံးပြုဖို့ လိုအပ်ပါတယ် — ဒါက ပြောရတာထက် လုပ်ရတာ ပိုခက်ပါတယ်။ ပထမဆုံး၊ သင် GPU ပေါ်မှာ models နှစ်ခုကို တစ်ပြိုင်နက်တည်း မထားရှိဘူးဆိုတာ သေချာပါစေ (သင့်ပြဿနာအတွက် မလိုအပ်ဘူးဆိုရင်ပေါ့)။ ပြီးရင်၊ သင့် batch size ကို လျှော့ချသင့်ပါတယ်၊ ဘာလို့လဲဆိုတော့ ဒါက model ရဲ့ ကြားခံ outputs တွေအားလုံးရဲ့ sizes နဲ့ ၎င်းတို့ရဲ့ gradients တွေကို တိုက်ရိုက်သက်ရောက်မှုရှိလို့ပါပဲ။ ပြဿနာဆက်ရှိနေသေးရင်၊ သင့် model ရဲ့ သေးငယ်တဲ့ version တစ်ခုကို အသုံးပြုဖို့ စဉ်းစားပါ။
+
+> [!TIP]
+> သင်တန်းရဲ့ နောက်အပိုင်းမှာ၊ သင့်ရဲ့ memory footprint ကို လျှော့ချနိုင်ပြီး အကြီးဆုံး models တွေကို fine-tune လုပ်နိုင်စေမယ့် ပိုမိုအဆင့်မြင့်တဲ့ နည်းလမ်းတွေကို ကျွန်တော်တို့ လေ့လာသွားမှာပါ။
+
+### Model ကို Evaluation လုပ်ခြင်း[[evaluating-the-model]]
+
+အခုဆိုရင် ကျွန်တော်တို့ code ထဲက ပြဿနာအားလုံးကို ဖြေရှင်းခဲ့ပြီဆိုတော့၊ အရာအားလုံး ပြီးပြည့်စုံပြီး training က ချောချောမွေ့မွေ့ run သွားသင့်တယ်၊ မှန်တယ်မလား? မြန်မြန်ဆန်ဆန် မဟုတ်သေးပါဘူး! သင် `trainer.train()` command ကို run ရင်၊ အရာအားလုံးက ပထမတော့ ကောင်းကောင်း ကြည့်ကောင်းနေပါလိမ့်မယ်၊ ဒါပေမယ့် ခဏအကြာမှာ အောက်ပါအတိုင်း ရပါလိမ့်မယ်။
+
+```py
+# This will take a long time and error out, so you shouldn't run this cell
+trainer.train()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+ဒီ error က evaluation phase မှာ ပေါ်လာတာကို သင်သိပါလိမ့်မယ်၊ ဒါကြောင့် ဒါက ကျွန်တော်တို့ debug လုပ်ရမယ့် နောက်ဆုံးအရာပါပဲ။
+
+training နဲ့ သီးခြားစီ `Trainer` ရဲ့ evaluation loop ကို အခုလို run နိုင်ပါတယ်။
+
+```py
+trainer.evaluate()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+> [!TIP]
+> 💡 error ကြုံတွေ့ရပြီး compute resources အများကြီး မကုန်ခင်မှာ `trainer.evaluate()` ကို run နိုင်ကြောင်း အမြဲတမ်း သေချာအောင် လုပ်သင့်ပါတယ်။
+
+evaluation loop မှာ ပြဿနာတစ်ခုကို debug လုပ်ဖို့ ကြိုးစားမယ့်အစား၊ သင်ဟာ data ကို ကြည့်ပြီးပြီ၊ batch တစ်ခုကို မှန်ကန်စွာ ဖန်တီးနိုင်ပြီ၊ ပြီးတော့ သင့် model ကို ဒါပေါ်မှာ run နိုင်ပြီဆိုတာကို အရင်ဆုံး သေချာအောင် လုပ်သင့်ပါတယ်။ ကျွန်တော်တို့ အဲဒီအဆင့်အားလုံးကို ပြီးဆုံးခဲ့ပြီဖြစ်လို့၊ အောက်ပါ code ကို error မရှိဘဲ run နိုင်ပါတယ်။
+
+```py
+for batch in trainer.get_eval_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+```
+
+error က နောက်ပိုင်း၊ evaluation phase အဆုံးမှာ ပေါ်လာတာဖြစ်ပြီး၊ traceback ကို ကြည့်လိုက်ရင် ဒါကို တွေ့ရပါတယ်။
+
+```python trace
+~/git/datasets/src/datasets/metric.py in add_batch(self, predictions, references)
+    431         """
+    432         batch = {"predictions": predictions, "references": references}
+--> 433         batch = self.info.features.encode_batch(batch)
+    434         if self.writer is None:
+    435             self._init_writer()
+```
+
+ဒါက error က `datasets/metric.py` module ကနေ ပေါက်ဖွားလာတယ်လို့ ကျွန်တော်တို့ကို ပြောပါတယ် — ဒါကြောင့် ဒါက ကျွန်တော်တို့ရဲ့ `compute_metrics()` function နဲ့ ပတ်သက်တဲ့ ပြဿနာပါ။ ဒါက logits နဲ့ labels တွေကို NumPy arrays အဖြစ် tuple တစ်ခုနဲ့ ယူပါတယ်၊ ဒါကြောင့် ဒါကို ပေးပို့ကြည့်ရအောင်။
+
+```py
+predictions = outputs.logits.cpu().numpy()
+labels = batch["labels"].cpu().numpy()
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+ကျွန်တော်တို့ error တူတူ ရရှိပါတယ်၊ ဒါကြောင့် ပြဿနာက အဲဒီ function မှာ အမှန်တကယ် ရှိနေပါတယ်။ ကျွန်တော်တို့ရဲ့ code ကို ပြန်ကြည့်လိုက်ရင်၊ ဒါက `predictions` နဲ့ `labels` တွေကို `metric.compute()` ကိုပဲ forwarding လုပ်နေတာကို တွေ့ရပါတယ်။ ဒါဆို အဲဒီ method မှာ ပြဿနာရှိလား? တကယ်တော့ မရှိပါဘူး။ shapes တွေကို မြန်မြန်လေး ကြည့်ရအောင်။
+
+```py
+predictions.shape, labels.shape
+```
+
+```python out
+((8, 3), (8,))
+```
+
+ကျွန်တော်တို့ရဲ့ predictions တွေက logit တွေပဲ ရှိပါသေးတယ်၊ အမှန်တကယ် predictions တွေ မဟုတ်သေးပါဘူး။ ဒါကြောင့် metric က ဒီ (အနည်းငယ် မရှင်းလင်းတဲ့) error ကို ပြန်ပေးတာပါ။ ပြင်ဆင်တာက အတော်လေး လွယ်ပါတယ်၊ ကျွန်တော်တို့ `compute_metrics()` function ထဲမှာ argmax တစ်ခု ထည့်လိုက်ရုံပါပဲ။
+
+```py
+import numpy as np
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+{'accuracy': 0.625}
+```
+
+အခု ကျွန်တော်တို့ရဲ့ error ပြင်ဆင်ပြီးပါပြီ! ဒါက နောက်ဆုံးတစ်ခုပါ၊ ဒါကြောင့် ကျွန်တော်တို့ရဲ့ script က model တစ်ခုကို မှန်ကန်စွာ train လုပ်ပါလိမ့်မယ်။
+
+ရည်ညွှန်းချက်အနေနဲ့၊ ဒီနေရာမှာ လုံးဝပြင်ဆင်ပြီးသား script ပါ။
+
+```py
+import numpy as np
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+ဒီကိစ္စမှာ၊ ပြဿနာတွေ နောက်ထပ်မရှိတော့ပါဘူး၊ ကျွန်တော်တို့ရဲ့ script က ကျိုးကြောင်းဆီလျော်တဲ့ ရလဒ်တွေပေးသင့်တဲ့ model တစ်ခုကို fine-tune လုပ်ပါလိမ့်မယ်။ ဒါပေမယ့် training က error တစ်ခုမှမရှိဘဲ ပြီးသွားပြီး၊ train လုပ်ထားတဲ့ model က လုံးဝစွမ်းဆောင်ရည်မကောင်းဘူးဆိုရင် ဘာလုပ်နိုင်မလဲ။ ဒါက machine learning ရဲ့ အခက်ခဲဆုံးအပိုင်းပါပဲ၊ ပြီးတော့ အကူအညီဖြစ်စေနိုင်မယ့် နည်းလမ်းအချို့ကို ကျွန်တော်တို့ ပြသပေးပါမယ်။
+
+> [!TIP]
+> 💡 သင် manual training loop ကို အသုံးပြုနေတယ်ဆိုရင်၊ တူညီတဲ့အဆင့်တွေက သင့် training pipeline ကို debug လုပ်ဖို့ သက်ဆိုင်ပါတယ်၊ ဒါပေမယ့် ဒါတွေကို ခွဲခြားရတာ ပိုလွယ်ပါတယ်။ သင့် `model.eval()` ဒါမှမဟုတ် `model.train()` ကို မှန်ကန်တဲ့နေရာတွေမှာ ထည့်ဖို့၊ ဒါမှမဟုတ် step တစ်ခုစီမှာ `zero_grad()` ကို ထည့်ဖို့ မမေ့ပါနဲ့!
+
+## Training လုပ်နေစဉ် Silent Errors များကို Debug လုပ်ခြင်း[[debugging-silent-errors-during-training]]
+
+error မရှိဘဲ ပြီးဆုံးသွားပေမယ့် ရလဒ်ကောင်းတွေ မရတဲ့ training တစ်ခုကို debug လုပ်ဖို့ ဘာလုပ်နိုင်မလဲ။ ဒီနေရာမှာ အကြံပြုချက်အချို့ကို ကျွန်တော်တို့ ပေးပါမယ်၊ ဒါပေမယ့် ဒီလို debug လုပ်တာက machine learning ရဲ့ အခက်ခဲဆုံးအပိုင်းဖြစ်ပြီး၊ မှော်ဆန်တဲ့အဖြေ မရှိပါဘူးဆိုတာ သတိထားပါ။
+
+### သင့် Data ကို စစ်ဆေးပါ (ထပ်မံပြီး!) [[check-your-data-again]]
+
+သင့် data ကနေ တစ်ခုခု သင်ယူဖို့ တကယ်ဖြစ်နိုင်မှသာ သင့် model က တစ်ခုခု သင်ယူပါလိမ့်မယ်။ data ကို ပျက်စီးစေတဲ့ bug တစ်ခုရှိရင် ဒါမှမဟုတ် labels တွေကို ကျပန်းပေးထားရင်၊ သင့် dataset ပေါ်မှာ model training တစ်ခုမှ ရမှာမဟုတ်ပါဘူး။ ဒါကြောင့် သင့် decoded inputs နဲ့ labels တွေကို အမြဲတမ်း နှစ်ခါစစ်ဆေးပြီး အောက်ပါမေးခွန်းတွေကို သင့်ကိုယ်သင် မေးပါ။
+
+- decoded data က နားလည်နိုင်လား။
+- labels တွေနဲ့ သင်သဘောတူလား။
+- တခြား labels တွေထက် ပိုအဖြစ်များတဲ့ label တစ်ခုခု ရှိလား။
+- model က random answer/အမြဲတမ်း အဖြေတူတူကို ခန့်မှန်းရင် loss/metric က ဘာဖြစ်သင့်လဲ။
+
+> [!WARNING]
+> ⚠️ သင် distributed training လုပ်နေတယ်ဆိုရင်၊ process တစ်ခုစီမှာ သင့် dataset ရဲ့ samples တွေကို print ထုတ်ပြီး တူညီတဲ့အရာ ရမရ သုံးခါစစ်ဆေးပါ။ common bug တစ်ခုကတော့ data creation မှာ randomness source အချို့ရှိတာကြောင့် process တစ်ခုစီမှာ dataset ရဲ့ version မတူတာပါပဲ။
+
+သင့် data ကို ကြည့်ပြီးနောက်၊ model ရဲ့ predictions အချို့ကို ဖြတ်သန်းပြီး ၎င်းတို့ကိုပါ decode လုပ်ပါ။ model က အမြဲတမ်း အဖြေတူတူကို ခန့်မှန်းနေတယ်ဆိုရင်၊ ဒါက သင့် dataset က category တစ်ခုဆီ ဘက်လိုက်နေလို့ (classification problem တွေအတွက်) ဖြစ်နိုင်ပါတယ်။ rare classes တွေကို oversampling လုပ်တာလို နည်းလမ်းတွေက အကူအညီဖြစ်နိုင်ပါတယ်။
+
+သင့် initial model မှာ ရရှိတဲ့ loss/metric က random predictions တွေအတွက် မျှော်လင့်ထားတဲ့ loss/metric နဲ့ အလွန်ကွာခြားနေတယ်ဆိုရင်၊ သင့် loss သို့မဟုတ် metric ကို တွက်ချက်ပုံကို နှစ်ခါစစ်ဆေးပါ၊ ဘာလို့လဲဆိုတော့ အဲဒီမှာ bug ရှိနိုင်လို့ပါပဲ။ သင်နောက်ဆုံးမှာ ပေါင်းထည့်တဲ့ losses များစွာကို အသုံးပြုနေတယ်ဆိုရင်၊ ၎င်းတို့က scale တူညီကြောင်း သေချာပါစေ။
+
+သင့် data က ပြီးပြည့်စုံကြောင်း သေချာပြီဆိုတာနဲ့၊ model က ဒါပေါ်မှာ train လုပ်နိုင်လားဆိုတာကို ရိုးရှင်းတဲ့ test တစ်ခုနဲ့ စစ်ဆေးနိုင်ပါတယ်။
+
+### Model ကို Batch တစ်ခုတည်းပေါ်မှာ Overfit လုပ်ခြင်း[[overfit-your-model-on-one-batch]]
+
+Overfitting က training လုပ်တဲ့အခါ ကျွန်တော်တို့ ရှောင်ရှားဖို့ ကြိုးစားလေ့ရှိတဲ့ အရာတစ်ခုပါ၊ ဘာလို့လဲဆိုတော့ ဒါက model က ကျွန်တော်တို့ လိုချင်တဲ့ general features တွေကို အသိအမှတ်ပြုဖို့ သင်ယူတာမဟုတ်ဘဲ training samples တွေကိုပဲ အလွတ်ကျက်နေတာကို ဆိုလိုလို့ပါပဲ။ သို့သော်လည်း၊ သင့် model ကို batch တစ်ခုတည်းပေါ်မှာ အကြိမ်ကြိမ် train လုပ်ဖို့ ကြိုးစားတာက၊ သင်ဖန်တီးထားတဲ့ ပြဿနာကို သင် train လုပ်ဖို့ ကြိုးစားနေတဲ့ model က ဖြေရှင်းနိုင်လားဆိုတာ စစ်ဆေးဖို့ ကောင်းတဲ့ test တစ်ခုပါ။ ဒါက သင့် initial learning rate က မြင့်မားလွန်းလားဆိုတာကိုလည်း မြင်အောင် ကူညီပေးပါလိမ့်မယ်။
+
+`Trainer` ကို သတ်မှတ်ပြီးတာနဲ့ ဒါကို လုပ်ဆောင်ရတာ အလွန်လွယ်ကူပါတယ်၊ training data batch တစ်ခုကို ယူပြီး၊ အဲဒီ batch တစ်ခုတည်းကိုပဲ 20 steps လောက်အတွက် manual training loop သေးသေးလေးတစ်ခု run ပါ။
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+trainer.create_optimizer()
+
+for _ in range(20):
+    outputs = trainer.model(**batch)
+    loss = outputs.loss
+    loss.backward()
+    trainer.optimizer.step()
+    trainer.optimizer.zero_grad()
+```
+
+> [!TIP]
+> 💡 သင့် training data က မညီမျှဘူးဆိုရင်၊ labels အားလုံးပါဝင်တဲ့ training data batch တစ်ခုကို တည်ဆောက်ဖို့ သေချာပါစေ။
+
+ရရှိလာတဲ့ model က တူညီတဲ့ `batch` ပေါ်မှာ perfect နီးပါး ရလဒ်တွေ ရရှိသင့်ပါတယ်။ ရရှိလာတဲ့ predictions တွေပေါ်မှာ metric ကို တွက်ချက်ကြည့်ရအောင်။
+
+```py
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+preds = outputs.logits
+labels = batch["labels"]
+
+compute_metrics((preds.cpu().numpy(), labels.cpu().numpy()))
+```
+
+```python out
+{'accuracy': 1.0}
+```
+
+100% accuracy၊ ဒါက overfitting ရဲ့ ကောင်းမွန်တဲ့ ဥပမာတစ်ခုပါပဲ (ဆိုလိုတာက သင်ရဲ့ model ကို တခြားစာကြောင်းတစ်ခုခုနဲ့ စမ်းကြည့်ရင်၊ ဒါက မှားယွင်းတဲ့ အဖြေကို ပေးနိုင်ခြေများပါတယ်)!
+
+သင်ဒီလို perfect ရလဒ်တွေရဖို့ သင့် model ကို မလုပ်ဆောင်နိုင်ဘူးဆိုရင်၊ ဒါက သင်ပြဿနာကို ဖန်တီးထားပုံ ဒါမှမဟုတ် သင့် data မှာ တစ်ခုခု မှားယွင်းနေတယ်လို့ ဆိုလိုတာကြောင့်၊ ဒါကို ပြင်ဆင်သင့်ပါတယ်။ overfitting test ကို အောင်မြင်စွာ ဖြတ်သန်းနိုင်မှသာ သင့် model က တကယ်တစ်ခုခု သင်ယူနိုင်တယ်ဆိုတာ သေချာနိုင်ပါတယ်။
+
+> [!WARNING]
+> ⚠️ ဒီ test ပြီးနောက် သင့် model နဲ့ `Trainer` ကို ပြန်လည်ဖန်တီးရပါလိမ့်မယ်၊ ဘာလို့လဲဆိုတော့ ရရှိတဲ့ model က သင့် full dataset ပေါ်မှာ အသုံးဝင်တဲ့အရာတစ်ခုကို ပြန်လည်သင်ယူနိုင်တော့မှာ မဟုတ်လို့ပါပဲ။
+
+### ပထမဆုံး Baseline တစ်ခုရသည်အထိ ဘာမှ မညှိပါနှင့်[[dont-tune-anything-until-you-have-a-first-baseline]]
+
+Hyperparameter tuning ကို machine learning ရဲ့ အခက်ခဲဆုံးအပိုင်းအဖြစ် အမြဲတမ်း အလေးပေးပြောဆိုလေ့ရှိပေမယ့်၊ ဒါက metric မှာ နည်းနည်းလေးသာ အကျိုးကျေးဇူးရရှိစေမယ့် နောက်ဆုံးအဆင့်ပါပဲ။ အချိန်အများစုမှာ၊ `Trainer` ရဲ့ default hyperparameters တွေက ကောင်းမွန်တဲ့ ရလဒ်တွေပေးဖို့ အဆင်ပြေမှာဖြစ်တာကြောင့်၊ သင့် dataset ပေါ်မှာရှိတဲ့ baseline ကို အနိုင်ယူနိုင်တဲ့အရာတစ်ခု မရမချင်း၊ အချိန်ကုန်ပြီး ကုန်ကျစရိတ်များတဲ့ hyperparameter search ကို မစတင်ပါနဲ့။
+
+ကောင်းမွန်တဲ့ model တစ်ခုရပြီဆိုတာနဲ့၊ နည်းနည်းချင်း စတင်ညှိနှိုင်းနိုင်ပါပြီ။ မတူညီတဲ့ hyperparameters တွေနဲ့ run တွေ အများကြီး မစတင်ပါနဲ့၊ ဒါပေမယ့် hyperparameter တစ်ခုအတွက် မတူညီတဲ့ values တွေနဲ့ run အနည်းငယ်ကို နှိုင်းယှဉ်ပြီး ဘယ်ဟာက အကြီးမားဆုံး သက်ရောက်မှုရှိလဲဆိုတာ စိတ်ကူးရယူပါ။
+
+သင် model ကိုယ်တိုင်ကို ညှိနှိုင်းနေတယ်ဆိုရင်၊ ရိုးရှင်းအောင်ထားပြီး ကျိုးကြောင်းဆီလျော်အောင် ရှင်းပြလို့မရတဲ့ အရာတစ်ခုခုကို မစမ်းသပ်ပါနဲ့။ သင့်ပြောင်းလဲမှုက မရည်ရွယ်ဘဲ အကျိုးဆက်တွေ မဖြစ်စေဘူးဆိုတာကို စစ်ဆေးဖို့ overfitting test ကို အမြဲတမ်း ပြန်သွားဖို့ သေချာပါစေ။
+
+### အကူအညီတောင်းပါ[[ask-for-help]]
+
+မျှော်လင့်တာကတော့ ဒီအပိုင်းမှာ သင့်ပြဿနာကို ဖြေရှင်းဖို့ ကူညီပေးမယ့် အကြံပြုချက်အချို့ကို သင်တွေ့ရှိခဲ့ပါပြီ။ ဒါပေမယ့် မဟုတ်ဘူးဆိုရင်၊ [forums](https://discuss.huggingface.co/) မှာ community ကို အမြဲတမ်း အကူအညီတောင်းနိုင်တယ်ဆိုတာ သတိရပါ။
+
+ဒီနေရာမှာ အထောက်အကူဖြစ်နိုင်မယ့် နောက်ထပ် အရင်းအမြစ်အချို့ပါ-
+
+- Joel Grus ရဲ့ "Reproducibility as a vehicle for engineering best practices" ([https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p))
+- Cecelia Shao ရဲ့ "Checklist for debugging neural networks" ([https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21))
+- Chase Roberts ရဲ့ "How to unit test machine learning code" ([https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765))
+- Andrej Karpathy ရဲ့ "A Recipe for Training Neural Networks" ([http://karpathy.github.io/2019/04/25/recipe/](http://karpathy.github.io/2019/04/25/recipe/))
+
+ဟုတ်ပါတယ်၊ neural nets တွေကို train လုပ်တဲ့အခါ သင်ကြုံတွေ့ရတဲ့ ပြဿနာတိုင်းက သင့်အမှားမဟုတ်ပါဘူး! 🤗 Transformers ဒါမှမဟုတ် 🤗 Datasets library ထဲမှာ တစ်ခုခု မမှန်ဘူးလို့ ထင်ရတာ ကြုံတွေ့ရရင်၊ သင် bug တစ်ခုနဲ့ ကြုံတွေ့ရတာ ဖြစ်နိုင်ပါတယ်။ ဒါကို ကျွန်တော်တို့ကို အသေးစိတ် ပြောပြသင့်ပါတယ်၊ ပြီးတော့ နောက်အပိုင်းမှာ ဒါကို ဘယ်လိုလုပ်ရမယ်ဆိုတာကို အတိအကျ ရှင်းပြပါမယ်။
+
+## ဝေါဟာရ ရှင်းလင်းချက် (Glossary)
+
+*   **Training Pipeline**: Machine Learning မော်ဒယ်တစ်ခုကို data preprocessing မှစ၍ model training, evaluation အထိ ပါဝင်သော အဆင့်များစွာရှိသည့် လုပ်ငန်းစဉ်။
+*   **Debug**: ကွန်ပျူတာပရိုဂရမ်တစ်ခုရှိ အမှားများ (bugs) ကို ရှာဖွေ၊ ဖော်ထုတ်ပြီး ပြင်ဆင်ခြင်း။
+*   **Fine-tune**: ကြိုတင်လေ့ကျင့်ထားပြီးသား (pre-trained) မော်ဒယ်တစ်ခုကို သီးခြားလုပ်ငန်းတစ်ခု (specific task) အတွက် အနည်းငယ်သော ဒေတာနဲ့ ထပ်မံလေ့ကျင့်ပေးခြင်းကို ဆိုလိုပါတယ်။
+*   **Model**: Artificial Intelligence (AI) နယ်ပယ်တွင် အချက်အလက်များကို လေ့လာပြီး ခန့်မှန်းချက်များ ပြုလုပ်ရန် ဒီဇိုင်းထုတ်ထားသော သင်္ချာဆိုင်ရာဖွဲ့စည်းပုံများ။
+*   **Task**: Artificial Intelligence (AI) သို့မဟုတ် Machine Learning (ML) မော်ဒယ်တစ်ခုက လုပ်ဆောင်ရန် ဒီဇိုင်းထုတ်ထားသော သီးခြားအလုပ်။
+*   **`trainer.train()` Command**: Hugging Face Transformers library ၏ `Trainer` class မှ model ကို လေ့ကျင့်ရန်အတွက် အသုံးပြုသော method။
+*   **Error**: ပရိုဂရမ်တစ်ခု အလုပ်လုပ်နေစဉ် ဖြစ်ပေါ်လာသော ပြဿနာတစ်ခုကြောင့် ၎င်းသည် ပုံမှန်အတိုင်း ဆက်လက်လုပ်ဆောင်နိုင်ခြင်းမရှိခြင်း။
+*   **Crappy (Model)**: စွမ်းဆောင်ရည် နိမ့်ကျသော သို့မဟုတ် အသုံးမဝင်သော model။
+*   **Datasets**: Hugging Face က ထုတ်လုပ်ထားတဲ့ library တစ်ခုဖြစ်ပြီး AI မော်ဒယ်တွေ လေ့ကျင့်ဖို့အတွက် ဒေတာအစုအဝေး (datasets) တွေကို လွယ်လွယ်ကူကူ ဝင်ရောက်ရယူ၊ စီမံခန့်ခွဲပြီး အသုံးပြုနိုင်စေပါတယ်။
+*   **Dataloaders**: dataset ကနေ data တွေကို batch အလိုက် load လုပ်ပေးတဲ့ PyTorch utility class (သို့မဟုတ် TensorFlow မှာ ဆင်တူ)။
+*   **Batch**: မတူညီသော input များစွာကို တစ်ပြိုင်နက်တည်း လုပ်ဆောင်နိုင်ရန် အုပ်စုဖွဲ့ခြင်း။
+*   **Model Code**: model ကို တည်ဆောက်ပြီး အကောင်အထည်ဖော်ရန် ရေးသားထားသော code။
+*   **Gradients**: neural network ၏ weights များကို loss function ကို အနည်းဆုံးဖြစ်အောင် ချိန်ညှိရန်အတွက် လမ်းညွှန်ပေးသော တန်ဖိုးများ။
+*   **Optimization Step**: gradients များကို အသုံးပြုပြီး model ၏ parameters များကို update လုပ်ခြင်း။
+*   **Optimizer**: model ၏ weights များကို training လုပ်နေစဉ် ချိန်ညှိပေးသော algorithm (ဥပမာ- AdamW, SGD)။
+*   **Evaluation**: Model ၏ စွမ်းဆောင်ရည်ကို တိုင်းတာခြင်း။
+*   **Metric**: Model ၏ စွမ်းဆောင်ရည်ကို တိုင်းတာရန် အသုံးပြုသော တန်ဖိုးများ (ဥပမာ- accuracy, F1 score)။
+*   **MNLI Dataset (Multi-Genre Natural Language Inference)**: GLUE benchmark ထဲက text entailment task တစ်ခု။
+*   **DistilBERT Model**: BERT model ၏ ပိုမိုသေးငယ်ပြီး မြန်ဆန်သော version။
+*   **`load_dataset()` Function**: Hugging Face Datasets library မှ dataset များကို download လုပ်ပြီး cache လုပ်ရန် အသုံးပြုသော function။
+*   **`evaluate` Library**: Hugging Face မှ metrics များကို load လုပ်ပြီး တွက်ချက်ရန်အတွက် library။
+*   **`AutoTokenizer`**: Hugging Face Transformers library မှာ ပါဝင်တဲ့ class တစ်ခုဖြစ်ပြီး မော်ဒယ်အမည်ကို အသုံးပြုပြီး သက်ဆိုင်ရာ tokenizer ကို အလိုအလျောက် load လုပ်ပေးသည်။
+*   **`AutoModelForSequenceClassification`**: Hugging Face Transformers library မှာ ပါဝင်တဲ့ class တစ်ခုဖြစ်ပြီး sequence classification task အတွက် model ကို အလိုအလျောက် load လုပ်ပေးသည်။
+*   **`TrainingArguments`**: Hugging Face Transformers library မှ `Trainer` အတွက် training arguments များကို သတ်မှတ်ရန် အသုံးပြုသော class။
+*   **`Trainer`**: Hugging Face Transformers library မှ model များကို ထိရောက်စွာ လေ့ကျင့်ရန်အတွက် ဒီဇိုင်းထုတ်ထားသော မြင့်မားသောအဆင့် API။
+*   **`raw_datasets`**: Preprocessing မလုပ်ရသေးသော dataset။
+*   **`model_checkpoint`**: pretrained model ၏ အမည် သို့မဟုတ် path။
+*   **`preprocess_function()`**: data ကို preprocessing လုပ်ရန်အတွက် function။
+*   **`premise`**: MNLI dataset တွင် ပထမဆုံး စာကြောင်း။
+*   **`hypothesis`**: MNLI dataset တွင် ဒုတိယ စာကြောင်း။
+*   **`truncation=True`**: input sequence များကို model ၏ maximum length အထိ ဖြတ်တောက်ရန် သတ်မှတ်ခြင်း။
+*   **`tokenized_datasets`**: Tokenizer ဖြင့် preprocessing လုပ်ထားသော dataset။
+*   **`Dataset.map()` Method**: 🤗 Datasets library မှာ ပါဝင်တဲ့ method တစ်ခုဖြစ်ပြီး dataset ရဲ့ element တစ်ခုစီ ဒါမှမဟုတ် batch တစ်ခုစီပေါ်မှာ function တစ်ခုကို အသုံးပြုနိုင်စေသည်။
+*   **`batched=True`**: `map()` method မှာ အသုံးပြုသော argument တစ်ခုဖြစ်ပြီး function ကို dataset ရဲ့ element အများအပြားပေါ်မှာ တစ်ပြိုင်နက်တည်း အသုံးပြုစေသည်။
+*   **`evaluation_strategy="epoch"`**: evaluation ကို epoch တစ်ခုစီတိုင်းမှာ လုပ်ဆောင်ရန် သတ်မှတ်ခြင်း။
+*   **`save_strategy="epoch"`**: model ကို epoch တစ်ခုစီတိုင်းမှာ save လုပ်ရန် သတ်မှတ်ခြင်း။
+*   **`learning_rate`**: training လုပ်ငန်းစဉ်အတွင်း model ၏ weights များကို မည်မျှပြောင်းလဲရမည်ကို ထိန်းချုပ်သော parameter။
+*   **`num_train_epochs`**: model ကို training dataset တစ်ခုလုံးဖြင့် လေ့ကျင့်သည့် အကြိမ်အရေအတွက်။
+*   **`weight_decay`**: overfitting ကို လျှော့ချရန်အတွက် regularization technique တစ်မျိုး။
+*   **`metric.load()`**: `evaluate` library မှ metric တစ်ခုကို load လုပ်ရန် function။
+*   **`compute_metrics()` Function**: evaluation အတွက် metrics များကို တွက်ချက်သော function။
+*   **`eval_pred`**: evaluation လုပ်နေစဉ် model မှ ထုတ်ပေးသော predictions နှင့် labels များပါဝင်သော tuple။
+*   **`predictions`**: model မှ ထုတ်ပေးသော ခန့်မှန်းချက်များ။
+*   **`references`**: အမှန်တကယ် labels များ။
+*   **`raw_datasets["train"]`**: preprocessing မလုပ်ရသေးသော training set။
+*   **`tokenized_datasets["train"]`**: preprocessing လုပ်ထားသော training set။
+*   **`tokenized_datasets["validation_matched"]`**: preprocessing လုပ်ထားသော validation set။
+*   **`ValueError`**: Python တွင် value သည် မှန်ကန်ခြင်းမရှိသည့်အခါ ဖြစ်ပေါ်သော error။
+*   **`input_ids`**: Tokenizer မှ ထုတ်ပေးသော tokens တစ်ခုစီ၏ ထူးခြားသော ဂဏန်းဆိုင်ရာ ID များ။
+*   **`inputs_embeds`**: input tokens များ၏ embeddings များကို တိုက်ရိုက်ပေးပို့ခြင်း။
+*   **Corrupted Data**: ပျက်စီးနေသော သို့မဟုတ် မမှန်ကန်သော ဒေတာ။
+*   **Model Signature**: model တစ်ခုက မျှော်လင့်ထားသော input arguments များ။
+*   **Labels**: AI model ကို လေ့ကျင့်ရန်အတွက် အသုံးပြုသော မှန်ကန်သော အဖြေများ သို့မဟုတ် အမျိုးအစားများ။
+*   **`Dataset.map()` Method**: 🤗 Datasets library မှာ ပါဝင်တဲ့ method တစ်ခုဖြစ်ပြီး dataset ရဲ့ element တစ်ခုစီ ဒါမှမဟုတ် batch တစ်ခုစီပေါ်မှာ function တစ်ခုကို အသုံးပြုနိုင်စေသည်။
+*   **Traceback**: error တစ်ခု ဖြစ်ပေါ်လာသည့်အခါ code execution path ကို ပြသသော မှတ်တမ်း။
+*   **Data Collation Step**: batch တစ်ခုအတွင်း samples များကို စုစည်းပေးသည့် လုပ်ငန်းစဉ်။
+*   **Decoded Inputs**: model ၏ input IDs များကို လူသားဖတ်နိုင်သော စာသားအဖြစ် ပြန်ပြောင်းခြင်း။
+*   **Pixels**: digital image တစ်ခု၏ အသေးငယ်ဆုံး အစိတ်အပိုင်း။
+*   **Audio Samples**: digital audio တွင် အသံ၏ တန်ဖိုးများ။
+*   **`tokenizer.decode()` Method**: input IDs များကို tokens များအဖြစ် ပြန်ပြောင်းပေးသော tokenizer method။
+*   **`[CLS]` Token**: BERT model တွင် sequence ၏ အစကို ကိုယ်စားပြုသော special token။
+*   **`[SEP]` Token**: BERT model တွင် sentence တစ်ခု၏ အဆုံး သို့မဟုတ် sentence နှစ်ခုကြား ပိုင်းခြားရန် အသုံးပြုသော special token။
+*   **`attention_mask`**: မော်ဒယ်ကို အာရုံစိုက်သင့်သည့် tokens များနှင့် လျစ်လျူရှုသင့်သည့် (padding) tokens များကို ခွဲခြားပေးသည့် binary mask။
+*   **Padding**: sequence များ၏ အရှည်ကို တူညီစေရန်အတွက် အပို tokens များ ထည့်သွင်းခြင်း။
+*   **Token Type IDs**: Sentence pair လုပ်ငန်းများတွင် input sequence တစ်ခုစီမှ token တစ်ခုစီသည် မည်သည့် sentence (ပထမ သို့မဟုတ် ဒုတိယ) နှင့် သက်ဆိုင်သည်ကို ဖော်ပြပေးသော IDs များ။
+*   **DistilBERT**: BERT model ၏ ပိုမိုသေးငယ်ပြီး မြန်ဆန်သော version။
+*   **`get_train_dataloader()`**: `Trainer` မှ training dataloader ကို ရယူရန် method။
+*   **`get_eval_dataloader()`**: `Trainer` မှ evaluation dataloader ကို ရယူရန် method။
+*   **Collate_fn**: `DataLoader` တစ်ခုမှာ အသုံးပြုတဲ့ function တစ်ခုဖြစ်ပြီး batch တစ်ခုအတွင်း samples တွေကို စုစည်းပေးသည်။
+*   **`default_data_collator`**: 🤗 Transformers library မှ default data collator။
+*   **`DataCollatorWithPadding`**: Hugging Face Transformers library မှ ပံ့ပိုးပေးသော class တစ်ခုဖြစ်ပြီး dynamic padding ကို အသုံးပြု၍ batch တစ်ခုအတွင်း samples များကို စုစည်းပေးသည်။
+*   **`DataCollatorWithPadding(tokenizer=tokenizer)`**: tokenizer ကို အသုံးပြု၍ dynamic padding လုပ်ဆောင်သော data collator ကို ဖန်တီးခြင်း။
+*   **CUDA Error**: NVIDIA GPU များတွင် GPU computation လုပ်နေစဉ် ဖြစ်ပေါ်လာသော error။
+*   **`CUBLAS_STATUS_ALLOC_FAILED`**: CUDA BLAS (Basic Linear Algebra Subprograms) မှ memory ခွဲဝေမှု (allocation) မအောင်မြင်ခြင်း။
+*   **`Trainer._remove_unused_columns()`**: `Trainer` ၏ private method တစ်ခုဖြစ်ပြီး model က လက်မခံသော columns များကို dataset မှ ဖယ်ရှားရန်။
+*   **`torch.stack()`**: PyTorch tensor များစွာကို dimension အသစ်တစ်ခုတွင် ပေါင်းစည်းခြင်း။
+*   **`torch.tensor()`**: PyTorch မှာ data များကို သိမ်းဆည်းရန် အသုံးပြုတဲ့ multi-dimensional array (tensor) တစ်ခုကို ဖန်တီးသော function။
+*   **Kernel**: operating system ၏ အဓိကအစိတ်အပိုင်း။ Jupyter/Colab တွင် code များကို run ရန်အတွက် backend process။
+*   **GPU (Graphics Processing Unit)**: ဂရပ်ဖစ်လုပ်ဆောင်မှုအတွက် အထူးဒီဇိုင်းထုတ်ထားသော processor တစ်မျိုးဖြစ်သော်လည်း AI/ML လုပ်ငန်းများတွင် အရှိန်မြှင့်ရန် အသုံးများသည်။
+*   **Parallel (Computing)**: လုပ်ငန်းများစွာကို တစ်ပြိုင်နက်တည်း လုပ်ဆောင်ခြင်း။
+*   **Synchronization**: multiple processes များကြား ဒေတာကို တူညီအောင် ထိန်းသိမ်းခြင်း။
+*   **Backward Pass**: Neural network ၏ training လုပ်ငန်းစဉ်တွင် loss function မှ gradients များကို တွက်ချက်ခြင်း။
+*   **Forward Pass**: Neural network ၏ training လုပ်ငန်းစဉ်တွင် input data ကို network ကို ဖြတ်သန်းစေပြီး output ကို တွက်ချက်ခြင်း။
+*   **Out-of-Memory Error (OOM)**: စက်၏ memory မလုံလောက်ခြင်းကြောင့် ဖြစ်ပေါ်သော error။
+*   **`trainer.model.cpu()(**batch)`**: model ကို CPU သို့ ရွှေ့ပြီး batch ပေါ်တွင် ခေါ်ဆိုခြင်း။
+*   **`outputs = trainer.model.cpu()(**batch)`**: model မှ output များကို ရရှိခြင်း။
+*   **`IndexError`**: Python တွင် sequence index သည် bounds ပြင်ပ ဖြစ်နေသည့်အခါ ဖြစ်ပေါ်သော error။
+*   **Loss Computation**: model ၏ ခန့်မှန်းချက်များနှင့် အမှန်တကယ် labels များကြား ကွာခြားမှုကို တွက်ချက်ခြင်း။
+*   **`trainer.model.config.num_labels`**: model ၏ configuration ထဲမှ labels အရေအတွက်။
+*   **`DataCollatorWithPadding`**: Hugging Face Transformers library မှ ပံ့ပိုးပေးသော class တစ်ခုဖြစ်ပြီး dynamic padding ကို အသုံးပြု၍ batch တစ်ခုအတွင်း samples များကို စုစည်းပေးသည်။
+*   **`trainer.model.to(device)(**batch)`**: model ကို သတ်မှတ်ထားသော device (CPU/GPU) သို့ ရွှေ့ပြီး batch ပေါ်တွင် ခေါ်ဆိုခြင်း။
+*   **`torch.no_grad()`**: PyTorch တွင် gradient တွက်ချက်မှုကို ပိတ်ထားရန် (evaluation သို့မဟုတ် inference အတွက်)။
+*   **`outputs.logits.cpu().numpy()`**: model output မှ logits များကို CPU သို့ ရွှေ့ပြီး NumPy array အဖြစ် ပြောင်းလဲခြင်း။
+*   **`batch["labels"].cpu().numpy()`**: batch မှ labels များကို CPU သို့ ရွှေ့ပြီး NumPy array အဖြစ် ပြောင်းလဲခြင်း။
+*   **`np.argmax(predictions, axis=1)`**: predictions array ၏ axis 1 (column) အလိုက် အမြင့်ဆုံးတန်ဖိုး၏ index ကို ရယူခြင်း။
+*   **Accuracy**: classification model ၏ မှန်ကန်သော ခန့်မှန်းချက်များ၏ ရာခိုင်နှုန်း။
+*   **Silent Errors**: error message များမပြသဘဲ ဖြစ်ပေါ်သော မှားယွင်းမှုများ။
+*   **Corrupts the Data**: ဒေတာများကို ပျက်စီးစေခြင်း။
+*   **Labels are Attributed Randomly**: labels များကို ကျပန်းပေးထားခြင်း။
+*   **Biased toward One Category**: dataset သည် သီးခြား category တစ်ခုဆီသို့ ဘက်လိုက်နေခြင်း။
+*   **Oversampling Rare Classes**: dataset ထဲရှိ ရှားပါးသော classes များကို ပိုမိုအသုံးပြုခြင်း။
+*   **Loss/Metric on Initial Model**: မလေ့ကျင့်ရသေးသော model ၏ loss သို့မဟုတ် metric တန်ဖိုး။
+*   **Scale (of Losses)**: losses များ၏ တန်ဖိုးအပိုင်းအခြား။
+*   **Distributed Training**: training လုပ်ငန်းစဉ်ကို ကွန်ပျူတာများစွာ သို့မဟုတ် GPU များစွာဖြင့် ဖြန့်ခွဲလုပ်ဆောင်ခြင်း။
+*   **Randomness**: ကျပန်းဖြစ်ခြင်း။
+*   **Overfit**: Model သည် training data ကို အလွန်အကျွံ သင်ယူသွားခြင်းကြောင့် test data တွင် စွမ်းဆောင်ရည် နိမ့်ကျခြင်း။
+*   **Memorizing Training Samples**: training samples များကို အလွတ်ကျက်မှတ်ခြင်း။
+*   **General Features**: training data ၏ အခြေခံသဘောတရားများ။
+*   **Initial Learning Rate**: training စတင်ချိန်တွင် learning rate တန်ဖိုး။
+*   **`trainer.create_optimizer()`**: `Trainer` မှ optimizer ကို ဖန်တီးရန် method။
+*   **`trainer.optimizer.step()`**: optimizer မှ optimization step ကို လုပ်ဆောင်ရန် method။
+*   **`trainer.optimizer.zero_grad()`**: optimizer မှ gradients များကို သုညသို့ ပြန်လည်သတ်မှတ်ရန် method။
+*   **Unbalanced Data**: dataset ထဲတွင် classes များ၏ samples အရေအတွက် မညီမျှခြင်း။
+*   **Accuracy**: classification model ၏ မှန်ကန်သော ခန့်မှန်းချက်များ၏ ရာခိုင်နှုန်း။
+*   **Hyperparameter Tuning**: model ၏ စွမ်းဆောင်ရည်ကို အကောင်းဆုံးဖြစ်အောင် hyperparameters များကို ချိန်ညှိခြင်း။
+*   **Baseline**: model တစ်ခု၏ စွမ်းဆောင်ရည်ကို နှိုင်းယှဉ်ရန်အတွက် အခြေခံရည်ညွှန်းတန်ဖိုး။
+*   **Hyperparameters**: model ၏ architecture သို့မဟုတ် training လုပ်ငန်းစဉ်ကို ထိန်းချုပ်သော parameters များ (ဥပမာ- learning rate, batch size)။
+*   **Unintended Consequences**: မရည်ရွယ်ဘဲ ဖြစ်ပေါ်လာသော ရလဒ်များ။
+*   **Forums**: အွန်လိုင်းဆွေးနွေးပွဲ ဖိုရမ်များ။
+*   **Neural Networks**: deep learning တွင် အသုံးပြုသော computational model တစ်မျိုး။
+*   **Unit Test**: ဆော့ဖ်ဝဲလ်တစ်ခု၏ သေးငယ်သော အစိတ်အပိုင်း (unit) တစ်ခုကို သီးခြားစီ စမ်းသပ်ခြင်း။
+*   **🤗 Datasets Library**: Hugging Face က ထုတ်လုပ်ထားတဲ့ library တစ်ခုဖြစ်ပြီး AI မော်ဒယ်တွေ လေ့ကျင့်ဖို့အတွက် ဒေတာအစုအဝေး (datasets) တွေကို လွယ်လွယ်ကူကူ ဝင်ရောက်ရယူ၊ စီမံခန့်ခွဲပြီး အသုံးပြုနိုင်စေပါတယ်။
+*   **Bug**: ဆော့ဖ်ဝဲလ်တစ်ခု၏ code ထဲတွင်ရှိသော အမှားတစ်ခုကြောင့် ပရိုဂရမ်သည် မျှော်လင့်ထားသည့်အတိုင်း အလုပ်မလုပ်ခြင်း။

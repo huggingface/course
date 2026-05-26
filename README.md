@@ -21,13 +21,13 @@ This repo contains the content that's used to create the **[Hugging Face course]
 | [Korean](https://huggingface.co/course/ko/chapter1/1) (WIP)                   | [`chapters/ko`](https://github.com/huggingface/course/tree/main/chapters/ko)       | [@Doohae](https://github.com/Doohae), [@wonhyeongseo](https://github.com/wonhyeongseo), [@dlfrnaos19](https://github.com/dlfrnaos19), [@nsbg](https://github.com/nsbg)                                                                                                                                                                                                                                                                                                                     |
 | [Portuguese](https://huggingface.co/course/pt/chapter1/1) (WIP)               | [`chapters/pt`](https://github.com/huggingface/course/tree/main/chapters/pt)       | [@johnnv1](https://github.com/johnnv1), [@victorescosta](https://github.com/victorescosta), [@LincolnVS](https://github.com/LincolnVS)                                                                                                                                                                                                                   |
 | [Russian](https://huggingface.co/course/ru/chapter1/1) (WIP)                  | [`chapters/ru`](https://github.com/huggingface/course/tree/main/chapters/ru)       | [@pdumin](https://github.com/pdumin), [@svv73](https://github.com/svv73), [@blademoon](https://github.com/blademoon)                                                                                                                                                                                                                                                                                 |
-| [Telugu]( https://huggingface.co/course/te/chapter0/1 ) (WIP)                                                             | [`chapters/te`](https://github.com/huggingface/course/tree/main/chapters/te)       | [@Ajey95](https://github.com/Ajey95)                                    
+| [Telugu]( https://huggingface.co/course/te/chapter0/1 ) (WIP)                                                             | [`chapters/te`](https://github.com/huggingface/course/tree/main/chapters/te)       | [@Ajey95](https://github.com/Ajey95), [@RahulKonda18](https://github.com/RahulKonda18)
 | [Thai](https://huggingface.co/course/th/chapter1/1) (WIP)                     | [`chapters/th`](https://github.com/huggingface/course/tree/main/chapters/th)       | [@peeraponw](https://github.com/peeraponw), [@a-krirk](https://github.com/a-krirk), [@jomariya23156](https://github.com/jomariya23156), [@ckingkan](https://github.com/ckingkan)                                                                                                                                                                         |
 | [Turkish](https://huggingface.co/course/tr/chapter1/1) (WIP)                  | [`chapters/tr`](https://github.com/huggingface/course/tree/main/chapters/tr)       | [@tanersekmen](https://github.com/tanersekmen), [@mertbozkir](https://github.com/mertbozkir), [@ftarlaci](https://github.com/ftarlaci), [@akkasayaz](https://github.com/akkasayaz)                                                                                                                                                                       |
 | [Vietnamese](https://huggingface.co/course/vi/chapter1/1)               | [`chapters/vi`](https://github.com/huggingface/course/tree/main/chapters/vi)       | [@honghanhh](https://github.com/honghanhh)                                                                                                                                                                                                                                                                                                               |
 | [Chinese (simplified)](https://huggingface.co/course/zh-CN/chapter1/1)  | [`chapters/zh-CN`](https://github.com/huggingface/course/tree/main/chapters/zh-CN) | [@zhlhyx](https://github.com/zhlhyx), [petrichor1122](https://github.com/petrichor1122), [@1375626371](https://github.com/1375626371)                                                                                                                                                                                                                    |
-| [Chinese (traditional)](https://huggingface.co/course/zh-TW/chapter1/1) (WIP) | [`chapters/zh-TW`](https://github.com/huggingface/course/tree/main/chapters/zh-TW) | [@davidpeng86](https://github.com/davidpeng86)                                                                                                                                                                                                                                                                                                           |
-| [Romanian](https://huggingface.co/course/rum/chapter1/1) (WIP) | [`chapters/rum`](https://github.com/huggingface/course/tree/main/chapters/rum) | [@Sigmoid](https://github.com/SigmoidAI), [@eduard-balamatiuc](https://github.com/eduard-balamatiuc), [@FriptuLudmila](https://github.com/FriptuLudmila), [@tokyo-s](https://github.com/tokyo-s), [@hbkdesign](https://github.com/hbkdesign), [@grumpycatyo-collab](https://github.com/grumpycatyo-collab), [@Angroys](https://github.com/Angroys)                                                                                                                                                                                                                                                                                                             |
+| [Chinese (traditional)](https://huggingface.co/course/zh-TW/chapter1/1) (WIP) | [`chapters/zh-TW`](https://github.com/huggingface/course/tree/main/chapters/zh-TW) | [@davidpeng86](https://github.com/davidpeng86), [@thliang01](https://github.com/thliang01)                                                                                                                                                                                                                                                                                                           |
+| [Romanian](https://huggingface.co/course/ro/chapter1/1) (WIP) | [`chapters/ro`](https://github.com/huggingface/course/tree/main/chapters/ro) | [@Sigmoid](https://github.com/SigmoidAI), [@eduard-balamatiuc](https://github.com/eduard-balamatiuc), [@FriptuLudmila](https://github.com/FriptuLudmila), [@tokyo-s](https://github.com/tokyo-s), [@hbkdesign](https://github.com/hbkdesign), [@grumpycatyo-collab](https://github.com/grumpycatyo-collab), [@Angroys](https://github.com/Angroys)                                                                                                                                                                                                                                                                                                             |
 
 ### Translating the course into your language
 
@@ -90,17 +90,31 @@ Once you have translated the `_toctree.yml` file, you can start translating the 
 
 Once you're happy with your changes, you can preview how they'll look by first installing the [`doc-builder`](https://github.com/huggingface/doc-builder) tool that we use for building all documentation at Hugging Face:
 
-```
-pip install hf-doc-builder
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "git+https://github.com/huggingface/doc-builder.git"
 ```
 
-```
-doc-builder preview course ../course/chapters/LANG-ID --not_python_module
+```bash
+doc-builder preview course ./chapters/LANG-ID --not_python_module
 ```
 
-**`preview` command does not work with Windows.
+If `LANG-ID` content is partial, make sure `_toctree.yml` only references files that exist in `chapters/LANG-ID`.
 
-This will build and render the course on [http://localhost:3000/](http://localhost:3000/). Although the content looks much nicer on the Hugging Face website, this step will still allow you to check that everything is formatted correctly.
+If preview starts but all routes return `404`, this might be a local `doc-builder` version mismatch between the Python package and the SvelteKit template:
+
+```bash
+python -m pip uninstall -y hf-doc-builder
+python -m pip install "git+https://github.com/huggingface/doc-builder.git"
+```
+
+Then restart `doc-builder preview`.
+
+> `preview` command does not work with Windows.
+
+This will build and render the course on [http://localhost:5173/](http://localhost:5173/). Although the content looks much nicer on the Hugging Face website, this step will still allow you to check that everything is formatted correctly.
 
 **🚀 Submit a pull request**
 

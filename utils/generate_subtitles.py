@@ -1,17 +1,31 @@
+import argparse
+from pathlib import Path
+
 import pandas as pd
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import SRTFormatter
 from youtubesearchpython import Playlist
-from pathlib import Path
-import argparse
 
-COURSE_VIDEOS_PLAYLIST = "https://youtube.com/playlist?list=PLo2EIpI_JMQvWfQndUesu0nPBAtZ9gP1o"
-TASK_VIDEOS_PLAYLIST = "https://youtube.com/playlist?list=PLo2EIpI_JMQtyEr-sLJSy5_SnLCb4vtQf"
+COURSE_VIDEOS_PLAYLIST = (
+    "https://youtube.com/playlist?list=PLo2EIpI_JMQvWfQndUesu0nPBAtZ9gP1o"
+)
+TASK_VIDEOS_PLAYLIST = (
+    "https://youtube.com/playlist?list=PLo2EIpI_JMQtyEr-sLJSy5_SnLCb4vtQf"
+)
 # These videos are not part of the course, but are part of the task playlist
-TASK_VIDEOS_TO_SKIP = ["tjAIM7BOYhw", "WdAeKSOpxhw", "KWwzcmG98Ds", "TksaY_FDgnk", "leNG9fN9FQU", "dKE8SIt9C-w"]
+TASK_VIDEOS_TO_SKIP = [
+    "tjAIM7BOYhw",
+    "WdAeKSOpxhw",
+    "KWwzcmG98Ds",
+    "TksaY_FDgnk",
+    "leNG9fN9FQU",
+    "dKE8SIt9C-w",
+]
 
 
-def generate_subtitles(language: str, youtube_language_code: str = None, is_task_playlist: bool = False):
+def generate_subtitles(
+    language: str, youtube_language_code: str = None, is_task_playlist: bool = False
+):
     metadata = []
     formatter = SRTFormatter()
     path = Path(f"subtitles/{language}")
@@ -24,7 +38,9 @@ def generate_subtitles(language: str, youtube_language_code: str = None, is_task
     for idx, video in enumerate(playlist_videos["videos"]):
         video_id = video["id"]
         title = video["title"]
-        title_formatted = title.lower().replace(" ", "-").replace(":", "").replace("?", "")
+        title_formatted = (
+            title.lower().replace(" ", "-").replace(":", "").replace("?", "")
+        )
         id_str = f"{idx}".zfill(2)
 
         if is_task_playlist:
@@ -42,8 +58,12 @@ def generate_subtitles(language: str, youtube_language_code: str = None, is_task
 
         # Get transcript
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        english_transcript = transcript_list.find_transcript(language_codes=["en", "en-US"])
-        languages = pd.DataFrame(english_transcript.translation_languages)["language_code"].tolist()
+        english_transcript = transcript_list.find_transcript(
+            language_codes=["en", "en-US"]
+        )
+        languages = pd.DataFrame(english_transcript.translation_languages)[
+            "language_code"
+        ].tolist()
         # Map mismatched language codes
         if language not in languages:
             if youtube_language_code is None:
@@ -60,11 +80,20 @@ def generate_subtitles(language: str, youtube_language_code: str = None, is_task
             with open(srt_filename, "w", encoding="utf-8") as f:
                 f.write(srt_formatted)
         except:
-            print(f"Problem generating transcript for {title} with ID {video_id} at {video['link']}.")
+            print(
+                f"Problem generating transcript for {title} with ID {video_id} at {video['link']}."
+            )
             with open(srt_filename, "w", encoding="utf-8") as f:
                 f.write("No transcript found for this video!")
 
-        metadata.append({"id": video_id, "title": title, "link": video["link"], "srt_filename": srt_filename})
+        metadata.append(
+            {
+                "id": video_id,
+                "title": title,
+                "link": video["link"],
+                "srt_filename": srt_filename,
+            }
+        )
 
     df = pd.DataFrame(metadata)
 
@@ -74,12 +103,17 @@ def generate_subtitles(language: str, youtube_language_code: str = None, is_task
         df.to_csv(f"{path}/metadata.csv", index=False)
 
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--language", type=str, help="Language to generate subtitles for")
-    parser.add_argument("--youtube_language_code", type=str, help="YouTube language code")
+    parser.add_argument(
+        "--language", type=str, help="Language to generate subtitles for"
+    )
+    parser.add_argument(
+        "--youtube_language_code", type=str, help="YouTube language code"
+    )
     args = parser.parse_args()
-    generate_subtitles(args.language, args.youtube_language_code, is_task_playlist=False)
+    generate_subtitles(
+        args.language, args.youtube_language_code, is_task_playlist=False
+    )
     generate_subtitles(args.language, args.youtube_language_code, is_task_playlist=True)
     print(f"All done! Subtitles stored at subtitles/{args.language}")

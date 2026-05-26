@@ -1,0 +1,319 @@
+# Tokenizer အဟောင်းမှ အသစ်တစ်ခုကို လေ့ကျင့်ခြင်း[[training-a-new-tokenizer-from-an-old-one]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section2.ipynb"},
+]} />
+
+သင်စိတ်ဝင်စားတဲ့ ဘာသာစကားနဲ့ language model တစ်ခု မရရှိနိုင်ဘူးဆိုရင်၊ ဒါမှမဟုတ် သင့်ရဲ့ corpus က သင့်ရဲ့ language model ကို train လုပ်ခဲ့တဲ့ corpus နဲ့ အလွန်ကွာခြားနေမယ်ဆိုရင်၊ သင့် data နဲ့ လိုက်လျောညီထွေဖြစ်အောင် လုပ်ဆောင်ထားတဲ့ tokenizer ကို အသုံးပြုပြီး model ကို အစကနေ train လုပ်ချင်ပါလိမ့်မယ်။ ဒါက သင့် dataset ပေါ်မှာ tokenizer အသစ်တစ်ခုကို train လုပ်ဖို့ လိုအပ်ပါလိမ့်မယ်။ ဒါပေမယ့် ဒါက ဘာကိုဆိုလိုတာလဲ။ [Chapter 2](/course/chapter2) မှာ tokenizers တွေကို ပထမဆုံး လေ့လာခဲ့တုန်းက၊ Transformer models အများစုဟာ _subword tokenization algorithm_ ကို အသုံးပြုတယ်ဆိုတာ ကျွန်တော်တို့ တွေ့ခဲ့ရပါတယ်။ ဘယ် subwords တွေက စိတ်ဝင်စားစရာကောင်းပြီး လက်ရှိ corpus ထဲမှာ အများဆုံး ဖြစ်ပေါ်နေသလဲဆိုတာကို ခွဲခြားသိမြင်ဖို့အတွက်၊ tokenizer က corpus ထဲက texts အားလုံးကို အသေအချာ လေ့လာဖို့လိုပါတယ် — ဒါကို ကျွန်တော်တို့ *training* လို့ ခေါ်ပါတယ်။ ဒီ training ကို ထိန်းချုပ်တဲ့ တိကျတဲ့ စည်းမျဉ်းတွေက အသုံးပြုတဲ့ tokenizer အမျိုးအစားပေါ် မူတည်ပြီး၊ ဒီအခန်းရဲ့ နောက်ပိုင်းမှာ အဓိက algorithms သုံးခုကို ကျွန်တော်တို့ ဆွေးနွေးသွားမှာပါ။
+
+<Youtube id="DJimQynXZsQ"/>
+
+> [!WARNING]
+> ⚠️ Tokenizer training က model training နဲ့ မတူပါဘူး! Model training က stochastic gradient descent ကို အသုံးပြုပြီး batch တစ်ခုစီအတွက် loss ကို အနည်းငယ် လျှော့ချပါတယ်။ ဒါဟာ သဘာဝအားဖြင့် randomized ဖြစ်ပါတယ် (ဆိုလိုတာက training ကို နှစ်ကြိမ်လုပ်တဲ့အခါ တူညီတဲ့ ရလဒ်တွေရဖို့အတွက် seeds တွေ သတ်မှတ်ထားရပါမယ်)။ Tokenizer training ကတော့ စာရင်းအင်းလုပ်ငန်းစဉ်တစ်ခုဖြစ်ပြီး ပေးထားတဲ့ corpus အတွက် ဘယ် subwords တွေက အကောင်းဆုံးရွေးချယ်သင့်သလဲဆိုတာကို ခွဲခြားသိမြင်ဖို့ ကြိုးစားပါတယ်။ ၎င်းတို့ကို ရွေးချယ်ရာမှာ အသုံးပြုတဲ့ တိကျတဲ့ စည်းမျဉ်းတွေက tokenization algorithm ပေါ် မူတည်ပါတယ်။ ဒါဟာ deterministic ဖြစ်ပါတယ်၊ ဆိုလိုတာက တူညီတဲ့ algorithm ကို အသုံးပြုပြီး တူညီတဲ့ corpus ပေါ်မှာ train လုပ်တဲ့အခါ အမြဲတမ်း တူညီတဲ့ ရလဒ်တွေ ရရှိပါလိမ့်မယ်။
+
+## Corpus တစ်ခု စုဆောင်းခြင်း[[assembling-a-corpus]]
+
+🤗 Transformers မှာ `AutoTokenizer.train_new_from_iterator()` ဆိုတဲ့ API တစ်ခု ရှိပါတယ်။ အဲဒါကို အသုံးပြုပြီး လက်ရှိ tokenizer တစ်ခုနဲ့ အတူတူ features တွေရှိတဲ့ tokenizer အသစ်တစ်ခုကို train လုပ်နိုင်ပါတယ်။ ဒါကို လက်တွေ့မြင်ရဖို့အတွက်၊ GPT-2 ကို အစကနေ train လုပ်ချင်တယ်၊ ဒါပေမယ့် English မဟုတ်ဘဲ အခြားဘာသာစကားတစ်ခုနဲ့ train လုပ်မယ်လို့ ဆိုကြပါစို့။ ကျွန်တော်တို့ရဲ့ ပထမဆုံးလုပ်ငန်းကတော့ အဲဒီဘာသာစကားနဲ့ data များစွာကို training corpus တစ်ခုထဲမှာ စုဆောင်းဖို့ပါပဲ။ လူတိုင်းနားလည်နိုင်တဲ့ ဥပမာတွေ ပေးနိုင်ဖို့၊ ဒီနေရာမှာ Russian ဒါမှမဟုတ် Chinese လို ဘာသာစကားတစ်ခုကို အသုံးပြုမှာ မဟုတ်ဘဲ၊ သီးခြား English language တစ်ခုဖြစ်တဲ့ Python code ကို အသုံးပြုပါမယ်။
+
+[🤗 Datasets](https://github.com/huggingface/datasets) library က Python source code corpus တစ်ခုကို စုဆောင်းရာမှာ ကျွန်တော်တို့ကို ကူညီပေးနိုင်ပါတယ်။ [CodeSearchNet](https://huggingface.co/datasets/code_search_net) dataset ကို download လုပ်ပြီး cache လုပ်ဖို့အတွက် ပုံမှန် `load_dataset()` function ကို ကျွန်တော်တို့ အသုံးပြုပါမယ်။ ဒီ dataset ကို [CodeSearchNet challenge](https://wandb.ai/github/CodeSearchNet/benchmark) အတွက် ဖန်တီးခဲ့တာဖြစ်ပြီး GitHub ပေါ်က open source libraries တွေက functions သန်းပေါင်းများစွာကို programming languages အမျိုးမျိုးနဲ့ ပါဝင်ပါတယ်။ ဒီနေရာမှာ၊ ဒီ dataset ရဲ့ Python အပိုင်းကို ကျွန်တော်တို့ load လုပ်ပါမယ်။
+
+```py
+from datasets import load_dataset
+
+# ဒါကို load လုပ်ဖို့ အချိန်အနည်းငယ် ကြာနိုင်ပါတယ်၊ ဒါကြောင့် ကော်ဖီ ဒါမှမဟုတ် လက်ဖက်ရည် သောက်ရင်း စောင့်ဆိုင်းပါ။
+raw_datasets = load_dataset("code_search_net", "python")
+```
+
+ကျွန်တော်တို့ ရရှိနိုင်တဲ့ columns တွေကို ကြည့်ရှုဖို့ training split ကို ကြည့်နိုင်ပါတယ်-
+
+```py
+raw_datasets["train"]
+```
+
+```python out
+Dataset({
+    features: ['repository_name', 'func_path_in_repository', 'func_name', 'whole_func_string', 'language',
+      'func_code_string', 'func_code_tokens', 'func_documentation_string', 'func_documentation_tokens', 'split_name',
+      'func_code_url'
+    ],
+    num_rows: 412178
+})
+```
+
+dataset က docstrings တွေကို code ကနေ ခွဲထုတ်ထားပြီး နှစ်ခုလုံးရဲ့ tokenization ကို အကြံပြုထားတာကို ကျွန်တော်တို့ မြင်နိုင်ပါတယ်။ ဒီနေရာမှာ၊ ကျွန်တော်တို့ `whole_func_string` column ကိုပဲ tokenizer ကို train လုပ်ဖို့ အသုံးပြုပါမယ်။ ဒီ functions တွေထဲက ဥပမာတစ်ခုကို training split ထဲကနေ indexing လုပ်ခြင်းဖြင့် ကြည့်နိုင်ပါတယ်။
+
+```py
+print(raw_datasets["train"][123456]["whole_func_string"])
+```
+
+ဒါက အောက်ပါတို့ကို print လုပ်ပါလိမ့်မယ်။
+
+```out
+def handle_simple_responses(
+      self, timeout_ms=None, info_cb=DEFAULT_MESSAGE_CALLBACK):
+    """Accepts normal responses from the device.
+
+    Args:
+      timeout_ms: Timeout in milliseconds to wait for each response.
+      info_cb: Optional callback for text sent from the bootloader.
+
+    Returns:
+      OKAY packet's message.
+    """
+    return self._accept_responses('OKAY', info_cb, timeout_ms=timeout_ms)
+```
+
+ကျွန်တော်တို့ ပထမဆုံးလုပ်ရမှာက dataset ကို texts တွေရဲ့ lists တွေရဲ့ _iterator_ တစ်ခုအဖြစ် ပြောင်းလဲဖို့ပါ — ဥပမာ၊ texts တွေရဲ့ list of lists တစ်ခုပေါ့။ texts တွေရဲ့ lists တွေကို အသုံးပြုခြင်းက ကျွန်တော်တို့ရဲ့ tokenizer ကို ပိုမြန်စေမှာပါ (texts တွေကို တစ်ခုချင်းစီ လုပ်ဆောင်မယ့်အစား batches အလိုက် train လုပ်တာ)၊ ပြီးတော့ အရာအားလုံးကို memory ထဲမှာ တစ်ပြိုင်နက်တည်း မထားချင်ဘူးဆိုရင် iterator ဖြစ်သင့်ပါတယ်။ သင့် corpus က ကြီးမားတယ်ဆိုရင်၊ 🤗 Datasets က အရာအားလုံးကို RAM ထဲကို load မလုပ်ဘဲ dataset ရဲ့ elements တွေကို disk ပေါ်မှာ သိမ်းဆည်းထားတယ်ဆိုတဲ့ အချက်ကို သင်အကျိုးယူချင်ပါလိမ့်မယ်။
+
+အောက်ပါအတိုင်းလုပ်ခြင်းက texts ၁,၀၀၀ စီ ပါဝင်တဲ့ list of lists တစ်ခုကို ဖန်တီးမှာဖြစ်ပေမယ့်၊ အရာအားလုံးကို memory ထဲကို load လုပ်ပါလိမ့်မယ်-
+
+```py
+# သင့် dataset က သေးငယ်ရင်သာ အောက်ပါ line ကို uncomment လုပ်ပါ။
+# training_corpus = [raw_datasets["train"][i: i + 1000]["whole_func_string"] for i in range(0, len(raw_datasets["train"]), 1000)]
+```
+
+Python generator ကို အသုံးပြုခြင်းဖြင့်၊ တကယ်လိုအပ်တဲ့အထိ Python က ဘာကိုမှ memory ထဲကို load လုပ်တာကို ရှောင်ရှားနိုင်ပါတယ်။ ဒီလို generator တစ်ခု ဖန်တီးဖို့အတွက်၊ သင်ဟာ brackets တွေကို parentheses နဲ့ အစားထိုးဖို့ပဲ လိုပါတယ်။
+
+```py
+training_corpus = (
+    raw_datasets["train"][i : i + 1000]["whole_func_string"]
+    for i in range(0, len(raw_datasets["train"]), 1000)
+)
+```
+
+ဒီ code လိုင်းက dataset ရဲ့ elements တွေကို fetch လုပ်တာ မဟုတ်ပါဘူး၊ ဒါက Python `for` loop ထဲမှာ အသုံးပြုနိုင်တဲ့ object တစ်ခုကိုပဲ ဖန်တီးတာပါ။ texts တွေကို သင်လိုအပ်တဲ့အခါ (ဆိုလိုတာက၊ သင်လိုအပ်တဲ့ `for` loop ရဲ့ အဆင့်မှာ) load လုပ်ပါလိမ့်မယ်၊ ပြီးတော့ texts ၁,၀၀၀ ကိုပဲ တစ်ကြိမ်တည်း load လုပ်ပါလိမ့်မယ်။ ဒီနည်းနဲ့ သင်ဟာ ကြီးမားတဲ့ dataset ကို လုပ်ဆောင်နေရင်တောင် သင့် memory အားလုံးကို ကုန်ခမ်းစေမှာ မဟုတ်ပါဘူး။
+
+generator object ရဲ့ ပြဿနာကတော့ အဲဒါကို တစ်ကြိမ်ပဲ အသုံးပြုနိုင်တာပါပဲ။ ဒါကြောင့်၊ ဒါက ကျွန်တော်တို့ကို ပထမဆုံး ဂဏန်း ၁၀ လုံးရဲ့ list ကို နှစ်ကြိမ်ပေးမယ့်အစား...
+
+```py
+gen = (i for i in range(10))
+print(list(gen))
+print(list(gen))
+```
+
+ကျွန်တော်တို့ တစ်ကြိမ်ရရှိပြီးနောက် ဗလာ list တစ်ခုကို ရရှိပါတယ်။
+
+```python out
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+[]
+```
+
+ဒါကြောင့် generator တစ်ခုကို ပြန်ပေးတဲ့ function တစ်ခုကို ကျွန်တော်တို့ သတ်မှတ်တာပါ။
+
+```py
+def get_training_corpus():
+    return (
+        raw_datasets["train"][i : i + 1000]["whole_func_string"]
+        for i in range(0, len(raw_datasets["train"]), 1000)
+    )
+
+
+training_corpus = get_training_corpus()
+```
+
+`yield` statement ကို အသုံးပြုပြီး `for` loop ထဲမှာလည်း သင့် generator ကို သတ်မှတ်နိုင်ပါတယ်။ 
+
+```py
+def get_training_corpus():
+    dataset = raw_datasets["train"]
+    for start_idx in range(0, len(dataset), 1000):
+        samples = dataset[start_idx : start_idx + 1000]
+        yield samples["whole_func_string"]
+```
+
+ဒါက အရင်ကနဲ့ အတိအကျတူညီတဲ့ generator ကို ထုတ်လုပ်ပေးမှာဖြစ်ပေမယ့်၊ list comprehension မှာ လုပ်ဆောင်နိုင်တာထက် ပိုရှုပ်ထွေးတဲ့ logic ကို အသုံးပြုခွင့်ပေးပါတယ်။
+
+## Tokenizer အသစ်တစ်ခုကို လေ့ကျင့်ခြင်း[[training-a-new-tokenizer]]
+
+အခု ကျွန်တော်တို့ texts တွေရဲ့ batches တွေရဲ့ iterator ပုံစံနဲ့ corpus ရရှိပြီဆိုတော့၊ tokenizer အသစ်တစ်ခုကို train လုပ်ဖို့ အဆင်သင့်ပါပဲ။ ဒါကိုလုပ်ဖို့၊ ကျွန်တော်တို့ model နဲ့ တွဲဖက်ချင်တဲ့ tokenizer (ဒီနေရာမှာ GPT-2) ကို အရင် load လုပ်ဖို့ လိုအပ်ပါတယ်။
+
+```py
+from transformers import AutoTokenizer
+
+old_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+ကျွန်တော်တို့ tokenizer အသစ်တစ်ခုကို train လုပ်တော့မှာ ဖြစ်ပေမယ့်၊ လုံးဝအစကနေ မစတင်မိအောင် ဒီလိုလုပ်တာက ကောင်းပါတယ်။ ဒီနည်းနဲ့ tokenization algorithm ဒါမှမဟုတ် ကျွန်တော်တို့ အသုံးပြုချင်တဲ့ special tokens တွေအကြောင်း ဘာမှ သတ်မှတ်ဖို့ မလိုပါဘူး။ ကျွန်တော်တို့ရဲ့ tokenizer အသစ်က GPT-2 နဲ့ အတိအကျ တူညီမှာဖြစ်ပြီး၊ ပြောင်းလဲမယ့် တစ်ခုတည်းသောအရာက vocabulary ဖြစ်ပြီး၊ ဒါကို ကျွန်တော်တို့ရဲ့ corpus ပေါ်မှာ train လုပ်ခြင်းဖြင့် သတ်မှတ်ပါလိမ့်မယ်။
+
+ပထမဆုံး ဒီ tokenizer က ဥပမာ function တစ်ခုကို ဘယ်လိုဆက်ဆံမလဲဆိုတာ ကြည့်ရအောင်...
+
+```py
+example = '''def add_numbers(a, b):
+    """Add the two numbers `a` and `b`."""
+    return a + b'''
+
+tokens = old_tokenizer.tokenize(example)
+tokens
+```
+
+```python out
+['def', 'Ġadd', '_', 'n', 'umbers', '(', 'a', ',', 'Ġb', '):', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġ"""', 'Add', 'Ġthe', 'Ġtwo',
+ 'Ġnumbers', 'Ġ`', 'a', '`', 'Ġand', 'Ġ`', 'b', '`', '."', '""', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġreturn', 'Ġa', 'Ġ+', 'Ġb']
+```
+
+ဒီ tokenizer မှာ `Ġ` နဲ့ `Ċ` လိုမျိုး special symbols အနည်းငယ် ရှိပြီး၊ ၎င်းတို့က spaces တွေနဲ့ newlines တွေကို အသီးသီး ဖော်ပြပါတယ်။ ကျွန်တော်တို့ မြင်ရတဲ့အတိုင်း၊ ဒါက သိပ်မထိရောက်ပါဘူး- tokenizer က space တစ်ခုစီအတွက် individual tokens တွေကို ပြန်ပေးတာ၊ indentation levels တွေကို အုပ်စုဖွဲ့နိုင်တဲ့အခါ (လေးခု ဒါမှမဟုတ် ရှစ်ခု စတာတွေရဲ့ sets တွေက code ထဲမှာ အလွန် common ဖြစ်မှာမို့)။ ဒါ့အပြင် `_` character ပါဝင်တဲ့ စကားလုံးတွေကို မတွေ့ဖူးတာကြောင့် function name ကို နည်းနည်း ထူးဆန်းစွာ ပိုင်းဖြတ်ခဲ့ပါတယ်။
+
+tokenizer အသစ်တစ်ခုကို train လုပ်ပြီး အဲဒီပြဿနာတွေကို ဖြေရှင်းနိုင်မလားဆိုတာ ကြည့်ရအောင်။ ဒီအတွက်၊ `train_new_from_iterator()` method ကို ကျွန်တော်တို့ အသုံးပြုပါမယ်။
+
+```py
+tokenizer = old_tokenizer.train_new_from_iterator(training_corpus, 52000)
+```
+
+သင့် corpus က အလွန်ကြီးမားမယ်ဆိုရင် ဒီ command က အချိန်အနည်းငယ် ကြာနိုင်ပါတယ်၊ ဒါပေမယ့် texts 1.6 GB ပါဝင်တဲ့ ဒီ dataset အတွက်ကတော့ အလွန်မြန်ပါတယ် (12 cores ရှိတဲ့ AMD Ryzen 9 3900X CPU မှာ ၁ မိနစ် ၁၆ စက္ကန့်)။
+
+`AutoTokenizer.train_new_from_iterator()` က သင်အသုံးပြုနေတဲ့ tokenizer က "fast" tokenizer ဖြစ်မှသာ အလုပ်လုပ်တယ်ဆိုတာ မှတ်သားပါ။ နောက်အပိုင်းမှာ သင်တွေ့ရမှာက၊ 🤗 Transformers library မှာ tokenizer အမျိုးအစား နှစ်မျိုး ပါဝင်ပါတယ်- အချို့က Python သီးသန့်နဲ့ ရေးထားတာဖြစ်ပြီး၊ အချို့ (fast ones တွေ) ကတော့ [Rust](https://www.rust-lang.org) programming language နဲ့ ရေးသားထားတဲ့ 🤗 Tokenizers library နဲ့ ထောက်ပံ့ထားတာပါ။ Python က data science နဲ့ deep learning applications တွေအတွက် အများဆုံးအသုံးပြုတဲ့ ဘာသာစကားဖြစ်ပေမယ့်၊ ဘာမဆို မြန်ဆန်စေဖို့ parallelized လုပ်ဖို့ လိုအပ်တဲ့အခါ အခြားဘာသာစကားနဲ့ ရေးရပါတယ်။ ဥပမာ၊ model computation ရဲ့ အဓိကဖြစ်တဲ့ matrix multiplications တွေကို CUDA (GPUs အတွက် optimized C library) နဲ့ ရေးထားပါတယ်။
+
+pure Python နဲ့ tokenizer အသစ်တစ်ခုကို train လုပ်တာက အလွန်နှေးကွေးပါလိမ့်မယ်၊ ဒါကြောင့် ကျွန်တော်တို့ 🤗 Tokenizers library ကို ဖန်တီးခဲ့တာပါ။ သင့် model ကို GPU ပေါ်က inputs batch တစ်ခုပေါ်မှာ execute လုပ်နိုင်ဖို့ CUDA language ကို သင်ယူဖို့ မလိုအပ်ခဲ့သလိုပဲ၊ fast tokenizer ကို အသုံးပြုဖို့ Rust ကို သင်ယူဖို့ မလိုအပ်ပါဘူး။ 🤗 Tokenizers library က Python bindings တွေကို methods များစွာအတွက် ပံ့ပိုးပေးပြီး၊ အတွင်းပိုင်းမှာ Rust code အချို့ကို ခေါ်ဆိုပါတယ်။ ဥပမာ၊ သင့် tokenizer အသစ်ကို train လုပ်ခြင်းကို parallelize လုပ်ဖို့ ဒါမှမဟုတ် [Chapter 3](/course/chapter3) မှာ ကျွန်တော်တို့ တွေ့ခဲ့ရတဲ့အတိုင်း inputs batch တစ်ခုရဲ့ tokenization ကို parallelize လုပ်ဖို့ပေါ့။
+
+Transformer models အများစုမှာ fast tokenizer တစ်ခု ရရှိနိုင်ပါတယ် (ဒီနေရာမှာ [here](https://huggingface.co/transformers/#supported-frameworks) စစ်ဆေးနိုင်တဲ့ ခြွင်းချက်အချို့တော့ ရှိပါတယ်)၊ ပြီးတော့ `AutoTokenizer` API က ရရှိနိုင်တယ်ဆိုရင် သင့်အတွက် fast tokenizer ကို အမြဲတမ်း ရွေးချယ်ပေးပါတယ်။ နောက်အပိုင်းမှာ fast tokenizers တွေမှာရှိတဲ့ အခြား special features အချို့ကို ကျွန်တော်တို့ ကြည့်ရှုသွားမှာပါ။ ဒါတွေက token classification နဲ့ question answering လို tasks တွေအတွက် တကယ်ကို အသုံးဝင်ပါလိမ့်မယ်။ ဒါပေမယ့် အဲဒါတွေထဲ မဝင်ခင်၊ ကျွန်တော်တို့ရဲ့ tokenizer အသစ်ကို ယခင်ဥပမာပေါ်မှာ စမ်းကြည့်ရအောင်။
+
+```py
+tokens = tokenizer.tokenize(example)
+tokens
+```
+
+```python out
+['def', 'Ġadd', '_', 'numbers', '(', 'a', ',', 'Ġb', '):', 'ĊĠĠĠ', 'Ġ"""', 'Add', 'Ġthe', 'Ġtwo', 'Ġnumbers', 'Ġ`',
+ 'a', '`', 'Ġand', 'Ġ`', 'b', '`."""', 'ĊĠĠĠ', 'Ġreturn', 'Ġa', 'Ġ+', 'Ġb']
+```
+
+ဒီနေရာမှာ spaces နဲ့ newlines တွေကို ဖော်ပြတဲ့ `Ġ` နဲ့ `Ċ` special symbols တွေကို ထပ်တွေ့ရပါတယ်၊ ဒါပေမယ့် ကျွန်တော်တို့ရဲ့ tokenizer က Python functions corpus နဲ့ အလွန်သီးသန့်ဖြစ်တဲ့ tokens အချို့ကို သင်ယူခဲ့တာကိုလည်း မြင်တွေ့ရပါတယ်- ဥပမာ၊ indentation ကို ကိုယ်စားပြုတဲ့ `ĊĠĠĠ` token တစ်ခုနဲ့ docstring ကို စတင်တဲ့ quotes သုံးခုကို ကိုယ်စားပြုတဲ့ `Ġ"""` token တစ်ခု ရှိပါတယ်။ tokenizer က `_` ပေါ်မှာ function name ကို မှန်ကန်စွာ ပိုင်းဖြတ်ခဲ့ပါတယ်။ ဒါက အတော်လေး ကျစ်လျစ်တဲ့ ကိုယ်စားပြုမှုတစ်ခုပါ၊ နှိုင်းယှဉ်ကြည့်မယ်ဆိုရင်၊ တူညီတဲ့ ဥပမာပေါ်မှာ plain English tokenizer ကို အသုံးပြုခြင်းက ပိုရှည်တဲ့ sentence တစ်ခုကို ပေးပါလိမ့်မယ်။
+
+```py
+print(len(tokens))
+print(len(old_tokenizer.tokenize(example)))
+```
+
+```python out
+27
+36
+```
+
+နောက်ထပ်ဥပမာတစ်ခု ကြည့်ရအောင်...
+
+```python
+example = """class LinearLayer():
+    def __init__(self, input_size, output_size):
+        self.weight = torch.randn(input_size, output_size)
+        self.bias = torch.zeros(output_size)
+
+    def __call__(self, x):
+        return x @ self.weights + self.bias
+    """
+tokenizer.tokenize(example)
+```
+
+```python out
+['class', 'ĠLinear', 'Layer', '():', 'ĊĠĠĠ', 'Ġdef', 'Ġ__', 'init', '__(', 'self', ',', 'Ġinput', '_', 'size', ',',
+ 'Ġoutput', '_', 'size', '):', 'ĊĠĠĠĠĠĠĠ', 'Ġself', '.', 'weight', 'Ġ=', 'Ġtorch', '.', 'randn', '(', 'input', '_',
+ 'size', ',', 'Ġoutput', '_', 'size', ')', 'ĊĠĠĠĠĠĠĠ', 'Ġself', '.', 'bias', 'Ġ=', 'Ġtorch', '.', 'zeros', '(',
+ 'output', '_', 'size', ')', 'ĊĊĠĠĠ', 'Ġdef', 'Ġ__', 'call', '__(', 'self', ',', 'Ġx', '):', 'ĊĠĠĠĠĠĠĠ',
+ 'Ġreturn', 'Ġx', 'Ġ@', 'Ġself', '.', 'weights', 'Ġ+', 'Ġself', '.', 'bias', 'ĊĠĠĠĠ']
+```
+
+indentation ကို ကိုက်ညီတဲ့ token အပြင်၊ ဒီနေရာမှာ double indentation အတွက် token တစ်ခုကိုလည်း ကျွန်တော်တို့ မြင်နိုင်ပါတယ်- `ĊĠĠĠĠĠĠĠ`။ `class`, `init`, `call`, `self`, နဲ့ `return` လို special Python words တွေကို token တစ်ခုစီအဖြစ် tokenize လုပ်ထားပြီး၊ `_` နဲ့ `.` ပေါ်မှာ ပိုင်းဖြတ်တာအပြင် tokenizer က camel-cased names တွေကိုတောင် မှန်ကန်စွာ ပိုင်းဖြတ်တာကို ကျွန်တော်တို့ မြင်နိုင်ပါတယ်- `LinearLayer` ကို `["ĠLinear", "Layer"]` အဖြစ် tokenize လုပ်ထားပါတယ်။
+
+## Tokenizer ကို သိမ်းဆည်းခြင်း[[saving-the-tokenizer]]
+
+နောက်ပိုင်းမှာ အသုံးပြုနိုင်ဖို့အတွက်၊ ကျွန်တော်တို့ရဲ့ tokenizer အသစ်ကို သိမ်းဆည်းဖို့ လိုအပ်ပါတယ်။ models တွေလိုပဲ၊ ဒါကို `save_pretrained()` method နဲ့ လုပ်ဆောင်ပါတယ်။
+
+```py
+tokenizer.save_pretrained("code-search-net-tokenizer")
+```
+
+ဒါက *code-search-net-tokenizer* လို့ခေါ်တဲ့ folder အသစ်တစ်ခုကို ဖန်တီးပါလိမ့်မယ်။ အဲဒီ folder ထဲမှာ tokenizer ကို ပြန်လည် load လုပ်ဖို့ လိုအပ်တဲ့ files အားလုံး ပါဝင်ပါလိမ့်မယ်။ ဒီ tokenizer ကို သင့်လုပ်ဖော်ကိုင်ဖက်တွေနဲ့ သူငယ်ချင်းတွေနဲ့ မျှဝေချင်တယ်ဆိုရင်၊ သင့် account ကို login ဝင်ပြီး Hub ကို upload လုပ်နိုင်ပါတယ်။ သင် notebook တစ်ခုမှာ အလုပ်လုပ်နေတယ်ဆိုရင်၊ ဒါကို ကူညီပေးမယ့် convenience function တစ်ခု ရှိပါတယ်။
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+ဒါက သင့် Hugging Face login credentials တွေကို ထည့်သွင်းနိုင်မယ့် widget တစ်ခုကို ပြသပါလိမ့်မယ်။ သင် notebook တစ်ခုမှာ အလုပ်လုပ်နေတာ မဟုတ်ဘူးဆိုရင်၊ သင့် terminal မှာ အောက်ပါ line ကို ရိုက်ထည့်လိုက်ပါ။
+
+```bash
+huggingface-cli login
+```
+
+သင် login ဝင်ပြီးတာနဲ့၊ အောက်ပါ command ကို execute လုပ်ခြင်းဖြင့် သင့် tokenizer ကို push လုပ်နိုင်ပါတယ်။
+
+```py
+tokenizer.push_to_hub("code-search-net-tokenizer")
+```
+
+ဒါက သင့် namespace ထဲမှာ `code-search-net-tokenizer` အမည်နဲ့ repository အသစ်တစ်ခုကို ဖန်တီးပါလိမ့်မယ်။ အဲဒီ repository ထဲမှာ tokenizer file ပါဝင်ပါလိမ့်မယ်။ အဲဒီနောက် `from_pretrained()` method နဲ့ ဘယ်နေရာကနေမဆို tokenizer ကို load လုပ်နိုင်ပါပြီ။
+
+```py
+# သင့်ကိုယ်ပိုင် tokenizer ကို အသုံးပြုဖို့ "huggingface-course" ကို သင့်ရဲ့ namespace အမှန်နဲ့ အစားထိုးပါ။
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+```
+
+အခုဆိုရင် သင်ဟာ language model တစ်ခုကို အစကနေ train လုပ်ဖို့နဲ့ သင့် task မှာ fine-tuning လုပ်ဖို့ အဆင်သင့်ဖြစ်ပါပြီ! ဒါတွေကို [Chapter 7](/course/chapter7) မှာ ကျွန်တော်တို့ လေ့လာရမှာဖြစ်ပေမယ့်၊ ပထမဆုံး၊ ဒီအခန်းရဲ့ ကျန်အပိုင်းတွေမှာ fast tokenizers တွေကို ပိုမိုနီးကပ်စွာ ကြည့်ရှုပြီး `train_new_from_iterator()` method ကို ခေါ်ဆိုတဲ့အခါ တကယ်ဘာတွေဖြစ်လာသလဲဆိုတာကို အသေးစိတ်လေ့လာသွားပါမယ်။
+
+## ဝေါဟာရ ရှင်းလင်းချက် (Glossary)
+
+*   **Language Model**: လူသားဘာသာစကား၏ ဖြန့်ဝေမှုကို နားလည်ရန် လေ့ကျင့်ထားသော AI မော်ဒယ်တစ်ခု။ ၎င်းသည် စာသားထုတ်လုပ်ခြင်း၊ ဘာသာပြန်ခြင်း စသည့်လုပ်ငန်းများတွင် အသုံးပြုနိုင်သည်။
+*   **Corpus**: စာသား (သို့မဟုတ် အခြားဒေတာ) အစုအဝေးကြီးတစ်ခု။
+*   **Train From Scratch**: Model (သို့မဟုတ် tokenizer) တစ်ခုကို မည်သည့် အစောပိုင်းလေ့ကျင့်မှုမျှ မရှိဘဲ လုံးဝအသစ်ကနေ စတင်တည်ဆောက်ခြင်းနှင့် လေ့ကျင့်ခြင်း။
+*   **Tokenizer**: စာသား (သို့မဟုတ် အခြားဒေတာ) ကို AI မော်ဒယ်များ စီမံဆောင်ရွက်နိုင်ရန် tokens တွေအဖြစ် ပိုင်းခြားပေးသည့် ကိရိယာ သို့မဟုတ် လုပ်ငန်းစဉ်။
+*   **Pretrained**: Model တစ်ခုကို အကြီးစားဒေတာများဖြင့် အစောပိုင်းကတည်းက လေ့ကျင့်ထားခြင်း။
+*   **Subword Tokenization Algorithm**: စကားလုံးများကို သေးငယ်သော subword units (ဥပမာ- word pieces, byte-pair encodings) များအဖြစ် ပိုင်းခြားသော tokenization နည်းလမ်းများ။
+*   **Training (Tokenizer)**: Tokenizer က corpus ကို လေ့လာပြီး မည်သည့် subwords များကို အသုံးပြုသင့်သည်ကို ဆုံးဖြတ်သည့် လုပ်ငန်းစဉ်။
+*   **Stochastic Gradient Descent (SGD)**: Machine learning မော်ဒယ်များကို လေ့ကျင့်ရာတွင် အသုံးပြုသော optimization algorithm တစ်ခု။
+*   **Loss**: Model ၏ ခန့်မှန်းချက်များနှင့် အမှန်တကယ် labels များကြား ကွာခြားမှုကို တိုင်းတာသော တန်ဖိုး။
+*   **Batch**: မတူညီသော input များစွာကို တစ်ပြိုင်နက်တည်း လုပ်ဆောင်နိုင်ရန် အုပ်စုဖွဲ့ခြင်း။
+*   **Randomized**: ကျပန်းသဘာဝရှိသော။
+*   **Seeds**: ကျပန်းနံပါတ်များ ထုတ်လုပ်ခြင်းကို ထိန်းချုပ်ရန် အသုံးပြုသော ကနဦးတန်ဖိုးများ။
+*   **Deterministic**: အမြဲတမ်း တူညီသော input များအတွက် တူညီသော output များကို ထုတ်ပေးသော လုပ်ငန်းစဉ်။
+*   **`AutoTokenizer.train_new_from_iterator()`**: 🤗 Transformers library မှ tokenizer အသစ်တစ်ခုကို iterator မှ data များဖြင့် train လုပ်ရန် အသုံးပြုသော method။
+*   **GPT-2**: Generative Pre-trained Transformer 2 ကို ရည်ညွှန်းပြီး OpenAI မှ ဖန်တီးထားသော language model တစ်မျိုး။
+*   **Training Corpus**: Model သို့မဟုတ် tokenizer ကို လေ့ကျင့်ရန်အတွက် အသုံးပြုသော စာသားအစုအဝေး။
+*   **Python Code**: Python programming language ဖြင့် ရေးသားထားသော code များ။
+*   **🤗 Datasets Library**: Hugging Face က ထုတ်လုပ်ထားတဲ့ library တစ်ခုဖြစ်ပြီး AI မော်ဒယ်တွေ လေ့ကျင့်ဖို့အတွက် ဒေတာအစုအဝေး (datasets) တွေကို လွယ်လွယ်ကူကူ ဝင်ရောက်ရယူ၊ စီမံခန့်ခွဲပြီး အသုံးပြုနိုင်စေပါတယ်။
+*   **`load_dataset()` Function**: Hugging Face Datasets library မှ dataset များကို download လုပ်ပြီး cache လုပ်ရန် အသုံးပြုသော function။
+*   **`CodeSearchNet` Dataset**: GitHub မှ open source libraries များမှ functions များစွာပါဝင်သော dataset။
+*   **CodeSearchNet Challenge**: Machine learning model များကို အသုံးပြု၍ code များကို ရှာဖွေခြင်းနှင့် နားလည်ခြင်းနှင့်ပတ်သက်သော စိန်ခေါ်မှု။
+*   **Open Source Libraries**: source code ကို လူအများကြည့်ရှု၊ အသုံးပြု၊ ပြင်ဆင်နိုင်သော software libraries များ။
+*   **GitHub**: Version control အတွက် Git ကို အသုံးပြုသည့် web-based platform တစ်ခုဖြစ်ပြီး code များနှင့် project များကို host လုပ်သည်။
+*   **`raw_datasets["train"]`**: `DatasetDict` object မှ training set ကို ဝင်ရောက်ကြည့်ရှုခြင်း။
+*   **`docstrings`**: Python code တွင် function, class, module စသည်တို့၏ ရည်ရွယ်ချက်ကို ဖော်ပြရန် အသုံးပြုသော မှတ်တမ်းစာသား။
+*   **`whole_func_string` Column**: dataset အတွင်းရှိ function တစ်ခုလုံး၏ code ကို စာသား string အဖြစ် သိမ်းဆည်းထားသော column။
+*   **Indexing**: dataset (သို့မဟုတ် list, dictionary) အတွင်းရှိ သီးခြား element တစ်ခုကို ၎င်း၏ index (သို့မဟုတ် key) ကို အသုံးပြု၍ ဝင်ရောက်ကြည့်ရှုခြင်း။
+*   **Iterator**: Python တွင် iteration (တစ်ခုပြီးတစ်ခု လှည့်ပတ်လုပ်ဆောင်ခြင်း) လုပ်နိုင်သော object တစ်ခု။
+*   **RAM (Random Access Memory)**: ကွန်ပျူတာ၏ ယာယီမှတ်ဉာဏ်သိုလှောင်ရာနေရာ။
+*   **Disk**: ကွန်ပျူတာ၏ hard drive သို့မဟုတ် solid-state drive (SSD) ကဲ့သို့သော အမြဲတမ်းသိုလှောင်ရာနေရာ။
+*   **Python Generator**: iteration လုပ်နိုင်သော object တစ်ခုဖြစ်ပြီး ၎င်းသည် အရာအားလုံးကို memory ထဲသို့ တစ်ပြိုင်နက်တည်း သိမ်းဆည်းမထားဘဲ လိုအပ်သလို တန်ဖိုးများကို ထုတ်ပေးသည်။
+*   **Brackets (`[]`)**: Python တွင် list များကို သတ်မှတ်ရန် အသုံးပြုသည်။
+*   **Parentheses (`()`)**: Python တွင် tuples များကို သတ်မှတ်ရန် သို့မဟုတ် generator expressions များကို ဖန်တီးရန် အသုံးပြုသည်။
+*   **`for` Loop**: Python တွင် collection တစ်ခု၏ elements များပေါ်တွင် iteration လုပ်ရန် အသုံးပြုသော loop။
+*   **List Comprehension**: Python တွင် lists များကို တိုတိုတုတ်တုတ် ဖန်တီးရန် နည်းလမ်း။
+*   **`yield` Statement**: Python generator function တစ်ခုမှ တန်ဖိုးတစ်ခုကို ပြန်ပေးပြီး function ၏ state ကို ထိန်းသိမ်းထားသည်။
+*   **`AutoTokenizer`**: Hugging Face Transformers library မှာ ပါဝင်တဲ့ class တစ်ခုဖြစ်ပြီး မော်ဒယ်အမည်ကို အသုံးပြုပြီး သက်ဆိုင်ရာ tokenizer ကို အလိုအလျောက် load လုပ်ပေးသည်။
+*   **Special Tokens**: Tokenizer သို့မဟုတ် model အတွက် သီးခြားအဓိပ္ပာယ်ရှိသော tokens များ (ဥပမာ- `[CLS]`, `[SEP]`, `[PAD]`)။
+*   **Vocabulary**: tokenizer သို့မဟုတ် model တစ်ခုက သိရှိနားလည်ပြီး ကိုင်တွယ်နိုင်သော ထူးခြားသည့် tokens များ စုစုပေါင်း။
+*   **`tokenize()` Method**: Tokenizer က စာသား string တစ်ခုကို tokens list တစ်ခုအဖြစ် ပြောင်းလဲပေးသော method။
+*   **`Ġ` Symbol**: GPT-2 tokenizer တွင် space ကို ကိုယ်စားပြုသော symbol။
+*   **`Ċ` Symbol**: GPT-2 tokenizer တွင် newline character ကို ကိုယ်စားပြုသော symbol။
+*   **Indentation**: code တွင် code blocks များကို ခွဲခြားရန် အသုံးပြုသော space သို့မဟုတ် tab။
+*   **Docstring**: Python code တွင် function, class, module စသည်တို့၏ ရည်ရွယ်ချက်ကို ဖော်ပြရန် အသုံးပြုသော မှတ်တမ်းစာသား။
+*   **Blazing Fast**: အလွန်လျင်မြန်စွာ လုပ်ဆောင်ခြင်း။
+*   **AMD Ryzen 9 3900X CPU**: AMD မှ ထုတ်လုပ်ထားသော desktop processor တစ်မျိုး။
+*   **Cores**: CPU အတွင်းရှိ သီးခြားစီ လုပ်ဆောင်နိုင်သော processing units များ။
+*   **Fast Tokenizer**: Rust ဘာသာစကားဖြင့် အကောင်အထည်ဖော်ထားသော tokenizers များဖြစ်ပြီး Python-based "slow" tokenizers များထက် အလွန်မြန်ဆန်သည်။
+*   **Rust Programming Language**: Memory safety, performance, နှင့် concurrency ကို အဓိကထားသော system programming language တစ်ခု။
+*   **Python Bindings**: Python code မှတဆင့် အခြားဘာသာစကား (ဥပမာ- Rust, C++) ဖြင့် ရေးသားထားသော library functions များကို ခေါ်ဆိုအသုံးပြုနိုင်သည့် နည်းလမ်း။
+*   **CUDA**: NVIDIA မှ ဖန်တီးထားသော parallel computing platform နှင့် API တစ်ခုဖြစ်ပြီး GPUs များပေါ်တွင် high-performance computing ကို လုပ်ဆောင်နိုင်စေသည်။
+*   **Optimized C Library**: C programming language ဖြင့် ရေးသားထားပြီး စွမ်းဆောင်ရည်ကို အကောင်းဆုံးဖြစ်အောင် ပြုလုပ်ထားသော library။
+*   **Parallelize**: အလုပ်တစ်ခုကို အစိတ်အပိုင်းများစွာအဖြစ် ပိုင်းခြားပြီး တစ်ချိန်တည်းမှာ လုပ်ဆောင်ခြင်း။
+*   **Batch of Inputs**: Model သို့မဟုတ် tokenizer သို့ တစ်ပြိုင်နက်တည်း ပေးပို့သော inputs အစုအဝေး။
+*   **GPU (Graphics Processing Unit)**: ဂရပ်ဖစ်လုပ်ဆောင်မှုအတွက် အထူးဒီဇိုင်းထုတ်ထားသော processor တစ်မျိုးဖြစ်သော်လည်း AI/ML လုပ်ငန်းများတွင် အရှိန်မြှင့်ရန် အသုံးများသည်။
+*   **Token Classification**: စာသား sequence တစ်ခုရှိ token တစ်ခုစီကို အမျိုးအစားခွဲခြားသတ်မှတ်ခြင်း။
+*   **Question Answering**: မေးခွန်းတစ်ခုကို စာသား document တစ်ခုမှ အဖြေရှာခြင်း။
+*   **`save_pretrained()` Method**: model သို့မဟုတ် tokenizer ၏ weights, configuration, vocabulary စသည်တို့ကို local disk တွင် သိမ်းဆည်းရန် အသုံးပြုသော method။
+*   **Repository (Repo)**: Git version control system ကို အသုံးပြု၍ project files တွေကို သိမ်းဆည်းထားသော နေရာ။
+*   **Namespace**: Hugging Face Hub တွင် သုံးစွဲသူအကောင့် သို့မဟုတ် အဖွဲ့အစည်းအမည်။
+*   **`from_pretrained()` Method**: local disk သို့မဟုတ် Hugging Face Hub ကနေ pretrained model သို့မဟုတ် tokenizer ကို load လုပ်ရန် အသုံးပြုသော method။
+*   **Camel-cased Names**: စကားလုံးများပေါင်းစပ်ရာတွင် ပထမစကားလုံးမှလွဲ၍ ကျန်စကားလုံးများ၏ ပထမစာလုံးကို အကြီးဖြင့်စရေးသော naming convention (ဥပမာ- `LinearLayer`)။
