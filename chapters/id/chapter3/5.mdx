@@ -1,0 +1,415 @@
+# Memahami Learning Curve[[understanding-learning-curves]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section7.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section7.ipynb"},
+]} />
+
+Sekarang Anda telah mempelajari cara melakukan fine-tuning menggunakan baik `Trainer` API maupun loop pelatihan kustom, penting untuk memahami cara menafsirkan hasilnya. **Learning curve** adalah alat visual yang sangat berharga untuk mengevaluasi performa model selama pelatihan dan mendeteksi masalah sejak dini.
+
+Di bagian ini, kita akan mempelajari cara membaca dan menafsirkan kurva akurasi dan loss, memahami bentuk-bentuk kurva yang umum, serta belajar menangani berbagai masalah yang muncul saat pelatihan.
+
+## Apa itu Learning Curve?[[what-are-learning-curves]]
+
+**Learning curve** adalah representasi visual dari metrik performa model selama pelatihan. Dua kurva paling penting yang perlu dipantau:
+
+- **Loss curve**: Menunjukkan perubahan error model selama langkah-langkah pelatihan atau per epoch.
+- **Accuracy curve**: Menunjukkan persentase prediksi benar selama pelatihan.
+
+Kurva ini membantu kita memahami apakah model sedang belajar dengan baik dan memberikan wawasan tentang perlu atau tidaknya penyesuaian strategi pelatihan. Dalam Transformers, metrik ini dihitung untuk setiap batch dan dapat divisualisasikan menggunakan alat seperti [Weights & Biases (W&B)](https://wandb.ai/).
+
+### Kurva Loss[[loss-curves]]
+
+Kurva loss menunjukkan bagaimana error model menurun dari waktu ke waktu. Dalam pelatihan yang sukses, kurva biasanya terlihat seperti ini:
+
+![Kurva Loss](https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter3/1.png)
+
+- **Loss awal tinggi**: Model belum dioptimalkan, jadi prediksi awal buruk.
+- **Loss menurun**: Seiring pelatihan, loss seharusnya menurun secara bertahap.
+- **Konvergen**: Akhirnya loss akan stabil di nilai rendah, menunjukkan model telah mempelajari pola data.
+
+Contoh penggunaan `Trainer` API untuk melacak loss dan visualisasi dengan W&B:
+
+```python
+from transformers import Trainer, TrainingArguments
+import wandb
+
+wandb.init(project="transformer-fine-tuning", name="bert-mrpc-analysis")
+
+training_args = TrainingArguments(
+    output_dir="./results",
+    eval_strategy="steps",
+    eval_steps=50,
+    save_steps=100,
+    logging_steps=10,
+    num_train_epochs=3,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    report_to="wandb",
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    processing_class=tokenizer,
+    compute_metrics=compute_metrics,
+)
+
+trainer.train()
+```
+
+### Kurva Akurasi[[accuracy-curves]]
+
+Kurva akurasi menunjukkan persentase prediksi benar dari waktu ke waktu.
+
+![Kurva Akurasi](https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter3/2.png)
+
+- **Mulai rendah**: Akurasi awal rendah karena model belum belajar.
+- **Meningkat**: Akurasi bertambah seiring model belajar pola dalam data.
+- **Plateau**: Akurasi naik dalam lonjakan, bukan garis mulus.
+
+<Tip>
+
+💡 **Kenapa Kurva Akurasi "Steppy"**: Berbeda dari loss yang kontinu, akurasi dihitung dari prediksi diskret. Peningkatan kecil pada kepercayaan model tidak akan mengubah akurasi sampai nilai prediksi melewati ambang klasifikasi.
+
+</Tip>
+
+### Konvergensi[[convergence]]
+
+Konvergensi terjadi saat performa model stabil dan kurva loss serta akurasi mendatar.
+
+![Konvergensi](https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter3/4.png)
+
+Setelah model konvergen, ia siap digunakan untuk membuat prediksi pada data baru.
+
+## Menafsirkan Pola Kurva[[interpreting-learning-curve-patterns]]
+
+Berikut bentuk-bentuk kurva umum dan artinya.
+
+### Kurva Sehat[[healthy-learning-curves]]
+
+Pelatihan yang berjalan baik biasanya menghasilkan kurva seperti berikut:
+
+![Kurva Sehat](https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter3/5.png)
+
+Mari kita lihat ilustrasi di atas. Gambar tersebut menampilkan kurva loss (di sebelah kiri) dan kurva akurasi yang sesuai (di sebelah kanan). Kedua kurva ini memiliki karakteristik yang berbeda.
+
+Kurva loss menunjukkan nilai loss model seiring waktu. Awalnya, nilai loss tinggi lalu secara bertahap menurun, yang menunjukkan bahwa model mengalami peningkatan. Penurunan nilai loss mengindikasikan bahwa model membuat prediksi yang lebih baik, karena loss merepresentasikan kesalahan antara output yang diprediksi dan output sebenarnya.
+
+Sekarang mari kita alihkan fokus ke kurva akurasi. Kurva ini merepresentasikan akurasi model seiring waktu. Kurva akurasi dimulai dari nilai yang rendah dan meningkat seiring pelatihan berlangsung. Akurasi mengukur proporsi instance yang diklasifikasikan dengan benar. Jadi, saat kurva akurasi naik, ini menandakan bahwa model membuat lebih banyak prediksi yang benar.
+
+Satu perbedaan mencolok antara kedua kurva adalah kelancaran dan keberadaan "dataran tinggi" (plateau) pada kurva akurasi. Sementara loss menurun secara halus, dataran tinggi pada kurva akurasi menunjukkan lonjakan diskrit dalam akurasi alih-alih peningkatan yang kontinu. Perilaku ini disebabkan oleh cara pengukuran akurasi. Loss bisa membaik jika output model semakin mendekati target, bahkan jika prediksi akhirnya masih salah. Namun, akurasi hanya meningkat ketika prediksi melampaui ambang batas dan menjadi benar.
+
+Sebagai contoh, dalam kasus klasifikasi biner yang membedakan kucing (0) dan anjing (1), jika model memprediksi 0,3 untuk gambar anjing (nilai sebenarnya 1), ini dibulatkan menjadi 0 dan merupakan klasifikasi yang salah. Jika pada langkah berikutnya model memprediksi 0,4, ini tetap salah. Nilai loss akan menurun karena 0,4 lebih dekat ke 1 dibandingkan 0,3, tetapi akurasi tetap tidak berubah, menciptakan dataran tinggi. Akurasi hanya akan naik ketika model memprediksi nilai lebih dari 0,5 yang dibulatkan menjadi 1.
+
+<Tip>
+
+**Karakteristik kurva yang sehat:**
+- **Penurunan loss yang halus**: Baik loss pelatihan maupun validasi menurun secara stabil
+- **Performa pelatihan/validasi yang serupa**: Perbedaan kecil antara metrik pelatihan dan validasi
+- **Konvergensi**: Kurva mulai mendatar, menandakan model telah mempelajari pola-pola
+
+</Tip>
+
+### Contoh Praktis[[practical-examples]]
+
+Mari kita bahas beberapa contoh praktis dari kurva pembelajaran. Pertama, kita akan menyoroti beberapa pendekatan untuk memantau kurva pembelajaran selama pelatihan. Di bawah ini, kita akan menguraikan berbagai pola yang dapat diamati dalam kurva pembelajaran.
+
+#### Selama Pelatihan[[during-training]]
+
+Selama proses pelatihan (setelah Anda menjalankan `trainer.train()`), Anda dapat memantau indikator-indikator utama berikut:
+
+1. **Konvergensi loss**: Apakah nilai loss masih menurun atau sudah mendatar?
+2. **Tanda-tanda overfitting**: Apakah loss validasi mulai meningkat sementara loss pelatihan menurun?
+3. **Learning rate**: Apakah kurvanya terlalu liar (learning rate terlalu tinggi) atau terlalu datar (learning rate terlalu rendah)?
+4. **Stabilitas**: Apakah ada lonjakan atau penurunan tiba-tiba yang menandakan adanya masalah?
+
+#### Setelah Pelatihan[[after-training]]
+
+Setelah proses pelatihan selesai, Anda dapat menganalisis keseluruhan kurva untuk memahami performa model.
+
+1. **Performa akhir**: Apakah model mencapai tingkat performa yang dapat diterima?
+2. **Efisiensi**: Apakah performa yang sama bisa dicapai dengan jumlah epoch yang lebih sedikit?
+3. **Generalisasi**: Seberapa dekat performa pelatihan dan validasi?
+4. **Tren**: Apakah pelatihan tambahan kemungkinan akan meningkatkan performa?
+
+<Tip>
+
+🔍 **Fitur Dashboard W&B**: Weights & Biases secara otomatis membuat plot interaktif dan menarik dari kurva pembelajaran Anda. Anda dapat:
+- Membandingkan beberapa percobaan secara berdampingan
+- Menambahkan metrik dan visualisasi kustom
+- Menyiapkan notifikasi untuk perilaku anomali
+- Membagikan hasil kepada tim Anda
+
+Pelajari lebih lanjut di [dokumentasi Weights & Biases](https://docs.wandb.ai/).
+</Tip>
+
+#### Overfitting[[overfitting]]
+
+Overfitting terjadi ketika model terlalu banyak mempelajari data pelatihan sehingga tidak mampu melakukan generalisasi ke data lain (yang direpresentasikan oleh set validasi).
+
+![Overfitting](https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter3/10.png)
+
+**Gejala:**
+
+- Loss pelatihan terus menurun sementara loss validasi meningkat atau mendatar
+- Terdapat celah besar antara akurasi pelatihan dan validasi
+- Akurasi pelatihan jauh lebih tinggi daripada akurasi validasi
+
+**Solusi untuk overfitting:**
+- **Regularisasi**: Tambahkan dropout, weight decay, atau teknik regularisasi lainnya
+- **Early stopping**: Hentikan pelatihan saat performa validasi tidak lagi membaik
+- **Augmentasi data**: Tingkatkan keragaman data pelatihan
+- **Kurangi kompleksitas model**: Gunakan model yang lebih kecil atau dengan parameter lebih sedikit
+
+Contoh berikut menggunakan *early stopping* untuk mencegah overfitting. Kita menetapkan `early_stopping_patience` ke 3, artinya jika loss validasi tidak membaik selama 3 epoch berturut-turut, pelatihan akan dihentikan.
+
+```python
+# Contoh deteksi overfitting dengan early stopping
+from transformers import EarlyStoppingCallback
+
+training_args = TrainingArguments(
+    output_dir="./results",
+    eval_strategy="steps",
+    eval_steps=100,
+    save_strategy="steps",
+    save_steps=100,
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    greater_is_better=False,
+    num_train_epochs=10,  # Disetel tinggi, tapi akan dihentikan lebih awal
+)
+
+# Tambahkan early stopping untuk mencegah overfitting
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    processing_class=tokenizer,
+    compute_metrics=compute_metrics,
+    callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+)
+```
+
+#### 2. Underfitting[[underfitting]]
+
+**Underfitting** terjadi ketika model terlalu sederhana untuk menangkap pola yang mendasari dalam data. Hal ini bisa terjadi karena beberapa alasan:
+
+- Model terlalu kecil atau tidak memiliki kapasitas untuk mempelajari pola
+- Learning rate terlalu rendah, menyebabkan proses belajar menjadi lambat
+- Dataset terlalu kecil atau tidak representatif terhadap masalah
+- Model tidak di-regularisasi dengan baik
+
+![Underfitting](https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter3/7.png)
+
+**Gejala:**
+- Baik loss pelatihan maupun validasi tetap tinggi
+- Performa model stagnan sejak awal pelatihan
+- Akurasi pelatihan lebih rendah dari yang diharapkan
+
+**Solusi untuk underfitting:**
+- **Tingkatkan kapasitas model**: Gunakan model yang lebih besar atau tambahkan parameter
+- **Latih lebih lama**: Tambah jumlah epoch
+- **Sesuaikan learning rate**: Coba berbagai nilai learning rate
+- **Periksa kualitas data**: Pastikan data telah diproses dengan baik
+
+Pada contoh di bawah, kita melatih lebih banyak epoch untuk melihat apakah model dapat mempelajari pola dalam data.
+
+```python
+from transformers import TrainingArguments
+
+training_args = TrainingArguments(
+    output_dir="./results",
+    -num_train_epochs=5,
+    +num_train_epochs=10,
+)
+```
+
+#### 3. Kurva Pembelajaran Tidak Stabil[[erratic-learning-curves]]
+
+Kurva pembelajaran yang tidak stabil terjadi ketika model tidak belajar secara efektif. Ini bisa disebabkan oleh beberapa faktor:
+
+- Learning rate terlalu tinggi, menyebabkan model melewati parameter optimal
+- Ukuran batch terlalu kecil, menyebabkan pembelajaran menjadi lambat
+- Model tidak di-regularisasi dengan baik, menyebabkan overfitting pada data pelatihan
+- Dataset tidak diproses dengan baik, menyebabkan model belajar dari noise
+
+![Erratic Learning Curves](https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter3/3.png)
+
+**Gejala:**
+- Fluktuasi yang sering pada nilai loss atau akurasi
+- Kurva menunjukkan variansi tinggi atau ketidakstabilan
+- Performa naik-turun tanpa tren yang jelas
+
+Baik kurva pelatihan maupun validasi menunjukkan perilaku yang tidak stabil.
+
+![Erratic Learning Curves](https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter3/9.png)
+
+**Solusi untuk kurva tidak stabil:**
+- **Turunkan learning rate**: Kurangi langkah pembelajaran untuk pelatihan yang lebih stabil
+- **Perbesar batch size**: Batch yang lebih besar memberikan gradien yang lebih stabil
+- **Gradient clipping**: Mencegah gradien meledak
+- **Preprocessing data yang lebih baik**: Pastikan kualitas data konsisten
+
+Pada contoh di bawah, kita menurunkan learning rate dan memperbesar batch size.
+
+```python
+from transformers import TrainingArguments
+
+training_args = TrainingArguments(
+    output_dir="./results",
+    -learning_rate=1e-5,
+    +learning_rate=1e-4,
+    -per_device_train_batch_size=16,
+    +per_device_train_batch_size=32,
+)
+```
+
+## Poin-Poin Penting[[key-takeaways]]
+
+Memahami kurva pembelajaran sangat penting untuk menjadi praktisi machine learning yang efektif. Alat visual ini memberikan umpan balik langsung tentang kemajuan pelatihan model dan membantu Anda membuat keputusan yang tepat kapan harus menghentikan pelatihan, menyesuaikan hyperparameter, atau mencoba pendekatan berbeda. Dengan latihan, Anda akan mengembangkan intuisi tentang seperti apa kurva pembelajaran yang sehat dan cara mengatasi masalah yang muncul.
+
+<Tip>
+
+💡 **Poin-Poin Penting:**
+- Kurva pembelajaran adalah alat penting untuk memahami kemajuan pelatihan model
+- Pantau baik kurva loss maupun akurasi, namun pahami bahwa keduanya memiliki karakteristik berbeda
+- Overfitting ditunjukkan oleh performa pelatihan/validasi yang menyimpang
+- Underfitting ditunjukkan oleh performa buruk di data pelatihan dan validasi
+- Alat seperti Weights & Biases mempermudah pelacakan dan analisis kurva pembelajaran
+- Early stopping dan regularisasi yang tepat bisa mengatasi sebagian besar masalah pelatihan umum
+
+🔬 **Langkah Selanjutnya**: Latih kemampuan Anda dalam menganalisis kurva pembelajaran lewat eksperimen fine-tuning Anda sendiri. Coba berbagai hyperparameter dan amati bagaimana bentuk kurva berubah. Pengalaman langsung adalah cara terbaik untuk mengembangkan intuisi dalam membaca kemajuan pelatihan.
+
+</Tip>
+
+## Kuis Bagian[[section-quiz]]
+
+Uji pemahaman Anda tentang kurva pembelajaran dan analisis pelatihan:
+
+### 1. Apa arti umum ketika loss pelatihan menurun tapi loss validasi mulai meningkat?
+
+<Question
+	choices={[
+		{
+			text: "Model belajar dengan baik dan akan terus meningkat.",
+			explain: "Jika *validation loss* meningkat sementara *training loss* menurun, ini menunjukkan masalah, bukan keberhasilan."
+		},
+		{
+			text: "Model mengalami overfitting terhadap data pelatihan.",
+			explain: "Benar! Ini adalah tanda klasik overfitting – model berkinerja baik pada data pelatihan tetapi buruk pada data validasi yang belum terlihat.",
+            correct: true
+		},
+		{
+			text: "Learning rate terlalu rendah.",
+			explain: "Learning rate yang rendah akan menyebabkan pembelajaran lambat, bukan perbedaan antara performa pelatihan dan validasi."
+		},
+        {
+			text: "Dataset terlalu kecil.",
+			explain: "Meskipun dataset kecil bisa menyebabkan overfitting, pola ini tetap merupakan definisi dari overfitting terlepas dari ukuran dataset."
+		}
+	]}
+/>
+
+### 2. Mengapa kurva akurasi sering menunjukkan pola bertingkat atau seperti dataran tinggi daripada peningkatan yang halus?
+
+<Question
+	choices={[
+		{
+			text: "Ada kesalahan dalam perhitungan akurasi.",
+			explain: "Pola bertingkat adalah hal yang normal dan diharapkan, bukan kesalahan."
+		},
+		{
+			text: "Akurasi adalah metrik diskrit yang hanya berubah saat prediksi melewati batas keputusan.",
+			explain: "Benar! Tidak seperti loss, akurasi bergantung pada keputusan prediksi diskrit, sehingga peningkatan kecil dalam kepercayaan mungkin tidak mengubah akurasi akhir sampai ambang batas terlewati.",
+            correct: true
+		},
+		{
+			text: "Model tidak belajar dengan efektif.",
+			explain: "Kurva akurasi bertingkat adalah hal yang normal bahkan saat model belajar dengan baik."
+		},
+        {
+			text: "Batch size terlalu kecil.",
+			explain: "Ukuran batch memengaruhi stabilitas pelatihan tetapi tidak menjelaskan sifat diskrit dari metrik akurasi."
+		}
+	]}
+/>
+
+### 3. Apa pendekatan terbaik ketika Anda mengamati kurva pembelajaran yang tidak stabil dan sangat berfluktuasi?
+
+<Question
+	choices={[
+		{
+			text: "Tingkatkan learning rate untuk mempercepat konvergensi.",
+			explain: "Meningkatkan learning rate kemungkinan akan memperburuk fluktuasi."
+		},
+		{
+			text: "Kurangi learning rate dan mungkin tingkatkan batch size.",
+			explain: "Benar! Learning rate yang lebih rendah dan batch size yang lebih besar biasanya menghasilkan pelatihan yang lebih stabil.",
+            correct: true
+		},
+		{
+			text: "Hentikan pelatihan segera karena model tidak akan membaik.",
+			explain: "Kurva yang tidak stabil sering kali bisa diperbaiki dengan penyesuaian hyperparameter."
+		},
+        {
+			text: "Ganti seluruh arsitektur model.",
+			explain: "Ini terlalu dini – kurva tidak stabil biasanya bisa diperbaiki dengan penyetelan hyperparameter."
+		}
+	]}
+/>
+
+### 4. Kapan Anda harus mempertimbangkan penggunaan *early stopping*?
+
+<Question
+	choices={[
+		{
+			text: "Selalu, karena mencegah segala bentuk overfitting.",
+			explain: "*Early stopping* berguna tetapi tidak selalu diperlukan, terutama jika metode regularisasi lain sudah efektif."
+		},
+		{
+			text: "Ketika performa validasi berhenti membaik atau mulai menurun.",
+			explain: "Benar! *Early stopping* membantu mencegah overfitting dengan menghentikan pelatihan saat model tidak lagi menunjukkan peningkatan generalisasi.",
+            correct: true
+		},
+		{
+			text: "Hanya saat *training loss* masih menurun dengan cepat.",
+			explain: "Jika *training loss* menurun dengan cepat dan performa validasi baik, Anda mungkin ingin melanjutkan pelatihan."
+		},
+        {
+			text: "Tidak pernah, karena mencegah model mencapai potensinya.",
+			explain: "*Early stopping* adalah teknik yang berharga dan sering meningkatkan performa akhir model dengan mencegah overfitting."
+		}
+	]}
+/>
+
+### 5. Apa yang menunjukkan bahwa model Anda mungkin mengalami *underfitting*?
+
+<Question
+	choices={[
+		{
+			text: "Akurasi pelatihan jauh lebih tinggi daripada akurasi validasi.",
+			explain: "Ini menggambarkan overfitting, bukan underfitting."
+		},
+		{
+			text: "Performa pelatihan dan validasi sama-sama buruk dan mendatar sejak awal.",
+			explain: "Benar! *Underfitting* terjadi saat model tidak cukup kompleks untuk mempelajari pola, menghasilkan performa buruk pada data pelatihan dan validasi.",
+            correct: true
+		},
+		{
+			text: "Kurva pembelajaran sangat halus tanpa fluktuasi.",
+			explain: "Kurva yang halus umumnya baik dan tidak menunjukkan underfitting."
+		},
+        {
+			text: "Loss validasi menurun lebih cepat dari loss pelatihan.",
+			explain: "Ini justru merupakan tanda positif, bukan masalah."
+		}
+	]}
+/>
