@@ -1,0 +1,937 @@
+# Unigram tokenization[[unigram-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section7.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section7.ipynb"},
+]} />
+
+
+جیسا کہ ہم نے پچھلے حصوں میں دیکھا، **tokenization** کئی مراحل پر مشتمل ہوتی ہے:
+
+- **Normalization** (متن کی صفائی جیسے کہ اضافی اسپیس یا ایکسنٹ ہٹانا، یونیکوڈ نارملائزیشن وغیرہ)  
+- **Pre-tokenization** (متن کو الفاظ میں تقسیم کرنا)  
+- **ماڈل پر چلانا** (پہلے سے تقسیم شدہ الفاظ کو **tokens** کی ترتیب میں تبدیل کرنا)  
+- **Post-processing** (اسپیشل **tokens** شامل کرنا، **attention mask** اور **token type IDs** بنانا)  
+
+یاد دہانی کے لیے، یہاں **tokenization pipeline** کا ایک اور جائزہ لیا جا سکتا ہے:  
+
+<div class="flex justify-center">  
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="Tokenization Pipeline">  
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="Tokenization Pipeline">  
+</div>  
+
+**🤗 Tokenizers** لائبریری ان تمام مراحل کے لیے مختلف اختیارات فراہم کرتی ہے، جنہیں آپ اپنی ضرورت کے مطابق ترتیب دے سکتے ہیں۔ اس سیکشن میں، ہم **نئے سرے سے** ایک **tokenizer** بنانا سیکھیں گے، بجائے اس کے کہ کسی پرانے **tokenizer** کو اپڈیٹ کریں، جیسا کہ ہم نے **[سیکشن 2](/course/chapter6/2)** میں کیا تھا۔ اس کے بعد، آپ کسی بھی قسم کا **tokenizer** بنانے کے قابل ہوں گے!
+
+<Youtube id="MR8tZm5ViWU"/>
+
+**🤗 Tokenizers** لائبریری بنیادی طور پر ایک مرکزی `Tokenizer` کلاس کے گرد بنی ہے، اور اس کے مختلف مراحل کو مختلف **ذیلی ماڈیولز** میں تقسیم کیا گیا ہے:  
+
+### **اہم ذیلی ماڈیولز**:
+- **`normalizers`** میں تمام ممکنہ اقسام کے `Normalizer` شامل ہیں جنہیں آپ استعمال کر سکتے ہیں ([مکمل فہرست](https://huggingface.co/docs/tokenizers/api/normalizers))۔  
+- **`pre_tokenizers`** میں تمام ممکنہ اقسام کے `PreTokenizer` شامل ہیں جنہیں آپ استعمال کر سکتے ہیں ([مکمل فہرست](https://huggingface.co/docs/tokenizers/api/pre-tokenizers))۔  
+- **`models`** میں مختلف اقسام کے `Model` شامل ہیں، جیسے کہ `BPE`, `WordPiece`, اور `Unigram` ([مکمل فہرست](https://huggingface.co/docs/tokenizers/api/models))۔  
+- **`trainers`** میں مختلف اقسام کے `Trainer` شامل ہیں جنہیں آپ اپنے کارپس پر ماڈل ٹرین کرنے کے لیے استعمال کر سکتے ہیں (ہر ماڈل کی قسم کے لیے ایک علیحدہ `Trainer` ہے؛ [مکمل فہرست](https://huggingface.co/docs/tokenizers/api/trainers))۔  
+- **`post_processors`** میں مختلف اقسام کے `PostProcessor` شامل ہیں جنہیں آپ استعمال کر سکتے ہیں ([مکمل فہرست](https://huggingface.co/docs/tokenizers/api/post-processors))۔  
+- **`decoders`** میں مختلف اقسام کے `Decoder` شامل ہیں جنہیں ٹوکنائزیشن کے نتائج کو ڈی کوڈ کرنے کے لیے استعمال کیا جاتا ہے ([مکمل فہرست](https://huggingface.co/docs/tokenizers/components#decoders))۔  
+
+تمام **اجزاء** کی مکمل فہرست [یہاں](https://huggingface.co/docs/tokenizers/components) دستیاب ہے۔  
+
+## **کارپس حاصل کرنا**  
+
+اپنا نیا **tokenizer** ٹرین کرنے کے لیے، ہم ایک **چھوٹے کارپس** کا استعمال کریں گے (تاکہ مثالیں تیزی سے چل سکیں)۔  
+کارپس حاصل کرنے کے اقدامات وہی ہیں جو ہم نے **[اس باب کے آغاز میں](/course/chapter6/2)** کیے تھے، لیکن اس بار ہم **[WikiText-2](https://huggingface.co/datasets/wikitext)** ڈیٹاسیٹ استعمال کریں گے۔
+
+
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("wikitext", name="wikitext-2-raw-v1", split="train")
+
+
+def get_training_corpus():
+    for i in range(0, len(dataset), 1000):
+        yield dataset[i : i + 1000]["text"]
+```
+
+The function `get_training_corpus()` ایک جنریٹر ہے جو 1,000 متن کے بیچز فراہم کرے گا، جنہیں ہم tokenizer کی تربیت کے لیے استعمال کریں گے۔
+
+🤗 Tokenizers کو text files پر بھی براہ راست تربیت دی جا سکتی ہے۔ یہاں یہ دکھایا گیا ہے کہ ہم WikiText-2 کے تمام texts/inputs کو ایک text file میں کیسے generate کر سکتے ہیں تاکہ اسے مقامی طور پر استعمال کیا جا سکے:
+
+```python
+with open("wikitext-2.txt", "w", encoding="utf-8") as f:
+    for i in range(len(dataset)):
+        f.write(dataset[i]["text"] + "\n")
+```
+Next we'll show you how to build your own BERT, GPT-2, and XLNet tokenizers, block by block. That will give us an example of each of the three main tokenization algorithms: WordPiece, BPE, and Unigram. Let's start with BERT!
+
+آگے ہم آپ کو بتائیں گے کہ کس طرح آپ اپنی مرضی کے مطابق BERT، GPT-2، اور XLNet ٹوکنائزرز کو بلاک بائی بلاک تیار کر سکتے ہیں۔ اس سے ہمیں تین اہم ٹوکنائزیشن الگورتھمز — WordPiece, BPE, اور Unigram — کی مثال ملے گی۔ آئیے BERT سے شروع کرتے ہیں!
+
+## Building a WordPiece tokenizer from scratch[[building-a-wordpiece-tokenizer-from-scratch]]
+
+🤗 Tokenizers لائبریری کے ساتھ ایک ٹوکنائزر بنانے کے لیے، ہم سب سے پہلے ایک `Tokenizer` object instantiate کرتے ہیں جس میں ایک `model` شامل ہوتا ہے، اور پھر اس کے `normalizer`, `pre_tokenizer`, `post_processor`, اور `decoder` attributes کو اپنی مرضی کے مطابق سیٹ کرتے ہیں۔
+
+اس مثال کے لیے، ہم WordPiece model کے ساتھ ایک `Tokenizer` بنائیں گے:
+
+```python
+from tokenizers import (
+    decoders,
+    models,
+    normalizers,
+    pre_tokenizers,
+    processors,
+    trainers,
+    Tokenizer,
+)
+
+tokenizer = Tokenizer(models.WordPiece(unk_token="[UNK]"))
+```
+
+We have to specify the `unk_token` so the model knows what to return when it encounters characters it hasn't seen before. Other arguments we can set here include the `vocab` of our model (we're going to train the model, so we don't need to set this) and `max_input_chars_per_word`, which specifies a maximum length for each word (words longer than the value passed will be split).
+
+ہمیں `unk_token` کو مخصوص کرنا ضروری ہے تاکہ ماڈل کو یہ معلوم ہو کہ جب اسے ایسے حروف ملیں جو پہلے کبھی نہیں دیکھے گئے، تو کیا واپس کرنا ہے۔ یہاں دیگر آرگومنٹس بھی سیٹ کیے جا سکتے ہیں جیسے کہ ہمارے ماڈل کا `vocab` (چونکہ ہم ماڈل کو تربیت دینے جا رہے ہیں، اس لیے اسے سیٹ کرنے کی ضرورت نہیں) اور `max_input_chars_per_word`، جو ہر لفظ کی زیادہ سے زیادہ لمبائی متعین کرتا ہے (اگر لفظ اس قدر سے زیادہ لمبا ہو تو اسے تقسیم کر دیا جائے گا)۔
+
+The first step of tokenization is normalization, so let's begin with that.
+
+ٹوکنائزیشن کا پہلا مرحلہ normalization ہے، تو آئیں اس سے شروع کرتے ہیں۔
+
+Since BERT is widely used, there is a `BertNormalizer` with the classic options we can set for BERT: `lowercase` and `strip_accents`, which are self-explanatory; `clean_text` to remove all control characters and replace repeating spaces with a single one; and `handle_chinese_chars`, which places spaces around Chinese characters. To replicate the `bert-base-uncased` tokenizer, we can just set this normalizer:
+
+چونکہ BERT وسیع پیمانے پر استعمال ہوتا ہے، اس لیے ایک `BertNormalizer` دستیاب ہے جس میں وہ کلاسیکی اختیارات شامل ہیں جو BERT کے لیے سیٹ کیے جا سکتے ہیں: `lowercase` اور `strip_accents` (جو بذات خود واضح ہیں)؛ `clean_text` جو تمام کنٹرول کریکٹرز کو ہٹا دیتا ہے اور بار بار آنے والی جگہوں کو ایک جگہ میں بدل دیتا ہے؛ اور `handle_chinese_chars`، جو چینی حروف کے اردگرد space لگا دیتا ہے۔ `bert-base-uncased` tokenizer کی نقل بنانے کے لیے ہم بس یہ normalizer سیٹ کر سکتے ہیں:
+
+```python
+tokenizer.normalizer = normalizers.BertNormalizer(lowercase=True)
+```
+
+Generally speaking, however, when building a new tokenizer you won't have access to such a handy normalizer already implemented in the 🤗 Tokenizers library -- so let's see how to create the BERT normalizer by hand. The library provides a `Lowercase` normalizer and a `StripAccents` normalizer, and you can compose several normalizers using a `Sequence`:
+
+عمومی طور پر، جب ہم ایک نیا tokenizer تیار کرتے ہیں تو آپ کو 🤗 Tokenizers لائبریری میں پہلے سے موجود اتنا مفید normalizer دستیاب نہیں ہوتا — تو آئیں دیکھتے ہیں کہ ہم BERT normalizer کو دستی طور پر کیسے بنا سکتے ہیں۔ لائبریری ایک `Lowercase` normalizer اور ایک `StripAccents` normalizer فراہم کرتی ہے، اور آپ `Sequence` کا استعمال کرتے ہوئے کئی normalizers کو یکجا کر سکتے ہیں:
+
+```python
+tokenizer.normalizer = normalizers.Sequence(
+    [normalizers.NFD(), normalizers.Lowercase(), normalizers.StripAccents()]
+)
+```
+
+We're also using an `NFD` Unicode normalizer, as otherwise the `StripAccents` normalizer won't properly recognize the accented characters and thus won't strip them out.
+
+ہم ایک `NFD` Unicode normalizer بھی استعمال کر رہے ہیں، کیونکہ ورنہ `StripAccents` normalizer accented حروف کو درست طور پر پہچان نہیں پائے گا اور انہیں ہٹا نہیں پائے گا۔
+
+As we've seen before, we can use the `normalize_str()` method of the `normalizer` to check out the effects it has on a given text:
+
+جیسا کہ پہلے دیکھا گیا، ہم `normalizer` کے `normalize_str()` method کا استعمال کر کے دیکھ سکتے ہیں کہ یہ کسی متن پر کیا اثر ڈال رہا ہے:
+
+```python
+print(tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+```
+
+```python
+hello how are u?
+```
+<Tip>
+
+**مزید آگے بڑھیں** اگر آپ پچھلے normalizers کے دونوں ورژنز کو ایسے string پر test کریں جس میں unicode character `u"\u0085"` شامل ہو، تو آپ یقینی طور پر دیکھیں گے کہ یہ دونوں normalizers عین مطابق نہیں ہیں۔  
+`normalizers.Sequence` والے ورژن کو زیادہ پیچیدہ کیے بغیر ہم نے Regex replacements شامل نہیں کیے جو `BertNormalizer` کو `clean_text=True` کے ساتھ درکار ہوتے ہیں — جو کہ ڈیفالٹ برتاؤ ہے۔ لیکن فکر نہ کریں: آپ دو `normalizers.Replace` کو normalizers sequence میں شامل کر کے بغیر `BertNormalizer` کے بالکل وہی normalization حاصل کر سکتے ہیں۔
+
+</Tip>
+
+Next is the pre-tokenization step. Again, there is a prebuilt `BertPreTokenizer` that we can use:
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+```
+
+یا ہم اسے zero سے بنا بھی سکتے ہیں:
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+```
+
+نوٹ کریں کہ `Whitespace` pre-tokenizer whitespace اور اُن تمام characters کو split کرتا ہے جو letters، digits، یا underscore نہیں ہیں، اس لیے یہ بنیادی طور پر whitespace اور punctuation دونوں پر تقسیم کرتا ہے:
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+اگر آپ صرف whitespace پر تقسیم کرنا چاہتے ہیں، تو آپ کو `WhitespaceSplit` pre-tokenizer استعمال کرنا چاہیے:
+
+```python
+pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[("Let's", (0, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre-tokenizer.', (14, 28))]
+```
+
+جیسے کہ normalizers کے ساتھ ہوتا ہے، آپ `Sequence` کا استعمال کرتے ہوئے متعدد pre-tokenizers کو ملا بھی سکتے ہیں:
+
+```python
+pre_tokenizer = pre_tokenizers.Sequence(
+    [pre_tokenizers.WhitespaceSplit(), pre_tokenizers.Punctuation()]
+)
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+ٹوکنائزیشن پائپ لائن کا اگلا مرحلہ یہ ہے کہ inputs کو model سے گزارا جائے۔ ہم نے پہلے ہی initialization میں اپنا model specify کر دیا ہے، مگر اب بھی ہمیں اسے تربیت دینے کی ضرورت ہے، جس کے لیے ایک `WordPieceTrainer` کی ضرورت ہوگی۔ 🤗 Tokenizers میں trainer instantiate کرتے وقت یاد رکھنا ہے کہ آپ کو تمام وہ special tokens فراہم کرنے ہوتے ہیں جن کا آپ استعمال کرنا چاہتے ہیں — ورنہ training corpus میں یہ شامل نہیں ہوتے:
+
+```python
+special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
+trainer = trainers.WordPieceTrainer(vocab_size=25000, special_tokens=special_tokens)
+```
+
+`vocab_size` اور `special_tokens` کے علاوہ، آپ `min_frequency` (جتنی بار کسی token کا ظاہر ہونا ضروری ہے کہ اسے vocabulary میں شامل کیا جائے) یا `continuing_subword_prefix` (اگر آپ `##` کے علاوہ کوئی اور استعمال کرنا چاہتے ہیں) سیٹ کر سکتے ہیں۔
+
+ہم اپنے پہلے سے تعریف شدہ iterator کا استعمال کرتے ہوئے model کو تربیت دینے کے لیے بس یہ کمانڈ چلائیں گے:
+
+```python
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+آپ text files کا استعمال بھی کر کے اپنے tokenizer کو تربیت دے سکتے ہیں، جو کچھ یوں نظر آئے گا (اس سے پہلے ہم model کو ایک خالی `WordPiece` کے ساتھ reinitialize کر دیں گے):
+
+```python
+tokenizer.model = models.WordPiece(unk_token="[UNK]")
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+دونوں صورتوں میں، آپ پھر `encode()` method کو استعمال کر کے کسی text پر tokenizer کا امتحان کر سکتے ہیں:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.']
+```
+
+حاصل شدہ `encoding` ایک `Encoding` object ہے، جس میں tokenizer کے تمام ضروری outputs موجود ہوتے ہیں جیسے: `ids`, `type_ids`, `tokens`, `offsets`, `attention_mask`, `special_tokens_mask`, اور `overflowing`.
+
+ٹوکنائزیشن پائپ لائن کا آخری مرحلہ post-processing ہے۔ ہمیں `[CLS]` token کو شروعات میں اور `[SEP]` token کو آخر میں (یا اگر جملوں کا جوڑا ہو تو ہر جملے کے بعد) شامل کرنا ہوتا ہے۔ اس کے لیے ہم `TemplateProcessor` کا استعمال کریں گے، مگر پہلے ہمیں vocabulary میں موجود `[CLS]` اور `[SEP]` tokens کی IDs معلوم کرنی ہوں گی:
+
+
+```python
+cls_token_id = tokenizer.token_to_id("[CLS]")
+sep_token_id = tokenizer.token_to_id("[SEP]")
+print(cls_token_id, sep_token_id)
+```
+
+```python out
+(2, 3)
+```
+
+To write the template for the `TemplateProcessor`, we have to specify how to treat a single sentence and a pair of sentences. For both, we write the special tokens we want to use; the first (or single) sentence is represented by `$A`, while the second sentence (if encoding a pair) is represented by `$B`. For each of these (special tokens and sentences), we also specify the corresponding token type ID after a colon.
+
+TemplateProcessor کے لیے template لکھنے کے لیے، ہمیں یہ بتانا ہوتا ہے کہ ایک واحد جملہ اور جملوں کے جوڑے کو کیسے handle کیا جائے۔ دونوں صورتوں میں، ہم وہ خاص tokens لکھتے ہیں جن کا استعمال کرنا چاہتے ہیں؛ ایک واحد (یا single) جملے کو `$A` سے ظاہر کیا جاتا ہے، جبکہ جملوں کے جوڑے میں دوسرے جملے کو `$B` سے ظاہر کیا جاتا ہے۔ ان کے لیے (خاص tokens اور جملے) ہم colon کے بعد متعلقہ token type ID بھی متعین کرتے ہیں۔
+
+The classic BERT template is thus defined as follows:
+
+روایتی BERT template کو درج ذیل طریقے سے define کیا جاتا ہے:
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single=f"[CLS]:0 $A:0 [SEP]:0",
+    pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
+    special_tokens=[("[CLS]", cls_token_id), ("[SEP]", sep_token_id)],
+)
+```
+
+نوٹ کریں کہ ہمیں **اسپیشل ٹوکنز** کے **IDs** بھی فراہم کرنے ہوں گے تاکہ **ٹوکینائزر** انہیں درست طریقے سے **ID** میں تبدیل کر سکے۔  
+
+جب ہم یہ شامل کر لیں گے، تو ہمارا پچھلا **مثال** درج ذیل نتیجہ دے گا:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.', '[SEP]']
+```
+
+اور جب ہم دو جملوں کے جوڑے پر آزماتے ہیں، تو ہمیں درست نتیجہ ملتا ہے:
+
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences.")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '...', '[SEP]', 'on', 'a', 'pair', 'of', 'sentences', '.', '[SEP]']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+```
+
+ہم نے تقریباً یہ ٹوکنائزر شروع سے بنا لیا ہے—آخری مرحلہ ایک ڈیکوڈر شامل کرنا ہے:
+
+```python
+tokenizer.decoder = decoders.WordPiece(prefix="##")
+```
+
+آئیے اسے اپنے پچھلے `encoding` پر آزماتے ہیں:
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+```python out
+"let's test this tokenizer... on a pair of sentences."
+```
+
+بہت خوب! ہم اپنے ٹوکنائزر کو ایک واحد JSON فائل میں اس طرح محفوظ کر سکتے ہیں:
+
+```python
+tokenizer.save("tokenizer.json")
+```
+
+پھر ہم اس فائل کو `Tokenizer` آبجیکٹ میں `from_file()` میتھڈ کے ذریعے دوبارہ لوڈ کر سکتے ہیں۔
+
+```python
+new_tokenizer = Tokenizer.from_file("tokenizer.json")
+```
+
+🤗 Transformers میں اس ٹوکنائزر کو استعمال کرنے کے لیے، ہمیں اسے `PreTrainedTokenizerFast` میں لپیٹنا ہوگا۔ ہم یا تو جنیرک کلاس استعمال کر سکتے ہیں یا، اگر ہمارا ٹوکنائزر کسی موجودہ ماڈل سے مطابقت رکھتا ہے، تو اس کلاس کو استعمال کر سکتے ہیں (یہاں، `BertTokenizerFast`)۔ اگر آپ یہ سبق کسی بالکل نئے ٹوکنائزر کے لیے لاگو کر رہے ہیں، تو آپ کو پہلا آپشن استعمال کرنا ہوگا۔  
+
+`PreTrainedTokenizerFast` میں ٹوکنائزر کو لپیٹنے کے لیے، ہم یا تو `tokenizer_object` کے طور پر اپنا بنایا ہوا ٹوکنائزر دے سکتے ہیں یا محفوظ کردہ ٹوکنائزر فائل کو `tokenizer_file` کے طور پر دے سکتے ہیں۔ اہم بات یہ ہے کہ ہمیں تمام خاص ٹوکنز (special tokens) کو دستی طور پر سیٹ کرنا ہوگا، کیونکہ یہ کلاس خود نہیں جان سکتی کہ ماسک ٹوکن، `[CLS]` ٹوکن، وغیرہ کون سے ہیں۔
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    # tokenizer_file="tokenizer.json", # You can load from the tokenizer file, alternatively
+    unk_token="[UNK]",
+    pad_token="[PAD]",
+    cls_token="[CLS]",
+    sep_token="[SEP]",
+    mask_token="[MASK]",
+)
+```
+
+اگر آپ کسی مخصوص ٹوکنائزر کلاس (جیسے `BertTokenizerFast`) استعمال کر رہے ہیں، تو آپ کو صرف وہ خاص ٹوکنز (special tokens) متعین کرنے کی ضرورت ہوگی جو ڈیفالٹ سے مختلف ہوں (یہاں، کوئی بھی نہیں):
+
+
+```python
+from transformers import BertTokenizerFast
+
+wrapped_tokenizer = BertTokenizerFast(tokenizer_object=tokenizer)
+```
+
+اب آپ اس ٹوکنائزر کو کسی بھی دوسرے 🤗 Transformers ٹوکنائزر کی طرح استعمال کر سکتے ہیں۔ آپ اسے `save_pretrained()` میتھڈ کے ذریعے محفوظ کر سکتے ہیں، یا `push_to_hub()` میتھڈ کے ذریعے ہب پر اپلوڈ کر سکتے ہیں۔  
+
+اب جب کہ ہم نے دیکھا کہ ورڈپیس (WordPiece) ٹوکنائزر کیسے بنایا جاتا ہے، آئیے بی پی ای (BPE) ٹوکنائزر کے لیے بھی یہی عمل دہرائیں۔ ہم اس بار تیز جائیں گے کیونکہ آپ تمام مراحل جان چکے ہیں، اور صرف فرق کو نمایاں کریں گے۔  
+
+## بی پی ای ٹوکنائزر کو شروع سے بنانا [[building-a-bpe-tokenizer-from-scratch]]  
+
+اب ہم ایک GPT-2 ٹوکنائزر بنائیں گے۔ بی ای آر ٹی (BERT) ٹوکنائزر کی طرح، ہم بھی ایک `Tokenizer` کو بی پی ای ماڈل کے ساتھ انیشیئلائز (initialize) کر کے شروعات کرتے ہیں:
+
+```python
+tokenizer = Tokenizer(models.BPE())
+```
+
+اسی طرح جیسے بی ای آر ٹی (BERT) کے لیے، اگر ہمارے پاس پہلے سے ایک الفاظ کی فہرست (vocabulary) ہوتی، تو ہم اس ماڈل کو `vocab` اور `merges` پاس کر کے انیشیئلائز کر سکتے تھے۔ لیکن چونکہ ہم اسے شروع سے تربیت دیں گے، اس لیے اس کی ضرورت نہیں۔ ہمیں `unk_token` بھی متعین کرنے کی ضرورت نہیں کیونکہ GPT-2 بائٹ-لیول بی پی ای (byte-level BPE) استعمال کرتا ہے، جو اس کی ضرورت نہیں رکھتا۔  
+
+GPT-2 کسی نارملائزر (normalizer) کا استعمال نہیں کرتا، لہٰذا ہم اس مرحلے کو چھوڑ کر براہ راست پری-ٹوکنائزیشن (pre-tokenization) پر جاتے ہیں:
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+```
+
+ہم نے یہاں `ByteLevel` میں جو آپشن شامل کیا ہے، وہ جملے کے شروع میں اسپیس شامل نہ کرنے کے لیے ہے (جو کہ بصورت دیگر ڈیفالٹ ہوتا ہے)۔ ہم ایک مثال کے طور پر کسی متن کی پری-ٹوکنائزیشن کو دیکھ سکتے ہیں، جیسے پہلے کیا تھا:
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test pre-tokenization!")
+```
+
+```python out
+[('Let', (0, 3)), ("'s", (3, 5)), ('Ġtest', (5, 10)), ('Ġpre', (10, 14)), ('-', (14, 15)),
+ ('tokenization', (15, 27)), ('!', (27, 28))]
+```
+
+اگلا مرحلہ ماڈل ہے، جسے ٹریننگ کی ضرورت ہوتی ہے۔ GPT-2 کے لیے واحد خاص ٹوکن "اختتامِ متن" (end-of-text) ٹوکن ہے:
+
+```python
+trainer = trainers.BpeTrainer(vocab_size=25000, special_tokens=["<|endoftext|>"])
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+جیسے کہ `WordPieceTrainer` میں، یہاں بھی ہم `vocab_size` اور `special_tokens` کے ساتھ `min_frequency` کو متعین کر سکتے ہیں اگر ضرورت ہو۔ اگر ہمارے پاس کسی لفظ کے آخر میں کوئی مخصوص لاحقہ (suffix) ہو (جیسے `</w>`)، تو ہم اسے `end_of_word_suffix` کے ذریعے سیٹ کر سکتے ہیں۔  
+
+یہ ٹوکنائزر ٹیکسٹ فائلوں پر بھی ٹرین کیا جا سکتا ہے:
+
+```python
+tokenizer.model = models.BPE()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+آئیے کسی نمونہ متن کی ٹوکنائزیشن کا جائزہ لیتے ہیں:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['L', 'et', "'", 's', 'Ġtest', 'Ġthis', 'Ġto', 'ken', 'izer', '.']
+```
+
+ہم GPT-2 ٹوکنائزر کے لیے بائٹ-لیول پوسٹ پروسیسنگ کو درج ذیل طریقے سے لاگو کرتے ہیں:
+
+```python
+tokenizer.post_processor = processors.ByteLevel(trim_offsets=False)
+```
+
+`trim_offsets = False` آپشن پوسٹ پروسیسر کو بتاتا ہے کہ وہ ان ٹوکنز کے آفسیٹس کو جوں کا توں چھوڑ دے جو 'Ġ' سے شروع ہوتے ہیں۔ اس کا مطلب یہ ہے کہ آفسیٹس کا آغاز اس لفظ سے پہلے کی اسپیس کی طرف اشارہ کرے گا، نہ کہ لفظ کے پہلے حرف کی طرف (کیونکہ اسپیس تکنیکی طور پر ٹوکن کا حصہ ہے)۔ آئیے ہم ابھی انکوڈ کیے گئے ٹیکسٹ کے نتیجے کو دیکھتے ہیں، جہاں `'Ġtest'` انڈیکس 4 پر واقع ٹوکن ہے:
+
+
+```python
+sentence = "Let's test this tokenizer."
+encoding = tokenizer.encode(sentence)
+start, end = encoding.offsets[4]
+sentence[start:end]
+```
+
+```python out
+' test'
+```
+
+آخر میں، ہم ایک بائٹ-لیول ڈیکوڈر شامل کرتے ہیں:
+
+
+```python
+tokenizer.decoder = decoders.ByteLevel()
+```
+
+اور ہم دوبارہ چیک کر سکتے ہیں کہ یہ درست کام کر رہا ہے:
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+```python out
+"Let's test this tokenizer."
+```
+
+زبردست! اب جب کہ ہم مکمل کر چکے ہیں، ہم پہلے کی طرح ٹوکنائزر کو محفوظ کر سکتے ہیں اور اگر ہم اسے 🤗 Transformers میں استعمال کرنا چاہتے ہیں تو اسے `PreTrainedTokenizerFast` یا `GPT2TokenizerFast` میں لپیٹ سکتے ہیں۔
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<|endoftext|>",
+    eos_token="<|endoftext|>",
+)
+```
+یا:
+
+```python
+from transformers import GPT2TokenizerFast
+
+wrapped_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer)
+```
+
+جیسا کہ آخری مثال میں، ہم آپ کو دکھائیں گے کہ یونِگرام ٹوکنائزر کو شروع سے کیسے بنایا جائے۔  
+
+## یونِگرام ٹوکنائزر کو شروع سے بنانا [[building-a-unigram-tokenizer-from-scratch]]  
+
+اب ہم ایک **XLNet** ٹوکنائزر بنائیں گے۔ پچھلے ٹوکنائزرز کی طرح، ہم ایک **`Tokenizer`** کو **Unigram** ماڈل کے ساتھ شروع کرکے آغاز کریں گے:
+
+
+```python
+tokenizer = Tokenizer(models.Unigram())
+```
+
+اسی طرح، اگر ہمارے پاس ایک وکیبلری ہوتی تو ہم اس ماڈل کو اس کے ساتھ بھی شروع کر سکتے تھے۔  
+
+**Normalization** کے لیے، **XLNet** کچھ ریپلیسمنٹس استعمال کرتا ہے (جو **SentencePiece** سے آتی ہیں):
+
+```python
+from tokenizers import Regex
+
+tokenizer.normalizer = normalizers.Sequence(
+    [
+        normalizers.Replace("``", '"'),
+        normalizers.Replace("''", '"'),
+        normalizers.NFKD(),
+        normalizers.StripAccents(),
+        normalizers.Replace(Regex(" {2,}"), " "),
+    ]
+)
+```
+
+یہ <code>``</code> اور <code>''</code> کو <code>"</code> سے تبدیل کر دیتا ہے اور دو یا اس سے زیادہ spaces کی کسی بھی sequence کو ایک single space سے بدل دیتا ہے، ساتھ ہی tokenize کیے جانے والے texts سے accents کو بھی ہٹا دیتا ہے۔
+
+SentencePiece tokenizer کے لیے استعمال ہونے والا pre-tokenizer `Metaspace` ہے:
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
+```
+
+ہم پہلے کی طرح کسی example text کی pre-tokenization دیکھ سکتے ہیں:
+
+
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test the pre-tokenizer!")
+```
+
+```python out
+[("▁Let's", (0, 5)), ('▁test', (5, 10)), ('▁the', (10, 14)), ('▁pre-tokenizer!', (14, 29))]
+```
+
+اگلا مرحلہ ماڈل ہے، جسے تربیت (training) کی ضرورت ہوتی ہے۔ **XLNet** میں کافی زیادہ **special tokens** شامل ہوتے ہیں:
+
+```python
+special_tokens = ["<cls>", "<sep>", "<unk>", "<pad>", "<mask>", "<s>", "</s>"]
+trainer = trainers.UnigramTrainer(
+    vocab_size=25000, special_tokens=special_tokens, unk_token="<unk>"
+)
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+
+**`UnigramTrainer`** کے لیے ایک بہت اہم دلیل **`unk_token`** ہے، جسے بھولنا نہیں چاہیے۔ ہم دیگر دلائل بھی پاس کر سکتے ہیں جو **Unigram** الگورتھم کے لیے مخصوص ہیں، جیسے کہ **`shrinking_factor`** (ہر مرحلے میں ٹوکنز کو ہٹانے کا تناسب، جو کہ ڈیفالٹ میں **0.75** ہوتا ہے) یا **`max_piece_length`** (کسی مخصوص ٹوکن کی زیادہ سے زیادہ لمبائی، جو کہ ڈیفالٹ میں **16** ہوتی ہے)۔  
+
+یہ **tokenizer** ٹیکسٹ فائلز پر بھی تربیت حاصل کر سکتا ہے:
+
+
+```python
+tokenizer.model = models.Unigram()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+
+آئیے ایک نمونہ متن کی **tokenization** پر نظر ڈالتے ہیں:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['▁Let', "'", 's', '▁test', '▁this', '▁to', 'ken', 'izer', '.']
+```
+
+
+XLNet کی ایک خاص بات یہ ہے کہ یہ `<cls>` ٹوکن کو جملے کے آخر میں رکھتا ہے، جس کا **type ID** `2` ہوتا ہے (تاکہ اسے دوسرے ٹوکنز سے الگ کیا جا سکے)۔ اس کا **padding** بائیں طرف ہوتا ہے۔  
+
+ہم تمام **special tokens** اور **token type IDs** کو ایک **template** کے ذریعے سنبھال سکتے ہیں، جیسے کہ **BERT** کے لیے، لیکن پہلے ہمیں `<cls>` اور `<sep>` ٹوکنز کے **IDs** حاصل کرنے ہوں گے:
+
+```python
+cls_token_id = tokenizer.token_to_id("<cls>")
+sep_token_id = tokenizer.token_to_id("<sep>")
+print(cls_token_id, sep_token_id)
+```
+
+```python out
+0 1
+```
+
+ٹیمپلیٹ اس طرح دکھائی دیتا ہے:
+
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single="$A:0 <sep>:0 <cls>:2",
+    pair="$A:0 <sep>:0 $B:1 <sep>:1 <cls>:2",
+    special_tokens=[("<sep>", sep_token_id), ("<cls>", cls_token_id)],
+)
+```
+
+اور ہم اسے ایک جوڑے جملوں کو انکوڈ کرکے آزما سکتے ہیں:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences!")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+```python out
+['▁Let', "'", 's', '▁test', '▁this', '▁to', 'ken', 'izer', '.', '.', '.', '<sep>', '▁', 'on', '▁', 'a', '▁pair', 
+  '▁of', '▁sentence', 's', '!', '<sep>', '<cls>']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]
+```
+
+آخر میں، ہم ایک `Metaspace` ڈیکوڈر شامل کرتے ہیں:
+
+
+```python
+tokenizer.decoder = decoders.Metaspace()
+```
+
+اور اس کے ساتھ ہمارا ٹوکنائزر مکمل ہو گیا! ہم اسے پہلے کی طرح محفوظ کر سکتے ہیں اور اگر ہم اسے 🤗 Transformers میں استعمال کرنا چاہیں تو `PreTrainedTokenizerFast` یا `XLNetTokenizerFast` میں لپیٹ سکتے ہیں۔ ایک بات یاد رکھنے کی ہے کہ `PreTrainedTokenizerFast` استعمال کرتے وقت، خاص ٹوکنز کے علاوہ، ہمیں 🤗 Transformers لائبریری کو یہ بھی بتانا ہوگا کہ پیڈنگ بائیں جانب ہوگی:
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<s>",
+    eos_token="</s>",
+    unk_token="<unk>",
+    pad_token="<pad>",
+    cls_token="<cls>",
+    sep_token="<sep>",
+    mask_token="<mask>",
+    padding_side="left",
+)
+```
+
+یا متبادل طور پر:
+
+
+```python
+from transformers import XLNetTokenizerFast
+
+wrapped_tokenizer = XLNetTokenizerFast(tokenizer_object=tokenizer)
+```
+
+اب جب کہ آپ نے دیکھا کہ مختلف تعمیراتی بلاکس کو موجودہ ٹوکنائزر بنانے کے لیے کیسے استعمال کیا جاتا ہے، تو آپ کو 🤗 Tokenizers لائبریری کے ساتھ کسی بھی ٹوکنائزر کو لکھنے کے قابل ہونا چاہیے اور اسے 🤗 Transformers میں استعمال کرنا چاہیے۔
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<Youtube id="TGZfZVuF9Yc"/>
+
+<Tip>
+
+💡 یہ سیکشن Unigram کو تفصیل سے cover کرتا ہے، یہاں تک کہ ایک مکمل implementation دکھاتا ہے۔ اگر آپ صرف ٹوکنائزیشن الگورتھم کا عمومی جائزہ چاہتے ہیں تو آپ آخر میں jump کر سکتے ہیں۔
+
+</Tip>
+
+## Training algorithm[[training-algorithm]]
+
+BPE اور WordPiece کے مقابلے میں، Unigram الگورتھم ایک بالکل مختلف رخ اختیار کرتا ہے: یہ ایک بڑی vocabulary سے شروع ہوتا ہے اور مطلوبہ vocabulary size تک پہنچنے کے لیے tokens کو حذف کرتا ہے۔ ابتدائی vocabulary بنانے کے لیے آپ مختلف طریقے استعمال کر سکتے ہیں، مثلاً pre-tokenized الفاظ میں سب سے زیادہ frequent substrings لینا، یا پھر ایک بڑی vocabulary پر BPE چلانا۔
+
+Training کے ہر مرحلے پر Unigram الگورتھم موجودہ vocabulary کی بنیاد پر corpus کا loss compute کرتا ہے۔ پھر، ہر symbol کے لیے الگورتھم یہ تعین کرتا ہے کہ اگر وہ symbol حذف کر دیا جائے تو مجموعی loss میں کتنا اضافہ ہوگا۔ جن tokens کا مجموعی loss پر کم اثر پڑتا ہے انہیں "کم ضروری" سمجھ کر حذف کرنے کے لیے ترجیح دی جاتی ہے۔
+
+یہ عمل کافی مہنگا (computationally expensive) ہوتا ہے، اس لیے عموماً صرف \\(p\\) فیصد (جہاں \\(p\\) ایک hyperparameter ہے، عموماً 10 یا 20) tokens کو ایک ساتھ حذف کیا جاتا ہے جن سے loss میں سب سے کم اضافہ ہوتا ہے۔ یہ عمل اسی طرح دہرایا جاتا ہے جب تک کہ vocabulary مطلوبہ size تک نہ پہنچ جائے۔
+
+نوٹ کریں کہ بنیادی characters (یعنی وہ جو ابتدائی alphabet کا حصہ ہیں) کو کبھی حذف نہیں کیا جاتا تاکہ کسی بھی word کو tokenize کیا جا سکے۔
+
+اب بھی یہ بیان کچھ مبہم ہو سکتا ہے: اصل مرحلہ corpus پر loss compute کرنا اور پھر دیکھنا کہ اگر کسی token کو حذف کیا جائے تو loss میں کتنا فرق آتا ہے، لیکن ہم ابھی تک اس بات کی وضاحت نہیں کی ہے کہ یہ کیسے کیا جائے گا۔ یہ مرحلہ Unigram ماڈل کے tokenization الگورتھم پر منحصر ہے، جس پر ہم آگے تفصیل سے بات کریں گے۔
+
+ہم اپنی پچھلی مثال استعمال کریں گے:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+اور اس مثال کے لیے ہم ابتدائی vocabulary کے لیے تمام strict substrings لیں گے:
+
+```
+["h", "u", "g", "hu", "ug", "p", "pu", "n", "un", "b", "bu", "s", "hug", "gs", "ugs"]
+```
+
+## Tokenization algorithm[[tokenization-algorithm]]
+
+Unigram ماڈل ایک ایسا language model ہے جو فرض کرتا ہے کہ ہر token پچھلے tokens سے آزاد ہے۔ یہ سب سے آسان language model تصور کیا جاتا ہے، کیونکہ کسی token X کی probability صرف X کی corpus میں موجود frequency پر مبنی ہوتی ہے۔ اگر ہم Unigram ماڈل سے text generate کرنے کی کوشش کریں تو ہم ہمیشہ سب سے زیادہ frequent token کی پیش گوئی کریں گے۔
+
+کسی token کی probability اس کی frequency (corpus میں ظاہر ہونے کی تعداد) کو تمام tokens کی frequencies کے مجموعے سے تقسیم کر کے حاصل کی جاتی ہے۔ مثال کے طور پر، `"ug"` کو لفظ `"hug"`, `"pug"`, اور `"hugs"` میں ظاہر ہونے کی وجہ سے frequency 20 ملتی ہے۔
+
+فرض کریں کہ corpus میں موجود ہر ممکن subword کی frequencies درج ذیل ہیں:
+
+```
+("h", 15), ("u", 36), ("g", 20), ("hu", 15), ("ug", 20), ("p", 17), ("pu", 17), ("n", 16),
+("un", 16), ("b", 4), ("bu", 4), ("s", 5), ("hug", 15), ("gs", 5), ("ugs", 5)
+```
+
+کل frequencies کا مجموعہ 210 ہوگا، اور subword `"ug"` کی probability ہوگی 20/210.
+
+<Tip>
+
+✏️ **اب آپ کی باری!** کوڈ لکھ کر اوپر بیان کردہ frequencies compute کریں اور یہ چیک کریں کہ نتائج درست ہیں اور مجموعی sum بھی درست ہے۔
+
+</Tip>
+
+اب، کسی word کو tokenize کرنے کے لیے، ہم تمام ممکنہ segmentations تلاش کرتے ہیں اور Unigram model کے مطابق ہر segmentation کی probability compute کرتے ہیں۔ چونکہ تمام tokens کو آزاد سمجھا جاتا ہے، یہ probability ہر token کی probability کے حاصل ضرب کے برابر ہوگی۔ مثال کے طور پر، word `"pug"` کے لیے segmentation `["p", "u", "g"]` کی probability ہوگی:
+
+$$P(["p", "u", "g"]) = P("p") \times P("u") \times P("g") = \frac{5}{210} \times \frac{36}{210} \times \frac{20}{210} = 0.000389$$
+
+جبکہ segmentation `["p", "ug"]` کی probability ہوگی:
+
+$$P(["p", "ug"]) = P("p") \times P("ug") = \frac{5}{210} \times \frac{20}{210} = 0.0022676$$
+
+اس طرح، وہ segmentation جس میں کم tokens ہوں عام طور پر زیادہ probability رکھتی ہے (کیونکہ ہر token کے لیے division دوہرایا جاتا ہے) — اور یہ وہی ہے جو ہم فطری طور پر چاہتے ہیں: ایک word کو جتنا ممکن ہو ایک ہی token میں تقسیم کرنا۔
+
+Unigram model کے تحت word کی tokenization وہ segmentation ہوگی جس کی probability سب سے زیادہ ہو۔ مثال کے طور پر، word `"pug"` کے لیے ممکنہ segmentation اور ان کی probabilities:
+
+```
+["p", "u", "g"] : 0.000389
+["p", "ug"] : 0.0022676
+["pu", "g"] : 0.0022676
+```
+
+لہٰذا، `"pug"` کو `["p", "ug"]` یا `["pu", "g"]` tokenize کیا جائے گا، اس بات پر منحصر کہ کون سا segmentation پہلے ملتا ہے (بڑے corpus میں ایسے equality کے معاملے شاذ و نادر ہوں گے)۔
+
+## Back to training[[back-to-training]]
+
+اب جبکہ ہم نے tokenization کا عمل سمجھ لیا ہے، ہم training کے دوران compute ہونے والے loss پر بھی بات کریں گے۔ کسی بھی مرحلے پر، corpus میں موجود ہر word کو tokenize کر کے، موجودہ vocabulary اور Unigram model کی بنیاد پر loss compute کیا جاتا ہے۔
+
+ہر word کا ایک score ہوتا ہے، اور مجموعی loss وہ negative log likelihood ہے — یعنی corpus میں موجود ہر word کے لیے \\(-\log(P(word))\\) کا مجموعہ۔
+
+آئیں اپنی پچھلی مثال پر واپس چلیں:
+
+```
+"hug": ["hug"] (score 0.071428)   (frequency 10)
+"pug": ["pu", "g"] (score 0.007710)  (frequency 5)
+"pun": ["pu", "n"] (score 0.006168)  (frequency 12)
+"bun": ["bu", "n"] (score 0.001451)  (frequency 4)
+"hugs": ["hug", "s"] (score 0.001701) (frequency 5)
+```
+
+تو loss ہوگی:
+
+```
+10 * (-log(0.071428)) + 5 * (-log(0.007710)) + 12 * (-log(0.006168)) + 4 * (-log(0.001451)) + 5 * (-log(0.001701)) = 169.8
+```
+
+اب ہمیں دیکھنا ہے کہ ہر token کو حذف کرنے سے loss میں کتنا اضافہ ہوتا ہے۔ یہ کام کافی محنت طلب ہے، لہٰذا ہم یہاں صرف دو tokens کے لیے بتاتے ہیں۔ فرض کریں کہ `"pug"` کے لیے دو equivalent tokenizations ہیں (جیسا کہ `["p", "ug"]` اور `["pu", "g"]` دونوں کے scores برابر ہیں) تو `"pu"` کو حذف کرنے سے loss میں کوئی فرق نہیں آئے گا۔
+
+دوسری طرف، اگر `"hug"` کو حذف کر دیا جائے تو loss بڑھے گی، کیونکہ `"hug"` اور `"hugs"` کی tokenization یوں ہو جائے گی:
+
+```
+"hug": ["hu", "g"] (score 0.006802)
+"hugs": ["hu", "gs"] (score 0.001701)
+```
+
+ان تبدیلیوں سے loss میں اضافہ ہوگا:
+
+```
+- 10 * (-log(0.071428)) + 10 * (-log(0.006802)) = 23.5
+```
+
+اس لیے امکان ہے کہ vocabulary سے `"pu"` کو ہٹا دیا جائے، مگر `"hug"` کو نہیں۔
+
+## Implementing Unigram[[implementing-unigram]]
+
+اب ہم Unigram الگورتھم کی پوری implementation کو code میں دیکھتے ہیں۔ جیسا کہ BPE اور WordPiece کے لیے، یہ implementation تعلیمی مقصد کے لیے ہے اور بڑے corpus پر استعمال کے لیے موزوں نہیں ہوگی، مگر اس سے آپ کو الگورتھم کی سمجھ بہتر ہوگی۔
+
+ہم وہی corpus استعمال کریں گے:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+اس بار ہم `xlnet-base-cased` ماڈل استعمال کریں گے:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("xlnet-base-cased")
+```
+
+BPE اور WordPiece کی طرح، سب سے پہلے corpus میں موجود ہر word کی occurrences count کریں گے:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+اب ہمیں اپنی vocabulary initialize کرنی ہے جو آخری vocabulary size سے بڑی ہو۔ ہمیں تمام بنیادی characters شامل کرنے ہیں (تاکہ ہر word tokenize ہو سکے) اور بڑے substrings کو ان کی frequency کے حساب سے sort کرنا ہے:
+
+```python
+char_freqs = defaultdict(int)
+subwords_freqs = defaultdict(int)
+for word, freq in word_freqs.items():
+    for i in range(len(word)):
+        char_freqs[word[i]] += freq
+        for j in range(i + 2, len(word) + 1):
+            subwords_freqs[word[i:j]] += freq
+
+sorted_subwords = sorted(subwords_freqs.items(), key=lambda x: x[1], reverse=True)
+sorted_subwords[:10]
+```
+
+```python
+[('▁t', 7), ('is', 5), ('er', 5), ('▁a', 5), ('▁to', 4), ('to', 4), ('en', 4), ('▁T', 3), ('▁Th', 3), ('▁Thi', 3)]
+```
+
+ہم characters اور سب سے زیادہ frequent subwords کو ملا کر ایک initial vocabulary تیار کرتے ہیں، فرض کریں کہ ہم vocabulary size 300 چاہتے ہیں:
+
+```python
+token_freqs = list(char_freqs.items()) + sorted_subwords[: 300 - len(char_freqs)]
+token_freqs = {token: freq for token, freq in token_freqs}
+```
+
+<Tip>
+💡 SentencePiece ایک زیادہ مؤثر الگورتھم Enhanced Suffix Array (ESA) استعمال کرتا ہے تاکہ ابتدائی vocabulary تیار کی جا سکے۔
+</Tip>
+
+اب، تمام frequencies کا مجموعہ compute کریں اور انہیں probabilities میں convert کرنے کے لیے logarithm لیں (کیونکہ چھوٹے numbers کا حاصل ضرب کرنے کے بجائے logarithms کو جمع کرنا numerical طور پر زیادہ مستحکم ہے):
+
+```python
+from math import log
+
+total_sum = sum([freq for token, freq in token_freqs.items()])
+model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+اب Viterbi algorithm استعمال کرتے ہوئے کسی word کو tokenize کریں۔ یہ algorithm word کے ہر substring کے لیے best segmentation تلاش کرتا ہے اور اسے `best_segmentations` میں store کرتا ہے۔ ہر position (0 سے word کی لمبائی تک) کے لیے ایک dictionary ہوگی جس میں دو keys ہوں گی: آخری token کی شروعات کا index اور best segmentation کا score۔ اس index کی مدد سے ہم پورا segmentation حاصل کر سکیں گے۔
+
+```python
+def encode_word(word, model):
+    best_segmentations = [{"start": 0, "score": 1}] + [
+        {"start": None, "score": None} for _ in range(len(word))
+    ]
+    for start_idx in range(len(word)):
+        best_score_at_start = best_segmentations[start_idx]["score"]
+        for end_idx in range(start_idx + 1, len(word) + 1):
+            token = word[start_idx:end_idx]
+            if token in model and best_score_at_start is not None:
+                score = model[token] + best_score_at_start
+                if (
+                    best_segmentations[end_idx]["score"] is None
+                    or best_segmentations[end_idx]["score"] > score
+                ):
+                    best_segmentations[end_idx] = {"start": start_idx, "score": score}
+    segmentation = best_segmentations[-1]
+    if segmentation["score"] is None:
+        return ["<unk>"], None
+    score = segmentation["score"]
+    start = segmentation["start"]
+    end = len(word)
+    tokens = []
+    while start != 0:
+        tokens.insert(0, word[start:end])
+        next_start = best_segmentations[start]["start"]
+        end = start
+        start = next_start
+    tokens.insert(0, word[start:end])
+    return tokens, score
+```
+
+ہم اپنے initial model کو کچھ الفاظ پر آزما کر دیکھ سکتے ہیں:
+
+```python
+print(encode_word("Hopefully", model))
+print(encode_word("This", model))
+```
+
+```python
+(['H', 'o', 'p', 'e', 'f', 'u', 'll', 'y'], 41.5157494601402)
+(['This'], 6.288267030694535)
+```
+
+اب corpus پر model کا loss compute کریں:
+
+```python
+def compute_loss(model):
+    loss = 0
+    for word, freq in word_freqs.items():
+        _, word_loss = encode_word(word, model)
+        loss += freq * word_loss
+    return loss
+```
+
+مثال کے طور پر:
+
+```python
+compute_loss(model)
+```
+
+```python
+413.10377642940875
+```
+
+اب ہر token کو حذف کرنے سے loss میں کیا فرق آتا ہے، یہ compute کریں:
+
+```python
+import copy
+
+def compute_scores(model):
+    scores = {}
+    model_loss = compute_loss(model)
+    for token, score in model.items():
+        if len(token) == 1:
+            continue
+        model_without_token = copy.deepcopy(model)
+        _ = model_without_token.pop(token)
+        scores[token] = compute_loss(model_without_token) - model_loss
+    return scores
+```
+
+مثلاً:
+
+```python
+scores = compute_scores(model)
+print(scores["ll"])
+print(scores["his"])
+```
+
+```python
+6.376412403623874
+0.0
+```
+
+<Tip>
+💡 یہ طریقہ کافی غیر مؤثر ہے، لہٰذا SentencePiece loss کو approximate کرنے کے لیے ایک اندازہ استعمال کرتا ہے۔
+</Tip>
+
+اب آخری مرحلہ یہ ہے کہ special tokens کو vocabulary میں شامل کریں، اور پھر loop کرتے ہوئے vocabulary کو prune کریں جب تک کہ مطلوبہ size نہ ہو جائے:
+
+```python
+percent_to_remove = 0.1
+while len(model) > 100:
+    scores = compute_scores(model)
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+    for i in range(int(len(model) * percent_to_remove)):
+        _ = token_freqs.pop(sorted_scores[i][0])
+    total_sum = sum([freq for token, freq in token_freqs.items()])
+    model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+آخر میں، text کو tokenize کرنے کے لیے، پہلے pre-tokenize کریں اور پھر `encode_word()` استعمال کریں:
+
+```python
+def tokenize(text, model):
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in words_with_offsets]
+    encoded_words = [encode_word(word, model)[0] for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+
+tokenize("This is the Hugging Face course.", model)
+```
+
+```python
+['▁This', '▁is', '▁the', '▁Hugging', '▁Face', '▁', 'c', 'ou', 'r', 's', 'e', '.']
+```
+
+یہی ہے Unigram الگورتھم کا جائزہ! امید ہے کہ اب آپ تمام tokenizers کے بارے میں ماہر محسوس کر رہے ہوں گے۔ اگلے حصے میں ہم 🤗 Tokenizers لائبریری کے building blocks کو explore کریں گے، اور دیکھیں گے کہ کس طرح آپ اپنی مرضی کا tokenizer بنا سکتے ہیں۔

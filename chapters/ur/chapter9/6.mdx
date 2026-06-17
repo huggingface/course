@@ -1,0 +1,112 @@
+```mdx
+# جدید انٹرفیس خصوصیات[[advanced-interface-features]]
+
+<CourseFloatingBanner chapter={9}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter9/section6.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter9/section6.ipynb"},
+]} />
+
+اب جبکہ ہم ایک بنیادی انٹرفیس بنا اور شیئر کر سکتے ہیں، آئیے کچھ مزید جدید خصوصیات جیسے کہ state اور interpretation کا جائزہ لیتے ہیں۔
+
+### ڈیٹا کو برقرار رکھنے کے لیے state کا استعمال[[using-state-to-persist-data]]
+
+Gradio *session state* کی حمایت کرتا ہے، جہاں ایک صفحہ لوڈ ہونے کے دوران متعدد سبمٹس کے باوجود ڈیٹا برقرار رہتا ہے۔  
+Session state چات بوٹس جیسے ڈیموز بنانے کے لیے مفید ہے جہاں آپ چاہتے ہیں کہ صارف کے ماڈل کے ساتھ تعامل کے دوران ڈیٹا برقرار رہے۔  
+نوٹ کریں کہ session state مختلف صارفین کے درمیان ڈیٹا شیئر نہیں کرتا۔
+
+Session state میں ڈیٹا اسٹور کرنے کے لیے، آپ کو تین چیزیں کرنی ہوں گی:
+
+1. اپنے فنکشن میں ایک *اضافی پیرامیٹر* پاس کریں، جو انٹرفیس کی state کی نمائندگی کرتا ہے۔
+2. فنکشن کے آخر میں، state کی اپ ڈیٹ شدہ ویلیو کو ایک *اضافی ریٹرن ویلیو* کے طور پر واپس کریں۔
+3. اپنے `Interface` بناتے وقت 'state' ان پٹ اور 'state' آؤٹ پٹ اجزاء شامل کریں۔
+
+نیچے دیے گئے چات بوٹ کی مثال دیکھیں:
+
+```py
+import random
+
+import gradio as gr
+
+
+def chat(message, history):
+    history = history or []
+    if message.startswith("How many"):
+        response = random.randint(1, 10)
+    elif message.startswith("How"):
+        response = random.choice(["Great", "Good", "Okay", "Bad"])
+    elif message.startswith("Where"):
+        response = random.choice(["Here", "There", "Somewhere"])
+    else:
+        response = "I don't know"
+    history.append((message, response))
+    return history, history
+
+
+iface = gr.Interface(
+    chat,
+    ["text", "state"],
+    ["chatbot", "state"],
+    allow_screenshot=False,
+    allow_flagging="never",
+)
+iface.launch()
+```
+
+<iframe src="https://course-demos-Chatbot-Demo.hf.space" frameBorder="0" height="350" title="Gradio app" class="container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+نوٹ کریں کہ آؤٹ پٹ جزو کی state سبمٹس کے درمیان برقرار رہتی ہے۔  
+نوٹ: آپ state پیرامیٹر کے لیے ڈیفالٹ ویلیو بھی پاس کر سکتے ہیں، جو state کی ابتدائی ویلیو کے طور پر استعمال ہوتی ہے۔
+
+### پیش گوئیوں کو سمجھنے کے لیے interpretation کا استعمال[[using-interpretation-to-understand-predictions]]
+
+زیادہ تر مشین لرننگ ماڈلز بلیک باکس ہوتے ہیں اور فنکشن کا اندرونی منطق آخر صارف سے چھپا ہوا ہوتا ہے۔  
+شفافیت کو فروغ دینے کے لیے، ہم نے آپ کے ماڈل میں interpretation شامل کرنا بہت آسان بنا دیا ہے، بس Interface کلاس میں interpretation کی ورڈ کو default پر سیٹ کر دیں۔  
+اس سے آپ کے صارفین سمجھ سکیں گے کہ ان پٹ کے کون سے حصے آؤٹ پٹ کے ذمہ دار ہیں۔
+
+نیچے دیے گئے سادہ انٹرفیس کو دیکھیں جو ایک image classifier کو ظاہر کرتا ہے اور interpretation بھی شامل کرتا ہے:
+
+```py
+import requests
+import tensorflow as tf
+
+import gradio as gr
+
+inception_net = tf.keras.applications.MobileNetV2()  # load the model
+
+# Download human-readable labels for ImageNet.
+response = requests.get("https://git.io/JJkYN")
+labels = response.text.split("\n")
+
+
+def classify_image(inp):
+    inp = inp.reshape((-1, 224, 224, 3))
+    inp = tf.keras.applications.mobilenet_v2.preprocess_input(inp)
+    prediction = inception_net.predict(inp).flatten()
+    return {labels[i]: float(prediction[i]) for i in range(1000)}
+
+
+image = gr.Image(shape=(224, 224))
+label = gr.Label(num_top_classes=3)
+
+title = "Gradio Image Classifiction + Interpretation Example"
+gr.Interface(
+    fn=classify_image, inputs=image, outputs=label, interpretation="default", title=title
+).launch()
+```
+
+Interpretation فنکشن کا ٹیسٹ کرنے کے لیے، ایک ان پٹ سبمٹ کریں اور پھر آؤٹ پٹ جزو کے نیچے Interpret پر کلک کریں۔
+
+<iframe src="https://course-demos-gradio-image-interpretation.hf.space" frameBorder="0" height="570" title="Gradio app" class="container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+Gradio کی فراہم کردہ ڈیفالٹ interpretation طریقہ کے علاوہ، آپ `interpretation` پیرامیٹر کے لیے `shap` بھی مخصوص کر سکتے ہیں اور `num_shap` پیرامیٹر سیٹ کر سکتے ہیں۔  
+یہ Shapley-based interpretation استعمال کرتا ہے، جس کے بارے میں آپ مزید [یہاں](https://christophm.github.io/interpretable-ml-book/shap.html) پڑھ سکتے ہیں۔  
+آخر میں، آپ اپنا اپنا interpretation فنکشن بھی `interpretation` پیرامیٹر میں پاس کر سکتے ہیں۔ Gradio کے getting started صفحے پر [یہاں](https://gradio.app/getting_started/) ایک مثال دیکھیں۔
+
+یہ ہماری Gradio کے `Interface` کلاس میں گہری نظر کا اختتام کرتا ہے۔  
+جیسا کہ ہم نے دیکھا، یہ کلاس چند لائنز Python کوڈ میں مشین لرننگ ڈیموز بنانے کو بہت آسان بنا دیتی ہے۔  
+تاہم، بعض اوقات آپ اپنے ڈیمو کو تخصیص دینے کے لیے لے آؤٹ کو تبدیل کرنا یا متعدد پیش گوئی کے فنکشنز کو ایک ساتھ جوڑنا چاہیں گے۔  
+کیا یہ اچھا نہ ہوتا اگر ہم کسی طرح `Interface` کو حسب ضرورت "بلاکس" میں تقسیم کر سکیں؟  
+خوش قسمتی سے، ایسا ممکن ہے! یہ آخری حصے کا موضوع ہے۔
+```

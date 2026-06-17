@@ -1,0 +1,378 @@
+<FrameworkSwitchCourse {fw} />
+
+# FAISS کے ساتھ semantic search[[semantic-search-with-faiss]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+[باب 5](/course/chapter5/5) میں، ہم نے 🤗 Datasets repository سے GitHub issues اور comments کا ایک dataset تیار کیا تھا۔ اس سیکشن میں ہم اس معلومات کا استعمال کرتے ہوئے ایک ایسا search engine تیار کریں گے جو ہمیں library کے بارے میں ہمارے سب سے اہم سوالات کے جوابات تلاش کرنے میں مدد دے سکے!
+
+<Youtube id="OATCgQtNX2o"/>
+
+## semantic search کے لیے embeddings کا استعمال[[using-embeddings-for-semantic-search]]
+
+جیسا کہ ہم نے [باب 1](/course/chapter1) میں دیکھا، Transformer-based زبان کے ماڈلز متن کے ایک حصے میں موجود ہر token کو ایک _embedding vector_ کے طور پر ظاہر کرتے ہیں۔ معلوم ہوا کہ انفرادی embeddings کو "pool" کر کے پورے جملوں، پیراگراف، یا (کچھ صورتوں میں) دستاویزات کی vector representation بنائی جا سکتی ہے۔ ان embeddings کا استعمال corpus میں ملتے جلتے documents تلاش کرنے کے لیے کیا جاتا ہے، جس میں dot-product similarity (یا کوئی اور similarity metric) کا حساب لگا کر سب سے زیادہ میل کھانے والے documents واپس کیے جاتے ہیں۔
+
+اس سیکشن میں ہم embeddings کا استعمال کرتے ہوئے ایک semantic search engine تیار کریں گے۔ ایسے search engines روایتی طریقوں کے مقابلے میں کئی فوائد فراہم کرتے ہیں جو صرف query اور documents میں موجود keywords کو match کرنے پر منحصر ہوتے ہیں۔
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search.svg" alt="Semantic search."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search-dark.svg" alt="Semantic search."/>
+</div>
+
+## ڈیٹاسیٹ کو لوڈ اور تیار کرنا[[loading-and-preparing-the-dataset]]
+
+سب سے پہلے ہمیں GitHub issues کا dataset download کرنا ہوگا، تو آئیں `load_dataset()` فنکشن کا استعمال کرتے ہیں:
+
+```py
+from datasets import load_dataset
+
+issues_dataset = load_dataset("lewtun/github-issues", split="train")
+issues_dataset
+```
+
+```python
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 2855
+})
+```
+
+یہاں ہم نے `train` split کو ڈیفالٹ کے طور پر specify کیا ہے، جس سے ایک `Dataset` واپس آتا ہے نہ کہ `DatasetDict`۔ سب سے پہلے ہمیں pull requests کو فلٹر کرنا ہے، کیونکہ وہ عموماً user queries کا جواب دینے کے لیے استعمال نہیں ہوتے اور ہمارے search engine میں noise پیدا کرتے ہیں۔ جیسے کہ اب تک آپ جانتے ہیں، ہم `Dataset.filter()` کا استعمال کر کے ان rows کو نکال سکتے ہیں۔ ساتھ ہی، ہم ان rows کو بھی فلٹر کر دیتے ہیں جن میں کوئی comments موجود نہ ہوں:
+
+```py
+issues_dataset = issues_dataset.filter(
+    lambda x: (x["is_pull_request"] == False and len(x["comments"]) > 0)
+)
+issues_dataset
+```
+
+```python
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 771
+})
+```
+
+ہمارے dataset میں کافی کالمز موجود ہیں جن میں سے زیادہ تر وہ نہیں ہیں جن کی ہمیں search engine بنانے کے لیے ضرورت ہے۔ search کے لحاظ سے سب سے معلوماتی کالمز `title`, `body`, اور `comments` ہیں، جبکہ `html_url` source issue کا لنک فراہم کرتا ہے۔ آئیں `Dataset.remove_columns()` کا استعمال کر کے باقی کالمز کو ہٹا دیں:
+
+```py
+columns = issues_dataset.column_names
+columns_to_keep = ["title", "body", "html_url", "comments"]
+columns_to_remove = set(columns_to_keep).symmetric_difference(columns)
+issues_dataset = issues_dataset.remove_columns(columns_to_remove)
+issues_dataset
+```
+
+```python
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 771
+})
+```
+
+embeddings تخلیق کرنے کے لیے، ہم ہر comment کے ساتھ issue کا title اور body شامل کریں گے، کیونکہ یہ فیلڈز context فراہم کرتی ہیں۔ چونکہ ہمارا `comments` کالم فی الحال ہر issue کے لیے ایک list ہے، ہمیں اسے "explode" کرنا ہوگا تاکہ ہر row ایک `(html_url, title, body, comment)` tuple پر مشتمل ہو۔ Pandas میں ہم یہ [`DataFrame.explode()` function](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html) استعمال کر کے کر سکتے ہیں۔ مثال کے طور پر، پہلے ہم اپنے dataset کو Pandas `DataFrame` میں تبدیل کرتے ہیں:
+
+```py
+issues_dataset.set_format("pandas")
+df = issues_dataset[:]
+```
+
+اگر ہم اس DataFrame کی پہلی row دیکھیں تو پتہ چلے گا کہ اس issue کے ساتھ چار comments منسلک ہیں:
+
+```py
+df["comments"][0].tolist()
+```
+
+```python
+['the bug code locate in ：\r\n    if data_args.task_name is not None:\r\n        # Downloading and loading a dataset from the hub.\r\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
+ 'Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com\r\n\r\nCould you please confirm if the problem persists?',
+ 'cannot connect，even by Web browser，please check that  there is some  problems。',
+ 'I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...']
+```
+
+جب ہم DataFrame کو explode کرتے ہیں تو ہمیں ہر comment کے لیے ایک row ملنی چاہیے:
+
+```py
+comments_df = df.explode("comments", ignore_index=True)
+comments_df.head(4)
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>html_url</th>
+      <th>title</th>
+      <th>comments</th>
+      <th>body</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>the bug code locate in ：\r\n    if data_args.task_name is not None...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>cannot connect，even by Web browser，please check that  there is some  problems。</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+  </tbody>
+</table>
+
+زبردست، اب ہم دیکھ چکے ہیں کہ rows explode ہو گئی ہیں اور `comments` کالم میں ہر comment الگ سے موجود ہے۔ جب ہم اپنی Pandas analysis مکمل کر لیں تو ہم اسے دوبارہ `Dataset` میں convert کر سکتے ہیں:
+
+```py
+from datasets import Dataset
+
+comments_dataset = Dataset.from_pandas(comments_df)
+comments_dataset
+```
+
+```python
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 2842
+})
+```
+
+اب ہمارے پاس چند ہزار comments موجود ہیں!
+
+<Tip>
+
+✏️ **آزمائیں!** کوشش کریں کہ `Dataset.map()` کا استعمال کرتے ہوئے `comments` کالم کو explode کریں بغیر Pandas کا استعمال کیے۔ یہ تھوڑا مشکل ہو سکتا ہے؛ اس کام کے لیے ["Batch mapping"](https://huggingface.co/docs/datasets/about_map_batch#batch-mapping) سیکشن ملاحظہ کریں۔
+
+</Tip>
+
+اب جب کہ ہمارے پاس ہر row میں ایک comment ہے، آئیں ایک نیا `comment_length` کالم بناتے ہیں جو ہر comment میں موجود الفاظ کی تعداد بتاتا ہے:
+
+```py
+comments_dataset = comments_dataset.map(
+    lambda x: {"comment_length": len(x["comments"].split())}
+)
+```
+
+ہم اس نئے کالم کو استعمال کرتے ہوئے چھوٹے comments کو فلٹر کر سکتے ہیں، کیونکہ ایسے comments عام طور پر "cc @lewtun" یا "Thanks!" جیسے ہوتے ہیں جو ہمارے search engine کے لیے غیر متعلقہ ہیں۔ تقریباً 15 الفاظ ایک اچھا معیار ہے:
+
+```py
+comments_dataset = comments_dataset.filter(lambda x: x["comment_length"] > 15)
+comments_dataset
+```
+
+```python
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body', 'comment_length'],
+    num_rows: 2098
+})
+```
+
+اب جب کہ ہم نے dataset کو صاف کر لیا ہے، آئیں issue کے title، body اور comments کو ملا کر ایک نیا `text` کالم تخلیق کرتے ہیں:
+
+```py
+def concatenate_text(examples):
+    return {
+        "text": examples["title"]
+        + " \n "
+        + examples["body"]
+        + " \n "
+        + examples["comments"]
+    }
+
+comments_dataset = comments_dataset.map(concatenate_text)
+```
+
+ہم اب embeddings بنانے کے لیے تیار ہیں!
+
+## text embeddings تخلیق کرنا[[creating-text-embeddings]]
+
+جیسا کہ ہم نے [باب 2](/course/chapter2) میں دیکھا کہ Transformer-based ماڈلز ہر token کو ایک _embedding vector_ کے طور پر ظاہر کرتے ہیں۔ انفرادی embeddings کو pool کر کے پورے جملوں، پیراگراف یا دستاویزات کی vector representation تیار کی جا سکتی ہے۔ یہ embeddings corpus میں ملتے جلتے documents تلاش کرنے کے لیے استعمال کی جاتی ہیں، جو کہ dot-product similarity (یا کوئی اور similarity metric) کا حساب لگا کر سب سے زیادہ میل کھانے والے documents واپس کرتی ہیں۔
+
+اس سیکشن میں، ہم embeddings کا استعمال کرتے ہوئے ایک semantic search engine تیار کریں گے۔ ایسے search engines روایتی طریقوں کے مقابلے میں کئی فوائد فراہم کرتے ہیں جو کہ صرف keywords match کرنے پر منحصر ہوتے ہیں۔
+
+## FAISS کا استعمال کرتے ہوئے مؤثر similarity search[[using-faiss-for-efficient-similarity-search]]
+
+اب جبکہ ہمارے پاس embeddings کا dataset موجود ہے، ہمیں ان میں تلاش کرنے کا ایک طریقہ چاہیے۔ اس کے لیے ہم 🤗 Datasets میں موجود FAISS index کا استعمال کریں گے۔ [FAISS](https://faiss.ai/) (Facebook AI Similarity Search) ایک ایسی لائبریری ہے جو embeddings کی تیزی سے تلاش اور clustering کے لیے مؤثر الگورتھمز فراہم کرتی ہے۔
+
+FAISS کا بنیادی خیال یہ ہے کہ ایک خاص data structure یعنی _index_ بنایا جائے جو input embedding کے مقابلے میں ملتے جلتے embeddings تلاش کرے۔ 🤗 Datasets میں FAISS index بنانے کے لیے، ہم `Dataset.add_faiss_index()` فنکشن استعمال کرتے ہیں اور اس بات کو specify کرتے ہیں کہ ہمارے dataset کا کون سا column index کیا جائے:
+
+```py
+embeddings_dataset.add_faiss_index(column="embeddings")
+```
+
+اب ہم اس index پر query کر سکتے ہیں `Dataset.get_nearest_examples()` فنکشن کا استعمال کرتے ہوئے۔ سب سے پہلے، ہم ایک سوال کا embedding تخلیق کرتے ہیں:
+
+{#if fw === 'pt'}
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).cpu().detach().numpy()
+question_embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+{:else}
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).numpy()
+question_embedding.shape
+```
+
+```python out
+(1, 768)
+```
+
+{/if}
+
+بالکل دستاویزات کی طرح، اب ہمارے پاس 768-ابعادی ویکٹر ہے جو استفسار (query) کی نمائندگی کرتا ہے، جسے ہم پورے کارپس (corpus) کے خلاف موازنہ کرکے سب سے زیادہ مشابہت رکھنے والی ایمبیڈنگز تلاش کر سکتے ہیں:
+
+```py
+scores, samples = embeddings_dataset.get_nearest_examples(
+    "embeddings", question_embedding, k=5
+)
+```
+
+`Dataset.get_nearest_examples()` فنکشن ایک ٹیوپل (tuple) واپس کرتا ہے، جس میں اسکور شامل ہوتے ہیں جو استفسار (query) اور دستاویز کے درمیان مماثلت کو درجہ بندی کرتے ہیں، اور اس کے ساتھ متعلقہ نمونوں کا ایک مجموعہ بھی فراہم کرتا ہے (یہاں، 5 بہترین مماثلات)۔  
+
+آئیے ان نتائج کو ایک `pandas.DataFrame` میں جمع کرتے ہیں تاکہ ہم انہیں آسانی سے ترتیب دے سکیں:
+
+```py
+import pandas as pd
+
+samples_df = pd.DataFrame.from_dict(samples)
+samples_df["scores"] = scores
+samples_df.sort_values("scores", ascending=False, inplace=True)
+```
+
+اب ہم ابتدائی چند قطاروں پر تکرار (iterate) کر سکتے ہیں تاکہ دیکھ سکیں کہ ہمارا استفسار (query) دستیاب تبصروں (comments) سے کس حد تک مطابقت رکھتا ہے:
+
+```py
+for _, row in samples_df.iterrows():
+    print(f"COMMENT: {row.comments}")
+    print(f"SCORE: {row.scores}")
+    print(f"TITLE: {row.title}")
+    print(f"URL: {row.html_url}")
+    print("=" * 50)
+    print()
+```
+
+```python out
+
+"""
+COMMENT: Requiring online connection is a deal breaker in some cases unfortunately so it'd be great if offline mode is added similar to how `transformers` loads models offline fine.
+
+@mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+SCORE: 25.505046844482422
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: The local dataset builders (csv, text , json and pandas) are now part of the `datasets` package since #1726 :)
+You can now use them offline
+```
+python
+datasets = load_dataset("text", data_files=data_files)
+```
+
+We'll do a new release soon
+SCORE: 24.555509567260742
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: I opened a PR that allows to reload modules that have already been loaded once even if there's no internet.
+
+Let me know if you know other ways that can make the offline mode experience better. I'd be happy to add them :)
+
+I already note the "freeze" modules option, to prevent local modules updates. It would be a cool feature.
+
+----------
+
+> @mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+
+Indeed `load_dataset` allows to load remote dataset script (squad, glue, etc.) but also you own local ones.
+For example if you have a dataset script at `./my_dataset/my_dataset.py` then you can do
+```
+python
+load_dataset("./my_dataset")
+```
+and the dataset script will generate your dataset once and for all.
+
+----------
+
+About I'm looking into having `csv`, `json`, `text`, `pandas` dataset builders already included in the `datasets` package, so that they are available offline by default, as opposed to the other datasets that require the script to be downloaded.
+cf #1724
+SCORE: 24.14896583557129
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: here is my way to load a dataset offline, but it **requires** an online machine
+1. (online machine)
+\`\`\`
+import datasets
+data = datasets.load_dataset(...)
+data.save_to_disk(/YOUR/DATASET/DIR)
+\`\`\`
+2. copy the dir from online to the offline machine
+3. (offline machine)
+\`\`\`
+import datasets
+data = datasets.load_from_disk(/SAVED/DATA/DIR)
+\`\`\`
+
+HTH.
+SCORE: 22.406635284423828
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+"""
+```
+
+Not bad! Our second hit seems to match the query.
+
+<Tip>
+
+✏️ **آزمائیں!** اپنا query بنائیں اور دیکھیں کہ کیا retrieved documents میں سے کوئی آپ کے سوال کا جواب دیتا ہے۔ ہو سکتا ہے آپ کو search کو وسیع کرنے کے لیے `k` parameter بڑھانا پڑے۔
+
+</Tip>
