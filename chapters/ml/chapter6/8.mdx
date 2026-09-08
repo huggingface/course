@@ -1,0 +1,562 @@
+# ഒരു ടോക്കണൈസർ ബ്ലോക്ക് ബ്ലോക്കായി നിർമ്മിക്കുന്നു[[building-a-tokenizer-block-by-block]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section8.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section8.ipynb"},
+]} />
+
+മുൻ ഭാഗങ്ങളിൽ നമ്മൾ കണ്ടതുപോലെ, ടോക്കണൈസേഷനിൽ പല ഘട്ടങ്ങൾ ഉൾപ്പെടുന്നു:
+
+- നോർമലൈസേഷൻ (Normalization) (ടെക്‌സ്‌റ്റിൽ ആവശ്യമെന്ന് കരുതുന്ന ഏത് ശുദ്ധീകരണവും — സ്‌പേസുകളോ ആക്‌സന്റുകളോ (accents) നീക്കം ചെയ്യുക, യൂണികോഡ് നോർമലൈസേഷൻ തുടങ്ങിയവ)
+- പ്രീ-ടോക്കണൈസേഷൻ (Pre-tokenization) (ഇൻപുട്ടിനെ വാക്കുകളായി വിഭജിക്കുക)
+- ഇൻപുട്ട് മോഡലിലൂടെ കടത്തിവിടുക (പ്രീ-ടോക്കണൈസ് ചെയ്ത വാക്കുകൾ ഉപയോഗിച്ച് ടോക്കണുകളുടെ ഒരു സീക്വൻസ് ഉണ്ടാക്കുക)
+- പോസ്‌റ്റ്-പ്രോസസ്സിംഗ് (Post-processing) (ടോക്കണൈസറിന്റെ പ്രത്യേക ടോക്കണുകൾ ചേർക്കുക, അറ്റൻഷൻ മാസ്‌കും ടോക്കൺ ടൈപ്പ് ID-കളും ജനറേറ്റ് ചെയ്യുക)
+
+ഓർമ്മപ്പെടുത്തലായി, മൊത്തത്തിലുള്ള പ്രക്രിയ ഒരിക്കൽ കൂടി ഇതാ:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="ടോക്കണൈസേഷൻ പൈപ്പ്‌ലൈൻ.">
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="ടോക്കണൈസേഷൻ പൈപ്പ്‌ലൈൻ.">
+</div>
+
+ഈ ഓരോ ഘട്ടത്തിനും പല ഓപ്‌ഷനുകൾ നൽകുന്ന തരത്തിലാണ് 🤗 Tokenizers ലൈബ്രറി നിർമ്മിച്ചിരിക്കുന്നത്; അവ നിങ്ങൾക്ക് ഇഷ്ടാനുസരണം കൂട്ടിച്ചേർത്ത് ഉപയോഗിക്കാം. [ഭാഗം 2](/course/chapter6/2)-ൽ നമ്മൾ ചെയ്തതുപോലെ പഴയൊരു ടോക്കണൈസറിൽ നിന്ന് പുതിയൊരു ടോക്കണൈസർ ട്രെയിൻ ചെയ്യുന്നതിന് പകരം, ഒരു ടോക്കണൈസർ പൂജ്യത്തിൽ നിന്ന് (from scratch) എങ്ങനെ നിർമ്മിക്കാമെന്ന് ഈ ഭാഗത്തിൽ നമ്മൾ കാണും. അതിനുശേഷം, നിങ്ങൾക്ക് ചിന്തിക്കാവുന്ന ഏതുതരം ടോക്കണൈസറും നിർമ്മിക്കാൻ നിങ്ങൾക്ക് കഴിയും!
+
+<Youtube id="MR8tZm5ViWU"/>
+
+കൂടുതൽ കൃത്യമായി പറഞ്ഞാൽ, ഒരു കേന്ദ്ര `Tokenizer` ക്ലാസിനെ ചുറ്റിപ്പറ്റിയാണ് ഈ ലൈബ്രറി നിർമ്മിച്ചിരിക്കുന്നത്; ബിൽഡിംഗ് ബ്ലോക്കുകൾ (building blocks) സബ്‌മൊഡ്യൂളുകളായി തരംതിരിച്ചിരിക്കുന്നു:
+
+- `normalizers`-ൽ, നിങ്ങൾക്ക് ഉപയോഗിക്കാവുന്ന എല്ലാത്തരം `Normalizer`-ഉം അടങ്ങിയിരിക്കുന്നു (പൂർണ്ണമായ ലിസ്‌റ്റ് [ഇവിടെ](https://huggingface.co/docs/tokenizers/api/normalizers)).
+- `pre_tokenizers`-ൽ, നിങ്ങൾക്ക് ഉപയോഗിക്കാവുന്ന എല്ലാത്തരം `PreTokenizer`-ഉം അടങ്ങിയിരിക്കുന്നു (പൂർണ്ണമായ ലിസ്‌റ്റ് [ഇവിടെ](https://huggingface.co/docs/tokenizers/api/pre-tokenizers)).
+- `models`-ൽ, `BPE`, `WordPiece`, `Unigram` തുടങ്ങി നിങ്ങൾക്ക് ഉപയോഗിക്കാവുന്ന വിവിധതരം `Model`-കൾ അടങ്ങിയിരിക്കുന്നു (പൂർണ്ണമായ ലിസ്‌റ്റ് [ഇവിടെ](https://huggingface.co/docs/tokenizers/api/models)).
+- `trainers`-ൽ, ഒരു കോർപ്പസിൽ (corpus) നിങ്ങളുടെ മോഡൽ ട്രെയിൻ ചെയ്യാൻ ഉപയോഗിക്കാവുന്ന വിവിധതരം `Trainer`-കൾ അടങ്ങിയിരിക്കുന്നു (ഓരോ തരം മോഡലിനും ഒന്ന്; പൂർണ്ണമായ ലിസ്‌റ്റ് [ഇവിടെ](https://huggingface.co/docs/tokenizers/api/trainers)).
+- `post_processors`-ൽ, നിങ്ങൾക്ക് ഉപയോഗിക്കാവുന്ന വിവിധതരം `PostProcessor`-കൾ അടങ്ങിയിരിക്കുന്നു (പൂർണ്ണമായ ലിസ്‌റ്റ് [ഇവിടെ](https://huggingface.co/docs/tokenizers/api/post-processors)).
+- `decoders`-ൽ, ടോക്കണൈസേഷന്റെ ഔട്ട്‌പുട്ടുകൾ ഡീകോഡ് ചെയ്യാൻ നിങ്ങൾക്ക് ഉപയോഗിക്കാവുന്ന വിവിധതരം `Decoder`-കൾ അടങ്ങിയിരിക്കുന്നു (പൂർണ്ണമായ ലിസ്‌റ്റ് [ഇവിടെ](https://huggingface.co/docs/tokenizers/components#decoders)).
+
+ബിൽഡിംഗ് ബ്ലോക്കുകളുടെ മുഴുവൻ ലിസ്‌റ്റും [ഇവിടെ](https://huggingface.co/docs/tokenizers/components) നിങ്ങൾക്ക് കാണാം.
+
+## ഒരു കോർപ്പസ് സ്വന്തമാക്കുന്നു[[acquiring-a-corpus]]
+
+നമ്മുടെ പുതിയ ടോക്കണൈസർ ട്രെയിൻ ചെയ്യാൻ, ഒരു ചെറിയ ടെക്‌സ്‌റ്റ് കോർപ്പസ് നമ്മൾ ഉപയോഗിക്കും (അങ്ങനെ ഉദാഹരണങ്ങൾ വേഗത്തിൽ റൺ ചെയ്യും). കോർപ്പസ് സ്വന്തമാക്കാനുള്ള ഘട്ടങ്ങൾ [ഈ അധ്യായത്തിന്റെ തുടക്കത്തിൽ](/course/chapter6/2) നമ്മൾ ചെയ്തതിന് സമാനമാണ്, എന്നാൽ ഇത്തവണ നമ്മൾ [WikiText-2](https://huggingface.co/datasets/wikitext) ഡേറ്റാസെറ്റ് ഉപയോഗിക്കും:
+
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("wikitext", name="wikitext-2-raw-v1", split="train")
+
+
+def get_training_corpus():
+    for i in range(0, len(dataset), 1000):
+        yield dataset[i : i + 1000]["text"]
+```
+
+`get_training_corpus()` എന്ന ഫംഗ്‌ഷൻ 1,000 ടെക്‌സ്‌റ്റുകൾ വീതമുള്ള ബാച്ചുകൾ യീൽഡ് ചെയ്യുന്ന (yield) ഒരു ജനറേറ്ററാണ് (generator); ടോക്കണൈസർ ട്രെയിൻ ചെയ്യാൻ നമ്മൾ ഇത് ഉപയോഗിക്കും.
+
+🤗 Tokenizers-ന് ടെക്‌സ്‌റ്റ് ഫയലുകളിൽ നേരിട്ടും ട്രെയിൻ ചെയ്യാൻ കഴിയും. WikiText-2-ലെ എല്ലാ ടെക്‌സ്‌റ്റുകളും/ഇൻപുട്ടുകളും അടങ്ങിയ, നമുക്ക് ലോക്കലായി ഉപയോഗിക്കാവുന്ന ഒരു ടെക്‌സ്‌റ്റ് ഫയൽ എങ്ങനെ ജനറേറ്റ് ചെയ്യാമെന്ന് ഇതാ:
+
+```python
+with open("wikitext-2.txt", "w", encoding="utf-8") as f:
+    for i in range(len(dataset)):
+        f.write(dataset[i]["text"] + "\n")
+```
+
+അടുത്തതായി, നിങ്ങളുടെ സ്വന്തം BERT, GPT-2, XLNet ടോക്കണൈസറുകൾ ബ്ലോക്ക് ബ്ലോക്കായി എങ്ങനെ നിർമ്മിക്കാമെന്ന് ഞങ്ങൾ കാണിച്ചുതരും. അത് മൂന്ന് പ്രധാന ടോക്കണൈസേഷൻ അൽഗോരിതങ്ങളുടെയും — WordPiece, BPE, Unigram — ഓരോ ഉദാഹരണം നമുക്ക് നൽകും. BERT-ൽ നിന്ന് തുടങ്ങാം!
+
+## ഒരു WordPiece ടോക്കണൈസർ പൂജ്യത്തിൽ നിന്ന് നിർമ്മിക്കുന്നു[[building-a-wordpiece-tokenizer-from-scratch]]
+
+🤗 Tokenizers ലൈബ്രറി ഉപയോഗിച്ച് ഒരു ടോക്കണൈസർ നിർമ്മിക്കാൻ, ഒരു `model`-ഓടെ ഒരു `Tokenizer` ഒബ്‌ജക്റ്റ് ഇൻസ്‌റ്റാൻഷിയേറ്റ് ചെയ്യുന്നതിൽ നിന്ന് നമ്മൾ തുടങ്ങുന്നു; തുടർന്ന് അതിന്റെ `normalizer`, `pre_tokenizer`, `post_processor`, `decoder` ആട്രിബ്യൂട്ടുകൾ നമുക്ക് വേണ്ട മൂല്യങ്ങളായി സെറ്റ് ചെയ്യുന്നു.
+
+ഈ ഉദാഹരണത്തിനായി, ഒരു WordPiece മോഡലോടുകൂടിയ ഒരു `Tokenizer` നമ്മൾ സൃഷ്ടിക്കും:
+
+```python
+from tokenizers import (
+    decoders,
+    models,
+    normalizers,
+    pre_tokenizers,
+    processors,
+    trainers,
+    Tokenizer,
+)
+
+tokenizer = Tokenizer(models.WordPiece(unk_token="[UNK]"))
+```
+
+മുമ്പ് കണ്ടിട്ടില്ലാത്ത അക്ഷരങ്ങൾ (characters) കണ്ടുമുട്ടുമ്പോൾ എന്ത് റിട്ടേൺ ചെയ്യണമെന്ന് മോഡലിന് അറിയാൻ നമ്മൾ `unk_token` നിർദ്ദേശിക്കണം. ഇവിടെ നമുക്ക് സെറ്റ് ചെയ്യാവുന്ന മറ്റ് ആർഗ്യുമെന്റുകളിൽ നമ്മുടെ മോഡലിന്റെ `vocab`-ഉം (നമ്മൾ മോഡൽ ട്രെയിൻ ചെയ്യാൻ പോകുന്നതിനാൽ ഇത് സെറ്റ് ചെയ്യേണ്ടതില്ല), ഓരോ വാക്കിന്റെയും പരമാവധി ദൈർഘ്യം നിർദ്ദേശിക്കുന്ന `max_input_chars_per_word`-ഉം ഉൾപ്പെടുന്നു (നൽകിയ മൂല്യത്തെക്കാൾ നീളമുള്ള വാക്കുകൾ വിഭജിക്കപ്പെടും).
+
+ടോക്കണൈസേഷന്റെ ആദ്യ ഘട്ടം നോർമലൈസേഷനാണ്, അതിനാൽ അതിൽ നിന്ന് തുടങ്ങാം. BERT വ്യാപകമായി ഉപയോഗിക്കപ്പെടുന്നതിനാൽ, BERT-നായി നമുക്ക് സെറ്റ് ചെയ്യാവുന്ന ക്ലാസിക് ഓപ്‌ഷനുകളോടുകൂടിയ ഒരു `BertNormalizer` ലഭ്യമാണ്: പേരിൽ നിന്നുതന്നെ അർത്ഥം വ്യക്തമാകുന്ന `lowercase`, `strip_accents`; എല്ലാ കൺട്രോൾ കാരക്ടറുകളും നീക്കം ചെയ്യാനും ആവർത്തിക്കുന്ന സ്‌പേസുകളെ ഒറ്റ സ്‌പേസാക്കി മാറ്റാനുമുള്ള `clean_text`; ചൈനീസ് അക്ഷരങ്ങൾക്ക് ചുറ്റും സ്‌പേസുകൾ ഇടുന്ന `handle_chinese_chars`. `bert-base-uncased` ടോക്കണൈസർ പുനഃസൃഷ്ടിക്കാൻ, ഈ നോർമലൈസർ സെറ്റ് ചെയ്താൽ മാത്രം മതി:
+
+```python
+tokenizer.normalizer = normalizers.BertNormalizer(lowercase=True)
+```
+
+എന്നാൽ പൊതുവേ പറഞ്ഞാൽ, ഒരു പുതിയ ടോക്കണൈസർ നിർമ്മിക്കുമ്പോൾ ഇത്രയും സൗകര്യപ്രദമായ, 🤗 Tokenizers ലൈബ്രറിയിൽ ഇതിനകം ഇംപ്ലിമെന്റ് ചെയ്തിട്ടുള്ള ഒരു നോർമലൈസർ നിങ്ങൾക്ക് ലഭ്യമാകണമെന്നില്ല -- അതിനാൽ BERT നോർമലൈസർ സ്വന്തമായി (by hand) എങ്ങനെ സൃഷ്ടിക്കാമെന്ന് നോക്കാം. ലൈബ്രറി ഒരു `Lowercase` നോർമലൈസറും ഒരു `StripAccents` നോർമലൈസറും നൽകുന്നു, കൂടാതെ ഒരു `Sequence` ഉപയോഗിച്ച് പല നോർമലൈസറുകൾ നിങ്ങൾക്ക് കൂട്ടിച്ചേർക്കാം (compose):
+
+```python
+tokenizer.normalizer = normalizers.Sequence(
+    [normalizers.NFD(), normalizers.Lowercase(), normalizers.StripAccents()]
+)
+```
+
+ഒരു `NFD` യൂണികോഡ് നോർമലൈസറും നമ്മൾ ഉപയോഗിക്കുന്നുണ്ട്; അല്ലാത്തപക്ഷം `StripAccents` നോർമലൈസർ ആക്‌സന്റുള്ള അക്ഷരങ്ങളെ ശരിയായി തിരിച്ചറിയില്ല, അതിനാൽ അവയെ നീക്കം ചെയ്യുകയുമില്ല.
+
+നമ്മൾ മുമ്പ് കണ്ടതുപോലെ, നൽകിയ ഒരു ടെക്‌സ്‌റ്റിൽ അത് ഉണ്ടാക്കുന്ന മാറ്റങ്ങൾ പരിശോധിക്കാൻ `normalizer`-ന്റെ `normalize_str()` മെത്തേഡ് നമുക്ക് ഉപയോഗിക്കാം:
+
+```python
+print(tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+```
+
+```python out
+hello how are u?
+```
+
+> [!TIP]
+> **കൂടുതൽ മുന്നോട്ട് പോകാൻ** യൂണികോഡ് കാരക്ടർ `u"\u0085"` അടങ്ങിയ ഒരു സ്‌ട്രിംഗിൽ മുൻപറഞ്ഞ നോർമലൈസറുകളുടെ രണ്ട് പതിപ്പുകളും നിങ്ങൾ പരീക്ഷിച്ചാൽ, ഈ രണ്ട് നോർമലൈസറുകളും കൃത്യമായി തുല്യമല്ലെന്ന് നിങ്ങൾ തീർച്ചയായും ശ്രദ്ധിക്കും.
+> `normalizers.Sequence` ഉപയോഗിച്ചുള്ള പതിപ്പ് അമിതമായി സങ്കീർണ്ണമാക്കാതിരിക്കാൻ, `clean_text` ആർഗ്യുമെന്റ് `True` ആയി സെറ്റ് ചെയ്യുമ്പോൾ `BertNormalizer`-ന് ആവശ്യമായ Regex റീപ്ലേസ്‌മെന്റുകൾ നമ്മൾ ഉൾപ്പെടുത്തിയിട്ടില്ല - അതാണ് ഡിഫോൾട്ട് സ്വഭാവം. എന്നാൽ വിഷമിക്കേണ്ട: നോർമലൈസർ സീക്വൻസിലേക്ക് രണ്ട് `normalizers.Replace`-കൾ ചേർത്തുകൊണ്ട്, സൗകര്യപ്രദമായ `BertNormalizer` ഉപയോഗിക്കാതെതന്നെ കൃത്യമായി അതേ നോർമലൈസേഷൻ നേടാൻ സാധിക്കും.
+
+അടുത്തത് പ്രീ-ടോക്കണൈസേഷൻ ഘട്ടമാണ്. ഇവിടെയും, നമുക്ക് ഉപയോഗിക്കാവുന്ന ഒരു മുൻകൂട്ടി നിർമ്മിച്ച `BertPreTokenizer` ഉണ്ട്:
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+```
+
+അല്ലെങ്കിൽ നമുക്ക് അത് പൂജ്യത്തിൽ നിന്ന് നിർമ്മിക്കാം:
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+```
+
+`Whitespace` പ്രീ-ടോക്കണൈസർ വൈറ്റ്‌സ്‌പേസിലും, അക്ഷരങ്ങളോ അക്കങ്ങളോ അണ്ടർസ്‌കോർ കാരക്ടറോ അല്ലാത്ത എല്ലാ കാരക്ടറുകളിലും വിഭജിക്കുന്നു എന്നത് ശ്രദ്ധിക്കുക; അതിനാൽ സാങ്കേതികമായി അത് വൈറ്റ്‌സ്‌പേസിലും ചിഹ്നങ്ങളിലും (punctuation) വിഭജിക്കുന്നു:
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+നിങ്ങൾക്ക് വൈറ്റ്‌സ്‌പേസിൽ മാത്രം വിഭജിക്കണമെങ്കിൽ, പകരം `WhitespaceSplit` പ്രീ-ടോക്കണൈസർ ഉപയോഗിക്കണം:
+
+```python
+pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[("Let's", (0, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre-tokenizer.', (14, 28))]
+```
+
+നോർമലൈസറുകളുടെ കാര്യത്തിലെന്നപോലെ, പല പ്രീ-ടോക്കണൈസറുകൾ കൂട്ടിച്ചേർക്കാൻ നിങ്ങൾക്ക് ഒരു `Sequence` ഉപയോഗിക്കാം:
+
+```python
+pre_tokenizer = pre_tokenizers.Sequence(
+    [pre_tokenizers.WhitespaceSplit(), pre_tokenizers.Punctuation()]
+)
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+ടോക്കണൈസേഷൻ പൈപ്പ്‌ലൈനിലെ അടുത്ത ഘട്ടം ഇൻപുട്ടുകൾ മോഡലിലൂടെ കടത്തിവിടുകയാണ്. ഇനിഷ്യലൈസേഷനിൽ നമ്മുടെ മോഡൽ നമ്മൾ ഇതിനകം നിർദ്ദേശിച്ചിട്ടുണ്ട്, എന്നാൽ അത് ഇനിയും ട്രെയിൻ ചെയ്യേണ്ടതുണ്ട്; അതിന് ഒരു `WordPieceTrainer` ആവശ്യമാണ്. 🤗 Tokenizers-ൽ ഒരു ട്രെയിനർ ഇൻസ്‌റ്റാൻഷിയേറ്റ് ചെയ്യുമ്പോൾ ഓർക്കേണ്ട പ്രധാന കാര്യം, നിങ്ങൾ ഉപയോഗിക്കാൻ ഉദ്ദേശിക്കുന്ന എല്ലാ പ്രത്യേക ടോക്കണുകളും അതിന് നൽകണം എന്നതാണ് -- അല്ലാത്തപക്ഷം, അവ ട്രെയിനിംഗ് കോർപ്പസിൽ ഇല്ലാത്തതിനാൽ അത് അവയെ വൊക്കാബുലറിയിൽ ചേർക്കില്ല:
+
+```python
+special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
+trainer = trainers.WordPieceTrainer(vocab_size=25000, special_tokens=special_tokens)
+```
+
+`vocab_size`-ഉം `special_tokens`-ഉം നിർദ്ദേശിക്കുന്നതിനൊപ്പം, `min_frequency` (വൊക്കാബുലറിയിൽ ഉൾപ്പെടാൻ ഒരു ടോക്കൺ എത്ര തവണ പ്രത്യക്ഷപ്പെടണം എന്നത്) സെറ്റ് ചെയ്യാനോ `continuing_subword_prefix` മാറ്റാനോ (`##`-ൽ നിന്ന് വ്യത്യസ്തമായ എന്തെങ്കിലും ഉപയോഗിക്കണമെങ്കിൽ) നമുക്ക് കഴിയും.
+
+നമ്മൾ മുമ്പ് നിർവചിച്ച ഇറ്ററേറ്റർ ഉപയോഗിച്ച് നമ്മുടെ മോഡൽ ട്രെയിൻ ചെയ്യാൻ, ഈ കമാൻഡ് എക്‌സിക്യൂട്ട് ചെയ്താൽ മാത്രം മതി:
+
+```python
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+നമ്മുടെ ടോക്കണൈസർ ട്രെയിൻ ചെയ്യാൻ ടെക്‌സ്‌റ്റ് ഫയലുകളും നമുക്ക് ഉപയോഗിക്കാം; അത് ഇങ്ങനെയായിരിക്കും (അതിനുമുമ്പ് ഒരു ശൂന്യമായ `WordPiece` ഉപയോഗിച്ച് മോഡൽ നമ്മൾ വീണ്ടും ഇനിഷ്യലൈസ് ചെയ്യുന്നു):
+
+```python
+tokenizer.model = models.WordPiece(unk_token="[UNK]")
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+രണ്ട് സാഹചര്യങ്ങളിലും, തുടർന്ന് `encode()` മെത്തേഡ് വിളിച്ചുകൊണ്ട് ഒരു ടെക്‌സ്‌റ്റിൽ ടോക്കണൈസർ നമുക്ക് പരീക്ഷിക്കാം:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.']
+```
+
+ലഭിച്ച `encoding` ഒരു `Encoding` ആണ്; ടോക്കണൈസറിന്റെ ആവശ്യമായ എല്ലാ ഔട്ട്‌പുട്ടുകളും അതിന്റെ വിവിധ ആട്രിബ്യൂട്ടുകളിൽ ഇത് ഉൾക്കൊള്ളുന്നു: `ids`, `type_ids`, `tokens`, `offsets`, `attention_mask`, `special_tokens_mask`, `overflowing`.
+
+ടോക്കണൈസേഷൻ പൈപ്പ്‌ലൈനിലെ അവസാന ഘട്ടം പോസ്‌റ്റ്-പ്രോസസ്സിംഗ് ആണ്. തുടക്കത്തിൽ `[CLS]` ടോക്കണും അവസാനത്തിൽ (അല്ലെങ്കിൽ ഒരു വാക്യജോഡിയാണെങ്കിൽ ഓരോ വാക്യത്തിനും ശേഷം) `[SEP]` ടോക്കണും നമ്മൾ ചേർക്കണം. ഇതിനായി ഒരു `TemplateProcessor` നമ്മൾ ഉപയോഗിക്കും, എന്നാൽ ആദ്യം വൊക്കാബുലറിയിലെ `[CLS]`, `[SEP]` ടോക്കണുകളുടെ ID-കൾ നമുക്ക് അറിയേണ്ടതുണ്ട്:
+
+```python
+cls_token_id = tokenizer.token_to_id("[CLS]")
+sep_token_id = tokenizer.token_to_id("[SEP]")
+print(cls_token_id, sep_token_id)
+```
+
+```python out
+(2, 3)
+```
+
+`TemplateProcessor`-നുള്ള ടെംപ്ലേറ്റ് എഴുതാൻ, ഒരൊറ്റ വാക്യത്തെയും ഒരു വാക്യജോഡിയെയും എങ്ങനെ കൈകാര്യം ചെയ്യണമെന്ന് നമ്മൾ നിർദ്ദേശിക്കണം. രണ്ടിനും, നമ്മൾ ഉപയോഗിക്കാൻ ആഗ്രഹിക്കുന്ന പ്രത്യേക ടോക്കണുകൾ എഴുതുന്നു; ആദ്യത്തെ (അല്ലെങ്കിൽ ഒറ്റ) വാക്യത്തെ `$A` പ്രതിനിധീകരിക്കുന്നു, രണ്ടാമത്തെ വാക്യത്തെ (ഒരു ജോഡി എൻകോഡ് ചെയ്യുകയാണെങ്കിൽ) `$B` പ്രതിനിധീകരിക്കുന്നു. ഇവയിൽ ഓരോന്നിനും (പ്രത്യേക ടോക്കണുകൾക്കും വാക്യങ്ങൾക്കും), ഒരു കോളനുശേഷം (colon) അനുബന്ധ ടോക്കൺ ടൈപ്പ് ID-യും നമ്മൾ നിർദ്ദേശിക്കുന്നു.
+
+അങ്ങനെ, ക്ലാസിക് BERT ടെംപ്ലേറ്റ് ഇനിപ്പറയുന്ന രീതിയിൽ നിർവചിക്കപ്പെടുന്നു:
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single=f"[CLS]:0 $A:0 [SEP]:0",
+    pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
+    special_tokens=[("[CLS]", cls_token_id), ("[SEP]", sep_token_id)],
+)
+```
+
+പ്രത്യേക ടോക്കണുകളുടെ ID-കൾ നമ്മൾ കൈമാറേണ്ടതുണ്ട് എന്നത് ശ്രദ്ധിക്കുക; അങ്ങനെയാണ് ടോക്കണൈസറിന് അവയെ ശരിയായി അവയുടെ ID-കളാക്കി മാറ്റാൻ കഴിയുന്നത്.
+
+ഇത് ചേർത്തുകഴിഞ്ഞാൽ, നമ്മുടെ മുൻ ഉദാഹരണത്തിലേക്ക് തിരികെ പോയാൽ ഇതായിരിക്കും ഫലം:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.', '[SEP]']
+```
+
+ഒരു വാക്യജോഡിയിലും നമുക്ക് ശരിയായ ഫലം ലഭിക്കുന്നു:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences.")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '...', '[SEP]', 'on', 'a', 'pair', 'of', 'sentences', '.', '[SEP]']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+```
+
+ഈ ടോക്കണൈസർ പൂജ്യത്തിൽ നിന്ന് നിർമ്മിക്കുന്നത് നമ്മൾ ഏതാണ്ട് പൂർത്തിയാക്കി -- അവസാന ഘട്ടം ഒരു ഡീകോഡർ ഉൾപ്പെടുത്തുകയാണ്:
+
+```python
+tokenizer.decoder = decoders.WordPiece(prefix="##")
+```
+
+നമ്മുടെ മുൻ `encoding`-ൽ ഇത് പരീക്ഷിക്കാം:
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+```python out
+"let's test this tokenizer... on a pair of sentences."
+```
+
+കൊള്ളാം! നമ്മുടെ ടോക്കണൈസർ ഒരൊറ്റ JSON ഫയലിൽ ഇങ്ങനെ സേവ് ചെയ്യാം:
+
+```python
+tokenizer.save("tokenizer.json")
+```
+
+തുടർന്ന്, `from_file()` മെത്തേഡ് ഉപയോഗിച്ച് ആ ഫയൽ ഒരു `Tokenizer` ഒബ്‌ജക്റ്റിലേക്ക് നമുക്ക് വീണ്ടും ലോഡ് ചെയ്യാം:
+
+```python
+new_tokenizer = Tokenizer.from_file("tokenizer.json")
+```
+
+ഈ ടോക്കണൈസർ 🤗 Transformers-ൽ ഉപയോഗിക്കാൻ, അതിനെ ഒരു `PreTrainedTokenizerFast`-ൽ പൊതിയേണ്ടതുണ്ട് (wrap). നമുക്ക് ഒന്നുകിൽ ജനറിക് ക്ലാസ് ഉപയോഗിക്കാം, അല്ലെങ്കിൽ നമ്മുടെ ടോക്കണൈസർ നിലവിലുള്ള ഒരു മോഡലിനോട് യോജിക്കുന്നതാണെങ്കിൽ ആ ക്ലാസ് ഉപയോഗിക്കാം (ഇവിടെ, `BertTokenizerFast`). തീർത്തും പുതിയൊരു ടോക്കണൈസർ നിർമ്മിക്കാൻ നിങ്ങൾ ഈ പാഠം പ്രയോഗിക്കുകയാണെങ്കിൽ, ആദ്യത്തെ ഓപ്‌ഷൻ നിങ്ങൾ ഉപയോഗിക്കേണ്ടിവരും.
+
+ടോക്കണൈസറിനെ ഒരു `PreTrainedTokenizerFast`-ൽ പൊതിയാൻ, നമ്മൾ നിർമ്മിച്ച ടോക്കണൈസർ `tokenizer_object` ആയി നൽകുകയോ, നമ്മൾ സേവ് ചെയ്ത ടോക്കണൈസർ ഫയൽ `tokenizer_file` ആയി നൽകുകയോ ചെയ്യാം. ഓർക്കേണ്ട പ്രധാന കാര്യം, എല്ലാ പ്രത്യേക ടോക്കണുകളും നമ്മൾ സ്വയം (manually) സെറ്റ് ചെയ്യണം എന്നതാണ്; കാരണം ഏത് ടോക്കണാണ് മാസ്‌ക് ടോക്കൺ, ഏതാണ് `[CLS]` ടോക്കൺ എന്നിങ്ങനെയുള്ള കാര്യങ്ങൾ `tokenizer` ഒബ്‌ജക്റ്റിൽ നിന്ന് ഊഹിച്ചെടുക്കാൻ ആ ക്ലാസിന് കഴിയില്ല:
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    # tokenizer_file="tokenizer.json", # You can load from the tokenizer file, alternatively
+    unk_token="[UNK]",
+    pad_token="[PAD]",
+    cls_token="[CLS]",
+    sep_token="[SEP]",
+    mask_token="[MASK]",
+)
+```
+
+നിങ്ങൾ ഒരു നിശ്ചിത ടോക്കണൈസർ ക്ലാസ് (`BertTokenizerFast` പോലെ) ഉപയോഗിക്കുകയാണെങ്കിൽ, ഡിഫോൾട്ടുകളിൽ നിന്ന് വ്യത്യസ്തമായ പ്രത്യേക ടോക്കണുകൾ മാത്രം നിർദ്ദേശിച്ചാൽ മതി (ഇവിടെ, ഒന്നുമില്ല):
+
+```python
+from transformers import BertTokenizerFast
+
+wrapped_tokenizer = BertTokenizerFast(tokenizer_object=tokenizer)
+```
+
+തുടർന്ന് മറ്റേതൊരു 🤗 Transformers ടോക്കണൈസറിനെയും പോലെ ഈ ടോക്കണൈസർ നിങ്ങൾക്ക് ഉപയോഗിക്കാം. `save_pretrained()` മെത്തേഡ് ഉപയോഗിച്ച് ഇത് സേവ് ചെയ്യാം, അല്ലെങ്കിൽ `push_to_hub()` മെത്തേഡ് ഉപയോഗിച്ച് Hub-ലേക്ക് അപ്‌ലോഡ് ചെയ്യാം.
+
+ഒരു WordPiece ടോക്കണൈസർ എങ്ങനെ നിർമ്മിക്കാമെന്ന് നമ്മൾ കണ്ടുകഴിഞ്ഞു; ഇനി ഒരു BPE ടോക്കണൈസറിനും അതുതന്നെ ചെയ്യാം. എല്ലാ ഘട്ടങ്ങളും നിങ്ങൾക്ക് അറിയാവുന്നതിനാൽ നമ്മൾ കുറച്ചുകൂടി വേഗത്തിൽ പോകും, വ്യത്യാസങ്ങൾ മാത്രം എടുത്തുകാണിക്കും.
+
+## ഒരു BPE ടോക്കണൈസർ പൂജ്യത്തിൽ നിന്ന് നിർമ്മിക്കുന്നു[[building-a-bpe-tokenizer-from-scratch]]
+
+ഇനി നമുക്ക് ഒരു GPT-2 ടോക്കണൈസർ നിർമ്മിക്കാം. BERT ടോക്കണൈസറിന്റെ കാര്യത്തിലെന്നപോലെ, ഒരു BPE മോഡലോടെ ഒരു `Tokenizer` ഇനിഷ്യലൈസ് ചെയ്യുന്നതിൽ നിന്ന് നമ്മൾ തുടങ്ങുന്നു:
+
+```python
+tokenizer = Tokenizer(models.BPE())
+```
+
+BERT-ന്റെ കാര്യത്തിലെന്നപോലെ, നമ്മുടെ കൈയിൽ ഒരു വൊക്കാബുലറി ഉണ്ടായിരുന്നെങ്കിൽ അതുപയോഗിച്ച് ഈ മോഡൽ ഇനിഷ്യലൈസ് ചെയ്യാമായിരുന്നു (ആ സാഹചര്യത്തിൽ `vocab`-ഉം `merges`-ഉം നമ്മൾ നൽകേണ്ടിവരും), എന്നാൽ നമ്മൾ പൂജ്യത്തിൽ നിന്ന് ട്രെയിൻ ചെയ്യാൻ പോകുന്നതിനാൽ അത് ചെയ്യേണ്ടതില്ല. ഒരു `unk_token` നിർദ്ദേശിക്കേണ്ട ആവശ്യവുമില്ല, കാരണം GPT-2 ബൈറ്റ്-ലെവൽ BPE ഉപയോഗിക്കുന്നു, അതിന് അത് ആവശ്യമില്ല.
+
+GPT-2 ഒരു നോർമലൈസർ ഉപയോഗിക്കുന്നില്ല, അതിനാൽ ആ ഘട്ടം ഒഴിവാക്കി നേരിട്ട് പ്രീ-ടോക്കണൈസേഷനിലേക്ക് പോകാം:
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+```
+
+ഇവിടെ `ByteLevel`-ന് നമ്മൾ ചേർത്ത ഓപ്‌ഷൻ, ഒരു വാക്യത്തിന്റെ തുടക്കത്തിൽ സ്‌പേസ് ചേർക്കാതിരിക്കാനുള്ളതാണ് (അല്ലാത്തപക്ഷം അതാണ് ഡിഫോൾട്ട്). മുമ്പത്തെപ്പോലെ ഒരു ഉദാഹരണ ടെക്‌സ്‌റ്റിന്റെ പ്രീ-ടോക്കണൈസേഷൻ നമുക്ക് നോക്കാം:
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test pre-tokenization!")
+```
+
+```python out
+[('Let', (0, 3)), ("'s", (3, 5)), ('Ġtest', (5, 10)), ('Ġpre', (10, 14)), ('-', (14, 15)),
+ ('tokenization', (15, 27)), ('!', (27, 28))]
+```
+
+അടുത്തത് മോഡലാണ്, അതിന് ട്രെയിനിംഗ് ആവശ്യമാണ്. GPT-2-ന്, ഒരേയൊരു പ്രത്യേക ടോക്കൺ end-of-text ടോക്കണാണ്:
+
+```python
+trainer = trainers.BpeTrainer(vocab_size=25000, special_tokens=["<|endoftext|>"])
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+`WordPieceTrainer`-ന്റെ കാര്യത്തിലെന്നപോലെ, `vocab_size`-ഉം `special_tokens`-ഉം കൂടാതെ, വേണമെങ്കിൽ `min_frequency` നമുക്ക് നിർദ്ദേശിക്കാം; അല്ലെങ്കിൽ ഒരു end-of-word സഫിക്‌സ് (`</w>` പോലെ) ഉണ്ടെങ്കിൽ, അത് `end_of_word_suffix` ഉപയോഗിച്ച് സെറ്റ് ചെയ്യാം.
+
+ഈ ടോക്കണൈസറും ടെക്‌സ്‌റ്റ് ഫയലുകളിൽ ട്രെയിൻ ചെയ്യാം:
+
+```python
+tokenizer.model = models.BPE()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+ഒരു സാമ്പിൾ ടെക്‌സ്‌റ്റിന്റെ ടോക്കണൈസേഷൻ നമുക്ക് നോക്കാം:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['L', 'et', "'", 's', 'Ġtest', 'Ġthis', 'Ġto', 'ken', 'izer', '.']
+```
+
+GPT-2 ടോക്കണൈസറിനുള്ള ബൈറ്റ്-ലെവൽ പോസ്‌റ്റ്-പ്രോസസ്സിംഗ് നമ്മൾ ഇനിപ്പറയുന്ന രീതിയിൽ പ്രയോഗിക്കുന്നു:
+
+```python
+tokenizer.post_processor = processors.ByteLevel(trim_offsets=False)
+```
+
+`trim_offsets = False` ഓപ്‌ഷൻ, 'Ġ'-യിൽ തുടങ്ങുന്ന ടോക്കണുകളുടെ ഓഫ്‌സെറ്റുകൾ (offsets) അതേപടി വിടണമെന്ന് പോസ്‌റ്റ്-പ്രോസസറിനോട് പറയുന്നു: ഇങ്ങനെ ചെയ്യുമ്പോൾ ഓഫ്‌സെറ്റുകളുടെ തുടക്കം വാക്കിന്റെ ആദ്യ അക്ഷരത്തിലേക്കല്ല, വാക്കിന് മുമ്പുള്ള സ്‌പേസിലേക്കാണ് ചൂണ്ടുന്നത് (കാരണം സാങ്കേതികമായി സ്‌പേസ് ടോക്കണിന്റെ ഭാഗമാണ്). നമ്മൾ ഇപ്പോൾ എൻകോഡ് ചെയ്ത ടെക്‌സ്‌റ്റ് ഉപയോഗിച്ച് ഫലം നോക്കാം; ഇവിടെ `'Ġtest'` എന്നത് ഇൻഡെക്‌സ് 4-ലെ ടോക്കണാണ്:
+
+```python
+sentence = "Let's test this tokenizer."
+encoding = tokenizer.encode(sentence)
+start, end = encoding.offsets[4]
+sentence[start:end]
+```
+
+```python out
+' test'
+```
+
+അവസാനമായി, ഒരു ബൈറ്റ്-ലെവൽ ഡീകോഡർ നമ്മൾ ചേർക്കുന്നു:
+
+```python
+tokenizer.decoder = decoders.ByteLevel()
+```
+
+അത് ശരിയായി പ്രവർത്തിക്കുന്നുണ്ടെന്ന് നമുക്ക് ഒന്നുകൂടി ഉറപ്പുവരുത്താം:
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+```python out
+"Let's test this tokenizer."
+```
+
+കൊള്ളാം! ഇപ്പോൾ പൂർത്തിയായതിനാൽ, മുമ്പത്തെപ്പോലെ ടോക്കണൈസർ സേവ് ചെയ്യാം, കൂടാതെ 🤗 Transformers-ൽ ഉപയോഗിക്കണമെങ്കിൽ ഒരു `PreTrainedTokenizerFast`-ലോ `GPT2TokenizerFast`-ലോ പൊതിയാം:
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<|endoftext|>",
+    eos_token="<|endoftext|>",
+)
+```
+
+അല്ലെങ്കിൽ:
+
+```python
+from transformers import GPT2TokenizerFast
+
+wrapped_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer)
+```
+
+അവസാന ഉദാഹരണമായി, ഒരു Unigram ടോക്കണൈസർ പൂജ്യത്തിൽ നിന്ന് എങ്ങനെ നിർമ്മിക്കാമെന്ന് ഞങ്ങൾ കാണിച്ചുതരും.
+
+## ഒരു Unigram ടോക്കണൈസർ പൂജ്യത്തിൽ നിന്ന് നിർമ്മിക്കുന്നു[[building-a-unigram-tokenizer-from-scratch]]
+
+ഇനി നമുക്ക് ഒരു XLNet ടോക്കണൈസർ നിർമ്മിക്കാം. മുൻ ടോക്കണൈസറുകളുടെ കാര്യത്തിലെന്നപോലെ, ഒരു Unigram മോഡലോടെ ഒരു `Tokenizer` ഇനിഷ്യലൈസ് ചെയ്യുന്നതിൽ നിന്ന് നമ്മൾ തുടങ്ങുന്നു:
+
+```python
+tokenizer = Tokenizer(models.Unigram())
+```
+
+ഇവിടെയും, നമ്മുടെ കൈയിൽ ഒരു വൊക്കാബുലറി ഉണ്ടായിരുന്നെങ്കിൽ അതുപയോഗിച്ച് ഈ മോഡൽ ഇനിഷ്യലൈസ് ചെയ്യാമായിരുന്നു.
+
+നോർമലൈസേഷനായി, XLNet ഏതാനും റീപ്ലേസ്‌മെന്റുകൾ ഉപയോഗിക്കുന്നു (ഇവ SentencePiece-ൽ നിന്ന് വരുന്നവയാണ്):
+
+```python
+from tokenizers import Regex
+
+tokenizer.normalizer = normalizers.Sequence(
+    [
+        normalizers.Replace("``", '"'),
+        normalizers.Replace("''", '"'),
+        normalizers.NFKD(),
+        normalizers.StripAccents(),
+        normalizers.Replace(Regex(" {2,}"), " "),
+    ]
+)
+```
+
+ഇത് <code>``</code>, <code>''</code> എന്നിവയെ <code>"</code> ആക്കിയും, രണ്ടോ അതിലധികമോ സ്‌പേസുകളുടെ ഏത് സീക്വൻസിനെയും ഒറ്റ സ്‌പേസാക്കിയും മാറ്റുന്നു; കൂടാതെ ടോക്കണൈസ് ചെയ്യേണ്ട ടെക്‌സ്‌റ്റുകളിലെ ആക്‌സന്റുകൾ നീക്കം ചെയ്യുകയും ചെയ്യുന്നു.
+
+ഏതൊരു SentencePiece ടോക്കണൈസറിനും ഉപയോഗിക്കേണ്ട പ്രീ-ടോക്കണൈസർ `Metaspace` ആണ്:
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
+```
+
+മുമ്പത്തെപ്പോലെ ഒരു ഉദാഹരണ ടെക്‌സ്‌റ്റിന്റെ പ്രീ-ടോക്കണൈസേഷൻ നമുക്ക് നോക്കാം:
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test the pre-tokenizer!")
+```
+
+```python out
+[("▁Let's", (0, 5)), ('▁test', (5, 10)), ('▁the', (10, 14)), ('▁pre-tokenizer!', (14, 29))]
+```
+
+അടുത്തത് മോഡലാണ്, അതിന് ട്രെയിനിംഗ് ആവശ്യമാണ്. XLNet-ന് കുറച്ചധികം പ്രത്യേക ടോക്കണുകളുണ്ട്:
+
+```python
+special_tokens = ["<cls>", "<sep>", "<unk>", "<pad>", "<mask>", "<s>", "</s>"]
+trainer = trainers.UnigramTrainer(
+    vocab_size=25000, special_tokens=special_tokens, unk_token="<unk>"
+)
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+`UnigramTrainer`-ന് മറക്കാൻ പാടില്ലാത്ത വളരെ പ്രധാനപ്പെട്ട ഒരു ആർഗ്യുമെന്റാണ് `unk_token`. Unigram അൽഗോരിതത്തിന് പ്രത്യേകമായ മറ്റ് ആർഗ്യുമെന്റുകളും നമുക്ക് നൽകാം; ഉദാഹരണത്തിന്, ടോക്കണുകൾ നീക്കം ചെയ്യുന്ന ഓരോ ഘട്ടത്തിനുമുള്ള `shrinking_factor` (ഡിഫോൾട്ട് 0.75) അല്ലെങ്കിൽ ഒരു ടോക്കണിന്റെ പരമാവധി ദൈർഘ്യം നിർദ്ദേശിക്കാനുള്ള `max_piece_length` (ഡിഫോൾട്ട് 16).
+
+ഈ ടോക്കണൈസറും ടെക്‌സ്‌റ്റ് ഫയലുകളിൽ ട്രെയിൻ ചെയ്യാം:
+
+```python
+tokenizer.model = models.Unigram()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+ഒരു സാമ്പിൾ ടെക്‌സ്‌റ്റിന്റെ ടോക്കണൈസേഷൻ നമുക്ക് നോക്കാം:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+```python out
+['▁Let', "'", 's', '▁test', '▁this', '▁to', 'ken', 'izer', '.']
+```
+
+XLNet-ന്റെ ഒരു സവിശേഷത, അത് `<cls>` ടോക്കൺ വാക്യത്തിന്റെ അവസാനത്തിൽ, 2 എന്ന ടൈപ്പ് ID-യോടെ (മറ്റ് ടോക്കണുകളിൽ നിന്ന് വേർതിരിക്കാൻ) വയ്ക്കുന്നു എന്നതാണ്. അതിന്റെ ഫലമായി, പാഡിംഗ് ഇടതുവശത്താണ്. BERT-ന്റെ കാര്യത്തിലെന്നപോലെ, എല്ലാ പ്രത്യേക ടോക്കണുകളും ടോക്കൺ ടൈപ്പ് ID-കളും ഒരു ടെംപ്ലേറ്റ് ഉപയോഗിച്ച് നമുക്ക് കൈകാര്യം ചെയ്യാം, എന്നാൽ ആദ്യം `<cls>`, `<sep>` ടോക്കണുകളുടെ ID-കൾ നമ്മൾ നേടണം:
+
+```python
+cls_token_id = tokenizer.token_to_id("<cls>")
+sep_token_id = tokenizer.token_to_id("<sep>")
+print(cls_token_id, sep_token_id)
+```
+
+```python out
+0 1
+```
+
+ടെംപ്ലേറ്റ് ഇങ്ങനെയാണ്:
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single="$A:0 <sep>:0 <cls>:2",
+    pair="$A:0 <sep>:0 $B:1 <sep>:1 <cls>:2",
+    special_tokens=[("<sep>", sep_token_id), ("<cls>", cls_token_id)],
+)
+```
+
+ഒരു വാക്യജോഡി എൻകോഡ് ചെയ്തുകൊണ്ട് അത് പ്രവർത്തിക്കുന്നുണ്ടെന്ന് നമുക്ക് പരീക്ഷിക്കാം:
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences!")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+```python out
+['▁Let', "'", 's', '▁test', '▁this', '▁to', 'ken', 'izer', '.', '.', '.', '<sep>', '▁', 'on', '▁', 'a', '▁pair', 
+  '▁of', '▁sentence', 's', '!', '<sep>', '<cls>']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]
+```
+
+അവസാനമായി, ഒരു `Metaspace` ഡീകോഡർ നമ്മൾ ചേർക്കുന്നു:
+
+```python
+tokenizer.decoder = decoders.Metaspace()
+```
+
+അതോടെ ഈ ടോക്കണൈസർ പൂർത്തിയായി! മുമ്പത്തെപ്പോലെ ടോക്കണൈസർ സേവ് ചെയ്യാം, കൂടാതെ 🤗 Transformers-ൽ ഉപയോഗിക്കണമെങ്കിൽ ഒരു `PreTrainedTokenizerFast`-ലോ `XLNetTokenizerFast`-ലോ പൊതിയാം. `PreTrainedTokenizerFast` ഉപയോഗിക്കുമ്പോൾ ശ്രദ്ധിക്കേണ്ട ഒരു കാര്യം, പ്രത്യേക ടോക്കണുകൾക്ക് പുറമേ, ഇടതുവശത്ത് പാഡ് ചെയ്യാൻ 🤗 Transformers ലൈബ്രറിയോട് നമ്മൾ പറയേണ്ടതുണ്ട് എന്നതാണ്:
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<s>",
+    eos_token="</s>",
+    unk_token="<unk>",
+    pad_token="<pad>",
+    cls_token="<cls>",
+    sep_token="<sep>",
+    mask_token="<mask>",
+    padding_side="left",
+)
+```
+
+അല്ലെങ്കിൽ പകരമായി:
+
+```python
+from transformers import XLNetTokenizerFast
+
+wrapped_tokenizer = XLNetTokenizerFast(tokenizer_object=tokenizer)
+```
+
+നിലവിലുള്ള ടോക്കണൈസറുകൾ നിർമ്മിക്കാൻ വിവിധ ബിൽഡിംഗ് ബ്ലോക്കുകൾ എങ്ങനെ ഉപയോഗിക്കുന്നു എന്ന് നിങ്ങൾ ഇപ്പോൾ കണ്ടുകഴിഞ്ഞു; ഇനി 🤗 Tokenizers ലൈബ്രറി ഉപയോഗിച്ച് നിങ്ങൾക്ക് വേണ്ട ഏത് ടോക്കണൈസറും എഴുതാനും അത് 🤗 Transformers-ൽ ഉപയോഗിക്കാനും നിങ്ങൾക്ക് കഴിയേണ്ടതാണ്.
