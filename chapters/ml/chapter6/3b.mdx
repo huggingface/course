@@ -1,0 +1,630 @@
+<FrameworkSwitchCourse {fw} />
+
+# QA പൈപ്പ്‌ലൈനിലെ ഫാസ്‌റ്റ് ടോക്കണൈസറുകൾ[[fast-tokenizers-in-the-qa-pipeline]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_tf.ipynb"},
+]} />
+
+{/if}
+
+ഇനി നമ്മൾ `question-answering` പൈപ്പ്‌ലൈനിലേക്ക് ആഴത്തിൽ കടക്കുകയും, മുൻ ഭാഗത്തിൽ ഗ്രൂപ്പ് ചെയ്ത എന്റിറ്റികൾക്കായി (grouped entities) ചെയ്തതുപോലെ, ഓഫ്‌സെറ്റുകൾ (offsets) ഉപയോഗപ്പെടുത്തി കോൺടെക്‌സ്‌റ്റിൽ (context) നിന്ന് ചോദ്യത്തിന്റെ ഉത്തരം എങ്ങനെ എടുക്കാമെന്ന് കാണുകയും ചെയ്യും. തുടർന്ന്, ട്രങ്കേറ്റ് ചെയ്യപ്പെടുന്ന (truncated) വളരെ നീണ്ട കോൺടെക്‌സ്‌റ്റുകളെ എങ്ങനെ കൈകാര്യം ചെയ്യാമെന്ന് നമ്മൾ നോക്കും. ചോദ്യോത്തര (question answering) ടാസ്‌കിൽ നിങ്ങൾക്ക് താൽപ്പര്യമില്ലെങ്കിൽ ഈ ഭാഗം നിങ്ങൾക്ക് ഒഴിവാക്കാം.
+
+{#if fw === 'pt'}
+
+<Youtube id="_wxyB3j3mk4"/>
+
+{:else}
+
+<Youtube id="b3u8RzBCX9Y"/>
+
+{/if}
+
+## `question-answering` പൈപ്പ്‌ലൈൻ ഉപയോഗിക്കുന്നു[[using-the-question-answering-pipeline]]
+
+[അധ്യായം 1](/course/chapter1)-ൽ നമ്മൾ കണ്ടതുപോലെ, ഒരു ചോദ്യത്തിന്റെ ഉത്തരം ലഭിക്കാൻ `question-answering` പൈപ്പ്‌ലൈൻ ഇങ്ങനെ ഉപയോഗിക്കാം:
+
+```py
+from transformers import pipeline
+
+question_answerer = pipeline("question-answering")
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch, and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+```python out
+{'score': 0.97773,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+മോഡൽ സ്വീകരിക്കുന്ന പരമാവധി ദൈർഘ്യത്തേക്കാൾ നീളമുള്ള ടെക്‌സ്‌റ്റുകളെ ട്രങ്കേറ്റ് ചെയ്യാനും വിഭജിക്കാനും കഴിയാത്ത (അതിനാൽ ഒരു ഡോക്യുമെന്റിന്റെ അവസാനത്തെ വിവരങ്ങൾ നഷ്ടപ്പെടുത്താൻ സാധ്യതയുള്ള) മറ്റ് പൈപ്പ്‌ലൈനുകളിൽ നിന്ന് വ്യത്യസ്തമായി, ഈ പൈപ്പ്‌ലൈനിന് വളരെ നീണ്ട കോൺടെക്‌സ്‌റ്റുകൾ കൈകാര്യം ചെയ്യാൻ കഴിയും, ഉത്തരം അവസാനഭാഗത്താണെങ്കിൽ പോലും ചോദ്യത്തിന്റെ ഉത്തരം അത് റിട്ടേൺ ചെയ്യും:
+
+```py
+long_context = """
+🤗 Transformers: State of the Art NLP
+
+🤗 Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+🤗 Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internals are exposed as consistently as possible.
+  - Model files can be used independently of the library for quick experiments.
+
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question_answerer(question=question, context=long_context)
+```
+
+```python out
+{'score': 0.97149,
+ 'start': 1892,
+ 'end': 1919,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+ഇതെല്ലാം അത് എങ്ങനെ ചെയ്യുന്നു എന്ന് നോക്കാം!
+
+## ചോദ്യോത്തരത്തിനായി ഒരു മോഡൽ ഉപയോഗിക്കുന്നു[[using-a-model-for-question-answering]]
+
+മറ്റേതൊരു പൈപ്പ്‌ലൈനിലെയും പോലെ, നമ്മുടെ ഇൻപുട്ട് ടോക്കണൈസ് ചെയ്തുകൊണ്ട് നമ്മൾ തുടങ്ങുന്നു, തുടർന്ന് അത് മോഡലിലൂടെ കടത്തിവിടുന്നു. `question-answering` പൈപ്പ്‌ലൈനിൽ ഡിഫോൾട്ടായി ഉപയോഗിക്കുന്ന ചെക്ക്‌പോയിന്റ് [`distilbert-base-cased-distilled-squad`](https://huggingface.co/distilbert-base-cased-distilled-squad) ആണ് (പേരിലെ "squad" വന്നത് മോഡൽ ഫൈൻ-ട്യൂൻ ചെയ്യപ്പെട്ട ഡേറ്റാസെറ്റിൽ നിന്നാണ്; SQuAD ഡേറ്റാസെറ്റിനെക്കുറിച്ച് [അധ്യായം 7](/course/chapter7/7)-ൽ നമ്മൾ കൂടുതൽ സംസാരിക്കും):
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFAutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = TFAutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="tf")
+outputs = model(**inputs)
+```
+
+{/if}
+
+ചോദ്യവും കോൺടെക്‌സ്‌റ്റും ഒരു ജോഡിയായി, ചോദ്യം ആദ്യം വരുന്ന രീതിയിൽ, നമ്മൾ ടോക്കണൈസ് ചെയ്യുന്നു എന്നത് ശ്രദ്ധിക്കുക.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens.svg" alt="ചോദ്യത്തിന്റെയും കോൺടെക്‌സ്‌റ്റിന്റെയും ടോക്കണൈസേഷന്റെ ഒരു ഉദാഹരണം"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens-dark.svg" alt="ചോദ്യത്തിന്റെയും കോൺടെക്‌സ്‌റ്റിന്റെയും ടോക്കണൈസേഷന്റെ ഒരു ഉദാഹരണം"/>
+</div>
+
+ചോദ്യോത്തരത്തിനുള്ള മോഡലുകൾ, നമ്മൾ ഇതുവരെ കണ്ട മോഡലുകളിൽ നിന്ന് അൽപ്പം വ്യത്യസ്തമായാണ് പ്രവർത്തിക്കുന്നത്. മുകളിലെ ചിത്രം ഉദാഹരണമായി എടുത്താൽ, ഉത്തരം ആരംഭിക്കുന്ന ടോക്കണിന്റെ ഇൻഡെക്‌സും (ഇവിടെ 21) ഉത്തരം അവസാനിക്കുന്ന ടോക്കണിന്റെ ഇൻഡെക്‌സും (ഇവിടെ 24) പ്രവചിക്കാനാണ് മോഡൽ ട്രെയിൻ ചെയ്യപ്പെട്ടിരിക്കുന്നത്. അതുകൊണ്ടാണ് ഈ മോഡലുകൾ ലോജിറ്റുകളുടെ (logits) ഒരു ടെൻസറല്ല, രണ്ടെണ്ണം റിട്ടേൺ ചെയ്യുന്നത്: ഒന്ന് ഉത്തരത്തിന്റെ ആരംഭ ടോക്കണിനോട് (start token) ബന്ധപ്പെട്ട ലോജിറ്റുകൾക്കും, മറ്റൊന്ന് ഉത്തരത്തിന്റെ അവസാന ടോക്കണിനോട് (end token) ബന്ധപ്പെട്ട ലോജിറ്റുകൾക്കും. ഈ സാഹചര്യത്തിൽ 66 ടോക്കണുകൾ അടങ്ങിയ ഒരേയൊരു ഇൻപുട്ട് മാത്രമേ നമുക്കുള്ളതിനാൽ, നമുക്ക് ലഭിക്കുന്നത്:
+
+```py
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([1, 66]) torch.Size([1, 66])
+```
+
+{:else}
+
+```python out
+(1, 66) (1, 66)
+```
+
+{/if}
+
+ഈ ലോജിറ്റുകളെ പ്രോബബിലിറ്റികളാക്കി മാറ്റാൻ, നമ്മൾ ഒരു സോഫ്‌റ്റ്‌മാക്‌സ് (softmax) ഫംഗ്‌ഷൻ പ്രയോഗിക്കും -- എന്നാൽ അതിനുമുമ്പ്, കോൺടെക്‌സ്‌റ്റിന്റെ ഭാഗമല്ലാത്ത ഇൻഡെക്‌സുകൾ മാസ്‌ക് ചെയ്യുന്നുണ്ടെന്ന് നമ്മൾ ഉറപ്പാക്കണം. നമ്മുടെ ഇൻപുട്ട് `[CLS] question [SEP] context [SEP]` എന്നതാണ്, അതിനാൽ ചോദ്യത്തിന്റെ ടോക്കണുകളും `[SEP]` ടോക്കണും നമ്മൾ മാസ്‌ക് ചെയ്യണം. എന്നാൽ `[CLS]` ടോക്കൺ നമ്മൾ നിലനിർത്തും, കാരണം ഉത്തരം കോൺടെക്‌സ്‌റ്റിൽ ഇല്ല എന്ന് സൂചിപ്പിക്കാൻ ചില മോഡലുകൾ അത് ഉപയോഗിക്കുന്നു.
+
+പിന്നീട് നമ്മൾ ഒരു സോഫ്‌റ്റ്‌മാക്‌സ് പ്രയോഗിക്കുന്നതിനാൽ, മാസ്‌ക് ചെയ്യേണ്ട ലോജിറ്റുകളെ ഒരു വലിയ നെഗറ്റീവ് സംഖ്യ കൊണ്ട് മാറ്റിവയ്ക്കുകയേ വേണ്ടൂ. ഇവിടെ നമ്മൾ `-10000` ഉപയോഗിക്കുന്നു:
+
+{#if fw === 'pt'}
+
+```py
+import torch
+
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+mask = torch.tensor(mask)[None]
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+{:else}
+
+```py
+import tensorflow as tf
+
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+mask = tf.constant(mask)[None]
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+{/if}
+
+പ്രവചിക്കാൻ നമ്മൾ ആഗ്രഹിക്കാത്ത സ്ഥാനങ്ങളോട് ബന്ധപ്പെട്ട ലോജിറ്റുകൾ ശരിയായി മാസ്‌ക് ചെയ്തുകഴിഞ്ഞതിനാൽ, ഇപ്പോൾ നമുക്ക് സോഫ്‌റ്റ്‌മാക്‌സ് പ്രയോഗിക്കാം:
+
+{#if fw === 'pt'}
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)[0]
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)[0]
+```
+
+{:else}
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1)[0].numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1)[0].numpy()
+```
+
+{/if}
+
+ഈ ഘട്ടത്തിൽ, ആരംഭ, അവസാന പ്രോബബിലിറ്റികളുടെ argmax നമുക്ക് എടുക്കാമായിരുന്നു -- എന്നാൽ അവസാന ഇൻഡെക്‌സിനേക്കാൾ വലിയ ഒരു ആരംഭ ഇൻഡെക്‌സ് നമുക്ക് ലഭിച്ചേക്കാം, അതിനാൽ കുറച്ചുകൂടി മുൻകരുതലുകൾ നമ്മൾ എടുക്കണം. `start_index <= end_index` ആയ, സാധ്യമായ ഓരോ `start_index`-ന്റെയും `end_index`-ന്റെയും പ്രോബബിലിറ്റികൾ നമ്മൾ കണക്കാക്കും, തുടർന്ന് ഏറ്റവും ഉയർന്ന പ്രോബബിലിറ്റിയുള്ള `(start_index, end_index)` എന്ന ട്യൂപ്പിൾ (tuple) എടുക്കും.
+
+"ഉത്തരം `start_index`-ൽ ആരംഭിക്കുന്നു" എന്നതും "ഉത്തരം `end_index`-ൽ അവസാനിക്കുന്നു" എന്നതും പരസ്പരം സ്വതന്ത്രമായ (independent) സംഭവങ്ങളാണെന്ന് അനുമാനിച്ചാൽ, ഉത്തരം `start_index`-ൽ ആരംഭിച്ച് `end_index`-ൽ അവസാനിക്കാനുള്ള പ്രോബബിലിറ്റി ഇതാണ്:
+
+$$\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]$$ 
+
+അതിനാൽ, എല്ലാ സ്‌കോറുകളും കണക്കാക്കാൻ, `start_index <= end_index` ആയ എല്ലാ \\(\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]\\) ഗുണനഫലങ്ങളും (products) നമ്മൾ കണക്കാക്കിയാൽ മതി.
+
+ആദ്യം സാധ്യമായ എല്ലാ ഗുണനഫലങ്ങളും കണക്കാക്കാം:
+
+```py
+scores = start_probabilities[:, None] * end_probabilities[None, :]
+```
+
+{#if fw === 'pt'}
+
+തുടർന്ന്, `start_index > end_index` ആയ മൂല്യങ്ങളെ `0` ആയി സെറ്റ് ചെയ്തുകൊണ്ട് നമ്മൾ അവയെ മാസ്‌ക് ചെയ്യും (മറ്റ് പ്രോബബിലിറ്റികളെല്ലാം പോസിറ്റീവ് സംഖ്യകളാണ്). ആർഗ്യുമെന്റായി നൽകുന്ന 2D ടെൻസറിന്റെ മുകളിലെ ത്രികോണഭാഗം (upper triangular part) `torch.triu()` ഫംഗ്‌ഷൻ റിട്ടേൺ ചെയ്യുന്നു, അതിനാൽ ആ മാസ്‌കിംഗ് അത് നമുക്കായി ചെയ്യും:
+
+```py
+scores = torch.triu(scores)
+```
+
+{:else}
+
+തുടർന്ന്, `start_index > end_index` ആയ മൂല്യങ്ങളെ `0` ആയി സെറ്റ് ചെയ്തുകൊണ്ട് നമ്മൾ അവയെ മാസ്‌ക് ചെയ്യും (മറ്റ് പ്രോബബിലിറ്റികളെല്ലാം പോസിറ്റീവ് സംഖ്യകളാണ്). ആർഗ്യുമെന്റായി നൽകുന്ന 2D ടെൻസറിന്റെ മുകളിലെ ത്രികോണഭാഗം (upper triangular part) `np.triu()` ഫംഗ്‌ഷൻ റിട്ടേൺ ചെയ്യുന്നു, അതിനാൽ ആ മാസ്‌കിംഗ് അത് നമുക്കായി ചെയ്യും:
+
+```py
+import numpy as np
+
+scores = np.triu(scores)
+```
+
+{/if}
+
+ഇനി പരമാവധി മൂല്യത്തിന്റെ ഇൻഡെക്‌സ് എടുക്കുകയേ വേണ്ടൂ. ഫ്ലാറ്റൻ ചെയ്ത (flattened) ടെൻസറിലെ ഇൻഡെക്‌സാണ് PyTorch റിട്ടേൺ ചെയ്യുന്നത് എന്നതിനാൽ, `start_index`-ഉം `end_index`-ഉം ലഭിക്കാൻ ഫ്ലോർ ഡിവിഷൻ `//`, മോഡുലസ് `%` എന്നീ ഓപ്പറേഷനുകൾ നമ്മൾ ഉപയോഗിക്കണം:
+
+```py
+max_index = scores.argmax().item()
+start_index = max_index // scores.shape[1]
+end_index = max_index % scores.shape[1]
+print(scores[start_index, end_index])
+```
+
+നമ്മൾ ഇതുവരെ പൂർണ്ണമായി തീർന്നിട്ടില്ല, എന്നാൽ ഉത്തരത്തിനുള്ള ശരിയായ സ്‌കോർ ഇപ്പോൾ തന്നെ നമുക്ക് ലഭിച്ചിട്ടുണ്ട് (മുൻ ഭാഗത്തിലെ ആദ്യ ഫലവുമായി താരതമ്യം ചെയ്ത് നിങ്ങൾക്ക് ഇത് പരിശോധിക്കാം):
+
+```python out
+0.97773
+```
+
+> [!TIP]
+> ✏️ **പരീക്ഷിച്ചു നോക്കൂ!** ഏറ്റവും സാധ്യതയുള്ള അഞ്ച് ഉത്തരങ്ങളുടെ ആരംഭ, അവസാന ഇൻഡെക്‌സുകൾ കണക്കാക്കുക.
+
+ടോക്കണുകളുടെ അടിസ്ഥാനത്തിൽ ഉത്തരത്തിന്റെ `start_index`-ഉം `end_index`-ഉം നമുക്ക് ലഭിച്ചു, അതിനാൽ ഇനി കോൺടെക്‌സ്‌റ്റിലെ അക്ഷര ഇൻഡെക്‌സുകളിലേക്ക് (character indices) മാറ്റുകയേ വേണ്ടൂ. ഇവിടെയാണ് ഓഫ്‌സെറ്റുകൾ വളരെ ഉപകാരപ്രദമാകുന്നത്. ടോക്കൺ ക്ലാസിഫിക്കേഷൻ ടാസ്‌കിൽ ചെയ്തതുപോലെ അവ എടുത്ത് ഉപയോഗിക്കാം:
+
+```py
+inputs_with_offsets = tokenizer(question, context, return_offsets_mapping=True)
+offsets = inputs_with_offsets["offset_mapping"]
+
+start_char, _ = offsets[start_index]
+_, end_char = offsets[end_index]
+answer = context[start_char:end_char]
+```
+
+ഇനി നമ്മുടെ ഫലം ലഭിക്കാൻ എല്ലാം ഫോർമാറ്റ് ചെയ്യുകയേ വേണ്ടൂ:
+
+```py
+result = {
+    "answer": answer,
+    "start": start_char,
+    "end": end_char,
+    "score": scores[start_index, end_index],
+}
+print(result)
+```
+
+```python out
+{'answer': 'Jax, PyTorch and TensorFlow',
+ 'start': 78,
+ 'end': 105,
+ 'score': 0.97773}
+```
+
+കൊള്ളാം! ഇത് നമ്മുടെ ആദ്യ ഉദാഹരണത്തിലേതിന് തുല്യമാണ്!
+
+> [!TIP]
+> ✏️ **പരീക്ഷിച്ചു നോക്കൂ!** ഏറ്റവും സാധ്യതയുള്ള അഞ്ച് ഉത്തരങ്ങൾ കാണിക്കാൻ നിങ്ങൾ മുമ്പ് കണക്കാക്കിയ മികച്ച സ്‌കോറുകൾ ഉപയോഗിക്കുക. നിങ്ങളുടെ ഫലങ്ങൾ പരിശോധിക്കാൻ, ആദ്യത്തെ പൈപ്പ്‌ലൈനിലേക്ക് തിരിച്ചുപോയി അത് വിളിക്കുമ്പോൾ `top_k=5` നൽകുക.
+
+## നീണ്ട കോൺടെക്‌സ്‌റ്റുകൾ കൈകാര്യം ചെയ്യുന്നു[[handling-long-contexts]]
+
+മുമ്പ് ഉദാഹരണമായി ഉപയോഗിച്ച ചോദ്യവും നീണ്ട കോൺടെക്‌സ്‌റ്റും ടോക്കണൈസ് ചെയ്യാൻ ശ്രമിച്ചാൽ, `question-answering` പൈപ്പ്‌ലൈനിൽ ഉപയോഗിക്കുന്ന പരമാവധി ദൈർഘ്യത്തേക്കാൾ (അത് 384 ആണ്) കൂടുതൽ ടോക്കണുകൾ നമുക്ക് ലഭിക്കും:
+
+```py
+inputs = tokenizer(question, long_context)
+print(len(inputs["input_ids"]))
+```
+
+```python out
+461
+```
+
+അതിനാൽ, ആ പരമാവധി ദൈർഘ്യത്തിൽ നമ്മുടെ ഇൻപുട്ടുകൾ ട്രങ്കേറ്റ് ചെയ്യേണ്ടിവരും. ഇത് ചെയ്യാൻ പല വഴികളുണ്ട്, എന്നാൽ ചോദ്യം ട്രങ്കേറ്റ് ചെയ്യാൻ നമ്മൾ ആഗ്രഹിക്കുന്നില്ല, കോൺടെക്‌സ്‌റ്റ് മാത്രം. കോൺടെക്‌സ്‌റ്റ് രണ്ടാമത്തെ വാക്യമായതിനാൽ, `"only_second"` എന്ന ട്രങ്കേഷൻ സ്‌ട്രാറ്റജി നമ്മൾ ഉപയോഗിക്കും. അപ്പോൾ ഉയരുന്ന പ്രശ്‌നം, ചോദ്യത്തിന്റെ ഉത്തരം ട്രങ്കേറ്റ് ചെയ്ത കോൺടെക്‌സ്‌റ്റിൽ ഉണ്ടാകണമെന്നില്ല എന്നതാണ്. ഉദാഹരണത്തിന്, ഇവിടെ ഉത്തരം കോൺടെക്‌സ്‌റ്റിന്റെ അവസാനഭാഗത്തുള്ള ഒരു ചോദ്യമാണ് നമ്മൾ തിരഞ്ഞെടുത്തത്, അത് ട്രങ്കേറ്റ് ചെയ്യുമ്പോൾ ആ ഉത്തരം അതിൽ ഉണ്ടാകില്ല:
+
+```py
+inputs = tokenizer(question, long_context, max_length=384, truncation="only_second")
+print(tokenizer.decode(inputs["input_ids"]))
+```
+
+```python out
+"""
+[CLS] Which deep learning libraries back [UNK] Transformers? [SEP] [UNK] Transformers : State of the Art NLP
+
+[UNK] Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+[UNK] Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internal [SEP]
+"""
+```
+
+ഇതിനർത്ഥം, ശരിയായ ഉത്തരം തിരഞ്ഞെടുക്കാൻ മോഡലിന് ബുദ്ധിമുട്ടാകും എന്നാണ്. ഇത് പരിഹരിക്കാൻ, പരമാവധി ദൈർഘ്യം വ്യക്തമാക്കിക്കൊണ്ട് കോൺടെക്‌സ്‌റ്റിനെ ചെറിയ ചങ്കുകളായി (chunks) വിഭജിക്കാൻ `question-answering` പൈപ്പ്‌ലൈൻ നമ്മെ അനുവദിക്കുന്നു. ഉത്തരം കണ്ടെത്താൻ കഴിയാത്ത തരത്തിൽ കൃത്യമായി തെറ്റായ സ്ഥലത്ത് കോൺടെക്‌സ്‌റ്റ് വിഭജിക്കപ്പെടുന്നില്ല എന്ന് ഉറപ്പാക്കാൻ, ചങ്കുകൾക്കിടയിൽ കുറച്ച് ഓവർലാപ്പും (overlap) അത് ഉൾപ്പെടുത്തുന്നു.
+
+`return_overflowing_tokens=True` ചേർത്തുകൊണ്ട് ടോക്കണൈസറിനെ (ഫാസ്‌റ്റോ സ്ലോയോ) ഇത് നമുക്കായി ചെയ്യിക്കാം, കൂടാതെ നമുക്ക് വേണ്ട ഓവർലാപ്പ് `stride` ആർഗ്യുമെന്റ് ഉപയോഗിച്ച് വ്യക്തമാക്കാം. ഒരു ചെറിയ വാക്യം ഉപയോഗിച്ചുള്ള ഒരു ഉദാഹരണം ഇതാ:
+
+```py
+sentence = "This sentence is not too long but we are going to split it anyway."
+inputs = tokenizer(
+    sentence, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+```python out
+'[CLS] This sentence is not [SEP]'
+'[CLS] is not too long [SEP]'
+'[CLS] too long but we [SEP]'
+'[CLS] but we are going [SEP]'
+'[CLS] are going to split [SEP]'
+'[CLS] to split it anyway [SEP]'
+'[CLS] it anyway. [SEP]'
+```
+
+നമുക്ക് കാണാവുന്നതുപോലെ, `inputs["input_ids"]`-ലെ ഓരോ എൻട്രിയിലും പരമാവധി 6 ടോക്കണുകൾ മാത്രമുള്ള രീതിയിൽ വാക്യം ചങ്കുകളായി വിഭജിക്കപ്പെട്ടിരിക്കുന്നു (അവസാനത്തെ എൻട്രി മറ്റുള്ളവയുടെ അതേ വലുപ്പത്തിലാകാൻ നമ്മൾ പാഡിംഗ് ചേർക്കേണ്ടിവരും), കൂടാതെ ഓരോ എൻട്രിക്കുമിടയിൽ 2 ടോക്കണുകളുടെ ഓവർലാപ്പുമുണ്ട്.
+
+ടോക്കണൈസേഷന്റെ ഫലം കുറച്ചുകൂടി അടുത്ത് പരിശോധിക്കാം:
+
+```py
+print(inputs.keys())
+```
+
+```python out
+dict_keys(['input_ids', 'attention_mask', 'overflow_to_sample_mapping'])
+```
+
+പ്രതീക്ഷിച്ചതുപോലെ, ഇൻപുട്ട് ID-കളും ഒരു അറ്റൻഷൻ മാസ്‌കും നമുക്ക് ലഭിക്കുന്നു. അവസാനത്തെ കീ, `overflow_to_sample_mapping`, ഓരോ ഫലവും ഏത് വാക്യത്തിനോട് ബന്ധപ്പെട്ടതാണെന്ന് നമ്മോട് പറയുന്ന ഒരു മാപ്പാണ് -- ഇവിടെ നമുക്ക് 7 ഫലങ്ങളുണ്ട്, അവയെല്ലാം ടോക്കണൈസറിന് നമ്മൾ നൽകിയ (ഒരേയൊരു) വാക്യത്തിൽ നിന്നാണ് വരുന്നത്:
+
+```py
+print(inputs["overflow_to_sample_mapping"])
+```
+
+```python out
+[0, 0, 0, 0, 0, 0, 0]
+```
+
+നിരവധി വാക്യങ്ങൾ ഒരുമിച്ച് ടോക്കണൈസ് ചെയ്യുമ്പോഴാണ് ഇത് കൂടുതൽ ഉപകാരപ്രദമാകുന്നത്. ഉദാഹരണത്തിന്, ഇത്:
+
+```py
+sentences = [
+    "This sentence is not too long but we are going to split it anyway.",
+    "This sentence is shorter but will still get split.",
+]
+inputs = tokenizer(
+    sentences, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+print(inputs["overflow_to_sample_mapping"])
+```
+
+നമുക്ക് നൽകുന്നത്:
+
+```python out
+[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+```
+
+ഇതിനർത്ഥം, ആദ്യത്തെ വാക്യം മുമ്പത്തെപ്പോലെ 7 ചങ്കുകളായി വിഭജിക്കപ്പെട്ടിരിക്കുന്നു, അടുത്ത 4 ചങ്കുകൾ രണ്ടാമത്തെ വാക്യത്തിൽ നിന്നാണ് വരുന്നത് എന്നാണ്.
+
+ഇനി നമ്മുടെ നീണ്ട കോൺടെക്‌സ്‌റ്റിലേക്ക് തിരിച്ചുപോകാം. മുമ്പ് സൂചിപ്പിച്ചതുപോലെ, `question-answering` പൈപ്പ്‌ലൈൻ ഡിഫോൾട്ടായി 384 എന്ന പരമാവധി ദൈർഘ്യവും 128 എന്ന സ്‌ട്രൈഡും (stride) ഉപയോഗിക്കുന്നു; മോഡൽ ഫൈൻ-ട്യൂൻ ചെയ്യപ്പെട്ട രീതിയോട് യോജിക്കുന്നവയാണ് ഇവ (പൈപ്പ്‌ലൈൻ വിളിക്കുമ്പോൾ `max_seq_len`, `stride` എന്നീ ആർഗ്യുമെന്റുകൾ നൽകിക്കൊണ്ട് ആ പാരാമീറ്ററുകൾ നിങ്ങൾക്ക് ക്രമീകരിക്കാം). അതിനാൽ ടോക്കണൈസ് ചെയ്യുമ്പോൾ ആ പാരാമീറ്ററുകൾ നമ്മൾ ഉപയോഗിക്കും. പാഡിംഗ് ചേർക്കുകയും (ഒരേ ദൈർഘ്യമുള്ള സാമ്പിളുകൾ ലഭിക്കാൻ, അങ്ങനെ നമുക്ക് ടെൻസറുകൾ നിർമ്മിക്കാം) ഓഫ്‌സെറ്റുകൾ ആവശ്യപ്പെടുകയും നമ്മൾ ചെയ്യും:
+
+```py
+inputs = tokenizer(
+    question,
+    long_context,
+    stride=128,
+    max_length=384,
+    padding="longest",
+    truncation="only_second",
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+```
+
+ആ `inputs`-ൽ, മോഡൽ പ്രതീക്ഷിക്കുന്ന ഇൻപുട്ട് ID-കളും അറ്റൻഷൻ മാസ്‌കുകളും, കൂടാതെ ഓഫ്‌സെറ്റുകളും നമ്മൾ ഇപ്പോൾ സംസാരിച്ച `overflow_to_sample_mapping`-ഉം ഉണ്ടാകും. ഈ രണ്ടെണ്ണം മോഡൽ ഉപയോഗിക്കുന്ന പാരാമീറ്ററുകളല്ലാത്തതിനാൽ, ടെൻസറാക്കി മാറ്റുന്നതിനുമുമ്പ് അവയെ `inputs`-ൽ നിന്ന് നമ്മൾ pop ചെയ്ത് പുറത്തെടുക്കും (ഇവിടെ ഉപകാരപ്രദമല്ലാത്തതിനാൽ മാപ്പ് നമ്മൾ സൂക്ഷിച്ചുവയ്ക്കുകയില്ല):
+
+{#if fw === 'pt'}
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("pt")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+torch.Size([2, 384])
+```
+
+{:else}
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("tf")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+(2, 384)
+```
+
+{/if}
+
+നമ്മുടെ നീണ്ട കോൺടെക്‌സ്‌റ്റ് രണ്ടായി വിഭജിക്കപ്പെട്ടു, അതിനർത്ഥം അത് നമ്മുടെ മോഡലിലൂടെ കടന്നുപോയ ശേഷം, ആരംഭ, അവസാന ലോജിറ്റുകളുടെ രണ്ട് സെറ്റുകൾ നമുക്ക് ഉണ്ടാകും എന്നാണ്:
+
+```py
+outputs = model(**inputs)
+
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([2, 384]) torch.Size([2, 384])
+```
+
+{:else}
+
+```python out
+(2, 384) (2, 384)
+```
+
+{/if}
+
+മുമ്പത്തെപ്പോലെ, സോഫ്‌റ്റ്‌മാക്‌സ് എടുക്കുന്നതിനുമുമ്പ് കോൺടെക്‌സ്‌റ്റിന്റെ ഭാഗമല്ലാത്ത ടോക്കണുകൾ നമ്മൾ ആദ്യം മാസ്‌ക് ചെയ്യുന്നു. എല്ലാ പാഡിംഗ് ടോക്കണുകളും (അറ്റൻഷൻ മാസ്‌ക് അടയാളപ്പെടുത്തിയിരിക്കുന്നതനുസരിച്ച്) നമ്മൾ മാസ്‌ക് ചെയ്യുന്നു:
+
+{#if fw === 'pt'}
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+# Mask all the [PAD] tokens
+mask = torch.logical_or(torch.tensor(mask)[None], (inputs["attention_mask"] == 0))
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+{:else}
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+# Mask all the [PAD] tokens
+mask = tf.math.logical_or(tf.constant(mask)[None], inputs["attention_mask"] == 0)
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+{/if}
+
+തുടർന്ന്, നമ്മുടെ ലോജിറ്റുകളെ പ്രോബബിലിറ്റികളാക്കി മാറ്റാൻ സോഫ്‌റ്റ്‌മാക്‌സ് ഉപയോഗിക്കാം:
+
+{#if fw === 'pt'}
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)
+```
+
+{:else}
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1).numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1).numpy()
+```
+
+{/if}
+
+അടുത്ത ഘട്ടം ചെറിയ കോൺടെക്‌സ്‌റ്റിനായി നമ്മൾ ചെയ്തതിന് സമാനമാണ്, എന്നാൽ നമ്മുടെ രണ്ട് ചങ്കുകളിൽ ഓരോന്നിനും അത് ആവർത്തിക്കുന്നു. ഉത്തരത്തിന്റെ സാധ്യമായ എല്ലാ സ്‌പാനുകൾക്കും (spans) നമ്മൾ ഒരു സ്‌കോർ നൽകുന്നു, തുടർന്ന് ഏറ്റവും മികച്ച സ്‌കോറുള്ള സ്‌പാൻ എടുക്കുന്നു:
+
+{#if fw === 'pt'}
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = torch.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+{:else}
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = np.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+{/if}
+
+```python out
+[(0, 18, 0.33867), (173, 184, 0.97149)]
+```
+
+ഓരോ ചങ്കിലും മോഡലിന് കണ്ടെത്താൻ കഴിഞ്ഞ മികച്ച ഉത്തരങ്ങളാണ് ആ രണ്ട് കാൻഡിഡേറ്റുകൾ. ശരിയായ ഉത്തരം രണ്ടാം ഭാഗത്തിലാണെന്ന് മോഡലിന് വളരെയധികം ആത്മവിശ്വാസമുണ്ട് (അത് ഒരു നല്ല സൂചനയാണ്!). ഇനി ആ രണ്ട് ടോക്കൺ സ്‌പാനുകളെ കോൺടെക്‌സ്‌റ്റിലെ അക്ഷര സ്‌പാനുകളിലേക്ക് മാപ്പ് ചെയ്യുകയേ വേണ്ടൂ (നമ്മുടെ ഉത്തരം ലഭിക്കാൻ രണ്ടാമത്തേത് മാത്രം മാപ്പ് ചെയ്താൽ മതി, എന്നാൽ ആദ്യ ചങ്കിൽ മോഡൽ എന്താണ് തിരഞ്ഞെടുത്തത് എന്ന് കാണുന്നത് രസകരമാണ്).
+
+> [!TIP]
+> ✏️ **പരീക്ഷിച്ചു നോക്കൂ!** ഏറ്റവും സാധ്യതയുള്ള അഞ്ച് ഉത്തരങ്ങളുടെ (ഓരോ ചങ്കിലും അല്ല, മൊത്തത്തിൽ) സ്‌കോറുകളും സ്‌പാനുകളും റിട്ടേൺ ചെയ്യാൻ മുകളിലെ കോഡ് അനുയോജ്യമായി മാറ്റുക.
+
+നമ്മൾ മുമ്പ് എടുത്ത `offsets` യഥാർത്ഥത്തിൽ ഓഫ്‌സെറ്റുകളുടെ ഒരു ലിസ്‌റ്റാണ്; ടെക്‌സ്‌റ്റിന്റെ ഓരോ ചങ്കിനും ഒരു ലിസ്‌റ്റ് വീതം:
+
+```py
+for candidate, offset in zip(candidates, offsets):
+    start_token, end_token, score = candidate
+    start_char, _ = offset[start_token]
+    _, end_char = offset[end_token]
+    answer = long_context[start_char:end_char]
+    result = {"answer": answer, "start": start_char, "end": end_char, "score": score}
+    print(result)
+```
+
+```python out
+{'answer': '\n🤗 Transformers: State of the Art NLP', 'start': 0, 'end': 37, 'score': 0.33867}
+{'answer': 'Jax, PyTorch and TensorFlow', 'start': 1892, 'end': 1919, 'score': 0.97149}
+```
+
+ആദ്യ ഫലം അവഗണിച്ചാൽ, ഈ നീണ്ട കോൺടെക്‌സ്‌റ്റിന് നമ്മുടെ പൈപ്പ്‌ലൈൻ നൽകിയ അതേ ഫലം നമുക്ക് ലഭിക്കുന്നു -- ഹുറേ!
+
+> [!TIP]
+> ✏️ **പരീക്ഷിച്ചു നോക്കൂ!** ഏറ്റവും സാധ്യതയുള്ള അഞ്ച് ഉത്തരങ്ങൾ (ഓരോ ചങ്കിനുമല്ല, മുഴുവൻ കോൺടെക്‌സ്‌റ്റിനും) കാണിക്കാൻ നിങ്ങൾ മുമ്പ് കണക്കാക്കിയ മികച്ച സ്‌കോറുകൾ ഉപയോഗിക്കുക. നിങ്ങളുടെ ഫലങ്ങൾ പരിശോധിക്കാൻ, ആദ്യത്തെ പൈപ്പ്‌ലൈനിലേക്ക് തിരിച്ചുപോയി അത് വിളിക്കുമ്പോൾ `top_k=5` നൽകുക.
+
+ടോക്കണൈസറിന്റെ കഴിവുകളിലേക്കുള്ള നമ്മുടെ ആഴത്തിലുള്ള അന്വേഷണം ഇവിടെ അവസാനിക്കുന്നു. സാധാരണമായ വിവിധ NLP ടാസ്‌കുകളിൽ ഒരു മോഡൽ എങ്ങനെ ഫൈൻ-ട്യൂൻ ചെയ്യാമെന്ന് കാണിച്ചുതരുന്ന അടുത്ത അധ്യായത്തിൽ, ഇതെല്ലാം നമ്മൾ വീണ്ടും പ്രായോഗികമായി ഉപയോഗിക്കും.
