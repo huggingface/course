@@ -1,0 +1,353 @@
+<FrameworkSwitchCourse {fw} />
+
+# పూర్తి శిక్షణ లూప్[[a-full-training]]
+
+<CourseFloatingBanner
+chapter={3}
+classNames="absolute z-10 right-0 top-0"
+notebooks={[
+{label: "Google Colab", value: "[https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/te/chapter3/section4.ipynb](https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/te/chapter3/section4.ipynb)"},
+{label: "Aws Studio", value: "[https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/te/chapter3/section4.ipynb](https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/te/chapter3/section4.ipynb)"},
+]}
+/> <Youtube id="Dh9CL8fyG80"/>
+
+ఇప్పుడు `Trainer` క్లాస్ ఉపయోగించకుండా, మునుపటి సెక్షన్‌లో చూపిన అదే ఫలితాలను సాధించే విధంగా పూర్తి శిక్షణ లూప్‌ను PyTorchలో అమలు చేద్దాం. మళ్లీ చెప్తున్నాం – మీరు సెక్షన్ 2లో డేటా ప్రాసెసింగ్ పూర్తి చేసి ఉన్నారని అనుకుంటున్నాం.
+
+> [!TIP]
+> 🏗️ **మాన్యువల్ శిక్షణ**: PyTorchలో ట్రైనింగ్ లూప్ మరియు బెస్ట్ ప్రాక్టీస్ల కోసం [🤗 Transformers training documentation](https://huggingface.co/docs/transformers/main/en/training#train-in-native-pytorch) మరియు [custom training cookbook](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu#model) చూడండి.
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### శిక్షణకు సిద్ధం చేయడం[[prepare-for-training]]
+
+`Trainer` ఆటోమేటిక్‌గా చేసే కొన్ని దశలను మనం మాన్యువల్‌గా చేయాలి:
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+
+tokenized_datasets["train"].column_names
+```
+
+```python out
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+ఇప్పుడు DataLoaderలు తయారు చేయవచ్చు:
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+ఒక బ్యాచ్ చూద్దాం:
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+మోడల్:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+టెస్ట్:
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+ఆప్టిమైజర్:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
+```
+
+లెర్నింగ్ రేట్ షెడ్యూలర్:
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+GPUకి తరలించడం:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+print(device)
+```
+
+```python out
+device(type='cuda')
+```
+
+### శిక్షణ లూప్[[the-training-loop]]
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        # Gradient clipping (optional)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+> [!TIP]
+> 💡 **అడ్వాన్స్డ్ శిక్షణ టిప్స్**:
+>
+> * మిక్స్డ్ ప్రెసిషన్: `torch.cuda.amp.autocast()` మరియు `GradScaler` వాడండి
+> * గ్రేడియంట్ అక్యుమ్యులేషన్: ఎక్కువ బ్యాచ్ సైజ్ సిమ్యులేషన్ కోసం గ్రేడియంట్స్ ను accumulate చేయండి
+> * Checkpointing: మధ్యలో మోడల్ సేవ్ చేయండి
+
+### ఎవాల్యుయేషన్ లూప్[[the-evaluation-loop]]
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+### 🤗 Accelerateతో శిక్షణ లూప్[[supercharge-your-training-loop-with-accelerate]]
+
+<Youtube id="s7dy8QRgjJ0" />
+
+```py
+from accelerate import Accelerator
+from transformers import get_scheduler
+from torch.optim import AdamW
+from tqdm.auto import tqdm
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(
+    range(num_training_steps), disable=not accelerator.is_local_main_process
+)
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+ఈ కోడ్‌ను `train.py`లో సేవ్ చేసి కింది కమాండ్‌లతో రన్ చేయవచ్చు:
+
+```bash
+accelerate config
+accelerate launch train.py
+```
+
+Colabలో టెస్ట్ చేయాలంటే:
+
+```py
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+### మరిన్ని బెస్ట్ ప్రాక్టీస్స్[[next-steps-and-best-practices]]
+
+* **Model Evaluation**: Accuracyతో పాటు ఇతర మెట్రిక్స్‌తో కూడా మోడల్ ఎవాల్యుయేట్ చేయండి
+* **Hyperparameter Tuning**: Optuna లేదా Ray Tune వంటివి వాడి హైపర్‌పారామీటర్స్ optimize చేయండి
+* **Model Monitoring**: Training metrics, learning curves, validation performance ట్రాక్ చేయండి
+* **Model Sharing**: Hugging Face Hubలో మోడల్ share చేయండి
+* **Efficiency**: Gradient checkpointing, LoRA, AdaLoRA, quantization techniques వాడి పెద్ద మోడల్ కోసం efficiency పెంచండి
+
+### సెక్షన్ క్విజ్[[section-quiz]]
+
+### 1. Adam మరియు AdamW మధ్య ప్రధాన తేడా ఏమిటి?
+
+<Question
+choices={[
+{ text: "AdamW వేరే learning rate schedule వాడుతుంది.", explain: "Learning rate scheduling optimizer నుండి వేరు." },
+{ text: "AdamW decoupled weight decay regularization వాడుతుంది.", explain: "Correct! Weight decay gradient updates నుండి వేరు.", correct: true },
+{ text: "AdamW transformer modelsకి మాత్రమే ఉపయోగపడుతుంది.", explain: "ఏ మోడల్ కి అయినా ఉపయోగించవచ్చు." },
+{ text: "AdamW memory తక్కువగా వాడుతుంది.", explain: "Memory requirement ఇరువురికీ తుల్యం." }
+]}
+/>
+
+### 2. Training loop లో operations సరైన క్రమం ఏమిటి?
+
+<Question
+choices={[
+{ text: "Forward → Backward → Optimizer step → Zero gradients", explain: "Zero gradients తర్వాత forward లోపు ఉండాలి." },
+{ text: "Forward → Backward → Optimizer step → Scheduler step → Zero gradients", explain: "Correct! ఇది proper order.", correct: true },
+{ text: "Zero gradients → Forward → Optimizer step → Backward", explain: "Backward forward తర్వాత వుంటుంది." },
+{ text: "Forward → Zero gradients → Backward → Optimizer step", explain: "Zeroing gradients తప్పు స్థానంలో." }
+]}
+/>
+
+### 3. 🤗 Accelerate library ప్రధాన ఉపయోగం ఏమిటి?
+
+<Question
+choices={[
+{ text: "Forward pass optimize చేస్తుంది.", explain: "Accelerate model architecture optimize చేయదు." },
+{ text: "Hyperparameters select చేస్తుంది.", explain: "Hyperparameter optimization Accelerate చేయదు." },
+{ text: "Multiple GPUs/TPUs distributed training enable చేస్తుంది.", explain: "Correct! Minimal code changes తో distributed training.", correct: true },
+{ text: "Models different frameworksకి convert చేస్తుంది.", explain: "Accelerate PyTorch లో పని చేస్తుంది." }
+]}
+/>
+
+### 4. Training loop లో batches deviceకి ఎందుకు తరలిస్తారు?
+
+<Question
+choices={[
+{ text: "Training వేగంగా చేయడానికి.", explain: "Speed effect కానీ main reason కాదు." },
+{ text: "Model మరియు data ఒకే device లో ఉండాలి.", explain: "Correct! PyTorch requires same device.", correct: true },
+{ text: "Memory save కోసం.", explain: "Device movement memory save కాదు." },
+{ text: "DataLoader కోసం required.", explain: "DataLoader specific device require కాదు." }
+]}
+/>
+
+### 5. Evaluation ముందు `model.eval()` ఏమి చేస్తుంది?
+
+<Question
+choices={[
+{ text: "Parameters freeze చేస్తుంది.", explain: "Freeze requires requires_grad=False." },
+{ text: "Dropout మరియు BatchNorm inferenceకి మారుస్తుంది.", explain: "Correct! eval mode disables dropout and uses running stats.", correct: true },
+{ text: "Gradient computation enable చేస్తుంది.", explain: "Gradient evaluation torch.no_grad() తో disabled." },
+{ text: "Metrics automatically calculate చేస్తుంది.", explain: "Metrics calculate manually చేయాలి." }
+]}
+/>
+
+### 6. Evaluation లో `torch.no_grad()` ఉపయోగం ఏమిటి?
+
+<Question
+choices={[
+{ text: "Model predictions block చేస్తుంది.", explain: "Predictions block కాదు." },
+{ text: "Gradient tracking disable చేసి memory, speed optimize చేస్తుంది.", explain: "Correct! Gradient computation disable అవుతుంది.", correct: true },
+{ text: "Evaluation mode enable చేస్తుంది.", explain: "Evaluation mode model.eval() ద్వారా." },
+{ text: "Results consistent across runs.", explain: "Reproducibility random seeds తో achieve అవుతుంది." }
+]}
+/>
+
+### 7. 🤗 Accelerate వాడితే training loop లో ఏమి మారుతుంది?
+
+<Question
+choices={[
+{ text: "Entire loop rewrite చేయాలి.", explain: "Minimal changes suffice." },
+{ text: "Key objects accelerator.prepare() తో wrap చేసి accelerator.backward() వాడాలి.", explain: "Correct! Main changes.", correct: true },
+{ text: "Number of GPUs specify చేయాలి.", explain: "Accelerate hardware auto detect చేస్తుంది." },
+{ text: "Optimizer, scheduler మార్చాలి.", explain: "Same optimizers & schedulers వాడవచ్చు." }
+]}
+/>
+
+> [!TIP]
+> 💡 **Key Takeaways**:
+>
+> * మాన్యువల్ training loops పూర్తి control ఇస్తాయి; proper sequence: forward → backward → optimizer step → scheduler step → zero gradients
+> * AdamW weight decay తో transformer modelsకి recommended
+> * Evaluation లో model.eval() మరియు torch.no_grad() తప్పనిసరి
+> * 🤗 Accelerate distributed training minimal changes తో
+> * Device management (GPU/CPU tensors) PyTorch లో crucial
+> * Mixed precision, gradient accumulation, gradient clipping efficiency పెంచుతాయి
