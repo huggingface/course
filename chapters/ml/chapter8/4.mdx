@@ -1,0 +1,771 @@
+<FrameworkSwitchCourse {fw} />
+
+# ട്രെയിനിംഗ് പൈപ്പ്‌ലൈൻ ഡീബഗ് ചെയ്യുന്നു[[debugging-the-training-pipeline]]
+
+<CourseFloatingBanner chapter={8}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter8/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter8/section4.ipynb"},
+]} />
+
+[അധ്യായം 7](/course/chapter7)-ലെ ഉപദേശങ്ങൾ കൃത്യമായി പിന്തുടർന്ന്, ഒരു ടാസ്‌കിൽ മോഡൽ ട്രെയിൻ ചെയ്യാനോ ഫൈൻ-ട്യൂൻ ചെയ്യാനോ മനോഹരമായ ഒരു സ്‌ക്രിപ്‌റ്റ് നിങ്ങൾ എഴുതി. പക്ഷേ `trainer.train()` എന്ന കമാൻഡ് റൺ ചെയ്യുമ്പോൾ ഭയങ്കരമായ ഒന്ന് സംഭവിക്കുന്നു: നിങ്ങൾക്ക് ഒരു എറർ കിട്ടുന്നു 😱! അല്ലെങ്കിൽ അതിലും മോശം: എല്ലാം ശരിയായി തോന്നുന്നു, ട്രെയിനിംഗ് എററില്ലാതെ ഓടുന്നു, പക്ഷേ കിട്ടുന്ന മോഡൽ തീരെ മോശമാണ്. ഇത്തരം പ്രശ്നങ്ങൾ ഡീബഗ് ചെയ്യാൻ നിങ്ങൾക്ക് എന്തു ചെയ്യാമെന്ന് ഈ ഭാഗത്തിൽ ഞങ്ങൾ കാണിച്ചുതരും.
+
+## ട്രെയിനിംഗ് പൈപ്പ്‌ലൈൻ ഡീബഗ് ചെയ്യുന്നു[[debugging-the-training-pipeline]]
+
+<Youtube id="L-WSwUWde1U"/>
+
+`trainer.train()`-ൽ ഒരു എറർ നേരിടുമ്പോഴുള്ള പ്രശ്നം, `Trainer` സാധാരണയായി ധാരാളം കാര്യങ്ങൾ ഒരുമിച്ചു ചേർക്കുന്നതിനാൽ, അത് പല ഉറവിടങ്ങളിൽ നിന്നും വരാം എന്നതാണ്. അത് ഡേറ്റാസെറ്റുകളെ ഡേറ്റാലോഡറുകളാക്കി (dataloaders) മാറ്റുന്നു; അതിനാൽ പ്രശ്നം നിങ്ങളുടെ ഡേറ്റാസെറ്റിലെ എന്തെങ്കിലും തകരാറോ, ഡേറ്റാസെറ്റിലെ ഘടകങ്ങൾ ഒരുമിച്ച് ബാച്ച് ചെയ്യാൻ ശ്രമിക്കുമ്പോഴുള്ള എന്തെങ്കിലും പ്രശ്നമോ ആകാം. പിന്നീട് അത് ഒരു ബാച്ച് ഡേറ്റ എടുത്ത് മോഡലിന് നൽകുന്നു; അതിനാൽ പ്രശ്നം മോഡൽ കോഡിലാകാം. അതിനുശേഷം അത് ഗ്രേഡിയന്റുകൾ (gradients) കണക്കാക്കി ഒപ്‌റ്റിമൈസേഷൻ സ്‌റ്റെപ്പ് നടത്തുന്നു; അതിനാൽ പ്രശ്നം നിങ്ങളുടെ ഒപ്‌റ്റിമൈസറിലുമാകാം. ട്രെയിനിംഗിൽ എല്ലാം ശരിയായി നടന്നാലും, നിങ്ങളുടെ മെട്രിക്കിൽ (metric) ഒരു പ്രശ്നമുണ്ടെങ്കിൽ ഇവാല്യുവേഷൻ (evaluation) സമയത്ത് എന്തെങ്കിലും പിഴയ്ക്കാം.
+
+`trainer.train()`-ൽ ഉണ്ടാകുന്ന ഒരു എറർ ഡീബഗ് ചെയ്യാനുള്ള ഏറ്റവും നല്ല മാർഗ്ഗം, എവിടെയാണ് കാര്യങ്ങൾ പിഴച്ചത് എന്ന് കാണാൻ ഈ മുഴുവൻ പൈപ്പ്‌ലൈനിലൂടെയും സ്വയം (manually) കടന്നുപോകുകയാണ്. അപ്പോൾ പലപ്പോഴും എറർ പരിഹരിക്കാൻ വളരെ എളുപ്പമാകും.
+
+ഇത് കാണിക്കാൻ, [MNLI ഡേറ്റാസെറ്റിൽ](https://huggingface.co/datasets/glue) ഒരു DistilBERT മോഡൽ ഫൈൻ-ട്യൂൻ ചെയ്യാൻ (ശ്രമിക്കുന്ന) താഴെയുള്ള സ്‌ക്രിപ്‌റ്റ് നമ്മൾ ഉപയോഗിക്കും:
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=raw_datasets["train"],
+    eval_dataset=raw_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+ഇത് എക്‌സിക്യൂട്ട് ചെയ്യാൻ ശ്രമിച്ചാൽ, കുറച്ച് ദുർഗ്രഹമായ ഒരു എറർ നിങ്ങളെ വരവേൽക്കും:
+
+```python out
+'ValueError: You have to specify either input_ids or inputs_embeds'
+```
+
+### നിങ്ങളുടെ ഡേറ്റ പരിശോധിക്കുക[[check-your-data]]
+
+ഇത് പറയേണ്ട ആവശ്യമില്ല; പക്ഷേ നിങ്ങളുടെ ഡേറ്റ കേടായതാണെങ്കിൽ, `Trainer`-ന് ബാച്ചുകൾ ഉണ്ടാക്കാൻ കഴിയില്ല; മോഡൽ ട്രെയിൻ ചെയ്യുന്ന കാര്യം പിന്നെ പറയേണ്ടതില്ലല്ലോ. അതിനാൽ ആദ്യം ചെയ്യേണ്ടത്, നിങ്ങളുടെ ട്രെയിനിംഗ് സെറ്റിനുള്ളിൽ എന്താണുള്ളത് എന്ന് ഒന്ന് നോക്കുകയാണ്.
+
+ബഗിന്റെ ഉറവിടമല്ലാത്ത എന്തെങ്കിലും ശരിയാക്കാൻ ശ്രമിച്ച് എണ്ണമറ്റ മണിക്കൂറുകൾ പാഴാക്കാതിരിക്കാൻ, നിങ്ങളുടെ പരിശോധനകൾക്ക് `trainer.train_dataset` മാത്രം ഉപയോഗിക്കാൻ ഞങ്ങൾ ശുപാർശ ചെയ്യുന്നു, മറ്റൊന്നും വേണ്ട. അതിനാൽ ഇവിടെ അതു ചെയ്യാം:
+
+```py
+trainer.train_dataset[0]
+```
+
+```python out
+{'hypothesis': 'Product and geography are what make cream skimming work. ',
+ 'idx': 0,
+ 'label': 1,
+ 'premise': 'Conceptually cream skimming has two basic dimensions - product and geography.'}
+```
+
+എന്തെങ്കിലും തെറ്റ് ശ്രദ്ധയിൽ പെട്ടോ? `input_ids` ഇല്ല എന്ന എറർ സന്ദേശവുമായി ചേർത്തു വായിക്കുമ്പോൾ, ഇവ ടെക്‌സ്‌റ്റുകളാണ്, മോഡലിന് മനസ്സിലാക്കാൻ കഴിയുന്ന സംഖ്യകളല്ല എന്ന് നിങ്ങൾക്ക് ബോധ്യമാകേണ്ടതാണ്. ഇവിടെ, യഥാർത്ഥ എറർ വളരെ തെറ്റിദ്ധരിപ്പിക്കുന്നതാണ്; കാരണം മോഡൽ സിഗ്നേച്ചറുമായി (അതായത്, മോഡൽ പ്രതീക്ഷിക്കുന്ന ആർഗ്യുമെന്റുകൾ) പൊരുത്തപ്പെടാത്ത കോളങ്ങൾ `Trainer` തനിയെ നീക്കം ചെയ്യുന്നു. അതായത് ഇവിടെ, ലേബലുകൾ ഒഴികെ എല്ലാം ഒഴിവാക്കപ്പെട്ടു. അതിനാൽ ബാച്ചുകൾ ഉണ്ടാക്കി മോഡലിലേക്ക് അയയ്ക്കുന്നതിൽ പ്രശ്നമൊന്നും ഉണ്ടായില്ല; പക്ഷേ ശരിയായ ഇൻപുട്ട് കിട്ടിയില്ലെന്ന് മോഡൽ പരാതിപ്പെട്ടു.
+
+ഡേറ്റ എന്തുകൊണ്ട് പ്രോസസ്സ് ചെയ്യപ്പെട്ടില്ല? ഓരോ സാമ്പിളിലും ടോക്കണൈസർ പ്രയോഗിക്കാൻ ഡേറ്റാസെറ്റുകളിൽ `Dataset.map()` മെത്തേഡ് നമ്മൾ ഉപയോഗിച്ചിരുന്നു. പക്ഷേ കോഡ് സൂക്ഷിച്ചു നോക്കിയാൽ, ട്രെയിനിംഗ്, ഇവാല്യുവേഷൻ സെറ്റുകൾ `Trainer`-ന് നൽകുമ്പോൾ നമുക്ക് ഒരു തെറ്റ് പറ്റിയതായി കാണാം. ഇവിടെ `tokenized_datasets` ഉപയോഗിക്കുന്നതിനു പകരം, നമ്മൾ `raw_datasets` ഉപയോഗിച്ചു 🤦. അതിനാൽ ഇത് ശരിയാക്കാം!
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+)
+trainer.train()
+```
+
+ഈ പുതിയ കോഡ് ഇപ്പോൾ മറ്റൊരു എറർ തരും (പുരോഗതി!):
+
+```python out
+'ValueError: expected sequence of length 43 at dim 1 (got 37)'
+```
+
+traceback നോക്കിയാൽ, ഡേറ്റാ കൊലേഷൻ (data collation) ഘട്ടത്തിലാണ് എറർ സംഭവിക്കുന്നത് എന്ന് കാണാം:
+
+```python out
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+```
+
+അതിനാൽ, നമ്മൾ അതിലേക്ക് നീങ്ങണം. എന്നാൽ അതിനു മുമ്പ്, നമ്മുടെ ഡേറ്റ 100% ശരിയാണെന്ന് ഉറപ്പുവരുത്താൻ, അതിന്റെ പരിശോധന പൂർത്തിയാക്കാം.
+
+ഒരു ട്രെയിനിംഗ് സെഷൻ ഡീബഗ് ചെയ്യുമ്പോൾ എപ്പോഴും ചെയ്യേണ്ട ഒരു കാര്യം, നിങ്ങളുടെ മോഡലിന്റെ ഡീകോഡ് ചെയ്ത ഇൻപുട്ടുകൾ നോക്കുകയാണ്. മോഡലിന് നേരിട്ട് നൽകുന്ന സംഖ്യകളിൽ നിന്ന് നമുക്ക് ഒന്നും മനസ്സിലാക്കാൻ കഴിയില്ല; അതിനാൽ ആ സംഖ്യകൾ എന്തിനെ പ്രതിനിധീകരിക്കുന്നു എന്ന് നോക്കണം. ഉദാഹരണത്തിന്, കമ്പ്യൂട്ടർ വിഷനിൽ അതിനർത്ഥം നിങ്ങൾ നൽകുന്ന പിക്‌സലുകളുടെ ഡീകോഡ് ചെയ്ത ചിത്രങ്ങൾ നോക്കുക എന്നാണ്; സ്പീച്ചിൽ ഡീകോഡ് ചെയ്ത ഓഡിയോ സാമ്പിളുകൾ കേൾക്കുക എന്നാണ്; ഇവിടെ നമ്മുടെ NLP ഉദാഹരണത്തിൽ, ഇൻപുട്ടുകൾ ഡീകോഡ് ചെയ്യാൻ നമ്മുടെ ടോക്കണൈസർ ഉപയോഗിക്കുക എന്നാണ്:
+
+```py
+tokenizer.decode(trainer.train_dataset[0]["input_ids"])
+```
+
+```python out
+'[CLS] conceptually cream skimming has two basic dimensions - product and geography. [SEP] product and geography are what make cream skimming work. [SEP]'
+```
+
+അപ്പോൾ അത് ശരിയാണെന്ന് തോന്നുന്നു. ഇൻപുട്ടുകളിലെ എല്ലാ കീകൾക്കും (keys) ഇത് ചെയ്യണം: 
+
+```py
+trainer.train_dataset[0].keys()
+```
+
+```python out
+dict_keys(['attention_mask', 'hypothesis', 'idx', 'input_ids', 'label', 'premise'])
+```
+
+മോഡൽ സ്വീകരിക്കുന്ന ഇൻപുട്ടുകളുമായി പൊരുത്തപ്പെടാത്ത കീകൾ തനിയെ ഒഴിവാക്കപ്പെടും എന്നത് ശ്രദ്ധിക്കുക; അതിനാൽ ഇവിടെ `input_ids`, `attention_mask`, `label` (ഇത് `labels` എന്ന് പുനർനാമകരണം ചെയ്യപ്പെടും) എന്നിവ മാത്രമേ നമ്മൾ നിലനിർത്തൂ. മോഡൽ സിഗ്നേച്ചർ ഒന്നുകൂടി ഉറപ്പുവരുത്താൻ, നിങ്ങളുടെ മോഡലിന്റെ ക്ലാസ്സ് പ്രിന്റ് ചെയ്ത്, അതിന്റെ ഡോക്യുമെന്റേഷൻ പോയി നോക്കാം:
+
+```py
+type(trainer.model)
+```
+
+```python out
+transformers.models.distilbert.modeling_distilbert.DistilBertForSequenceClassification
+```
+
+അതിനാൽ നമ്മുടെ കാര്യത്തിൽ, സ്വീകരിക്കുന്ന പാരാമീറ്ററുകൾ [ഈ പേജിൽ](https://huggingface.co/transformers/model_doc/distilbert.html#distilbertforsequenceclassification) പരിശോധിക്കാം. ഒഴിവാക്കുന്ന കോളങ്ങൾ `Trainer` ലോഗ് ചെയ്യുകയും ചെയ്യും.
+
+ഇൻപുട്ട് ID-കൾ ഡീകോഡ് ചെയ്ത് അവ ശരിയാണെന്ന് നമ്മൾ ഉറപ്പുവരുത്തി. അടുത്തത് `attention_mask` ആണ്:
+
+```py
+trainer.train_dataset[0]["attention_mask"]
+```
+
+```python out
+[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+നമ്മുടെ പ്രീപ്രോസസ്സിംഗിൽ പാഡിംഗ് (padding) പ്രയോഗിക്കാത്തതിനാൽ, ഇത് തികച്ചും സ്വാഭാവികമായി തോന്നുന്നു. ആ അറ്റൻഷൻ മാസ്‌കിൽ പ്രശ്നമൊന്നുമില്ലെന്ന് ഉറപ്പാക്കാൻ, അതിന് നമ്മുടെ ഇൻപുട്ട് ID-കളുടെ അതേ നീളമാണോ എന്ന് പരിശോധിക്കാം:
+
+```py
+len(trainer.train_dataset[0]["attention_mask"]) == len(
+    trainer.train_dataset[0]["input_ids"]
+)
+```
+
+```python out
+True
+```
+
+നല്ലത്! അവസാനമായി, നമ്മുടെ ലേബൽ പരിശോധിക്കാം:
+
+```py
+trainer.train_dataset[0]["label"]
+```
+
+```python out
+1
+```
+
+ഇൻപുട്ട് ID-കൾ പോലെ, ഇതും ഒറ്റയ്ക്ക് വലിയ അർത്ഥമില്ലാത്ത ഒരു സംഖ്യയാണ്. മുമ്പ് കണ്ടതുപോലെ, ഇന്റിജറുകളും ലേബൽ പേരുകളും തമ്മിലുള്ള മാപ്പ്, ഡേറ്റാസെറ്റിന്റെ ബന്ധപ്പെട്ട *feature*-ന്റെ `names` ആട്രിബ്യൂട്ടിനുള്ളിൽ സൂക്ഷിച്ചിരിക്കുന്നു:
+
+```py
+trainer.train_dataset.features["label"].names
+```
+
+```python out
+['entailment', 'neutral', 'contradiction']
+```
+
+അതിനാൽ `1` എന്നാൽ `neutral`; അതായത്, മുകളിൽ കണ്ട രണ്ട് വാക്യങ്ങൾ പരസ്പരവിരുദ്ധമല്ല, ആദ്യത്തേത് രണ്ടാമത്തേതിനെ സൂചിപ്പിക്കുന്നുമില്ല. അത് ശരിയാണെന്ന് തോന്നുന്നു!
+
+DistilBERT ടോക്കൺ ടൈപ്പ് ID-കൾ പ്രതീക്ഷിക്കാത്തതിനാൽ ഇവിടെ അവ ഇല്ല; നിങ്ങളുടെ മോഡലിൽ അവയുണ്ടെങ്കിൽ, ഇൻപുട്ടിൽ ഒന്നാമത്തെയും രണ്ടാമത്തെയും വാക്യങ്ങൾ എവിടെയാണ് എന്നതുമായി അവ ശരിയായി പൊരുത്തപ്പെടുന്നുണ്ടെന്നും നിങ്ങൾ ഉറപ്പുവരുത്തണം.
+
+> [!TIP]
+> ✏️ **നിങ്ങളുടെ ഊഴം!** ട്രെയിനിംഗ് ഡേറ്റാസെറ്റിന്റെ രണ്ടാമത്തെ എലമെന്റിൽ എല്ലാം ശരിയാണെന്ന് പരിശോധിക്കുക.
+
+ഇവിടെ നമ്മൾ ട്രെയിനിംഗ് സെറ്റിൽ മാത്രമാണ് പരിശോധന നടത്തുന്നത്; പക്ഷേ വാലിഡേഷൻ, ടെസ്‌റ്റ് സെറ്റുകളും തീർച്ചയായും ഇതേ രീതിയിൽ നിങ്ങൾ പരിശോധിക്കണം.
+
+നമ്മുടെ ഡേറ്റാസെറ്റുകൾ ശരിയാണെന്ന് ഇപ്പോൾ അറിയാം; ഇനി ട്രെയിനിംഗ് പൈപ്പ്‌ലൈനിന്റെ അടുത്ത ഘട്ടം പരിശോധിക്കാനുള്ള സമയമായി.
+
+### ഡേറ്റാസെറ്റുകളിൽ നിന്ന് ഡേറ്റാലോഡറുകളിലേക്ക്[[from-datasets-to-dataloaders]]
+
+ട്രെയിനിംഗ് പൈപ്പ്‌ലൈനിൽ അടുത്തതായി പിഴയ്ക്കാവുന്ന കാര്യം, ട്രെയിനിംഗ് അല്ലെങ്കിൽ വാലിഡേഷൻ സെറ്റിൽ നിന്ന് `Trainer` ബാച്ചുകൾ ഉണ്ടാക്കാൻ ശ്രമിക്കുമ്പോഴാണ്. `Trainer`-ന്റെ ഡേറ്റാസെറ്റുകൾ ശരിയാണെന്ന് ഉറപ്പായാൽ, താഴെയുള്ളത് എക്‌സിക്യൂട്ട് ചെയ്ത് സ്വയം ഒരു ബാച്ച് ഉണ്ടാക്കാൻ ശ്രമിക്കാം (വാലിഡേഷൻ ഡേറ്റാലോഡറിനായി `train` എന്നതിനു പകരം `eval` ഉപയോഗിക്കുക):
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+ഈ കോഡ് ട്രെയിനിംഗ് ഡേറ്റാലോഡർ ഉണ്ടാക്കി, അതിലൂടെ ഇറ്ററേറ്റ് ചെയ്ത്, ആദ്യ ഇറ്ററേഷനിൽ നിൽക്കുന്നു. കോഡ് എററില്ലാതെ എക്‌സിക്യൂട്ട് ആയാൽ, പരിശോധിക്കാവുന്ന ആദ്യ ട്രെയിനിംഗ് ബാച്ച് നിങ്ങളുടെ കൈയിലുണ്ട്; കോഡ് എറർ ആയാൽ, ഇവിടെ സംഭവിക്കുന്നതുപോലെ, പ്രശ്നം ഡേറ്റാലോഡറിലാണെന്ന് നിങ്ങൾക്ക് ഉറപ്പിക്കാം:
+
+```python out
+~/git/transformers/src/transformers/data/data_collator.py in torch_default_data_collator(features)
+    105                 batch[k] = torch.stack([f[k] for f in features])
+    106             else:
+--> 107                 batch[k] = torch.tensor([f[k] for f in features])
+    108 
+    109     return batch
+
+ValueError: expected sequence of length 45 at dim 1 (got 76)
+```
+
+traceback-ന്റെ അവസാന ഫ്രെയിം പരിശോധിച്ചാൽ തന്നെ ഒരു സൂചന കിട്ടേണ്ടതാണ്; എന്നാലും കുറച്ചുകൂടി ആഴത്തിൽ നോക്കാം. ബാച്ച് ഉണ്ടാക്കുമ്പോഴുള്ള മിക്ക പ്രശ്നങ്ങളും ഉദാഹരണങ്ങളെ ഒരൊറ്റ ബാച്ചായി കൊലേറ്റ് ചെയ്യുന്നതു (collation) കാരണമാണ് ഉണ്ടാകുന്നത്; അതിനാൽ സംശയമുള്ളപ്പോൾ ആദ്യം പരിശോധിക്കേണ്ടത്, നിങ്ങളുടെ `DataLoader` ഏത് `collate_fn` ഉപയോഗിക്കുന്നു എന്നതാണ്:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+data_collator
+```
+
+```python out
+<function transformers.data.data_collator.default_data_collator(features: List[InputDataClass], return_tensors='pt') -> Dict[str, Any]>
+```
+
+അതിനാൽ ഇത് `default_data_collator` ആണ്; പക്ഷേ ഈ സന്ദർഭത്തിൽ നമുക്ക് വേണ്ടത് അതല്ല. ബാച്ചിലെ ഏറ്റവും നീണ്ട വാക്യത്തിന്റെ നീളത്തിലേക്ക് ഉദാഹരണങ്ങൾ പാഡ് ചെയ്യാനാണ് നമുക്ക് വേണ്ടത്; അത് `DataCollatorWithPadding` കൊലേറ്റർ ചെയ്യുന്ന കാര്യമാണ്. ഈ ഡേറ്റാ കൊലേറ്റർ `Trainer` ഡിഫോൾട്ടായി ഉപയോഗിക്കേണ്ടതാണ്; അപ്പോൾ എന്തുകൊണ്ട് ഇവിടെ അത് ഉപയോഗിക്കുന്നില്ല?
+
+ഉത്തരം: നമ്മൾ `tokenizer` `Trainer`-ന് നൽകിയില്ല; അതിനാൽ നമുക്ക് വേണ്ട `DataCollatorWithPadding` ഉണ്ടാക്കാൻ അതിന് കഴിഞ്ഞില്ല. പ്രായോഗികമായി, ഇത്തരം എററുകൾ ഒഴിവാക്കാൻ, ഉപയോഗിക്കാൻ ആഗ്രഹിക്കുന്ന ഡേറ്റാ കൊലേറ്റർ വ്യക്തമായി നൽകാൻ നിങ്ങൾ ഒരിക്കലും മടിക്കരുത്. കൃത്യമായി അതു ചെയ്യാൻ നമ്മുടെ കോഡ് മാറ്റാം:
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+നല്ല വാർത്ത? മുമ്പത്തെ എറർ തന്നെ നമുക്ക് കിട്ടുന്നില്ല; അത് തീർച്ചയായും പുരോഗതിയാണ്. ചീത്ത വാർത്ത? പകരം കുപ്രസിദ്ധമായ ഒരു CUDA എറർ കിട്ടുന്നു:
+
+```python out
+RuntimeError: CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`
+```
+
+ഇത് മോശമാണ്; കാരണം CUDA എററുകൾ പൊതുവെ ഡീബഗ് ചെയ്യാൻ അതികഠിനമാണ്. ഇത് എങ്ങനെ പരിഹരിക്കാമെന്ന് ഒരു നിമിഷത്തിനുള്ളിൽ കാണാം; പക്ഷേ ആദ്യം ബാച്ച് ഉണ്ടാക്കുന്നതിന്റെ വിശകലനം പൂർത്തിയാക്കാം.
+
+നിങ്ങളുടെ ഡേറ്റാ കൊലേറ്റർ ശരിയായതാണെന്ന് ഉറപ്പാണെങ്കിൽ, ഡേറ്റാസെറ്റിലെ രണ്ട് സാമ്പിളുകളിൽ അത് പ്രയോഗിച്ചു നോക്കണം:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+batch = data_collator([trainer.train_dataset[i] for i in range(4)])
+```
+
+ഈ കോഡ് പരാജയപ്പെടും; കാരണം `train_dataset`-ൽ സ്‌ട്രിംഗ് കോളങ്ങളുണ്ട്, അവ സാധാരണയായി `Trainer` നീക്കം ചെയ്യുന്നതാണ്. അവ നിങ്ങൾക്ക് സ്വയം നീക്കം ചെയ്യാം; അല്ലെങ്കിൽ `Trainer` തിരശ്ശീലയ്ക്ക് പിന്നിൽ ചെയ്യുന്നത് കൃത്യമായി അനുകരിക്കണമെങ്കിൽ, അതു ചെയ്യുന്ന പ്രൈവറ്റ് മെത്തേഡായ `Trainer._remove_unused_columns()` വിളിക്കാം:
+
+```py
+data_collator = trainer.get_train_dataloader().collate_fn
+actual_train_set = trainer._remove_unused_columns(trainer.train_dataset)
+batch = data_collator([actual_train_set[i] for i in range(4)])
+```
+
+എറർ തുടരുകയാണെങ്കിൽ, ഡേറ്റാ കൊലേറ്ററിനുള്ളിൽ എന്താണ് സംഭവിക്കുന്നത് എന്ന് സ്വയം ഡീബഗ് ചെയ്യാൻ അപ്പോൾ നിങ്ങൾക്ക് കഴിയേണ്ടതാണ്.
+
+ബാച്ച് ഉണ്ടാക്കുന്ന പ്രോസസ്സ് നമ്മൾ ഡീബഗ് ചെയ്തു; ഇനി ഒരു ബാച്ച് മോഡലിലൂടെ കടത്തിവിടാനുള്ള സമയമായി!
+
+### മോഡലിലൂടെ കടന്നുപോകുന്നു[[going-through-the-model]]
+
+താഴെയുള്ള കമാൻഡ് എക്‌സിക്യൂട്ട് ചെയ്ത് നിങ്ങൾക്ക് ഒരു ബാച്ച് കിട്ടേണ്ടതാണ്:
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+```
+
+ഈ കോഡ് ഒരു നോട്ട്‌ബുക്കിൽ റൺ ചെയ്യുകയാണെങ്കിൽ, മുമ്പ് കണ്ടതിന് സമാനമായ ഒരു CUDA എറർ കിട്ടാം; അങ്ങനെയെങ്കിൽ നോട്ട്‌ബുക്ക് റീസ്‌റ്റാർട്ട് ചെയ്ത്, `trainer.train()` വരി ഒഴിവാക്കി അവസാന സ്‌നിപ്പെറ്റ് വീണ്ടും എക്‌സിക്യൂട്ട് ചെയ്യണം. CUDA എററുകളുടെ രണ്ടാമത്തെ ഏറ്റവും ശല്യപ്പെടുത്തുന്ന കാര്യമാണത്: അവ നിങ്ങളുടെ കേർണലിനെ (kernel) പരിഹരിക്കാനാവാത്ത വിധം തകർക്കുന്നു. അവയുടെ ഏറ്റവും ശല്യപ്പെടുത്തുന്ന കാര്യം, അവ ഡീബഗ് ചെയ്യാൻ ബുദ്ധിമുട്ടാണ് എന്നതാണ്.
+
+അത് എന്തുകൊണ്ടാണ്? GPU-കൾ പ്രവർത്തിക്കുന്ന രീതിയുമായി ബന്ധപ്പെട്ടതാണത്. ധാരാളം ഓപ്പറേഷനുകൾ സമാന്തരമായി (parallel) എക്‌സിക്യൂട്ട് ചെയ്യുന്നതിൽ അവ അതീവ കാര്യക്ഷമമാണ്; പക്ഷേ അതിന്റെ പോരായ്മ, ആ ഇൻസ്‌ട്രക്‌ഷനുകളിൽ ഒന്ന് എററിൽ കലാശിക്കുമ്പോൾ അത് ഉടനടി നിങ്ങൾ അറിയുന്നില്ല എന്നതാണ്. GPU-വിലെ ഒന്നിലധികം പ്രോസസ്സുകളുടെ ഒരു സിൻക്രൊണൈസേഷൻ പ്രോഗ്രാം വിളിക്കുമ്പോൾ മാത്രമാണ്, എന്തോ പിഴച്ചു എന്ന് അത് തിരിച്ചറിയുന്നത്; അതിനാൽ എറർ ഉയർത്തപ്പെടുന്നത്, അത് ഉണ്ടാക്കിയ കാര്യവുമായി ഒരു ബന്ധവുമില്ലാത്ത ഒരിടത്താണ്. ഉദാഹരണത്തിന്, നമ്മുടെ മുമ്പത്തെ traceback നോക്കിയാൽ, ബാക്ക്‌വേഡ് പാസ്സിലാണ് (backward pass) എറർ ഉയർത്തപ്പെട്ടത്; പക്ഷേ അത് യഥാർത്ഥത്തിൽ ഫോർവേഡ് പാസ്സിലെ എന്തോ ഒന്നിൽ നിന്നാണ് വരുന്നത് എന്ന് ഒരു നിമിഷത്തിനുള്ളിൽ നമ്മൾ കാണും.
+
+അപ്പോൾ ആ എററുകൾ എങ്ങനെ ഡീബഗ് ചെയ്യും? ഉത്തരം എളുപ്പമാണ്: നമ്മൾ ചെയ്യില്ല. നിങ്ങളുടെ CUDA എറർ ഒരു out-of-memory എറർ അല്ലെങ്കിൽ (അതായത്, GPU-വിൽ മതിയായ മെമ്മറി ഇല്ല എന്നർത്ഥം), അത് ഡീബഗ് ചെയ്യാൻ എപ്പോഴും CPU-വിലേക്ക് തിരിച്ചു പോകണം.
+
+നമ്മുടെ കാര്യത്തിൽ ഇത് ചെയ്യാൻ, മോഡലിനെ CPU-വിലേക്ക് തിരികെ കൊണ്ടുവന്ന് നമ്മുടെ ബാച്ചിൽ അത് വിളിച്ചാൽ മതി -- `DataLoader` തിരികെ നൽകിയ ബാച്ച് ഇതുവരെ GPU-വിലേക്ക് മാറ്റിയിട്ടില്ല:
+
+```python
+outputs = trainer.model.cpu()(**batch)
+```
+
+```python out
+~/.pyenv/versions/3.7.9/envs/base/lib/python3.7/site-packages/torch/nn/functional.py in nll_loss(input, target, weight, size_average, ignore_index, reduce, reduction)
+   2386         )
+   2387     if dim == 2:
+-> 2388         ret = torch._C._nn.nll_loss(input, target, weight, _Reduction.get_enum(reduction), ignore_index)
+   2389     elif dim == 4:
+   2390         ret = torch._C._nn.nll_loss2d(input, target, weight, _Reduction.get_enum(reduction), ignore_index)
+
+IndexError: Target 2 is out of bounds.
+```
+
+അതിനാൽ, ചിത്രം കൂടുതൽ വ്യക്തമാകുന്നു. ഒരു CUDA എററിനു പകരം, ഇപ്പോൾ ലോസ്സ് (loss) കണക്കാക്കുന്നതിൽ ഒരു `IndexError` നമുക്കുണ്ട് (അതിനാൽ, മുമ്പ് പറഞ്ഞതുപോലെ, ബാക്ക്‌വേഡ് പാസ്സുമായി ഒരു ബന്ധവുമില്ല). കൂടുതൽ കൃത്യമായി പറഞ്ഞാൽ, target 2 ആണ് എറർ ഉണ്ടാക്കുന്നത് എന്ന് കാണാം; അതിനാൽ നമ്മുടെ മോഡലിന്റെ ലേബലുകളുടെ എണ്ണം പരിശോധിക്കാൻ ഇത് വളരെ നല്ല സമയമാണ്:
+
+```python
+trainer.model.config.num_labels
+```
+
+```python out
+2
+```
+
+രണ്ട് ലേബലുകൾ ഉള്ളപ്പോൾ, 0-ഉം 1-ഉം മാത്രമേ ടാർഗെറ്റുകളായി അനുവദിക്കൂ; പക്ഷേ എറർ സന്ദേശം അനുസരിച്ച് നമുക്ക് ഒരു 2 കിട്ടി. 2 കിട്ടുന്നത് യഥാർത്ഥത്തിൽ സ്വാഭാവികമാണ്: മുമ്പ് നമ്മൾ എടുത്ത ലേബൽ പേരുകൾ ഓർത്താൽ, അവ മൂന്നെണ്ണമായിരുന്നു; അതിനാൽ നമ്മുടെ ഡേറ്റാസെറ്റിൽ 0, 1, 2 എന്ന ഇൻഡെക്‌സുകളുണ്ട്. പ്രശ്നം, നമ്മൾ അത് നമ്മുടെ മോഡലിനോട് പറഞ്ഞില്ല എന്നതാണ്; അത് മൂന്ന് ലേബലുകളോടെ ഉണ്ടാക്കേണ്ടതായിരുന്നു. അതിനാൽ അത് ശരിയാക്കാം!
+
+```py
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+എല്ലാം ശരിയായി തോന്നുന്നുണ്ടോ എന്ന് പരിശോധിക്കാൻ സമയമെടുക്കുന്നതിനായി, `trainer.train()` വരി നമ്മൾ ഇപ്പോഴും ഉൾപ്പെടുത്തുന്നില്ല. ഒരു ബാച്ച് എടുത്ത് നമ്മുടെ മോഡലിന് നൽകിയാൽ, അത് ഇപ്പോൾ എററില്ലാതെ പ്രവർത്തിക്കുന്നു!
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+outputs = trainer.model.cpu()(**batch)
+```
+
+അടുത്ത ഘട്ടം GPU-വിലേക്ക് തിരികെ പോയി, എല്ലാം ഇപ്പോഴും പ്രവർത്തിക്കുന്നുണ്ടോ എന്ന് പരിശോധിക്കുകയാണ്:
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+batch = {k: v.to(device) for k, v in batch.items()}
+
+outputs = trainer.model.to(device)(**batch)
+```
+
+ഇപ്പോഴും എറർ കിട്ടുന്നുണ്ടെങ്കിൽ, നോട്ട്‌ബുക്ക് റീസ്‌റ്റാർട്ട് ചെയ്ത് സ്‌ക്രിപ്‌റ്റിന്റെ അവസാന പതിപ്പ് മാത്രം എക്‌സിക്യൂട്ട് ചെയ്യുന്നുണ്ടെന്ന് ഉറപ്പുവരുത്തുക.
+
+### ഒരു ഒപ്‌റ്റിമൈസേഷൻ സ്‌റ്റെപ്പ് നടത്തുന്നു[[performing-one-optimization-step]]
+
+മോഡലിലൂടെ ശരിക്കും കടന്നുപോകുന്ന ബാച്ചുകൾ ഉണ്ടാക്കാൻ കഴിയുമെന്ന് ഇപ്പോൾ അറിയാം; ട്രെയിനിംഗ് പൈപ്പ്‌ലൈനിന്റെ അടുത്ത ഘട്ടത്തിന് നമ്മൾ തയ്യാറാണ്: ഗ്രേഡിയന്റുകൾ കണക്കാക്കി ഒരു ഒപ്‌റ്റിമൈസേഷൻ സ്‌റ്റെപ്പ് നടത്തുക.
+
+ആദ്യ ഭാഗം, ലോസ്സിൽ `backward()` മെത്തേഡ് വിളിക്കുന്നത് മാത്രമാണ്:
+
+```py
+loss = outputs.loss
+loss.backward()
+```
+
+ഈ ഘട്ടത്തിൽ ഒരു എറർ കിട്ടുന്നത് വളരെ അപൂർവ്വമാണ്; പക്ഷേ കിട്ടിയാൽ, ഉപകാരപ്രദമായ ഒരു എറർ സന്ദേശം ലഭിക്കാൻ CPU-വിലേക്ക് തിരിച്ചു പോകാൻ മറക്കരുത്.
+
+ഒപ്‌റ്റിമൈസേഷൻ സ്‌റ്റെപ്പ് നടത്താൻ, `optimizer` ഉണ്ടാക്കി അതിന്റെ `step()` മെത്തേഡ് വിളിച്ചാൽ മതി:
+
+```py
+trainer.create_optimizer()
+trainer.optimizer.step()
+```
+
+വീണ്ടും, `Trainer`-ലെ ഡിഫോൾട്ട് ഒപ്‌റ്റിമൈസർ ഉപയോഗിക്കുകയാണെങ്കിൽ, ഈ ഘട്ടത്തിൽ എറർ കിട്ടാൻ വഴിയില്ല; പക്ഷേ ഒരു കസ്‌റ്റം ഒപ്‌റ്റിമൈസർ ഉണ്ടെങ്കിൽ, ഇവിടെ ഡീബഗ് ചെയ്യേണ്ട ചില പ്രശ്നങ്ങൾ ഉണ്ടാകാം. ഈ ഘട്ടത്തിൽ വിചിത്രമായ ഒരു CUDA എറർ കിട്ടിയാൽ CPU-വിലേക്ക് തിരിച്ചു പോകാൻ മറക്കരുത്. CUDA എററുകളുടെ കാര്യം പറയുമ്പോൾ, ഒരു പ്രത്യേക സന്ദർഭത്തെക്കുറിച്ച് മുമ്പ് നമ്മൾ സൂചിപ്പിച്ചിരുന്നു. ഇപ്പോൾ അത് നോക്കാം.
+
+### CUDA out-of-memory എററുകൾ കൈകാര്യം ചെയ്യുന്നു[[dealing-with-cuda-out-of-memory-errors]]
+
+`RuntimeError: CUDA out of memory` എന്ന് തുടങ്ങുന്ന ഒരു എറർ സന്ദേശം കിട്ടുമ്പോഴെല്ലാം, GPU മെമ്മറി തീർന്നു എന്നാണ് അത് സൂചിപ്പിക്കുന്നത്. ഇത് നിങ്ങളുടെ കോഡുമായി നേരിട്ട് ബന്ധപ്പെട്ടതല്ല; തികച്ചും ശരിയായി ഓടുന്ന ഒരു സ്‌ക്രിപ്‌റ്റിലും ഇത് സംഭവിക്കാം. നിങ്ങളുടെ GPU-വിന്റെ ആന്തരിക മെമ്മറിയിൽ വളരെയധികം കാര്യങ്ങൾ വയ്ക്കാൻ ശ്രമിച്ചു, അത് ഒരു എററിൽ കലാശിച്ചു എന്നാണ് ഈ എററിന്റെ അർത്ഥം. മറ്റ് CUDA എററുകളുടെ കാര്യത്തിലെന്നപോലെ, ട്രെയിനിംഗ് വീണ്ടും റൺ ചെയ്യാവുന്ന അവസ്ഥയിലെത്താൻ കേർണൽ റീസ്‌റ്റാർട്ട് ചെയ്യേണ്ടിവരും.
+
+ഈ പ്രശ്നം പരിഹരിക്കാൻ, GPU സ്ഥലം കുറച്ച് ഉപയോഗിച്ചാൽ മതി -- പറയാൻ എളുപ്പമാണെങ്കിലും ചെയ്യാൻ പലപ്പോഴും ബുദ്ധിമുട്ടുള്ള കാര്യം. ആദ്യം, ഒരേ സമയം രണ്ട് മോഡലുകൾ GPU-വിൽ ഇല്ലെന്ന് ഉറപ്പുവരുത്തുക (തീർച്ചയായും, നിങ്ങളുടെ പ്രശ്നത്തിന് അത് ആവശ്യമല്ലെങ്കിൽ). പിന്നെ, നിങ്ങളുടെ ബാച്ച് സൈസ് കുറയ്ക്കുന്നതാവും നല്ലത്; കാരണം അത് മോഡലിന്റെ എല്ലാ ഇന്റർമീഡിയറ്റ് ഔട്ട്‌പുട്ടുകളുടെയും അവയുടെ ഗ്രേഡിയന്റുകളുടെയും വലുപ്പത്തെ നേരിട്ട് ബാധിക്കുന്നു. പ്രശ്നം തുടരുകയാണെങ്കിൽ, നിങ്ങളുടെ മോഡലിന്റെ ഒരു ചെറിയ പതിപ്പ് ഉപയോഗിക്കുന്നത് പരിഗണിക്കുക.
+
+> [!TIP]
+> കോഴ്‌സിന്റെ അടുത്ത ഭാഗത്തിൽ, മെമ്മറി ഉപയോഗം കുറയ്ക്കാനും ഏറ്റവും വലിയ മോഡലുകൾ ഫൈൻ-ട്യൂൻ ചെയ്യാനും സഹായിക്കുന്ന കൂടുതൽ വിപുലമായ രീതികൾ നമ്മൾ പരിശോധിക്കും.
+
+### മോഡൽ ഇവാല്യുവേറ്റ് ചെയ്യുന്നു[[evaluating-the-model]]
+
+നമ്മുടെ കോഡിലെ എല്ലാ പ്രശ്നങ്ങളും പരിഹരിച്ചു; ഇനി എല്ലാം പെർഫെക്റ്റാണ്, ട്രെയിനിംഗ് സുഗമമായി ഓടണം, അല്ലേ? അത്ര വേഗം വേണ്ട! `trainer.train()` കമാൻഡ് റൺ ചെയ്താൽ, തുടക്കത്തിൽ എല്ലാം ശരിയായി തോന്നും; പക്ഷേ കുറച്ചു കഴിയുമ്പോൾ ഇത് കിട്ടും:
+
+```py
+# This will take a long time and error out, so you shouldn't run this cell
+trainer.train()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+ഈ എറർ ഇവാല്യുവേഷൻ ഘട്ടത്തിലാണ് പ്രത്യക്ഷപ്പെടുന്നത് എന്ന് നിങ്ങൾ മനസ്സിലാക്കും; അതിനാൽ ഇതാണ് നമ്മൾ ഡീബഗ് ചെയ്യേണ്ട അവസാന കാര്യം.
+
+`Trainer`-ന്റെ ഇവാല്യുവേഷൻ ലൂപ്പ് ട്രെയിനിംഗിൽ നിന്ന് സ്വതന്ത്രമായി ഇങ്ങനെ റൺ ചെയ്യാം:
+
+```py
+trainer.evaluate()
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+> [!TIP]
+> 💡 ഒരു എററിൽ ചെന്നു തട്ടുന്നതിനു മുമ്പ് ധാരാളം കമ്പ്യൂട്ട് റിസോഴ്‌സുകൾ പാഴാക്കാതിരിക്കാൻ, `trainer.train()` തുടങ്ങുന്നതിനു മുമ്പ് `trainer.evaluate()` റൺ ചെയ്യാൻ കഴിയുമെന്ന് എപ്പോഴും ഉറപ്പുവരുത്തണം.
+
+ഇവാല്യുവേഷൻ ലൂപ്പിലെ ഒരു പ്രശ്നം ഡീബഗ് ചെയ്യാൻ ശ്രമിക്കുന്നതിനു മുമ്പ്, ഡേറ്റ നോക്കിയിട്ടുണ്ടെന്നും, ശരിയായി ഒരു ബാച്ച് ഉണ്ടാക്കാൻ കഴിയുമെന്നും, അതിൽ നിങ്ങളുടെ മോഡൽ റൺ ചെയ്യാൻ കഴിയുമെന്നും ആദ്യം ഉറപ്പുവരുത്തണം. ആ ഘട്ടങ്ങളെല്ലാം നമ്മൾ പൂർത്തിയാക്കി; അതിനാൽ താഴെയുള്ള കോഡ് എററില്ലാതെ എക്‌സിക്യൂട്ട് ചെയ്യാം:
+
+```py
+for batch in trainer.get_eval_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+```
+
+എറർ പിന്നീടാണ് വരുന്നത്, ഇവാല്യുവേഷൻ ഘട്ടത്തിന്റെ അവസാനത്തിൽ; traceback നോക്കിയാൽ ഇത് കാണാം:
+
+```python trace
+~/git/datasets/src/datasets/metric.py in add_batch(self, predictions, references)
+    431         """
+    432         batch = {"predictions": predictions, "references": references}
+--> 433         batch = self.info.features.encode_batch(batch)
+    434         if self.writer is None:
+    435             self._init_writer()
+```
+
+എറർ `datasets/metric.py` മൊഡ്യൂളിൽ നിന്നാണ് ഉത്ഭവിക്കുന്നത് എന്ന് ഇത് നമ്മോട് പറയുന്നു -- അതിനാൽ ഇത് നമ്മുടെ `compute_metrics()` ഫംഗ്‌ഷന്റെ പ്രശ്നമാണ്. ലോജിറ്റുകളും ലേബലുകളും NumPy അറേകളായി അടങ്ങിയ ഒരു ട്യൂപ്പിൾ (tuple) ആണ് അത് സ്വീകരിക്കുന്നത്; അതിനാൽ അത് നൽകാൻ ശ്രമിക്കാം:
+
+```py
+predictions = outputs.logits.cpu().numpy()
+labels = batch["labels"].cpu().numpy()
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+TypeError: only size-1 arrays can be converted to Python scalars
+```
+
+അതേ എറർ തന്നെ കിട്ടുന്നു; അതിനാൽ പ്രശ്നം തീർച്ചയായും ആ ഫംഗ്‌ഷനിലാണ്. അതിന്റെ കോഡ് തിരിഞ്ഞു നോക്കിയാൽ, അത് `predictions`-ഉം `labels`-ഉം `metric.compute()`-ലേക്ക് കൈമാറുക മാത്രമാണ് ചെയ്യുന്നത് എന്ന് കാണാം. അപ്പോൾ ആ മെത്തേഡിൽ എന്തെങ്കിലും പ്രശ്നമുണ്ടോ? അങ്ങനെയൊന്നുമില്ല. ഷേപ്പുകൾ (shapes) ഒന്ന് വേഗം നോക്കാം:
+
+```py
+predictions.shape, labels.shape
+```
+
+```python out
+((8, 3), (8,))
+```
+
+നമ്മുടെ predictions ഇപ്പോഴും ലോജിറ്റുകളാണ്, യഥാർത്ഥ പ്രവചനങ്ങളല്ല; അതുകൊണ്ടാണ് മെട്രിക് ഈ (കുറച്ച് അവ്യക്തമായ) എറർ തിരികെ നൽകുന്നത്. പരിഹാരം വളരെ എളുപ്പമാണ്; `compute_metrics()` ഫംഗ്‌ഷനിൽ ഒരു argmax ചേർത്താൽ മതി:
+
+```py
+import numpy as np
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+compute_metrics((predictions, labels))
+```
+
+```python out
+{'accuracy': 0.625}
+```
+
+ഇപ്പോൾ നമ്മുടെ എറർ പരിഹരിച്ചു! ഇത് അവസാനത്തേതായിരുന്നു; അതിനാൽ നമ്മുടെ സ്‌ക്രിപ്‌റ്റ് ഇപ്പോൾ ഒരു മോഡൽ ശരിയായി ട്രെയിൻ ചെയ്യും.
+
+റഫറൻസിനായി, പൂർണ്ണമായി ശരിയാക്കിയ സ്‌ക്രിപ്‌റ്റ് ഇതാ:
+
+```py
+import numpy as np
+from datasets import load_dataset
+import evaluate
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    TrainingArguments,
+    Trainer,
+)
+
+raw_datasets = load_dataset("glue", "mnli")
+
+model_checkpoint = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["premise"], examples["hypothesis"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(preprocess_function, batched=True)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=3)
+
+args = TrainingArguments(
+    f"distilbert-finetuned-mnli",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+metric = evaluate.load("glue", "mnli")
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+trainer = Trainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation_matched"],
+    compute_metrics=compute_metrics,
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+ഈ സന്ദർഭത്തിൽ, ഇനി പ്രശ്നങ്ങളൊന്നുമില്ല; നമ്മുടെ സ്‌ക്രിപ്‌റ്റ് ന്യായമായ ഫലങ്ങൾ തരേണ്ട ഒരു മോഡൽ ഫൈൻ-ട്യൂൻ ചെയ്യും. പക്ഷേ ട്രെയിനിംഗ് എററൊന്നുമില്ലാതെ മുന്നോട്ടു പോകുകയും, ട്രെയിൻ ചെയ്ത മോഡൽ ഒട്ടും നന്നായി പ്രവർത്തിക്കാതിരിക്കുകയും ചെയ്യുമ്പോൾ നമുക്ക് എന്തു ചെയ്യാം? അതാണ് മെഷീൻ ലേണിംഗിലെ ഏറ്റവും കഠിനമായ ഭാഗം; സഹായിക്കാവുന്ന ചില രീതികൾ ഞങ്ങൾ കാണിച്ചുതരാം.
+
+> [!TIP]
+> 💡 ഒരു മാനുവൽ ട്രെയിനിംഗ് ലൂപ്പ് ഉപയോഗിക്കുകയാണെങ്കിൽ, നിങ്ങളുടെ ട്രെയിനിംഗ് പൈപ്പ്‌ലൈൻ ഡീബഗ് ചെയ്യാൻ ഇതേ ഘട്ടങ്ങൾ തന്നെയാണ് ബാധകം; പക്ഷേ അവ വേർതിരിക്കാൻ കൂടുതൽ എളുപ്പമാണ്. എന്നിരുന്നാലും, ശരിയായ സ്ഥലങ്ങളിൽ `model.eval()` അല്ലെങ്കിൽ `model.train()`, ഓരോ സ്‌റ്റെപ്പിലും `zero_grad()` എന്നിവ മറന്നിട്ടില്ലെന്ന് ഉറപ്പുവരുത്തുക!
+
+## ട്രെയിനിംഗ് സമയത്തെ നിശ്ശബ്ദ എററുകൾ ഡീബഗ് ചെയ്യുന്നു[[debugging-silent-errors-during-training]]
+
+എററില്ലാതെ പൂർത്തിയാകുന്ന, പക്ഷേ നല്ല ഫലങ്ങൾ കിട്ടാത്ത ഒരു ട്രെയിനിംഗ് ഡീബഗ് ചെയ്യാൻ നമുക്ക് എന്തു ചെയ്യാം? ചില സൂചനകൾ ഇവിടെ ഞങ്ങൾ നൽകും; പക്ഷേ ഇത്തരം ഡീബഗ്ഗിംഗ് മെഷീൻ ലേണിംഗിലെ ഏറ്റവും കഠിനമായ ഭാഗമാണെന്നും, ഇതിന് മാന്ത്രികമായ ഒരു ഉത്തരമില്ലെന്നും ഓർക്കുക.
+
+### നിങ്ങളുടെ ഡേറ്റ പരിശോധിക്കുക (വീണ്ടും!)[[check-your-data-again]]
+
+നിങ്ങളുടെ ഡേറ്റയിൽ നിന്ന് എന്തെങ്കിലും പഠിക്കാൻ ശരിക്കും സാധ്യമാണെങ്കിൽ മാത്രമേ നിങ്ങളുടെ മോഡൽ എന്തെങ്കിലും പഠിക്കൂ. ഡേറ്റയെ കേടുവരുത്തുന്ന ഒരു ബഗ് ഉണ്ടെങ്കിലോ, ലേബലുകൾ ക്രമരഹിതമായി (randomly) നൽകിയിട്ടുണ്ടെങ്കിലോ, നിങ്ങളുടെ ഡേറ്റാസെറ്റിൽ ഒരു മോഡലും ട്രെയിൻ ആകാതിരിക്കാൻ വളരെ സാധ്യതയുണ്ട്. അതിനാൽ എപ്പോഴും ഡീകോഡ് ചെയ്ത ഇൻപുട്ടുകളും ലേബലുകളും ഒന്നുകൂടി പരിശോധിച്ചു തുടങ്ങുക, സ്വയം ഈ ചോദ്യങ്ങൾ ചോദിക്കുക:
+
+- ഡീകോഡ് ചെയ്ത ഡേറ്റ മനസ്സിലാക്കാവുന്നതാണോ?
+- ലേബലുകളോട് നിങ്ങൾ യോജിക്കുന്നുണ്ടോ?
+- മറ്റുള്ളവയെക്കാൾ കൂടുതൽ സാധാരണമായ ഒരു ലേബൽ ഉണ്ടോ?
+- മോഡൽ ക്രമരഹിതമായ ഒരു ഉത്തരം / എപ്പോഴും ഒരേ ഉത്തരം പ്രവചിച്ചാൽ ലോസ്സ്/മെട്രിക് എന്തായിരിക്കണം?
+
+> [!WARNING]
+> ⚠️ ഡിസ്‌ട്രിബ്യൂട്ടഡ് ട്രെയിനിംഗ് (distributed training) ചെയ്യുകയാണെങ്കിൽ, ഓരോ പ്രോസസ്സിലും നിങ്ങളുടെ ഡേറ്റാസെറ്റിന്റെ സാമ്പിളുകൾ പ്രിന്റ് ചെയ്ത്, ഒരേ കാര്യമാണ് കിട്ടുന്നത് എന്ന് മൂന്നു വട്ടം ഉറപ്പുവരുത്തുക. ഡേറ്റ ഉണ്ടാക്കുന്നതിൽ ഏതെങ്കിലും റാൻഡംനെസ്സിന്റെ ഉറവിടം ഉണ്ടാവുകയും, അതു കാരണം ഓരോ പ്രോസസ്സിനും ഡേറ്റാസെറ്റിന്റെ വ്യത്യസ്ത പതിപ്പ് കിട്ടുകയും ചെയ്യുന്നത് ഒരു സാധാരണ ബഗ് ആണ്.
+
+ഡേറ്റ നോക്കിയതിനു ശേഷം, മോഡലിന്റെ ഏതാനും പ്രവചനങ്ങളിലൂടെ കടന്നുപോയി അവയും ഡീകോഡ് ചെയ്യുക. മോഡൽ എപ്പോഴും ഒരേ കാര്യമാണ് പ്രവചിക്കുന്നതെങ്കിൽ, നിങ്ങളുടെ ഡേറ്റാസെറ്റ് ഒരു കാറ്റഗറിയിലേക്ക് ചായ്‌വുള്ളതാകാം (ക്ലാസിഫിക്കേഷൻ പ്രശ്നങ്ങളിൽ); അപൂർവ്വ ക്ലാസ്സുകൾ ഓവർസാമ്പിൾ (oversampling) ചെയ്യുന്നതു പോലുള്ള രീതികൾ സഹായിക്കാം.
+
+നിങ്ങളുടെ പ്രാരംഭ മോഡലിൽ കിട്ടുന്ന ലോസ്സ്/മെട്രിക്, ക്രമരഹിത പ്രവചനങ്ങൾക്ക് പ്രതീക്ഷിക്കുന്ന ലോസ്സ്/മെട്രിക്കിൽ നിന്ന് വളരെ വ്യത്യസ്തമാണെങ്കിൽ, ലോസ്സോ മെട്രിക്കോ കണക്കാക്കുന്ന രീതി ഒന്നുകൂടി പരിശോധിക്കുക; അവിടെ ഒരു ബഗ് ഉണ്ടാകാൻ സാധ്യതയുണ്ട്. അവസാനം കൂട്ടിച്ചേർക്കുന്ന പല ലോസ്സുകൾ ഉപയോഗിക്കുകയാണെങ്കിൽ, അവ ഒരേ സ്‌കെയിലിലാണെന്ന് ഉറപ്പുവരുത്തുക.
+
+നിങ്ങളുടെ ഡേറ്റ പെർഫെക്റ്റാണെന്ന് ഉറപ്പായാൽ, ഒരു ലളിതമായ ടെസ്‌റ്റിലൂടെ മോഡലിന് അതിൽ ട്രെയിൻ ആകാൻ കഴിവുണ്ടോ എന്ന് നോക്കാം.
+
+### ഒരു ബാച്ചിൽ നിങ്ങളുടെ മോഡൽ ഓവർഫിറ്റ് ചെയ്യുക[[overfit-your-model-on-one-batch]]
+
+ട്രെയിൻ ചെയ്യുമ്പോൾ സാധാരണയായി നമ്മൾ ഒഴിവാക്കാൻ ശ്രമിക്കുന്ന ഒന്നാണ് ഓവർഫിറ്റിംഗ് (overfitting); കാരണം, നമ്മൾ ആഗ്രഹിക്കുന്ന പൊതു സവിശേഷതകൾ തിരിച്ചറിയാൻ പഠിക്കുന്നതിനു പകരം, മോഡൽ ട്രെയിനിംഗ് സാമ്പിളുകൾ കാണാതെ പഠിക്കുക മാത്രമാണ് ചെയ്യുന്നത് എന്നാണ് അതിന്റെ അർത്ഥം. എന്നിരുന്നാലും, ഒരേ ബാച്ചിൽ വീണ്ടും വീണ്ടും മോഡൽ ട്രെയിൻ ചെയ്യാൻ ശ്രമിക്കുന്നത്, നിങ്ങൾ രൂപപ്പെടുത്തിയ പ്രശ്നം, ട്രെയിൻ ചെയ്യാൻ ശ്രമിക്കുന്ന മോഡലിന് പരിഹരിക്കാൻ കഴിയുമോ എന്ന് പരിശോധിക്കാനുള്ള ഒരു നല്ല ടെസ്‌റ്റാണ്. നിങ്ങളുടെ പ്രാരംഭ ലേണിംഗ് റേറ്റ് (learning rate) വളരെ കൂടുതലാണോ എന്ന് കാണാനും ഇത് സഹായിക്കും.
+
+`Trainer` നിർവ്വചിച്ചു കഴിഞ്ഞാൽ ഇത് ചെയ്യുന്നത് വളരെ എളുപ്പമാണ്; ഒരു ബാച്ച് ട്രെയിനിംഗ് ഡേറ്റ എടുത്ത്, ആ ബാച്ച് മാത്രം ഉപയോഗിച്ച് ഏകദേശം 20 സ്‌റ്റെപ്പുകൾക്ക് ഒരു ചെറിയ മാനുവൽ ട്രെയിനിംഗ് ലൂപ്പ് റൺ ചെയ്യുക:
+
+```py
+for batch in trainer.get_train_dataloader():
+    break
+
+batch = {k: v.to(device) for k, v in batch.items()}
+trainer.create_optimizer()
+
+for _ in range(20):
+    outputs = trainer.model(**batch)
+    loss = outputs.loss
+    loss.backward()
+    trainer.optimizer.step()
+    trainer.optimizer.zero_grad()
+```
+
+> [!TIP]
+> 💡 നിങ്ങളുടെ ട്രെയിനിംഗ് ഡേറ്റ അസന്തുലിതമാണെങ്കിൽ (unbalanced), എല്ലാ ലേബലുകളും അടങ്ങിയ ഒരു ബാച്ച് ട്രെയിനിംഗ് ഡേറ്റ ഉണ്ടാക്കാൻ ഉറപ്പുവരുത്തുക.
+
+കിട്ടുന്ന മോഡലിന് അതേ `batch`-ൽ ഏകദേശം പെർഫെക്റ്റായ ഫലങ്ങൾ ഉണ്ടാകണം. കിട്ടുന്ന പ്രവചനങ്ങളിൽ മെട്രിക് കണക്കാക്കാം:
+
+```py
+with torch.no_grad():
+    outputs = trainer.model(**batch)
+preds = outputs.logits
+labels = batch["labels"]
+
+compute_metrics((preds.cpu().numpy(), labels.cpu().numpy()))
+```
+
+```python out
+{'accuracy': 1.0}
+```
+
+100% അക്യുറസി; ഇത് ഓവർഫിറ്റിംഗിന്റെ ഒരു നല്ല ഉദാഹരണമാണ് (അതായത്, മറ്റേതെങ്കിലും വാക്യത്തിൽ നിങ്ങളുടെ മോഡൽ പരീക്ഷിച്ചാൽ, അത് തെറ്റായ ഉത്തരം തരാൻ വളരെ സാധ്യതയുണ്ട്)!
+
+ഇതുപോലെ പെർഫെക്റ്റായ ഫലങ്ങൾ നേടാൻ നിങ്ങളുടെ മോഡലിന് കഴിയുന്നില്ലെങ്കിൽ, പ്രശ്നം രൂപപ്പെടുത്തിയ രീതിയിലോ ഡേറ്റയിലോ എന്തോ കുഴപ്പമുണ്ട് എന്നാണ് അതിനർത്ഥം; അതിനാൽ അത് ശരിയാക്കണം. ഓവർഫിറ്റിംഗ് ടെസ്‌റ്റ് പാസ്സാകാൻ കഴിഞ്ഞാൽ മാത്രമേ, നിങ്ങളുടെ മോഡലിന് ശരിക്കും എന്തെങ്കിലും പഠിക്കാൻ കഴിയുമെന്ന് ഉറപ്പിക്കാനാവൂ.
+
+> [!WARNING]
+> ⚠️ ഈ ടെസ്‌റ്റിനു ശേഷം നിങ്ങളുടെ മോഡലും `Trainer`-ഉം വീണ്ടും ഉണ്ടാക്കേണ്ടിവരും; കാരണം കിട്ടിയ മോഡലിന്, തിരിച്ചുവന്ന് നിങ്ങളുടെ മുഴുവൻ ഡേറ്റാസെറ്റിൽ ഉപകാരപ്രദമായ എന്തെങ്കിലും പഠിക്കാൻ കഴിയാൻ വഴിയില്ല.
+
+### ആദ്യത്തെ ഒരു ബേസ്‌ലൈൻ കിട്ടുന്നതുവരെ ഒന്നും ട്യൂൻ ചെയ്യരുത്[[dont-tune-anything-until-you-have-a-first-baseline]]
+
+ഹൈപ്പർപാരാമീറ്റർ ട്യൂണിംഗ് (hyperparameter tuning) മെഷീൻ ലേണിംഗിലെ ഏറ്റവും കഠിനമായ ഭാഗമാണെന്ന് എപ്പോഴും ഊന്നിപ്പറയാറുണ്ട്; പക്ഷേ മെട്രിക്കിൽ കുറച്ച് നേട്ടം കൂടി കിട്ടാൻ സഹായിക്കുന്ന അവസാന ഘട്ടം മാത്രമാണത്. മിക്കപ്പോഴും, `Trainer`-ന്റെ ഡിഫോൾട്ട് ഹൈപ്പർപാരാമീറ്ററുകൾ നല്ല ഫലങ്ങൾ തരാൻ ധാരാളം മതിയാകും; അതിനാൽ നിങ്ങളുടെ ഡേറ്റാസെറ്റിലെ ബേസ്‌ലൈനിനെ (baseline) മറികടക്കുന്ന എന്തെങ്കിലും കിട്ടുന്നതുവരെ, സമയമെടുക്കുന്നതും ചെലവേറിയതുമായ ഒരു ഹൈപ്പർപാരാമീറ്റർ തിരച്ചിലിലേക്ക് എടുത്തുചാടരുത്.
+
+മതിയായ നല്ലൊരു മോഡൽ കിട്ടിയാൽ, കുറച്ച് മാറ്റങ്ങൾ വരുത്തിത്തുടങ്ങാം. വ്യത്യസ്ത ഹൈപ്പർപാരാമീറ്ററുകളോടെ ആയിരം റണ്ണുകൾ തുടങ്ങാൻ ശ്രമിക്കരുത്; പകരം, ഏതിനാണ് ഏറ്റവും വലിയ സ്വാധീനം എന്ന് മനസ്സിലാക്കാൻ, ഒരു ഹൈപ്പർപാരാമീറ്ററിന്റെ വ്യത്യസ്ത മൂല്യങ്ങളോടെ രണ്ട് റണ്ണുകൾ താരതമ്യം ചെയ്യുക.
+
+മോഡലിൽ തന്നെ മാറ്റങ്ങൾ വരുത്തുകയാണെങ്കിൽ, അത് ലളിതമായി വയ്ക്കുക; ന്യായമായി വിശദീകരിക്കാൻ കഴിയാത്ത ഒന്നും പരീക്ഷിക്കരുത്. നിങ്ങളുടെ മാറ്റത്തിന് ഉദ്ദേശിക്കാത്ത ഫലങ്ങളൊന്നും ഉണ്ടായിട്ടില്ലെന്ന് ഉറപ്പുവരുത്താൻ, എപ്പോഴും ഓവർഫിറ്റിംഗ് ടെസ്‌റ്റിലേക്ക് തിരിച്ചു പോകാൻ ഉറപ്പുവരുത്തുക.
+
+### സഹായം ചോദിക്കുക[[ask-for-help]]
+
+നിങ്ങളുടെ പ്രശ്നം പരിഹരിക്കാൻ സഹായിച്ച ചില ഉപദേശങ്ങൾ ഈ ഭാഗത്തിൽ നിങ്ങൾ കണ്ടെത്തിയിട്ടുണ്ടാവുമെന്ന് പ്രതീക്ഷിക്കുന്നു; അങ്ങനെയല്ലെങ്കിൽ, [ഫോറങ്ങളിൽ](https://discuss.huggingface.co/) കമ്മ്യൂണിറ്റിയോട് എപ്പോഴും ചോദിക്കാമെന്ന് ഓർക്കുക. 
+
+സഹായകമായേക്കാവുന്ന ചില അധിക റിസോഴ്‌സുകൾ ഇതാ:
+
+- Joel Grus-ന്റെ ["Reproducibility as a vehicle for engineering best practices"](https://docs.google.com/presentation/d/1yHLPvPhUs2KGI5ZWo0sU-PKU3GimAk3iTsI38Z-B5Gw/edit#slide=id.p)
+- Cecelia Shao-യുടെ ["Checklist for debugging neural networks"](https://towardsdatascience.com/checklist-for-debugging-neural-networks-d8b2a9434f21)
+- Chase Roberts-ന്റെ ["How to unit test machine learning code"](https://medium.com/@keeper6928/how-to-unit-test-machine-learning-code-57cf6fd81765)
+- Andrej Karpathy-യുടെ ["A Recipe for Training Neural Networks"](http://karpathy.github.io/2019/04/25/recipe/)
+
+തീർച്ചയായും, ന്യൂറൽ നെറ്റുകൾ ട്രെയിൻ ചെയ്യുമ്പോൾ നേരിടുന്ന എല്ലാ പ്രശ്നങ്ങളും നിങ്ങളുടെ സ്വന്തം തെറ്റല്ല! 🤗 Transformers അല്ലെങ്കിൽ 🤗 Datasets ലൈബ്രറിയിൽ ശരിയല്ലെന്ന് തോന്നുന്ന എന്തെങ്കിലും നേരിട്ടാൽ, നിങ്ങൾ ഒരു ബഗ് കണ്ടെത്തിയതാകാം. അതിനെക്കുറിച്ചെല്ലാം തീർച്ചയായും ഞങ്ങളോട് പറയണം; അത് കൃത്യമായി എങ്ങനെ ചെയ്യാമെന്ന് അടുത്ത ഭാഗത്തിൽ ഞങ്ങൾ വിശദീകരിക്കും.
