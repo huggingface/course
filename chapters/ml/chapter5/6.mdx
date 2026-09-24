@@ -1,0 +1,512 @@
+<FrameworkSwitchCourse {fw} />
+
+# FAISS ഉപയോഗിച്ചുള്ള സെമാന്റിക് സെർച്ച്[[semantic-search-with-faiss]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+[ഭാഗം 5](/course/chapter5/5)-ൽ, 🤗 Datasets റിപ്പോസിറ്ററിയിലെ GitHub ഇഷ്യൂകളുടെയും കമന്റുകളുടെയും ഒരു ഡേറ്റാസെറ്റ് നമ്മൾ നിർമ്മിച്ചു. ഈ ഭാഗത്തിൽ, ഈ ലൈബ്രറിയെക്കുറിച്ചുള്ള നമ്മുടെ ഏറ്റവും അടിയന്തരമായ ചോദ്യങ്ങൾക്ക് ഉത്തരം കണ്ടെത്താൻ സഹായിക്കുന്ന ഒരു സെർച്ച് എഞ്ചിൻ നിർമ്മിക്കാൻ ഈ വിവരങ്ങൾ നമ്മൾ ഉപയോഗിക്കും!
+
+<Youtube id="OATCgQtNX2o"/>
+
+## സെമാന്റിക് സെർച്ചിനായി എംബെഡ്ഡിംഗുകൾ ഉപയോഗിക്കുന്നു[[using-embeddings-for-semantic-search]]
+
+[അധ്യായം 1](/course/chapter1)-ൽ നമ്മൾ കണ്ടതുപോലെ, Transformer അടിസ്ഥാനമാക്കിയ ലാംഗ്വേജ് മോഡലുകൾ ഒരു ടെക്‌സ്‌റ്റ് ഭാഗത്തിലെ ഓരോ ടോക്കണിനെയും ഒരു _എംബെഡ്ഡിംഗ് വെക്റ്റർ_ (embedding vector) ആയി പ്രതിനിധീകരിക്കുന്നു. ഈ വ്യക്തിഗത എംബെഡ്ഡിംഗുകളെ "പൂൾ" (pool) ചെയ്ത്, മുഴുവൻ വാക്യങ്ങൾക്കും, പാരഗ്രാഫുകൾക്കും, അല്ലെങ്കിൽ (ചില സന്ദർഭങ്ങളിൽ) ഡോക്യുമെന്റുകൾക്കും ഒരു വെക്റ്റർ പ്രാതിനിധ്യം (vector representation) ഉണ്ടാക്കാൻ കഴിയുമെന്ന് തെളിഞ്ഞിട്ടുണ്ട്. ഓരോ എംബെഡ്ഡിംഗിനും ഇടയിലുള്ള ഡോട്ട്-പ്രോഡക്റ്റ് സാമ്യം (dot-product similarity) (അല്ലെങ്കിൽ മറ്റേതെങ്കിലും സാമ്യ മെട്രിക്) കണക്കാക്കി, ഏറ്റവും കൂടുതൽ ഓവർലാപ്പ് ഉള്ള ഡോക്യുമെന്റുകൾ റിട്ടേൺ ചെയ്തുകൊണ്ട്, കോർപ്പസിലെ സമാനമായ ഡോക്യുമെന്റുകൾ കണ്ടെത്താൻ ഈ എംബെഡ്ഡിംഗുകൾ പിന്നീട് ഉപയോഗിക്കാം.
+
+ഈ ഭാഗത്തിൽ, ഒരു സെമാന്റിക് സെർച്ച് എഞ്ചിൻ (semantic search engine) വികസിപ്പിക്കാൻ നമ്മൾ എംബെഡ്ഡിംഗുകൾ ഉപയോഗിക്കും. ഒരു ക്വറിയിലെ കീവേഡുകളെ ഡോക്യുമെന്റുകളുമായി പൊരുത്തപ്പെടുത്തുന്നതിനെ അടിസ്ഥാനമാക്കിയ പരമ്പരാഗത രീതികളെ അപേക്ഷിച്ച് ഈ സെർച്ച് എഞ്ചിനുകൾക്ക് നിരവധി മേന്മകളുണ്ട്.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search.svg" alt="സെമാന്റിക് സെർച്ച്."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search-dark.svg" alt="സെമാന്റിക് സെർച്ച്."/>
+</div>
+
+## ഡേറ്റാസെറ്റ് ലോഡ് ചെയ്യുകയും തയ്യാറാക്കുകയും ചെയ്യുന്നു[[loading-and-preparing-the-dataset]]
+
+GitHub ഇഷ്യൂകളുടെ നമ്മുടെ ഡേറ്റാസെറ്റ് ഡൗൺലോഡ് ചെയ്യുകയാണ് ആദ്യം ചെയ്യേണ്ടത്; അതിനാൽ പതിവുപോലെ `load_dataset()` ഫംഗ്‌ഷൻ ഉപയോഗിക്കാം:
+
+```py
+from datasets import load_dataset
+
+issues_dataset = load_dataset("lewtun/github-issues", split="train")
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 2855
+})
+```
+
+ഇവിടെ `load_dataset()`-ൽ ഡിഫോൾട്ട് `train` സ്‌പ്ലിറ്റ് നമ്മൾ വ്യക്തമാക്കിയിട്ടുണ്ട്, അതിനാൽ ഇത് ഒരു `DatasetDict`-ന് പകരം ഒരു `Dataset` റിട്ടേൺ ചെയ്യുന്നു. ആദ്യം ചെയ്യേണ്ട കാര്യം പുൾ റിക്വസ്‌റ്റുകൾ ഫിൽറ്റർ ചെയ്ത് ഒഴിവാക്കുകയാണ്, കാരണം ഉപയോക്താക്കളുടെ ചോദ്യങ്ങൾക്ക് ഉത്തരം നൽകാൻ ഇവ വളരെ അപൂർവമായി മാത്രമേ ഉപയോഗിക്കപ്പെടാറുള്ളൂ, കൂടാതെ ഇവ നമ്മുടെ സെർച്ച് എഞ്ചിനിൽ നോയ്‌സ് (noise) ഉണ്ടാക്കുകയും ചെയ്യും. ഇപ്പോൾ നിങ്ങൾക്ക് പരിചിതമായിരിക്കേണ്ടതുപോലെ, നമ്മുടെ ഡേറ്റാസെറ്റിലെ ഈ വരികൾ ഒഴിവാക്കാൻ `Dataset.filter()` ഫംഗ്‌ഷൻ ഉപയോഗിക്കാം. ഇതിനൊപ്പം, കമന്റുകളില്ലാത്ത വരികളും ഫിൽറ്റർ ചെയ്ത് ഒഴിവാക്കാം, കാരണം അവ ഉപയോക്താക്കളുടെ ചോദ്യങ്ങൾക്ക് ഉത്തരങ്ങളൊന്നും നൽകുന്നില്ല:
+
+```py
+issues_dataset = issues_dataset.filter(
+    lambda x: (x["is_pull_request"] == False and len(x["comments"]) > 0)
+)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 771
+})
+```
+
+നമ്മുടെ ഡേറ്റാസെറ്റിൽ ധാരാളം കോളങ്ങൾ ഉണ്ടെന്ന് നമുക്ക് കാണാം; അവയിൽ മിക്കതും നമ്മുടെ സെർച്ച് എഞ്ചിൻ നിർമ്മിക്കാൻ ആവശ്യമില്ല. സെർച്ചിന്റെ കാഴ്ചപ്പാടിൽ, ഏറ്റവും കൂടുതൽ വിവരങ്ങൾ നൽകുന്ന കോളങ്ങൾ `title`, `body`, `comments` എന്നിവയാണ്; അതേസമയം `html_url` നമുക്ക് ഉറവിട ഇഷ്യൂവിലേക്കുള്ള ഒരു ലിങ്ക് നൽകുന്നു. ബാക്കിയുള്ളവ ഒഴിവാക്കാൻ `Dataset.remove_columns()` ഫംഗ്‌ഷൻ ഉപയോഗിക്കാം:
+
+```py
+columns = issues_dataset.column_names
+columns_to_keep = ["title", "body", "html_url", "comments"]
+columns_to_remove = set(columns_to_keep).symmetric_difference(columns)
+issues_dataset = issues_dataset.remove_columns(columns_to_remove)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 771
+})
+```
+
+നമ്മുടെ എംബെഡ്ഡിംഗുകൾ ഉണ്ടാക്കാൻ, ഓരോ കമന്റിനോടും ഇഷ്യൂവിന്റെ ടൈറ്റിലും ബോഡിയും നമ്മൾ കൂട്ടിച്ചേർക്കും, കാരണം ഈ ഫീൽഡുകളിൽ പലപ്പോഴും ഉപകാരപ്രദമായ സന്ദർഭ വിവരങ്ങൾ (contextual information) ഉൾപ്പെടുന്നു. നമ്മുടെ `comments` കോളം ഇപ്പോൾ ഓരോ ഇഷ്യൂവിനുമുള്ള കമന്റുകളുടെ ഒരു ലിസ്‌റ്റായതിനാൽ, ഓരോ വരിയും ഒരു `(html_url, title, body, comment)` ട്യൂപ്പിൾ ആയിരിക്കുന്ന വിധത്തിൽ ഈ കോളം നമ്മൾ "എക്‌സ്‌പ്ലോഡ്" (explode) ചെയ്യേണ്ടതുണ്ട്. Pandas-ൽ ഇത് [`DataFrame.explode()` ഫംഗ്‌ഷൻ](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html) ഉപയോഗിച്ച് ചെയ്യാം; ലിസ്‌റ്റ് പോലുള്ള ഒരു കോളത്തിലെ ഓരോ എലമെന്റിനും ഇത് ഒരു പുതിയ വരി ഉണ്ടാക്കുന്നു, അതേസമയം മറ്റെല്ലാ കോളങ്ങളുടെയും മൂല്യങ്ങൾ അതേപടി ആവർത്തിക്കുന്നു. ഇത് പ്രവർത്തിക്കുന്നത് കാണാൻ, ആദ്യം Pandas `DataFrame` ഫോർമാറ്റിലേക്ക് മാറാം:
+
+```py
+issues_dataset.set_format("pandas")
+df = issues_dataset[:]
+```
+
+ഈ `DataFrame`-ലെ ആദ്യ വരി പരിശോധിച്ചാൽ, ഈ ഇഷ്യൂവുമായി ബന്ധപ്പെട്ട് നാല് കമന്റുകൾ ഉണ്ടെന്ന് നമുക്ക് കാണാം:
+
+```py
+df["comments"][0].tolist()
+```
+
+```python out
+['the bug code locate in ：\r\n    if data_args.task_name is not None:\r\n        # Downloading and loading a dataset from the hub.\r\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
+ 'Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com\r\n\r\nNormally, it should work if you wait a little and then retry.\r\n\r\nCould you please confirm if the problem persists?',
+ 'cannot connect，even by Web browser，please check that  there is some  problems。',
+ 'I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...']
+```
+
+`df` എക്‌സ്‌പ്ലോഡ് ചെയ്യുമ്പോൾ, ഈ കമന്റുകൾ ഓരോന്നിനും ഒരു വരി വീതം ലഭിക്കുമെന്ന് നമ്മൾ പ്രതീക്ഷിക്കുന്നു. അങ്ങനെയാണോ എന്ന് പരിശോധിക്കാം:
+
+```py
+comments_df = df.explode("comments", ignore_index=True)
+comments_df.head(4)
+```
+
+<table border="1" class="dataframe" style="table-layout: fixed; word-wrap:break-word; width: 100%;">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>html_url</th>
+      <th>title</th>
+      <th>comments</th>
+      <th>body</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>the bug code locate in ：\r\n    if data_args.task_name is not None...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>cannot connect，even by Web browser，please check that  there is some  problems。</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+  </tbody>
+</table>
+
+കൊള്ളാം, വരികൾ ആവർത്തിക്കപ്പെട്ടിരിക്കുന്നതും `comments` കോളത്തിൽ ഓരോ കമന്റും വെവ്വേറെ ഉള്ളതും നമുക്ക് കാണാം! Pandas-ലെ പണി കഴിഞ്ഞതിനാൽ, `DataFrame` മെമ്മറിയിൽ ലോഡ് ചെയ്തുകൊണ്ട് വേഗത്തിൽ ഒരു `Dataset`-ലേക്ക് തിരികെ മാറാം:
+
+```py
+from datasets import Dataset
+
+comments_dataset = Dataset.from_pandas(comments_df)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 2842
+})
+```
+
+ശരി, ഇത് നമുക്ക് പ്രവർത്തിക്കാൻ ഏതാനും ആയിരം കമന്റുകൾ നൽകിയിരിക്കുന്നു!
+
+
+> [!TIP]
+> ✏️ **സ്വയം പരീക്ഷിക്കുക!** Pandas _ഉപയോഗിക്കാതെ_, `issues_dataset`-ന്റെ `comments` കോളം എക്‌സ്‌പ്ലോഡ് ചെയ്യാൻ `Dataset.map()` ഉപയോഗിക്കാൻ കഴിയുമോ എന്ന് നോക്കുക. ഇത് കുറച്ച് ബുദ്ധിമുട്ടുള്ളതാണ്; ഈ ടാസ്‌ക്കിന് 🤗 Datasets ഡോക്യുമെന്റേഷനിലെ ["Batch mapping"](https://huggingface.co/docs/datasets/about_map_batch#batch-mapping) വിഭാഗം നിങ്ങൾക്ക് ഉപകാരപ്രദമായേക്കാം.
+
+ഇപ്പോൾ ഓരോ വരിയിലും ഒരു കമന്റ് വീതം ഉള്ളതിനാൽ, ഓരോ കമന്റിലെയും വാക്കുകളുടെ എണ്ണം ഉൾക്കൊള്ളുന്ന ഒരു പുതിയ `comments_length` കോളം ഉണ്ടാക്കാം:
+
+```py
+comments_dataset = comments_dataset.map(
+    lambda x: {"comment_length": len(x["comments"].split())}
+)
+```
+
+ചെറിയ കമന്റുകൾ ഫിൽറ്റർ ചെയ്ത് ഒഴിവാക്കാൻ ഈ പുതിയ കോളം നമുക്ക് ഉപയോഗിക്കാം; ഇവയിൽ സാധാരണയായി "cc @lewtun" അല്ലെങ്കിൽ "Thanks!" പോലുള്ള, നമ്മുടെ സെർച്ച് എഞ്ചിന് പ്രസക്തമല്ലാത്ത കാര്യങ്ങളാണ് ഉണ്ടാകാറുള്ളത്. ഫിൽറ്ററിനായി തിരഞ്ഞെടുക്കാൻ കൃത്യമായ ഒരു സംഖ്യയില്ല, എന്നാൽ ഏകദേശം 15 വാക്കുകൾ ഒരു നല്ല തുടക്കമായി തോന്നുന്നു:
+
+```py
+comments_dataset = comments_dataset.filter(lambda x: x["comment_length"] > 15)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body', 'comment_length'],
+    num_rows: 2098
+})
+```
+
+നമ്മുടെ ഡേറ്റാസെറ്റ് കുറച്ച് വൃത്തിയാക്കിയ ശേഷം, ഇഷ്യൂവിന്റെ ടൈറ്റിൽ, വിവരണം, കമന്റുകൾ എന്നിവ ഒരു പുതിയ `text` കോളത്തിൽ ഒരുമിച്ച് ചേർക്കാം (concatenate). പതിവുപോലെ, `Dataset.map()`-ന് നൽകാവുന്ന ഒരു ലളിതമായ ഫംഗ്‌ഷൻ നമ്മൾ എഴുതും:
+
+```py
+def concatenate_text(examples):
+    return {
+        "text": examples["title"]
+        + " \n "
+        + examples["body"]
+        + " \n "
+        + examples["comments"]
+    }
+
+
+comments_dataset = comments_dataset.map(concatenate_text)
+```
+
+ഒടുവിൽ കുറച്ച് എംബെഡ്ഡിംഗുകൾ ഉണ്ടാക്കാൻ നമ്മൾ തയ്യാറായി! നമുക്ക് നോക്കാം.
+
+## ടെക്‌സ്‌റ്റ് എംബെഡ്ഡിംഗുകൾ ഉണ്ടാക്കുന്നു[[creating-text-embeddings]]
+
+`AutoModel` ക്ലാസ് ഉപയോഗിച്ച് ടോക്കൺ എംബെഡ്ഡിംഗുകൾ ലഭിക്കുമെന്ന് [അധ്യായം 2](/course/chapter2)-ൽ നമ്മൾ കണ്ടു. മോഡൽ ലോഡ് ചെയ്യാൻ അനുയോജ്യമായ ഒരു ചെക്ക്‌പോയിന്റ് തിരഞ്ഞെടുക്കുക മാത്രമാണ് നമ്മൾ ചെയ്യേണ്ടത്. ഭാഗ്യവശാൽ, എംബെഡ്ഡിംഗുകൾ ഉണ്ടാക്കാൻ മാത്രമായി സമർപ്പിതമായ `sentence-transformers` എന്ന ഒരു ലൈബ്രറിയുണ്ട്. ലൈബ്രറിയുടെ [ഡോക്യുമെന്റേഷനിൽ](https://www.sbert.net/examples/applications/semantic-search/README.html#symmetric-vs-asymmetric-semantic-search) വിവരിച്ചിരിക്കുന്നതുപോലെ, നമ്മുടെ ഉപയോഗം _അസിമെട്രിക് സെമാന്റിക് സെർച്ചിന്റെ_ (asymmetric semantic search) ഒരു ഉദാഹരണമാണ്, കാരണം നമുക്ക് ഒരു ചെറിയ ക്വറിയുണ്ട്, അതിന്റെ ഉത്തരം ഒരു ഇഷ്യൂ കമന്റ് പോലുള്ള കൂടുതൽ നീളമുള്ള ഒരു ഡോക്യുമെന്റിൽ കണ്ടെത്താനാണ് നമ്മൾ ആഗ്രഹിക്കുന്നത്. സെമാന്റിക് സെർച്ചിന് ഏറ്റവും മികച്ച പ്രകടനം `multi-qa-mpnet-base-dot-v1` ചെക്ക്‌പോയിന്റിനാണെന്ന് ഡോക്യുമെന്റേഷനിലെ ഉപകാരപ്രദമായ [മോഡൽ ഓവർവ്യൂ ടേബിൾ](https://www.sbert.net/docs/pretrained_models.html#model-overview) സൂചിപ്പിക്കുന്നു; അതിനാൽ നമ്മുടെ ആപ്ലിക്കേഷന് അത് നമ്മൾ ഉപയോഗിക്കും. അതേ ചെക്ക്‌പോയിന്റ് ഉപയോഗിച്ച് ടോക്കണൈസറും നമ്മൾ ലോഡ് ചെയ്യും:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, AutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = AutoModel.from_pretrained(model_ckpt)
+```
+
+എംബെഡ്ഡിംഗ് പ്രോസസ്സ് വേഗത്തിലാക്കാൻ, മോഡലും ഇൻപുട്ടുകളും ഒരു GPU ഡിവൈസിൽ വയ്ക്കുന്നത് സഹായകമാണ്; അതിനാൽ ഇപ്പോൾ അത് ചെയ്യാം:
+
+```py
+import torch
+
+device = torch.device("cuda")
+model.to(device)
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFAutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = TFAutoModel.from_pretrained(model_ckpt, from_pt=True)
+```
+
+`from_pretrained()` മെത്തേഡിന്റെ ഒരു ആർഗ്യുമെന്റായി `from_pt=True` നമ്മൾ സെറ്റ് ചെയ്തിരിക്കുന്നത് ശ്രദ്ധിക്കുക. `multi-qa-mpnet-base-dot-v1` ചെക്ക്‌പോയിന്റിന് PyTorch വെയ്‌റ്റുകൾ മാത്രമേ ഉള്ളൂ എന്നതാണ് ഇതിന് കാരണം; അതിനാൽ `from_pt=True` സെറ്റ് ചെയ്യുന്നത് അവയെ നമുക്കായി TensorFlow ഫോർമാറ്റിലേക്ക് സ്വയമേവ മാറ്റും. നിങ്ങൾക്ക് കാണാവുന്നതുപോലെ, 🤗 Transformers-ൽ ഫ്രെയിംവർക്കുകൾക്കിടയിൽ മാറുന്നത് വളരെ ലളിതമാണ്!
+
+{/if}
+
+നേരത്തെ സൂചിപ്പിച്ചതുപോലെ, നമ്മുടെ GitHub ഇഷ്യൂ കോർപ്പസിലെ ഓരോ എൻട്രിയെയും ഒരൊറ്റ വെക്റ്ററായി പ്രതിനിധീകരിക്കാനാണ് നമ്മൾ ആഗ്രഹിക്കുന്നത്; അതിനാൽ നമ്മുടെ ടോക്കൺ എംബെഡ്ഡിംഗുകളെ ഏതെങ്കിലും വിധത്തിൽ "പൂൾ" ചെയ്യുകയോ ശരാശരി എടുക്കുകയോ ചെയ്യേണ്ടതുണ്ട്. നമ്മുടെ മോഡലിന്റെ ഔട്ട്‌പുട്ടുകളിൽ *CLS പൂളിംഗ്* (CLS pooling) നടത്തുന്നതാണ് ഒരു ജനപ്രിയ രീതി; ഇവിടെ പ്രത്യേക `[CLS]` ടോക്കണിന്റെ അവസാനത്തെ ഹിഡൻ സ്‌റ്റേറ്റ് (last hidden state) മാത്രം നമ്മൾ എടുക്കുന്നു. താഴെയുള്ള ഫംഗ്‌ഷൻ ഇത് നമുക്കായി ചെയ്യുന്നു:
+
+```py
+def cls_pooling(model_output):
+    return model_output.last_hidden_state[:, 0]
+```
+
+അടുത്തതായി, ഡോക്യുമെന്റുകളുടെ ഒരു ലിസ്‌റ്റ് ടോക്കണൈസ് ചെയ്യുകയും, ടെൻസറുകൾ GPU-വിൽ വയ്ക്കുകയും, അവ മോഡലിന് നൽകുകയും, ഒടുവിൽ ഔട്ട്‌പുട്ടുകളിൽ CLS പൂളിംഗ് പ്രയോഗിക്കുകയും ചെയ്യുന്ന ഒരു ഹെൽപ്പർ ഫംഗ്‌ഷൻ നമ്മൾ ഉണ്ടാക്കും:
+
+{#if fw === 'pt'}
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="pt"
+    )
+    encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+നമ്മുടെ കോർപ്പസിലെ ആദ്യത്തെ ടെക്‌സ്‌റ്റ് എൻട്രി ഈ ഫംഗ്‌ഷന് നൽകി ഔട്ട്‌പുട്ടിന്റെ ഷേപ്പ് പരിശോധിച്ചുകൊണ്ട് ഫംഗ്‌ഷൻ പ്രവർത്തിക്കുന്നുണ്ടോ എന്ന് നമുക്ക് ടെസ്‌റ്റ് ചെയ്യാം:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+കൊള്ളാം, നമ്മുടെ കോർപ്പസിലെ ആദ്യത്തെ എൻട്രിയെ 768-ഡൈമെൻഷനുള്ള ഒരു വെക്റ്ററായി നമ്മൾ മാറ്റിയിരിക്കുന്നു! നമ്മുടെ കോർപ്പസിലെ ഓരോ വരിയിലും `get_embeddings()` ഫംഗ്‌ഷൻ പ്രയോഗിക്കാൻ `Dataset.map()` ഉപയോഗിക്കാം; അതിനാൽ താഴെ കാണുന്നതുപോലെ ഒരു പുതിയ `embeddings` കോളം ഉണ്ടാക്കാം:
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).detach().cpu().numpy()[0]}
+)
+```
+
+{:else}
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="tf"
+    )
+    encoded_input = {k: v for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+നമ്മുടെ കോർപ്പസിലെ ആദ്യത്തെ ടെക്‌സ്‌റ്റ് എൻട്രി ഈ ഫംഗ്‌ഷന് നൽകി ഔട്ട്‌പുട്ടിന്റെ ഷേപ്പ് പരിശോധിച്ചുകൊണ്ട് ഫംഗ്‌ഷൻ പ്രവർത്തിക്കുന്നുണ്ടോ എന്ന് നമുക്ക് ടെസ്‌റ്റ് ചെയ്യാം:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+TensorShape([1, 768])
+```
+
+കൊള്ളാം, നമ്മുടെ കോർപ്പസിലെ ആദ്യത്തെ എൻട്രിയെ 768-ഡൈമെൻഷനുള്ള ഒരു വെക്റ്ററായി നമ്മൾ മാറ്റിയിരിക്കുന്നു! നമ്മുടെ കോർപ്പസിലെ ഓരോ വരിയിലും `get_embeddings()` ഫംഗ്‌ഷൻ പ്രയോഗിക്കാൻ `Dataset.map()` ഉപയോഗിക്കാം; അതിനാൽ താഴെ കാണുന്നതുപോലെ ഒരു പുതിയ `embeddings` കോളം ഉണ്ടാക്കാം:
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).numpy()[0]}
+)
+```
+
+{/if}
+
+എംബെഡ്ഡിംഗുകളെ നമ്മൾ NumPy അറേകളായി മാറ്റിയിരിക്കുന്നത് ശ്രദ്ധിക്കുക -- FAISS ഉപയോഗിച്ച് അവയെ ഇൻഡെക്‌സ് ചെയ്യാൻ ശ്രമിക്കുമ്പോൾ 🤗 Datasets-ന് ഈ ഫോർമാറ്റ് ആവശ്യമാണ് എന്നതാണ് കാരണം; അതാണ് നമ്മൾ അടുത്തതായി ചെയ്യാൻ പോകുന്നത്.
+
+
+## കാര്യക്ഷമമായ സിമിലാരിറ്റി സെർച്ചിനായി FAISS ഉപയോഗിക്കുന്നു[[using-faiss-for-efficient-similarity-search]]
+
+ഇപ്പോൾ എംബെഡ്ഡിംഗുകളുടെ ഒരു ഡേറ്റാസെറ്റ് നമ്മുടെ കൈയിലുള്ളതിനാൽ, അവയിൽ തിരയാൻ എന്തെങ്കിലും ഒരു മാർഗ്ഗം നമുക്ക് ആവശ്യമാണ്. ഇതിനായി, 🤗 Datasets-ലെ _FAISS ഇൻഡെക്‌സ്_ (FAISS index) എന്ന ഒരു പ്രത്യേക ഡേറ്റാ സ്‌ട്രക്ചർ നമ്മൾ ഉപയോഗിക്കും. [FAISS](https://faiss.ai/) (Facebook AI Similarity Search എന്നതിന്റെ ചുരുക്കം) എംബെഡ്ഡിംഗ് വെക്റ്ററുകൾ വേഗത്തിൽ തിരയാനും ക്ലസ്‌റ്റർ ചെയ്യാനുമുള്ള കാര്യക്ഷമമായ അൽഗോരിതങ്ങൾ നൽകുന്ന ഒരു ലൈബ്രറിയാണ്.
+
+ഒരു ഇൻപുട്ട് എംബെഡ്ഡിംഗിനോട് ഏതെല്ലാം എംബെഡ്ഡിംഗുകൾ സാമ്യമുള്ളവയാണെന്ന് കണ്ടെത്താൻ സഹായിക്കുന്ന _ഇൻഡെക്‌സ്_ (index) എന്ന ഒരു പ്രത്യേക ഡേറ്റാ സ്‌ട്രക്ചർ ഉണ്ടാക്കുക എന്നതാണ് FAISS-ന്റെ പിന്നിലെ അടിസ്ഥാന ആശയം. 🤗 Datasets-ൽ ഒരു FAISS ഇൻഡെക്‌സ് ഉണ്ടാക്കുന്നത് ലളിതമാണ് -- `Dataset.add_faiss_index()` ഫംഗ്‌ഷൻ ഉപയോഗിച്ച്, നമ്മുടെ ഡേറ്റാസെറ്റിലെ ഏത് കോളമാണ് ഇൻഡെക്‌സ് ചെയ്യേണ്ടതെന്ന് നമ്മൾ വ്യക്തമാക്കുന്നു:
+
+```py
+embeddings_dataset.add_faiss_index(column="embeddings")
+```
+
+`Dataset.get_nearest_examples()` ഫംഗ്‌ഷൻ ഉപയോഗിച്ച് ഒരു നിയറസ്‌റ്റ് നെയ്‌ബർ ലുക്കപ്പ് (nearest neighbor lookup) നടത്തി ഈ ഇൻഡെക്‌സിൽ നമുക്ക് ഇപ്പോൾ ക്വറികൾ നടത്താം. താഴെ കാണുന്നതുപോലെ ആദ്യം ഒരു ചോദ്യം എംബെഡ് ചെയ്തുകൊണ്ട് ഇത് ടെസ്‌റ്റ് ചെയ്യാം:
+
+{#if fw === 'pt'}
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).cpu().detach().numpy()
+question_embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+{:else}
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).numpy()
+question_embedding.shape
+```
+
+```python out
+(1, 768)
+```
+
+{/if}
+
+ഡോക്യുമെന്റുകളുടെ കാര്യത്തിലെന്നപോലെ, ക്വറിയെ പ്രതിനിധീകരിക്കുന്ന 768-ഡൈമെൻഷനുള്ള ഒരു വെക്റ്റർ ഇപ്പോൾ നമ്മുടെ കൈയിലുണ്ട്; ഏറ്റവും സാമ്യമുള്ള എംബെഡ്ഡിംഗുകൾ കണ്ടെത്താൻ ഇത് മുഴുവൻ കോർപ്പസുമായി താരതമ്യം ചെയ്യാം:
+
+```py
+scores, samples = embeddings_dataset.get_nearest_examples(
+    "embeddings", question_embedding, k=5
+)
+```
+
+`Dataset.get_nearest_examples()` ഫംഗ്‌ഷൻ, ക്വറിയും ഡോക്യുമെന്റും തമ്മിലുള്ള ഓവർലാപ്പ് റാങ്ക് ചെയ്യുന്ന സ്‌കോറുകളുടെയും, അവയോട് അനുബന്ധമായ സാമ്പിളുകളുടെ ഒരു സെറ്റിന്റെയും (ഇവിടെ, ഏറ്റവും മികച്ച 5 പൊരുത്തങ്ങൾ) ഒരു ട്യൂപ്പിൾ റിട്ടേൺ ചെയ്യുന്നു. എളുപ്പത്തിൽ സോർട്ട് ചെയ്യാനായി ഇവ ഒരു `pandas.DataFrame`-ൽ ശേഖരിക്കാം:
+
+```py
+import pandas as pd
+
+samples_df = pd.DataFrame.from_dict(samples)
+samples_df["scores"] = scores
+samples_df.sort_values("scores", ascending=False, inplace=True)
+```
+
+ലഭ്യമായ കമന്റുകളുമായി നമ്മുടെ ക്വറി എത്ര നന്നായി പൊരുത്തപ്പെട്ടു എന്ന് കാണാൻ, ആദ്യത്തെ കുറച്ച് വരികളിലൂടെ ഇപ്പോൾ നമുക്ക് ഇറ്ററേറ്റ് ചെയ്യാം:
+
+```py
+for _, row in samples_df.iterrows():
+    print(f"COMMENT: {row.comments}")
+    print(f"SCORE: {row.scores}")
+    print(f"TITLE: {row.title}")
+    print(f"URL: {row.html_url}")
+    print("=" * 50)
+    print()
+```
+
+```python out
+"""
+COMMENT: Requiring online connection is a deal breaker in some cases unfortunately so it'd be great if offline mode is added similar to how `transformers` loads models offline fine.
+
+@mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+SCORE: 25.505046844482422
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: The local dataset builders (csv, text , json and pandas) are now part of the `datasets` package since #1726 :)
+You can now use them offline
+\`\`\`python
+datasets = load_dataset("text", data_files=data_files)
+\`\`\`
+
+We'll do a new release soon
+SCORE: 24.555509567260742
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: I opened a PR that allows to reload modules that have already been loaded once even if there's no internet.
+
+Let me know if you know other ways that can make the offline mode experience better. I'd be happy to add them :)
+
+I already note the "freeze" modules option, to prevent local modules updates. It would be a cool feature.
+
+----------
+
+> @mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+
+Indeed `load_dataset` allows to load remote dataset script (squad, glue, etc.) but also you own local ones.
+For example if you have a dataset script at `./my_dataset/my_dataset.py` then you can do
+\`\`\`python
+load_dataset("./my_dataset")
+\`\`\`
+and the dataset script will generate your dataset once and for all.
+
+----------
+
+About I'm looking into having `csv`, `json`, `text`, `pandas` dataset builders already included in the `datasets` package, so that they are available offline by default, as opposed to the other datasets that require the script to be downloaded.
+cf #1724
+SCORE: 24.14896583557129
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: > here is my way to load a dataset offline, but it **requires** an online machine
+>
+> 1. (online machine)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_dataset(...)
+>
+> data.save_to_disk(/YOUR/DATASET/DIR)
+>
+> ```
+>
+> 2. copy the dir from online to the offline machine
+>
+> 3. (offline machine)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_from_disk(/SAVED/DATA/DIR)
+>
+> ```
+>
+>
+>
+> HTH.
+
+
+SCORE: 22.893993377685547
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: here is my way to load a dataset offline, but it **requires** an online machine
+1. (online machine)
+\`\`\`
+import datasets
+data = datasets.load_dataset(...)
+data.save_to_disk(/YOUR/DATASET/DIR)
+\`\`\`
+2. copy the dir from online to the offline machine
+3. (offline machine)
+\`\`\`
+import datasets
+data = datasets.load_from_disk(/SAVED/DATA/DIR)
+\`\`\`
+
+HTH.
+SCORE: 22.406635284423828
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+"""
+```
+
+മോശമില്ല! നമ്മുടെ രണ്ടാമത്തെ ഫലം (hit) ക്വറിയുമായി പൊരുത്തപ്പെടുന്നതായി തോന്നുന്നു.
+
+> [!TIP]
+> ✏️ **സ്വയം പരീക്ഷിക്കുക!** നിങ്ങളുടെ സ്വന്തം ക്വറി ഉണ്ടാക്കി, തിരിച്ചെടുത്ത (retrieved) ഡോക്യുമെന്റുകളിൽ ഒരു ഉത്തരം കണ്ടെത്താൻ കഴിയുമോ എന്ന് നോക്കുക. തിരയൽ വിപുലമാക്കാൻ `Dataset.get_nearest_examples()`-ലെ `k` പാരാമീറ്റർ നിങ്ങൾക്ക് കൂട്ടേണ്ടി വന്നേക്കാം.
