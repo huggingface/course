@@ -1,0 +1,857 @@
+# ഒപ്റ്റിമൈസ് ചെയ്ത ഇൻഫറൻസ് ഡിപ്ലോയ്‌മെന്റ്
+
+ഈ ഭാഗത്തിൽ, LLM ഡിപ്ലോയ്‌മെന്റുകൾ ഒപ്റ്റിമൈസ് ചെയ്യാനുള്ള നൂതന ഫ്രെയിംവർക്കുകളായ Text Generation Inference (TGI), vLLM, llama.cpp എന്നിവ നമ്മൾ പരിചയപ്പെടും. ഉപയോക്താക്കൾക്ക് LLM-കൾ സേവനമായി നൽകാൻ (serve) പ്രൊഡക്ഷൻ പരിതസ്ഥിതികളിലാണ് ഈ ആപ്ലിക്കേഷനുകൾ പ്രധാനമായും ഉപയോഗിക്കുന്നത്. ഒരൊറ്റ മെഷീനിൽ ഇൻഫറൻസിനായി ഇവ എങ്ങനെ ഉപയോഗിക്കാം എന്നതിനെക്കാൾ, ഈ ഫ്രെയിംവർക്കുകൾ പ്രൊഡക്ഷനിൽ എങ്ങനെ ഡിപ്ലോയ് ചെയ്യാം എന്നതിലാണ് ഈ ഭാഗം ശ്രദ്ധ കേന്ദ്രീകരിക്കുന്നത്.
+
+ഈ ടൂളുകൾ ഇൻഫറൻസ് കാര്യക്ഷമത എങ്ങനെ പരമാവധി ഉയർത്തുന്നു എന്നും ലാർജ് ലാംഗ്വേജ് മോഡലുകളുടെ പ്രൊഡക്ഷൻ ഡിപ്ലോയ്‌മെന്റുകൾ എങ്ങനെ ലളിതമാക്കുന്നു എന്നും നമ്മൾ പരിശോധിക്കും.
+
+## ഫ്രെയിംവർക്ക് തിരഞ്ഞെടുക്കാനുള്ള ഗൈഡ്
+
+TGI, vLLM, llama.cpp എന്നിവ സമാനമായ ആവശ്യങ്ങൾക്കാണ് ഉപയോഗിക്കുന്നതെങ്കിലും, വ്യത്യസ്ത ഉപയോഗ സാഹചര്യങ്ങൾക്ക് (use cases) കൂടുതൽ യോജിച്ചവയാക്കുന്ന തനതായ സവിശേഷതകൾ ഓരോന്നിനുമുണ്ട്. പ്രകടനത്തിലും (performance) ഇന്റഗ്രേഷനിലും ശ്രദ്ധ കേന്ദ്രീകരിച്ച്, അവയ്ക്കിടയിലുള്ള പ്രധാന വ്യത്യാസങ്ങൾ നോക്കാം.
+
+### മെമ്മറി മാനേജ്‌മെന്റും പ്രകടനവും
+
+**TGI** പ്രൊഡക്ഷനിൽ സ്ഥിരതയോടെയും പ്രവചിക്കാവുന്ന രീതിയിലും പ്രവർത്തിക്കാൻ രൂപകൽപ്പന ചെയ്തതാണ്; മെമ്മറി ഉപയോഗം സ്ഥിരമായി നിലനിർത്താൻ ഇത് നിശ്ചിത സീക്വൻസ് ലെങ്ത്തുകൾ ഉപയോഗിക്കുന്നു. Flash Attention 2, കണ്ടിന്യുവസ് ബാച്ചിംഗ് (continuous batching) എന്നീ വിദ്യകൾ ഉപയോഗിച്ചാണ് TGI മെമ്മറി കൈകാര്യം ചെയ്യുന്നത്. അതായത്, അറ്റൻഷൻ കണക്കുകൂട്ടലുകൾ വളരെ കാര്യക്ഷമമായി പ്രോസസ്സ് ചെയ്യാനും, GPU-വിന് നിരന്തരം ജോലി നൽകിക്കൊണ്ട് അതിനെ തിരക്കിലാക്കി നിർത്താനും ഇതിന് കഴിയും. ആവശ്യമുള്ളപ്പോൾ മോഡലിന്റെ ഭാഗങ്ങൾ CPU-വിനും GPU-വിനും ഇടയിൽ മാറ്റാൻ ഈ സിസ്റ്റത്തിന് കഴിയും; ഇത് കൂടുതൽ വലിയ മോഡലുകൾ കൈകാര്യം ചെയ്യാൻ സഹായിക്കുന്നു. 
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/tgi/flash-attn.png" alt="Flash Attention" />
+
+<Tip title="Flash Attention എങ്ങനെ പ്രവർത്തിക്കുന്നു">
+
+മെമ്മറി ബാൻഡ്‌വിഡ്ത്ത് തടസ്സങ്ങൾ (bottlenecks) പരിഹരിച്ചുകൊണ്ട് Transformer മോഡലുകളിലെ അറ്റൻഷൻ മെക്കാനിസം ഒപ്റ്റിമൈസ് ചെയ്യുന്ന ഒരു വിദ്യയാണ് Flash Attention. [അധ്യായം 1.8](/course/chapter1/8)-ൽ നേരത്തെ ചർച്ച ചെയ്തതുപോലെ, അറ്റൻഷൻ മെക്കാനിസത്തിന്റെ സങ്കീർണ്ണതയും മെമ്മറി ഉപയോഗവും ക്വാഡ്രാറ്റിക് (quadratic) ആണ്; ഇത് നീണ്ട സീക്വൻസുകൾക്ക് അതിനെ കാര്യക്ഷമമല്ലാതാക്കുന്നു.
+
+High Bandwidth Memory (HBM)-യും അതിലും വേഗതയേറിയ SRAM കാഷും തമ്മിലുള്ള മെമ്മറി കൈമാറ്റങ്ങൾ എങ്ങനെ കൈകാര്യം ചെയ്യുന്നു എന്നതിലാണ് ഇതിന്റെ പ്രധാന നൂതനത്വം. പരമ്പരാഗത അറ്റൻഷൻ HBM-നും SRAM-നും ഇടയിൽ ഡേറ്റ ആവർത്തിച്ച് കൈമാറുന്നു; ഇത് GPU-വിനെ വെറുതെയിരുത്തി തടസ്സങ്ങൾ സൃഷ്ടിക്കുന്നു. Flash Attention ഡേറ്റ ഒരിക്കൽ മാത്രം SRAM-ലേക്ക് ലോഡ് ചെയ്ത് എല്ലാ കണക്കുകൂട്ടലുകളും അവിടെത്തന്നെ നടത്തുന്നു; അതുവഴി ചെലവേറിയ മെമ്മറി കൈമാറ്റങ്ങൾ ഏറ്റവും കുറയ്ക്കുന്നു. 
+
+ട്രെയിനിംഗ് സമയത്താണ് ഇതിന്റെ പ്രയോജനങ്ങൾ ഏറ്റവും പ്രകടമാകുന്നതെങ്കിലും, Flash Attention-ന്റെ കുറഞ്ഞ VRAM ഉപയോഗവും മെച്ചപ്പെട്ട കാര്യക്ഷമതയും ഇൻഫറൻസിനും അതിനെ വിലപ്പെട്ടതാക്കുന്നു; കൂടുതൽ വേഗതയേറിയതും സ്കേലബിളായതുമായ LLM സെർവിംഗ് ഇത് സാധ്യമാക്കുന്നു.
+
+</Tip>
+
+**vLLM** PagedAttention ഉപയോഗിച്ച് വ്യത്യസ്തമായ ഒരു സമീപനമാണ് സ്വീകരിക്കുന്നത്. ഒരു കമ്പ്യൂട്ടർ തന്റെ മെമ്മറി പേജുകളായി കൈകാര്യം ചെയ്യുന്നതുപോലെ, vLLM മോഡലിന്റെ മെമ്മറിയെ ചെറിയ ബ്ലോക്കുകളായി വിഭജിക്കുന്നു. ഈ ബുദ്ധിപൂർവ്വമായ സംവിധാനം കാരണം, വ്യത്യസ്ത വലുപ്പത്തിലുള്ള റിക്വസ്‌റ്റുകൾ കൂടുതൽ വഴക്കത്തോടെ കൈകാര്യം ചെയ്യാൻ ഇതിന് കഴിയുന്നു, മെമ്മറി സ്ഥലം പാഴാക്കുന്നുമില്ല. വ്യത്യസ്ത റിക്വസ്‌റ്റുകൾക്കിടയിൽ മെമ്മറി പങ്കുവയ്ക്കുന്നതിൽ ഇത് പ്രത്യേകിച്ചും മികച്ചതാണ്; മെമ്മറി ഫ്രാഗ്‌മെന്റേഷൻ കുറയ്ക്കുകയും ചെയ്യുന്നു, ഇത് സിസ്റ്റത്തെ മൊത്തത്തിൽ കൂടുതൽ കാര്യക്ഷമമാക്കുന്നു.
+
+<Tip title="PagedAttention എങ്ങനെ പ്രവർത്തിക്കുന്നു">
+
+LLM ഇൻഫറൻസിലെ മറ്റൊരു നിർണ്ണായക തടസ്സം പരിഹരിക്കുന്ന ഒരു വിദ്യയാണ് PagedAttention: KV കാഷ് മെമ്മറി മാനേജ്‌മെന്റ്. [അധ്യായം 1.8](/course/chapter1/8)-ൽ ചർച്ച ചെയ്തതുപോലെ, ടെക്‌സ്‌റ്റ് ജനറേഷൻ സമയത്ത്, ആവർത്തിച്ചുള്ള കണക്കുകൂട്ടലുകൾ കുറയ്ക്കാൻ മോഡൽ ജനറേറ്റ് ചെയ്ത ഓരോ ടോക്കണിന്റെയും അറ്റൻഷൻ കീകളും വാല്യൂകളും (KV കാഷ്) സംഭരിച്ചുവയ്ക്കുന്നു. പ്രത്യേകിച്ച് നീണ്ട സീക്വൻസുകളോ ഒരേസമയം ഒന്നിലധികം റിക്വസ്‌റ്റുകളോ ഉള്ളപ്പോൾ, KV കാഷ് വളരെ വലുതായി മാറാം.
+
+ഈ കാഷ് എങ്ങനെ കൈകാര്യം ചെയ്യുന്നു എന്നതിലാണ് vLLM-ന്റെ പ്രധാന നൂതനത്വം:
+
+1. **മെമ്മറി പേജിംഗ് (Memory Paging)**: KV കാഷിനെ ഒരൊറ്റ വലിയ ബ്ലോക്കായി കണക്കാക്കുന്നതിനുപകരം, അതിനെ നിശ്ചിത വലുപ്പമുള്ള "പേജുകളായി" വിഭജിക്കുന്നു (ഓപ്പറേറ്റിംഗ് സിസ്റ്റങ്ങളിലെ വിർച്വൽ മെമ്മറിക്ക് സമാനമായി).
+2. **തുടർച്ചയല്ലാത്ത സംഭരണം (Non-contiguous Storage)**: പേജുകൾ GPU മെമ്മറിയിൽ തുടർച്ചയായി സംഭരിക്കേണ്ട ആവശ്യമില്ല; ഇത് കൂടുതൽ വഴക്കമുള്ള മെമ്മറി അലോക്കേഷൻ സാധ്യമാക്കുന്നു.
+3. **പേജ് ടേബിൾ മാനേജ്‌മെന്റ് (Page Table Management)**: ഏതൊക്കെ പേജുകൾ ഏത് സീക്വൻസിന്റേതാണ് എന്ന് ഒരു പേജ് ടേബിൾ ട്രാക്ക് ചെയ്യുന്നു; ഇത് കാര്യക്ഷമമായ തിരയലും ആക്‌സസ്സും സാധ്യമാക്കുന്നു.
+4. **മെമ്മറി പങ്കുവയ്ക്കൽ (Memory Sharing)**: പാരലൽ സാംപ്ലിംഗ് പോലുള്ള പ്രവർത്തനങ്ങളിൽ, പ്രോംപ്‌റ്റിന്റെ KV കാഷ് സംഭരിക്കുന്ന പേജുകൾ ഒന്നിലധികം സീക്വൻസുകൾക്കിടയിൽ പങ്കുവയ്ക്കാം.
+
+പരമ്പരാഗത രീതികളെ അപേക്ഷിച്ച് 24 മടങ്ങ് വരെ ഉയർന്ന ത്രൂപുട്ട് (throughput) നേടാൻ PagedAttention സമീപനത്തിന് കഴിയും; ഇത് പ്രൊഡക്ഷൻ LLM ഡിപ്ലോയ്‌മെന്റുകളിൽ വലിയ മാറ്റം കൊണ്ടുവരുന്ന ഒന്നാണ്. PagedAttention എങ്ങനെ പ്രവർത്തിക്കുന്നു എന്നതിലേക്ക് ശരിക്കും ആഴത്തിൽ ഇറങ്ങണമെന്നുണ്ടെങ്കിൽ, [vLLM ഡോക്യുമെന്റേഷനിലെ ഗൈഡ്](https://docs.vllm.ai/en/latest/design/kernel/paged_attention.html) നിങ്ങൾക്ക് വായിക്കാം.
+
+</Tip>
+
+**llama.cpp** സാധാരണ ഉപഭോക്തൃ ഹാർഡ്‌വെയറിൽ (consumer hardware) LLaMA മോഡലുകൾ റൺ ചെയ്യാനായി ആദ്യം രൂപകൽപ്പന ചെയ്ത, ഉയർന്ന തോതിൽ ഒപ്റ്റിമൈസ് ചെയ്ത ഒരു C/C++ ഇംപ്ലിമെന്റേഷനാണ്. ഓപ്‌ഷണലായ GPU ആക്‌സിലറേഷനോടുകൂടി CPU കാര്യക്ഷമതയിലാണ് ഇത് ശ്രദ്ധ കേന്ദ്രീകരിക്കുന്നത്; വിഭവങ്ങൾ പരിമിതമായ പരിതസ്ഥിതികൾക്ക് ഇത് ഏറ്റവും അനുയോജ്യമാണ്. മികച്ച പ്രകടനം നിലനിർത്തിക്കൊണ്ടുതന്നെ മോഡലിന്റെ വലുപ്പവും മെമ്മറി ആവശ്യങ്ങളും കുറയ്ക്കാൻ llama.cpp ക്വാണ്ടൈസേഷൻ (quantization) വിദ്യകൾ ഉപയോഗിക്കുന്നു. വിവിധ CPU ആർക്കിടെക്ചറുകൾക്കായി ഒപ്റ്റിമൈസ് ചെയ്ത കെർണലുകൾ ഇത് ഇംപ്ലിമെന്റ് ചെയ്യുന്നു, കൂടാതെ കാര്യക്ഷമമായ ടോക്കൺ ജനറേഷനായി അടിസ്ഥാന KV കാഷ് മാനേജ്‌മെന്റിനെ പിന്തുണയ്ക്കുന്നു.
+
+<Tip title="llama.cpp ക്വാണ്ടൈസേഷൻ എങ്ങനെ പ്രവർത്തിക്കുന്നു">
+
+llama.cpp-യിലെ ക്വാണ്ടൈസേഷൻ മോഡൽ വെയ്‌റ്റുകളുടെ പ്രിസിഷൻ 32-ബിറ്റ് അല്ലെങ്കിൽ 16-ബിറ്റ് ഫ്ലോട്ടിംഗ് പോയിന്റിൽ നിന്ന് 8-ബിറ്റ് ഇന്റിജർ (INT8), 4-ബിറ്റ്, അതിലും താഴെ എന്നിങ്ങനെയുള്ള കുറഞ്ഞ പ്രിസിഷൻ ഫോർമാറ്റുകളിലേക്ക് കുറയ്ക്കുന്നു. ഗുണനിലവാരത്തിൽ ഏറ്റവും കുറഞ്ഞ നഷ്ടത്തോടെ ഇത് മെമ്മറി ഉപയോഗം കാര്യമായി കുറയ്ക്കുകയും ഇൻഫറൻസ് വേഗം മെച്ചപ്പെടുത്തുകയും ചെയ്യുന്നു.
+
+llama.cpp-യിലെ പ്രധാന ക്വാണ്ടൈസേഷൻ സവിശേഷതകൾ ഇവയാണ്:
+1. **ഒന്നിലധികം ക്വാണ്ടൈസേഷൻ ലെവലുകൾ (Multiple Quantization Levels)**: 8-ബിറ്റ്, 4-ബിറ്റ്, 3-ബിറ്റ്, എന്തിന്, 2-ബിറ്റ് ക്വാണ്ടൈസേഷൻ വരെ പിന്തുണയ്ക്കുന്നു
+2. **GGML/GGUF ഫോർമാറ്റ്**: ക്വാണ്ടൈസ്ഡ് ഇൻഫറൻസിനായി ഒപ്റ്റിമൈസ് ചെയ്ത കസ്‌റ്റം ടെൻസർ ഫോർമാറ്റുകൾ ഉപയോഗിക്കുന്നു
+3. **മിക്‌സഡ് പ്രിസിഷൻ (Mixed Precision)**: മോഡലിന്റെ വ്യത്യസ്ത ഭാഗങ്ങൾക്ക് വ്യത്യസ്ത ക്വാണ്ടൈസേഷൻ ലെവലുകൾ പ്രയോഗിക്കാൻ കഴിയും
+4. **ഹാർഡ്‌വെയർ-നിർദ്ദിഷ്ട ഒപ്റ്റിമൈസേഷനുകൾ (Hardware-Specific Optimizations)**: വിവിധ CPU ആർക്കിടെക്ചറുകൾക്കായി (AVX2, AVX-512, NEON) ഒപ്റ്റിമൈസ് ചെയ്ത കോഡ് പാതകൾ ഉൾപ്പെടുന്നു
+
+പരിമിതമായ മെമ്മറിയുള്ള സാധാരണ ഉപഭോക്തൃ ഹാർഡ്‌വെയറിൽ ബില്യൺ കണക്കിന് പാരാമീറ്ററുകളുള്ള മോഡലുകൾ റൺ ചെയ്യാൻ ഈ സമീപനം സാധ്യമാക്കുന്നു; ഇത് ലോക്കൽ ഡിപ്ലോയ്‌മെന്റുകൾക്കും എഡ്ജ് ഡിവൈസുകൾക്കും ഇതിനെ തികച്ചും അനുയോജ്യമാക്കുന്നു.
+
+</Tip>
+
+### ഡിപ്ലോയ്‌മെന്റും ഇന്റഗ്രേഷനും
+
+ഇനി ഈ ഫ്രെയിംവർക്കുകൾ തമ്മിലുള്ള ഡിപ്ലോയ്‌മെന്റ്, ഇന്റഗ്രേഷൻ വ്യത്യാസങ്ങളിലേക്ക് കടക്കാം.
+
+**TGI** അതിന്റെ പ്രൊഡക്ഷൻ-റെഡി സവിശേഷതകൾ കൊണ്ട് എന്റർപ്രൈസ് തലത്തിലുള്ള ഡിപ്ലോയ്‌മെന്റിൽ മികച്ചുനിൽക്കുന്നു. ബിൽറ്റ്-ഇൻ Kubernetes പിന്തുണയോടെ വരുന്ന ഇതിൽ, Prometheus, Grafana എന്നിവ വഴിയുള്ള മോണിറ്ററിംഗ്, ഓട്ടോമാറ്റിക് സ്കേലിംഗ്, സമഗ്രമായ സുരക്ഷാ സവിശേഷതകൾ എന്നിങ്ങനെ പ്രൊഡക്ഷനിൽ റൺ ചെയ്യാൻ നിങ്ങൾക്ക് ആവശ്യമുള്ളതെല്ലാം ഉൾപ്പെടുന്നു. നിങ്ങളുടെ ഡിപ്ലോയ്‌മെന്റ് സുരക്ഷിതവും സ്ഥിരതയുള്ളതുമായി നിലനിർത്താൻ എന്റർപ്രൈസ്-ഗ്രേഡ് ലോഗിംഗും, കണ്ടന്റ് ഫിൽറ്ററിംഗ്, റേറ്റ് ലിമിറ്റിംഗ് തുടങ്ങിയ വിവിധ സംരക്ഷണ നടപടികളും ഈ സിസ്റ്റത്തിൽ ഉൾപ്പെടുന്നു.
+
+**vLLM** ഡിപ്ലോയ്‌മെന്റിനോട് കൂടുതൽ വഴക്കമുള്ളതും ഡെവലപ്പർ-സൗഹൃദവുമായ ഒരു സമീപനമാണ് സ്വീകരിക്കുന്നത്. Python-നെ കാതലാക്കി നിർമ്മിച്ചിരിക്കുന്ന ഇതിന്, നിങ്ങളുടെ നിലവിലുള്ള ആപ്ലിക്കേഷനുകളിൽ OpenAI-യുടെ API-യെ എളുപ്പത്തിൽ പകരം വയ്ക്കാൻ കഴിയും. ഈ ഫ്രെയിംവർക്ക് അസംസ്കൃത പ്രകടനം (raw performance) നൽകുന്നതിൽ ശ്രദ്ധ കേന്ദ്രീകരിക്കുന്നു; നിങ്ങളുടെ പ്രത്യേക ആവശ്യങ്ങൾക്ക് അനുസരിച്ച് ഇത് ഇഷ്ടാനുസൃതമാക്കാനും കഴിയും. ക്ലസ്‌റ്ററുകൾ കൈകാര്യം ചെയ്യാൻ Ray-യുമായി ഇത് പ്രത്യേകിച്ചും നന്നായി പ്രവർത്തിക്കുന്നു; ഉയർന്ന പ്രകടനവും അനുരൂപപ്പെടാനുള്ള കഴിവും ആവശ്യമുള്ളപ്പോൾ ഇത് മികച്ചൊരു തിരഞ്ഞെടുപ്പാണ്.
+
+**llama.cpp** ലാളിത്യത്തിനും പോർട്ടബിലിറ്റിക്കും മുൻഗണന നൽകുന്നു. ഇതിന്റെ സെർവർ ഇംപ്ലിമെന്റേഷൻ ഭാരം കുറഞ്ഞതാണ്; ശക്തമായ സെർവറുകളിൽ നിന്ന് സാധാരണ ലാപ്‌ടോപ്പുകളിലേക്കും, എന്തിന്, ചില ഹൈ-എൻഡ് മൊബൈൽ ഡിവൈസുകളിലേക്കും വരെ, വിപുലമായ ഹാർഡ്‌വെയർ ശ്രേണിയിൽ ഇത് റൺ ചെയ്യാൻ കഴിയും. ഏറ്റവും കുറഞ്ഞ ഡിപ്പൻഡൻസികളും ലളിതമായ ഒരു C/C++ കാതലും ഉള്ളതിനാൽ, Python ഫ്രെയിംവർക്കുകൾ ഇൻസ്‌റ്റാൾ ചെയ്യുന്നത് വെല്ലുവിളിയാകുന്ന പരിതസ്ഥിതികളിൽ ഇത് ഡിപ്ലോയ് ചെയ്യാൻ എളുപ്പമാണ്. മറ്റ് പരിഹാരങ്ങളെ അപേക്ഷിച്ച് വളരെ ചെറിയ റിസോഴ്‌സ് ഉപയോഗം (resource footprint) നിലനിർത്തിക്കൊണ്ടുതന്നെ ഈ സെർവർ OpenAI-അനുയോജ്യമായ ഒരു API നൽകുന്നു.
+
+## തുടങ്ങാം
+
+ഇൻസ്‌റ്റലേഷനും അടിസ്ഥാന സെറ്റപ്പും മുതൽ തുടങ്ങി, LLM-കൾ ഡിപ്ലോയ് ചെയ്യാൻ ഈ ഫ്രെയിംവർക്കുകൾ എങ്ങനെ ഉപയോഗിക്കാം എന്ന് നോക്കാം.
+
+### ഇൻസ്‌റ്റലേഷനും അടിസ്ഥാന സെറ്റപ്പും
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI ഇൻസ്‌റ്റാൾ ചെയ്യാനും ഉപയോഗിക്കാനും എളുപ്പമാണ്; Hugging Face ഇക്കോസിസ്‌റ്റവുമായി ഇതിന് ആഴത്തിലുള്ള ഇന്റഗ്രേഷനുണ്ട്.
+
+ആദ്യം, Docker ഉപയോഗിച്ച് TGI സെർവർ ലോഞ്ച് ചെയ്യുക:
+
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct
+```
+
+തുടർന്ന്, Hugging Face-ന്റെ InferenceClient ഉപയോഗിച്ച് അതുമായി സംവദിക്കുക:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to TGI endpoint
+client = InferenceClient(
+    model="http://localhost:8080",  # URL to the TGI server
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+    stop_sequences=[],
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+പകരമായി, OpenAI ക്ലയന്റും നിങ്ങൾക്ക് ഉപയോഗിക്കാം:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to TGI endpoint
+client = OpenAI(
+    base_url="http://localhost:8080/v1",  # Make sure to include /v1
+    api_key="not-needed",  # TGI doesn't require an API key by default
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp ഇൻസ്‌റ്റാൾ ചെയ്യാനും ഉപയോഗിക്കാനും എളുപ്പമാണ്; ഇതിന് ഏറ്റവും കുറഞ്ഞ ഡിപ്പൻഡൻസികൾ മാത്രമേ ആവശ്യമുള്ളൂ, CPU, GPU ഇൻഫറൻസ് രണ്ടും ഇത് പിന്തുണയ്ക്കുന്നു.
+
+ആദ്യം, llama.cpp ഇൻസ്‌റ്റാൾ ചെയ്ത് ബിൽഡ് ചെയ്യുക:
+
+```sh
+# Clone the repository
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Build the project
+make
+
+# Download the SmolLM2-1.7B-Instruct-GGUF model
+curl -L -O https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct.Q4_K_M.gguf
+```
+
+തുടർന്ന്, സെർവർ ലോഞ്ച് ചെയ്യുക (OpenAI API അനുയോജ്യതയോടെ):
+
+```sh
+# Start the server
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \
+    --n-gpu-layers 0  # Set to a higher number to use GPU
+```
+
+Hugging Face-ന്റെ InferenceClient ഉപയോഗിച്ച് സെർവറുമായി സംവദിക്കുക:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to llama.cpp server
+client = InferenceClient(
+    model="http://localhost:8080/v1",  # URL to the llama.cpp server
+    token="sk-no-key-required",  # llama.cpp server requires this placeholder
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+പകരമായി, OpenAI ക്ലയന്റും നിങ്ങൾക്ക് ഉപയോഗിക്കാം:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to llama.cpp server
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-no-key-required",  # llama.cpp server requires this placeholder
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",  # Model identifier can be anything as server only loads one model
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM ഇൻസ്‌റ്റാൾ ചെയ്യാനും ഉപയോഗിക്കാനും എളുപ്പമാണ്; OpenAI API അനുയോജ്യതയും ഒരു നേറ്റീവ് Python ഇന്റർഫേസും ഇതിനുണ്ട്.
+
+ആദ്യം, vLLM-ന്റെ OpenAI-അനുയോജ്യമായ സെർവർ ലോഞ്ച് ചെയ്യുക:
+
+```sh
+python -m vllm.entrypoints.openai.api_server \
+    --model HuggingFaceTB/SmolLM2-360M-Instruct \
+    --host 0.0.0.0 \
+    --port 8000
+```
+
+തുടർന്ന്, Hugging Face-ന്റെ InferenceClient ഉപയോഗിച്ച് അതുമായി സംവദിക്കുക:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to vLLM endpoint
+client = InferenceClient(
+    model="http://localhost:8000/v1",  # URL to the vLLM server
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+പകരമായി, OpenAI ക്ലയന്റും നിങ്ങൾക്ക് ഉപയോഗിക്കാം:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to vLLM endpoint
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed",  # vLLM doesn't require an API key by default
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### അടിസ്ഥാന ടെക്‌സ്‌റ്റ് ജനറേഷൻ
+
+ഈ ഫ്രെയിംവർക്കുകൾ ഉപയോഗിച്ചുള്ള ടെക്‌സ്‌റ്റ് ജനറേഷന്റെ ഉദാഹരണങ്ങൾ നോക്കാം:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+ആദ്യം, നൂതന പാരാമീറ്ററുകളോടെ TGI ഡിപ്ലോയ് ചെയ്യുക:
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --max-total-tokens 4096 \
+    --max-input-length 3072 \
+    --max-batch-total-tokens 8192 \
+    --waiting-served-ratio 1.2
+```
+
+വഴക്കമുള്ള ടെക്‌സ്‌റ്റ് ജനറേഷനായി InferenceClient ഉപയോഗിക്കുക:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Raw text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    do_sample=True,
+    details=True,
+)
+print(response.generated_text)
+```
+
+അല്ലെങ്കിൽ OpenAI ക്ലയന്റ് ഉപയോഗിക്കുക:
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # Higher for more creativity
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp-യിൽ, സെർവർ ലോഞ്ച് ചെയ്യുമ്പോൾ തന്നെ നൂതന പാരാമീറ്ററുകൾ സെറ്റ് ചെയ്യാം:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \            # Context size
+    --threads 8 \        # CPU threads to use
+    --batch-size 512 \   # Batch size for prompt evaluation
+    --n-gpu-layers 0     # GPU layers (0 = CPU only)
+```
+
+InferenceClient ഉപയോഗിക്കുക:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080/v1", token="sk-no-key-required")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# For direct text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    details=True,
+)
+print(response.generated_text)
+```
+
+അല്ലെങ്കിൽ, സാംപ്ലിംഗ് പാരാമീറ്ററുകളുടെ മേൽ നിയന്ത്രണത്തോടെ ജനറേറ്റ് ചെയ്യാൻ OpenAI ക്ലയന്റ് ഉപയോഗിക്കുക:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="sk-no-key-required")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Nucleus sampling probability
+    frequency_penalty=0.5,  # Reduce repetition of frequent tokens
+    presence_penalty=0.5,  # Reduce repetition by penalizing tokens already present
+    max_tokens=200,  # Maximum generation length
+)
+print(response.choices[0].message.content)
+```
+
+കൂടുതൽ നിയന്ത്രണത്തിനായി llama.cpp-യുടെ നേറ്റീവ് ലൈബ്രറിയും നിങ്ങൾക്ക് ഉപയോഗിക്കാം:
+
+```python
+# Using llama-cpp-python package for direct model access
+from llama_cpp import Llama
+
+# Load the model
+llm = Llama(
+    model_path="smollm2-1.7b-instruct.Q4_K_M.gguf",
+    n_ctx=4096,  # Context window size
+    n_threads=8,  # CPU threads
+    n_gpu_layers=0,  # GPU layers (0 = CPU only)
+)
+
+# Format prompt according to the model's expected format
+prompt = """<|im_start|>system
+You are a creative storyteller.
+<|im_end|>
+<|im_start|>user
+Write a creative story
+<|im_end|>
+<|im_start|>assistant
+"""
+
+# Generate response with precise parameter control
+output = llm(
+    prompt,
+    max_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    frequency_penalty=0.5,
+    presence_penalty=0.5,
+    stop=["<|im_end|>"],
+)
+
+print(output["choices"][0]["text"])
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM-ന്റെ നൂതന ഉപയോഗത്തിനായി, InferenceClient നിങ്ങൾക്ക് ഉപയോഗിക്കാം:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8000/v1")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# For direct text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+```
+
+OpenAI ക്ലയന്റും നിങ്ങൾക്ക് ഉപയോഗിക്കാം:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+```
+
+സൂക്ഷ്മമായ നിയന്ത്രണം (fine-grained control) നൽകുന്ന ഒരു നേറ്റീവ് Python ഇന്റർഫേസും vLLM നൽകുന്നു:
+
+```python
+from vllm import LLM, SamplingParams
+
+# Initialize the model with advanced parameters
+llm = LLM(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    max_num_seqs=256,
+    block_size=16,
+)
+
+# Configure sampling parameters
+sampling_params = SamplingParams(
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    max_tokens=100,  # Maximum length
+    presence_penalty=1.1,  # Reduce repetition
+    frequency_penalty=1.1,  # Reduce repetition
+    stop=["\n\n", "###"],  # Stop sequences
+)
+
+# Generate text
+prompt = "Write a creative story"
+outputs = llm.generate(prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+
+# For chat-style interactions
+chat_prompt = [
+    {"role": "system", "content": "You are a creative storyteller."},
+    {"role": "user", "content": "Write a creative story"},
+]
+formatted_prompt = llm.get_chat_template()(chat_prompt)  # Uses model's chat template
+outputs = llm.generate(formatted_prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## നൂതന ജനറേഷൻ നിയന്ത്രണം
+
+### ടോക്കൺ തിരഞ്ഞെടുപ്പും സാംപ്ലിംഗും
+
+ടെക്‌സ്‌റ്റ് ജനറേറ്റ് ചെയ്യുന്ന പ്രക്രിയയിൽ ഓരോ ഘട്ടത്തിലും അടുത്ത ടോക്കൺ തിരഞ്ഞെടുക്കേണ്ടതുണ്ട്. ഈ തിരഞ്ഞെടുപ്പ് പ്രക്രിയ വിവിധ പാരാമീറ്ററുകളിലൂടെ നിയന്ത്രിക്കാം:
+
+1. **റോ ലോജിറ്റ്‌സ് (Raw Logits)**: ഓരോ ടോക്കണിനുമുള്ള പ്രാരംഭ ഔട്ട്‌പുട്ട് പ്രോബബിലിറ്റികൾ
+2. **ടെമ്പറേച്ചർ (Temperature)**: തിരഞ്ഞെടുപ്പിലെ ക്രമരഹിതത (randomness) നിയന്ത്രിക്കുന്നു (ഉയർന്നത് = കൂടുതൽ സർഗ്ഗാത്മകം)
+3. **Top-p (Nucleus) സാംപ്ലിംഗ്**: പ്രോബബിലിറ്റി മാസ്സിന്റെ X% വരുന്ന മുൻനിര ടോക്കണുകളിലേക്ക് ഫിൽറ്റർ ചെയ്യുന്നു
+4. **Top-k ഫിൽറ്ററിംഗ്**: ഏറ്റവും സാധ്യതയുള്ള k ടോക്കണുകളിലേക്ക് തിരഞ്ഞെടുപ്പ് പരിമിതപ്പെടുത്തുന്നു
+
+ഈ പാരാമീറ്ററുകൾ എങ്ങനെ കോൺഫിഗർ ചെയ്യാം എന്ന് നോക്കാം:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Write a creative story",
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    top_k=50,  # Consider top 50 tokens
+    max_new_tokens=100,  # Maximum length
+    repetition_penalty=1.1,  # Reduce repetition
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API compatibility
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",  # Model name (can be any string for llama.cpp server)
+    prompt="Write a creative story",
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    frequency_penalty=1.1,  # Reduce repetition
+    presence_penalty=0.1,  # Reduce repetition
+    max_tokens=100,  # Maximum length
+)
+
+# Via llama-cpp-python direct access
+output = llm(
+    "Write a creative story",
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=100,
+    repeat_penalty=1.1,
+)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    top_k=50,  # Consider top 50 tokens
+    max_tokens=100,  # Maximum length
+    presence_penalty=0.1,  # Reduce repetition
+)
+llm.generate("Write a creative story", sampling_params=params)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### ആവർത്തനം നിയന്ത്രിക്കുന്നു
+
+ആവർത്തന സ്വഭാവമുള്ള ടെക്‌സ്‌റ്റ് ജനറേഷൻ തടയാനുള്ള മാർഗ്ഗങ്ങൾ ഈ ഫ്രെയിംവർക്കുകളെല്ലാം നൽകുന്നു:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Write a varied text",
+    repetition_penalty=1.1,  # Penalize repeated tokens
+    no_repeat_ngram_size=3,  # Prevent 3-gram repetition
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Write a varied text",
+    frequency_penalty=1.1,  # Penalize frequent tokens
+    presence_penalty=0.8,  # Penalize tokens already present
+)
+
+# Via direct library
+output = llm(
+    "Write a varied text",
+    repeat_penalty=1.1,  # Penalize repeated tokens
+    frequency_penalty=0.5,  # Additional frequency penalty
+    presence_penalty=0.5,  # Additional presence penalty
+)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    presence_penalty=0.1,  # Penalize token presence
+    frequency_penalty=0.1,  # Penalize token frequency
+)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### ദൈർഘ്യ നിയന്ത്രണവും സ്‌റ്റോപ്പ് സീക്വൻസുകളും
+
+ജനറേഷന്റെ ദൈർഘ്യം നിയന്ത്രിക്കാനും എപ്പോൾ നിർത്തണം എന്ന് വ്യക്തമാക്കാനും നിങ്ങൾക്ക് കഴിയും:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Generate a short paragraph",
+    max_new_tokens=100,
+    min_new_tokens=10,
+    stop_sequences=["\n\n", "###"],
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Generate a short paragraph",
+    max_tokens=100,
+    stop=["\n\n", "###"],
+)
+
+# Via direct library
+output = llm("Generate a short paragraph", max_tokens=100, stop=["\n\n", "###"])
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    max_tokens=100,
+    min_tokens=10,
+    stop=["###", "\n\n"],
+    ignore_eos=False,
+    skip_special_tokens=True,
+)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## മെമ്മറി മാനേജ്‌മെന്റ്
+
+കാര്യക്ഷമമായ ഇൻഫറൻസിനായി ഈ ഫ്രെയിംവർക്കുകളെല്ലാം നൂതന മെമ്മറി മാനേജ്‌മെന്റ് വിദ്യകൾ ഇംപ്ലിമെന്റ് ചെയ്യുന്നു.
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI Flash Attention 2-ഉം കണ്ടിന്യുവസ് ബാച്ചിംഗും ഉപയോഗിക്കുന്നു:
+
+```sh
+# Docker deployment with memory optimization
+docker run --gpus all -p 8080:80 \
+    --shm-size 1g \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct \
+    --max-batch-total-tokens 8192 \
+    --max-input-length 4096
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp ക്വാണ്ടൈസേഷനും ഒപ്റ്റിമൈസ് ചെയ്ത മെമ്മറി ലേഔട്ടും ഉപയോഗിക്കുന്നു:
+
+```sh
+# Server with memory optimizations
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 2048 \               # Context size
+    --threads 4 \           # CPU threads
+    --n-gpu-layers 32 \     # Use more GPU layers for larger models
+    --mlock \               # Lock memory to prevent swapping
+    --cont-batching         # Enable continuous batching
+```
+
+നിങ്ങളുടെ GPU-വിന് താങ്ങാനാവാത്തത്ര വലിയ മോഡലുകൾക്ക്, CPU ഓഫ്‌ലോഡിംഗ് ഉപയോഗിക്കാം:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --n-gpu-layers 20 \     # Keep first 20 layers on GPU
+    --threads 8             # Use more CPU threads for CPU layers
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+ഏറ്റവും മികച്ച മെമ്മറി മാനേജ്‌മെന്റിനായി vLLM PagedAttention ഉപയോഗിക്കുന്നു:
+
+```python
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16,
+)
+
+llm = LLM(engine_args=engine_args)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## റിസോഴ്‌സുകൾ
+
+- [Text Generation Inference ഡോക്യുമെന്റേഷൻ](https://huggingface.co/docs/text-generation-inference)
+- [TGI GitHub റിപ്പോസിറ്ററി](https://github.com/huggingface/text-generation-inference)
+- [vLLM ഡോക്യുമെന്റേഷൻ](https://vllm.readthedocs.io/)
+- [vLLM GitHub റിപ്പോസിറ്ററി](https://github.com/vllm-project/vllm)
+- [PagedAttention പേപ്പർ](https://arxiv.org/abs/2309.06180)
+- [llama.cpp GitHub റിപ്പോസിറ്ററി](https://github.com/ggerganov/llama.cpp)
+- [llama-cpp-python റിപ്പോസിറ്ററി](https://github.com/abetlen/llama-cpp-python)
