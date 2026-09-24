@@ -1,0 +1,517 @@
+<FrameworkSwitchCourse {fw} />
+
+# Pencarian Semantik dengan FAISS[[semantic-search-with-faiss]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+Pada [bagian 5](/course/chapter5/5), kita telah membuat dataset dari isu dan komentar GitHub dari repositori 🤗 Datasets. Di bagian ini, kita akan menggunakan informasi tersebut untuk membangun mesin pencari yang dapat membantu kita menemukan jawaban atas pertanyaan penting tentang pustaka tersebut!
+
+<Youtube id="OATCgQtNX2o"/>
+
+## Menggunakan Embedding untuk Pencarian Semantik[[using-embeddings-for-semantic-search]]
+
+Seperti yang telah kita lihat di [Bab 1](/course/chapter1), model bahasa berbasis Transformer merepresentasikan setiap token dalam teks sebagai _vektor embedding_. Ternyata, kita bisa "menggabungkan" embedding individual ini untuk membuat representasi vektor dari satu kalimat, paragraf, atau bahkan dokumen secara keseluruhan. Embedding ini kemudian dapat digunakan untuk menemukan dokumen serupa dalam korpus dengan menghitung kemiripan dot-product (atau metrik kemiripan lainnya) antara setiap embedding dan mengembalikan dokumen yang memiliki tumpang tindih tertinggi.
+
+Di bagian ini kita akan menggunakan embedding untuk mengembangkan mesin pencari semantik. Mesin pencari semantik memiliki beberapa keunggulan dibanding pendekatan konvensional yang berbasis pencocokan kata kunci dalam kueri terhadap dokumen.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search.svg" alt="Pencarian semantik."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search-dark.svg" alt="Pencarian semantik."/>
+</div>
+
+## Memuat dan Menyiapkan Dataset[[loading-and-preparing-the-dataset]]
+
+Hal pertama yang perlu kita lakukan adalah mengunduh dataset isu GitHub kita. Mari kita gunakan fungsi `load_dataset()` seperti biasa:
+
+```py
+from datasets import load_dataset
+
+issues_dataset = load_dataset("lewtun/github-issues", split="train")
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 2855
+})
+```
+
+Di sini kita menentukan split `train` secara default dalam `load_dataset()`, sehingga ia mengembalikan sebuah objek `Dataset` bukan `DatasetDict`. Langkah pertama kita adalah menyaring *pull request*, karena biasanya tidak berguna untuk menjawab pertanyaan pengguna dan justru akan menambah noise dalam mesin pencari. Seperti yang sudah sering kita lakukan, kita bisa menggunakan fungsi `Dataset.filter()` untuk mengecualikan baris-baris ini. Sekalian, mari juga kita buang baris yang tidak memiliki komentar, karena komentar adalah bagian yang menyediakan jawaban:
+
+```py
+issues_dataset = issues_dataset.filter(
+    lambda x: (x["is_pull_request"] == False and len(x["comments"]) > 0)
+)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 771
+})
+```
+
+Kita bisa lihat bahwa ada banyak kolom dalam dataset ini, namun sebagian besar tidak kita butuhkan untuk membangun mesin pencari. Dari sudut pandang pencarian, kolom yang paling informatif adalah `title`, `body`, dan `comments`, sementara `html_url` menyediakan tautan ke isu sumber. Mari kita gunakan `Dataset.remove_columns()` untuk menghapus kolom-kolom lain:
+
+```py
+columns = issues_dataset.column_names
+columns_to_keep = ["title", "body", "html_url", "comments"]
+columns_to_remove = set(columns_to_keep).symmetric_difference(columns)
+issues_dataset = issues_dataset.remove_columns(columns_to_remove)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 771
+})
+```
+
+Untuk membuat embedding, kita akan menambahkan setiap komentar dengan `title` dan `body` dari isu terkait, karena informasi kontekstual sering kali ada di bagian tersebut. Karena kolom `comments` saat ini merupakan daftar komentar untuk setiap isu, kita perlu "meledakkan" kolom tersebut agar setiap baris hanya berisi satu pasangan `(html_url, title, body, comment)`. Dalam Pandas, kita bisa melakukannya dengan fungsi [`DataFrame.explode()`](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html), yang membuat baris baru untuk setiap elemen dalam kolom berisi daftar, sambil menggandakan nilai kolom lain. Untuk melihatnya secara langsung, mari kita ubah terlebih dahulu ke format `DataFrame` Pandas:
+
+```py
+issues_dataset.set_format("pandas")
+df = issues_dataset[:]
+```
+
+Jika kita lihat baris pertama dalam `DataFrame` ini, kita akan melihat ada empat komentar terkait dengan isu tersebut:
+
+```py
+df["comments"][0].tolist()
+```
+
+```python out
+['kode bug terletak di:\r\n    if data_args.task_name is not None:\r\n        # Mengunduh dan memuat dataset dari hub.\r\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
+ 'Hai @jinec,\r\n\r\nSesekali kami menerima `ConnectionError` seperti ini dari situs github.com: https://raw.githubusercontent.com\r\n\r\nBiasanya, hal ini bisa diatasi dengan menunggu sejenak dan mencoba kembali.\r\n\r\nBisakah Anda konfirmasi apakah masalahnya masih terjadi?',
+ 'tidak bisa konek, bahkan lewat browser, tolong dicek apakah ada masalah.',
+ 'Saya bisa mengakses https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py tanpa masalah...']
+```
+
+Saat kita melakukan *explode* pada `df`, kita harapkan akan mendapatkan satu baris untuk setiap komentar tersebut. Mari kita periksa apakah hasilnya sesuai ekspektasi:
+
+```py
+comments_df = df.explode("comments", ignore_index=True)
+comments_df.head(4)
+```
+
+<table border="1" class="dataframe" style="table-layout: fixed; word-wrap:break-word; width: 100%;">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>html_url</th>
+      <th>title</th>
+      <th>comments</th>
+      <th>body</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>kode bug terletak di:\r\n    if data_args.task_name is not None...</td>
+      <td>Halo,\r\nSaya mencoba menjalankan run_glue.py dan mendapatkan error berikut...</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>Hai @jinec,\r\n\r\nSesekali kami mendapat `ConnectionError` seperti ini dari situs github.com: https://raw.githubusercontent.com...</td>
+      <td>Halo,\r\nSaya mencoba menjalankan run_glue.py dan mendapatkan error berikut...</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>tidak bisa konek, bahkan lewat browser, tolong dicek apakah ada masalah.</td>
+      <td>Halo,\r\nSaya mencoba menjalankan run_glue.py dan mendapatkan error berikut...</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>Saya bisa mengakses https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py tanpa masalah...</td>
+      <td>Halo,\r\nSaya mencoba menjalankan run_glue.py dan mendapatkan error berikut...</td>
+    </tr>
+  </tbody>
+</table>
+
+Bagus, kita bisa lihat baris-baris telah direplikasi, dengan kolom `comments` sekarang berisi komentar individual! Sekarang kita sudah selesai menggunakan Pandas, kita bisa dengan cepat kembali ke format `Dataset` dengan memuat `DataFrame` ke memori:
+
+```py
+from datasets import Dataset
+
+comments_dataset = Dataset.from_pandas(comments_df)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 2842
+})
+```
+
+Oke, sekarang kita punya beberapa ribu komentar untuk digunakan!
+
+<Tip>
+
+✏️ **Coba sendiri!** Lihat apakah Anda bisa menggunakan `Dataset.map()` untuk meledakkan kolom `comments` dari `issues_dataset` _tanpa_ menggunakan Pandas. Ini agak rumit; Anda mungkin akan terbantu dengan bagian ["Batch mapping"](https://huggingface.co/docs/datasets/about_map_batch#batch-mapping) dari dokumentasi 🤗 Datasets.
+
+</Tip>
+
+Sekarang kita sudah punya satu komentar per baris, mari buat kolom baru `comment_length` yang berisi jumlah kata per komentar:
+
+```py
+comments_dataset = comments_dataset.map(
+    lambda x: {"comment_length": len(x["comments"].split())}
+)
+```
+
+Kita bisa menggunakan kolom ini untuk menyaring komentar yang terlalu pendek, seperti "cc @lewtun" atau "Terima kasih!" yang tidak relevan untuk mesin pencari. Tidak ada batasan pasti, tapi sekitar 15 kata sepertinya jumlah yang baik untuk disaring:
+
+```py
+comments_dataset = comments_dataset.filter(lambda x: x["comment_length"] > 15)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body', 'comment_length'],
+    num_rows: 2098
+})
+```
+
+Setelah membersihkan dataset, mari kita gabungkan judul isu, deskripsi, dan komentar ke dalam kolom baru `text`. Seperti biasa, kita akan menulis fungsi sederhana untuk digunakan dengan `Dataset.map()`:
+
+```py
+def concatenate_text(examples):
+    return {
+        "text": examples["title"]
+        + " \n "
+        + examples["body"]
+        + " \n "
+        + examples["comments"]
+    }
+
+
+comments_dataset = comments_dataset.map(concatenate_text)
+```
+
+Akhirnya kita siap untuk membuat embedding! Mari kita lihat bagaimana caranya.
+
+## Membuat Embedding Teks[[creating-text-embeddings]]
+
+Kita telah melihat di [Bab 2](/course/chapter2) bahwa kita bisa mendapatkan token embedding menggunakan kelas `AutoModel`. Yang kita butuhkan hanya memilih *checkpoint* yang cocok untuk memuat model. Untungnya, ada pustaka bernama `sentence-transformers` yang memang ditujukan untuk membuat embedding. Seperti yang dijelaskan dalam [dokumentasi pustaka](https://www.sbert.net/examples/applications/semantic-search/README.html#symmetric-vs-asymmetric-semantic-search), kasus penggunaan kita adalah contoh dari _asymmetric semantic search_, karena kita memiliki kueri pendek dan ingin menemukan jawabannya dalam dokumen yang lebih panjang, seperti komentar isu.  Tabel [ringkasan model](https://www.sbert.net/docs/pretrained_models.html#model-overview) di dokumentasi menunjukkan bahwa checkpoint `multi-qa-mpnet-base-dot-v1` memiliki performa terbaik untuk pencarian semantik, jadi kita akan gunakan itu untuk aplikasi ini. Kita juga akan memuat tokenizer menggunakan checkpoint yang sama:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, AutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = AutoModel.from_pretrained(model_ckpt)
+```
+
+Untuk mempercepat proses pembuatan embedding, sebaiknya model dan input ditempatkan di perangkat GPU. Mari kita lakukan sekarang:
+
+```py
+import torch
+
+device = torch.device("cuda")
+model.to(device)
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFAutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = TFAutoModel.from_pretrained(model_ckpt, from_pt=True)
+```
+
+Perhatikan bahwa kita menetapkan from_pt=True sebagai argumen dari metode from_pretrained(). Ini karena checkpoint multi-qa-mpnet-base-dot-v1 hanya memiliki bobot (weights) dalam format PyTorch, sehingga dengan menyetel from_pt=True, bobot tersebut akan secara otomatis dikonversi ke format TensorFlow. Seperti yang bisa Anda lihat, sangat mudah untuk beralih antar framework di 🤗 Transformers!
+
+{/if}
+
+Seperti yang telah disebutkan sebelumnya, kita ingin merepresentasikan setiap entri dalam korpus GitHub Issues kita sebagai sebuah vektor tunggal, jadi kita perlu melakukan "pooling" atau merata-ratakan embedding token dengan cara tertentu. Salah satu pendekatan populer adalah melakukan CLS pooling pada output model, di mana kita cukup mengambil last hidden state untuk token spesial [CLS]. Fungsi berikut akan melakukan hal tersebut untuk kita:
+
+
+```py
+def cls_pooling(model_output):
+    return model_output.last_hidden_state[:, 0]
+```
+
+Selanjutnya, kita akan membuat fungsi bantu untuk melakukan tokenisasi pada daftar dokumen, menempatkan tensor di GPU, mengoperasikannya ke model, lalu menerapkan *CLS pooling* pada output:
+
+{#if fw === 'pt'}
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="pt"
+    )
+    encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+Kita bisa menguji fungsi tersebut dengan memberikan entri teks pertama dari korpus dan memeriksa bentuk output-nya:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+Bagus, kita telah mengubah entri pertama dari korpus menjadi vektor berdimensi 768! Kita bisa menggunakan `Dataset.map()` untuk menerapkan fungsi `get_embeddings()` ke setiap baris dalam korpus, dan membuat kolom baru `embeddings` seperti berikut:
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).detach().cpu().numpy()[0]}
+)
+```
+
+{:else}
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="tf"
+    )
+    encoded_input = {k: v for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+Kita dapat menguji apakah fungsi tersebut bekerja dengan memberikannya entri teks pertama dari korpus kita dan memeriksa bentuk output-nya:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+TensorShape([1, 768])
+```
+
+Hebat, kita telah mengubah entri pertama dalam korpus kita menjadi vektor berdimensi 768! Kita dapat menggunakan `Dataset.map()` untuk menerapkan fungsi `get_embeddings()` ke setiap baris dalam korpus kita, jadi mari kita buat kolom baru bernama `embeddings` seperti berikut:
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).numpy()[0]}
+)
+```
+
+{/if}
+
+Perhatikan bahwa kita telah mengubah embeddings ke dalam format array NumPy -- ini karena 🤗 Datasets memerlukan format ini ketika kita mencoba mengindeksnya dengan FAISS, yang akan kita lakukan selanjutnya.
+
+
+## Menggunakan FAISS untuk pencarian kemiripan yang efisien[[using-faiss-for-efficient-similarity-search]]
+
+Sekarang kita memiliki dataset berisi embedding, kita butuh cara untuk mencari di dalamnya. Untuk itu, kita akan menggunakan struktur data khusus dari 🤗 Datasets yang disebut _FAISS index_. [FAISS](https://faiss.ai/) (singkatan dari Facebook AI Similarity Search) adalah pustaka yang menyediakan algoritma efisien untuk mencari dan mengelompokkan vektor embedding dengan cepat.
+
+Ide dasar dari FAISS adalah membuat struktur data khusus bernama _index_ yang memungkinkan kita menemukan embedding yang paling mirip dengan embedding input. Membuat FAISS index dalam 🤗 Datasets cukup sederhana — kita cukup gunakan fungsi `Dataset.add_faiss_index()` dan menentukan kolom mana yang ingin diindeks:
+
+```py
+embeddings_dataset.add_faiss_index(column="embeddings")
+```
+
+Sekarang kita bisa melakukan pencarian dengan melakukan pencocokan *nearest neighbor* menggunakan fungsi `Dataset.get_nearest_examples()`. Mari kita coba dengan mengubah sebuah pertanyaan menjadi embedding terlebih dahulu:
+
+{#if fw === 'pt'}
+
+```py
+question = "Bagaimana cara memuat dataset secara offline?"
+question_embedding = get_embeddings([question]).cpu().detach().numpy()
+question_embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+{:else}
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).numpy()
+question_embedding.shape
+```
+
+```python out
+(1, 768)
+```
+
+{/if}
+
+Sama seperti pada dokumen, sekarang kita memiliki vektor berdimensi 768 yang merepresentasikan pertanyaan, yang dapat kita bandingkan dengan seluruh korpus untuk menemukan embeddings yang paling mirip:
+
+```py
+scores, samples = embeddings_dataset.get_nearest_examples(
+    "embeddings", question_embedding, k=5
+)
+```
+
+Fungsi `Dataset.get_nearest_examples()` mengembalikan tuple berisi skor (yang menunjukkan tingkat kemiripan) dan sampel dokumen (dalam hal ini 5 hasil terbaik). Mari kita ubah ini menjadi `pandas.DataFrame` agar mudah untuk disortir:
+
+```py
+import pandas as pd
+
+samples_df = pd.DataFrame.from_dict(samples)
+samples_df["scores"] = scores
+samples_df.sort_values("scores", ascending=False, inplace=True)
+```
+
+Sekarang kita bisa menelusuri beberapa baris pertama untuk melihat seberapa baik kueri kita dicocokkan dengan komentar yang tersedia:
+
+```py
+for _, row in samples_df.iterrows():
+    print(f"KOMENTAR: {row.comments}")
+    print(f"SKOR: {row.scores}")
+    print(f"JUDUL: {row.title}")
+    print(f"URL: {row.html_url}")
+    print("=" * 50)
+    print()
+```
+
+```python out
+"""
+KOMENTAR: Membutuhkan koneksi online adalah hal yang menyulitkan dalam beberapa kasus, jadi akan sangat bagus jika mode offline ditambahkan — seperti bagaimana `transformers` memuat model secara offline dengan baik.
+
+Poin kedua dari @mandubian menyarankan bahwa ada solusi alternatif yang memungkinkan Anda menggunakan dataset offline (kustom?) dengan `datasets`. Bisakah Anda jelaskan bagaimana cara melakukannya?
+SKOR: 25.505046844482422
+JUDUL: Diskusi penggunaan datasets dalam mode offline
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+KOMENTAR: Builder dataset lokal (csv, text, json, dan pandas) sekarang sudah menjadi bagian dari paket `datasets` sejak #1726 :)
+Sekarang Anda bisa menggunakannya secara offline
+\`\`\`python
+datasets = load_dataset("text", data_files=data_files)
+\`\`\`
+
+Kami akan merilis versi baru segera
+SKOR: 24.555509567260742
+JUDUL: Diskusi penggunaan datasets dalam mode offline
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+KOMENTAR: Saya membuka PR yang memungkinkan modul yang sudah pernah dimuat dapat dimuat ulang meskipun tidak ada koneksi internet.
+
+Beri tahu saya jika Anda tahu cara lain untuk membuat pengalaman mode offline jadi lebih baik. Saya akan senang menambahkannya :)
+
+Saya juga mencatat opsi "freeze modules", untuk mencegah pembaruan modul lokal. Itu akan jadi fitur keren.
+
+----------
+
+> Poin kedua dari @mandubian menyarankan bahwa ada solusi alternatif untuk menggunakan dataset offline (kustom?) dengan `datasets`. Bisakah Anda jelaskan bagaimana bentuknya?
+
+Memang benar bahwa `load_dataset` memungkinkan untuk memuat skrip dataset jarak jauh (squad, glue, dll.) tetapi juga yang lokal.
+Misalnya jika Anda punya skrip dataset di `./my_dataset/my_dataset.py` maka Anda bisa jalankan
+\`\`\`python
+load_dataset("./my_dataset")
+\`\`\`
+dan skrip dataset tersebut akan menghasilkan dataset Anda secara permanen.
+
+----------
+
+Saya sedang meneliti agar builder dataset `csv`, `json`, `text`, `pandas` sudah termasuk dalam paket `datasets`, supaya tersedia offline secara default — berbeda dengan dataset lain yang masih perlu mengunduh skrip.
+lihat #1724
+SKOR: 24.14896583557129
+JUDUL: Diskusi penggunaan datasets dalam mode offline
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+KOMENTAR: > ini adalah cara saya untuk memuat dataset secara offline, tetapi **memerlukan** mesin yang terhubung ke internet
+>
+> 1. (mesin yang online)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_dataset(...)
+>
+> data.save_to_disk(/DIREKTORI/DATASET/ANDA)
+>
+> ```
+>
+> 2. salin direktori dari mesin online ke mesin offline
+>
+> 3. (mesin offline)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_from_disk(/DIREKTORI/DATA/YANG/DISIMPAN)
+>
+> ```
+>
+>
+>
+> Semoga membantu.
+
+SKOR: 22.893993377685547  
+JUDUL: Diskusi penggunaan datasets dalam mode offline
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+KOMENTAR: Berikut cara saya memuat dataset secara offline, tapi **memerlukan** mesin yang terhubung ke internet
+1. (mesin online)
+\`\`\`
+import datasets
+data = datasets.load_dataset(...)
+data.save_to_disk(/YOUR/DATASET/DIR)
+\`\`\`
+2. salin direktori dari mesin online ke mesin offline
+3. (mesin offline)
+\`\`\`
+import datasets
+data = datasets.load_from_disk(/SAVED/DATA/DIR)
+\`\`\`
+
+Semoga membantu.
+SKOR: 22.406635284423828
+JUDUL: Diskusi penggunaan datasets dalam mode offline
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+"""
+```
+
+Tidak buruk! Hasil kedua kita tampaknya cocok dengan kueri yang diberikan.
+
+<Tip>
+
+✏️ **Coba sendiri!** Buat kueri Anda sendiri dan lihat apakah Anda bisa menemukan jawabannya dalam dokumen yang ditemukan. Anda mungkin perlu menaikkan nilai parameter `k` dalam `Dataset.get_nearest_examples()` untuk memperluas pencarian.
+
+</Tip>

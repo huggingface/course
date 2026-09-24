@@ -1,0 +1,360 @@
+# Tokenisasi Byte-Pair Encoding[[byte-pair-encoding-tokenization]]
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section5.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section5.ipynb"},
+]} />
+
+Byte-Pair Encoding (BPE) awalnya dikembangkan sebagai algoritma untuk mengompresi teks, dan kemudian digunakan oleh OpenAI untuk tokenisasi saat pra-pelatihan model GPT. BPE digunakan oleh banyak model Transformer, termasuk GPT, GPT-2, RoBERTa, BART, dan DeBERTa.
+
+<Youtube id="HEikzVL-lZU"/>
+
+<Tip>
+
+💡 Bagian ini membahas BPE secara mendalam, bahkan hingga menunjukkan implementasi lengkapnya. Kamu bisa langsung lompat ke akhir jika hanya ingin gambaran umum dari algoritma tokenisasi ini.
+
+</Tip>
+
+## Algoritma Pelatihan[[training-algorithm]]
+
+Pelatihan BPE dimulai dengan menghitung kumpulan kata unik yang digunakan dalam korpus (setelah langkah normalisasi dan pra-tokenisasi selesai), lalu membangun kosakata dengan mengambil semua simbol yang digunakan untuk menulis kata-kata tersebut. Sebagai contoh yang sangat sederhana, misalkan korpus kita hanya menggunakan lima kata ini:
+
+```
+"hug", "pug", "pun", "bun", "hugs"
+```
+
+Kosakata dasarnya akan menjadi `["b", "g", "h", "n", "p", "s", "u"]`. Dalam kasus nyata, kosakata dasar tersebut akan mencakup semua karakter ASCII, dan mungkin juga beberapa karakter Unicode. Jika sebuah contoh yang kamu tokenisasi menggunakan karakter yang tidak ada di korpus pelatihan, karakter itu akan dikonversi menjadi token tidak dikenal (`[UNK]`). Ini adalah salah satu alasan mengapa banyak model NLP kurang baik dalam menganalisis konten dengan emoji, misalnya.
+
+<Tip>
+
+Tokenizer GPT-2 dan RoBERTa (yang cukup mirip) memiliki cara cerdas untuk mengatasi hal ini: mereka tidak menganggap kata ditulis dengan karakter Unicode, melainkan dengan *byte*. Dengan begitu, ukuran kosakata dasar tetap kecil (256), namun semua karakter tetap tercakup dan tidak diubah menjadi token `[UNK]`. Trik ini disebut *byte-level BPE*.
+
+</Tip>
+
+Setelah mendapatkan kosakata dasar, kita menambahkan token baru hingga ukuran kosakata yang diinginkan tercapai, dengan mempelajari *penggabungan* (merge), yaitu aturan untuk menggabungkan dua elemen dalam kosakata yang ada menjadi elemen baru. Pada awalnya, penggabungan ini akan membuat token dua karakter, dan seiring pelatihan berjalan, token yang lebih panjang.
+
+Pada setiap langkah pelatihan tokenizer, algoritma BPE akan mencari pasangan token yang paling sering muncul (pasangan berarti dua token yang bersebelahan dalam suatu kata). Pasangan yang paling sering inilah yang akan digabungkan, dan proses diulang kembali pada langkah selanjutnya.
+
+Kembali ke contoh sebelumnya, misalnya kata-kata tersebut memiliki frekuensi sebagai berikut:
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+Artinya kata `"hug"` muncul 10 kali dalam korpus, `"pug"` 5 kali, `"pun"` 12 kali, `"bun"` 4 kali, dan `"hugs"` 5 kali. Kita mulai pelatihan dengan membagi setiap kata menjadi karakter individual (yang membentuk kosakata dasar), jadi kita bisa melihat setiap kata sebagai daftar token:
+
+```
+("h" "u" "g", 10), ("p" "u" "g", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "u" "g" "s", 5)
+```
+
+Kemudian kita melihat pasangan token. Pasangan `("h", "u")` muncul dalam kata `"hug"` dan `"hugs"`, jadi total 15 kali dalam korpus. Namun ini bukan pasangan yang paling sering. Yang paling sering adalah `("u", "g")`, yang muncul dalam `"hug"`, `"pug"`, dan `"hugs"`, dengan total 20 kali.
+
+Maka, aturan penggabungan pertama yang dipelajari tokenizer adalah `("u", "g") -> "ug"`, artinya `"ug"` akan ditambahkan ke kosakata dan pasangan tersebut digabung dalam semua kata di korpus. Setelah tahap ini, kosakata dan korpus akan terlihat seperti ini:
+
+```
+Kosakata: ["b", "g", "h", "n", "p", "s", "u", "ug"]
+Korpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "ug" "s", 5)
+```
+
+Sekarang kita memiliki pasangan yang lebih panjang dari dua karakter: seperti pasangan `("h", "ug")`, yang muncul 15 kali. Namun pasangan yang paling sering saat ini adalah `("u", "n")`, yang muncul 16 kali. Jadi aturan penggabungan kedua adalah `("u", "n") -> "un"`. Setelah menambahkan itu ke kosakata dan menerapkannya di semua tempat, kita dapatkan:
+
+```
+Kosakata: ["b", "g", "h", "n", "p", "s", "u", "ug", "un"]
+Korpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("h" "ug" "s", 5)
+```
+
+Sekarang pasangan paling sering adalah `("h", "ug")`, jadi kita pelajari aturan `("h", "ug") -> "hug"`, yang menjadi token tiga karakter pertama kita. Setelah penggabungan, korpus menjadi:
+
+```
+Kosakata: ["b", "g", "h", "n", "p", "s", "u", "ug", "un", "hug"]
+Korpus: ("hug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("hug" "s", 5)
+```
+
+Dan proses ini terus diulang hingga kita mencapai ukuran kosakata yang diinginkan.
+
+<Tip>
+
+✏️ **Sekarang giliranmu!** Menurutmu, apa aturan penggabungan berikutnya?
+
+</Tip>
+
+## Algoritma Tokenisasi[[tokenization-algorithm]]
+
+Proses tokenisasi mengikuti pelatihan secara langsung, artinya input baru akan ditokenisasi dengan langkah-langkah berikut:
+
+1. Normalisasi
+2. Pra-tokenisasi
+3. Membagi kata menjadi karakter individual
+4. Menerapkan aturan penggabungan yang telah dipelajari, secara berurutan
+
+Mari kita ambil contoh yang digunakan saat pelatihan, dengan tiga aturan penggabungan yang telah dipelajari:
+
+```
+("u", "g") -> "ug"
+("u", "n") -> "un"
+("h", "ug") -> "hug"
+```
+
+Kata `"bug"` akan di-tokenisasi menjadi `["b", "ug"]`. Namun, `"mug"` akan di-tokenisasi menjadi `["[UNK]", "ug"]` karena huruf `"m"` tidak ada dalam kosakata dasar. Demikian pula, kata `"thug"` akan di-tokenisasi menjadi `["[UNK]", "hug"]`: huruf `"t"` tidak ada dalam kosakata dasar, dan penerapan aturan penggabungan menghasilkan penggabungan `"u"` dan `"g"` terlebih dahulu, kemudian `"h"` dan `"ug"` digabungkan.
+
+<Tip>
+
+✏️ **Sekarang giliranmu!** Menurutmu, bagaimana kata `"unhug"` akan ditokenisasi?
+
+</Tip>
+
+## Implementasi BPE[[implementing-bpe]]
+
+Sekarang mari kita lihat bagaimana implementasi algoritma BPE. Ini bukan versi yang dioptimalkan untuk digunakan pada korpus besar; tujuannya hanya untuk membantu kamu memahami algoritmanya lebih baik.
+
+Pertama kita butuh korpus. Mari kita buat yang sederhana dengan beberapa kalimat:
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+Selanjutnya, kita perlu melakukan pra-tokenisasi pada korpus tersebut menjadi kata-kata. Karena kita meniru tokenizer BPE (seperti GPT-2), kita akan menggunakan tokenizer `gpt2` untuk pra-tokenisasi:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+Kemudian kita hitung frekuensi setiap kata dalam korpus saat melakukan pra-tokenisasi:
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+print(word_freqs)
+```
+
+```python out
+defaultdict(int, {'This': 3, 'Ġis': 2, 'Ġthe': 1, 'ĠHugging': 1, 'ĠFace': 1, 'ĠCourse': 1, '.': 4, 'Ġchapter': 1,
+    'Ġabout': 1, 'Ġtokenization': 1, 'Ġsection': 1, 'Ġshows': 1, 'Ġseveral': 1, 'Ġtokenizer': 1, 'Ġalgorithms': 1,
+    'Hopefully': 1, ',': 1, 'Ġyou': 1, 'Ġwill': 1, 'Ġbe': 1, 'Ġable': 1, 'Ġto': 1, 'Ġunderstand': 1, 'Ġhow': 1,
+    'Ġthey': 1, 'Ġare': 1, 'Ġtrained': 1, 'Ġand': 1, 'Ġgenerate': 1, 'Ġtokens': 1})
+```
+
+Langkah berikutnya adalah menghitung kosakata dasar, yaitu semua karakter yang digunakan dalam korpus:
+
+```python
+alphabet = []
+
+for word in word_freqs.keys():
+    for letter in word:
+        if letter not in alphabet:
+            alphabet.append(letter)
+alphabet.sort()
+
+print(alphabet)
+```
+
+```python out
+[ ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's',
+  't', 'u', 'v', 'w', 'y', 'z', 'Ġ']
+```
+
+Kita juga menambahkan token spesial yang digunakan oleh model di awal kosakata tersebut. Dalam kasus GPT-2, hanya ada satu token spesial, yaitu `"<|endoftext|>"`:
+
+```python
+vocab = ["<|endoftext|>"] + alphabet.copy()
+```
+
+Sekarang kita perlu membagi setiap kata menjadi karakter individu untuk memulai pelatihan:
+
+```python
+splits = {word: [c for c in word] for word in word_freqs.keys()}
+```
+
+Setelah semuanya siap untuk pelatihan, mari kita tulis fungsi untuk menghitung frekuensi setiap pasangan karakter. Fungsi ini akan digunakan pada setiap langkah pelatihan:
+
+```python
+def compute_pair_freqs(splits):
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            pair_freqs[pair] += freq
+    return pair_freqs
+```
+
+Mari kita lihat sebagian dari kamus pasangan ini setelah pembagian awal:
+
+```python
+pair_freqs = compute_pair_freqs(splits)
+
+for i, key in enumerate(pair_freqs.keys()):
+    print(f"{key}: {pair_freqs[key]}")
+    if i >= 5:
+        break
+```
+
+```python out
+('T', 'h'): 3
+('h', 'i'): 3
+('i', 's'): 5
+('Ġ', 'i'): 2
+('Ġ', 't'): 7
+('t', 'h'): 3
+```
+
+Menemukan pasangan paling sering hanya memerlukan loop cepat:
+
+```python
+best_pair = ""
+max_freq = None
+
+for pair, freq in pair_freqs.items():
+    if max_freq is None or max_freq < freq:
+        best_pair = pair
+        max_freq = freq
+
+print(best_pair, max_freq)
+```
+
+```python out
+('Ġ', 't') 7
+```
+
+Jadi penggabungan pertama yang dipelajari adalah `('Ġ', 't') -> 'Ġt'`, dan kita tambahkan `'Ġt'` ke kosakata:
+
+```python
+merges = {("Ġ", "t"): "Ġt"}
+vocab.append("Ġt")
+```
+
+Untuk melanjutkan, kita perlu menerapkan penggabungan itu pada dictionary `splits`. Berikut fungsi untuk itu:
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                split = split[:i] + [a + b] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+Mari kita lihat hasil dari penggabungan pertama:
+
+```python
+splits = merge_pair("Ġ", "t", splits)
+print(splits["Ġtrained"])
+```
+
+```python out
+['Ġt', 'r', 'a', 'i', 'n', 'e', 'd']
+```
+
+Sekarang kita punya semua yang dibutuhkan untuk melakukan loop hingga kita mempelajari semua aturan penggabungan yang diinginkan. Misalnya kita targetkan ukuran kosakata 50:
+
+```python
+vocab_size = 50
+
+while len(vocab) < vocab_size:
+    pair_freqs = compute_pair_freqs(splits)
+    best_pair = ""
+    max_freq = None
+    for pair, freq in pair_freqs.items():
+        if max_freq is None or max_freq < freq:
+            best_pair = pair
+            max_freq = freq
+    splits = merge_pair(*best_pair, splits)
+    merges[best_pair] = best_pair[0] + best_pair[1]
+    vocab.append(best_pair[0] + best_pair[1])
+```
+
+Sebagai hasilnya, kita telah mempelajari 19 aturan penggabungan (kosakata awal memiliki ukuran 31 — 30 karakter alfabet ditambah satu token spesial):
+
+```python
+print(merges)
+```
+
+```python out
+{('Ġ', 't'): 'Ġt', ('i', 's'): 'is', ('e', 'r'): 'er', ('Ġ', 'a'): 'Ġa', ('Ġt', 'o'): 'Ġto', ('e', 'n'): 'en',
+ ('T', 'h'): 'Th', ('Th', 'is'): 'This', ('o', 'u'): 'ou', ('s', 'e'): 'se', ('Ġto', 'k'): 'Ġtok',
+ ('Ġtok', 'en'): 'Ġtoken', ('n', 'd'): 'nd', ('Ġ', 'is'): 'Ġis', ('Ġt', 'h'): 'Ġth', ('Ġth', 'e'): 'Ġthe',
+ ('i', 'n'): 'in', ('Ġa', 'b'): 'Ġab', ('Ġtoken', 'i'): 'Ġtokeni'}
+```
+
+Dan kosakatanya terdiri dari token spesial, alfabet awal, dan semua hasil penggabungan:
+
+```python
+print(vocab)
+```
+
+```python out
+['<|endoftext|>', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o',
+ 'p', 'r', 's', 't', 'u', 'v', 'w', 'y', 'z', 'Ġ', 'Ġt', 'is', 'er', 'Ġa', 'Ġto', 'en', 'Th', 'This', 'ou', 'se',
+ 'Ġtok', 'Ġtoken', 'nd', 'Ġis', 'Ġth', 'Ġthe', 'in', 'Ġab', 'Ġtokeni']
+```
+
+<Tip>
+
+💡 Menggunakan `train_new_from_iterator()` pada korpus yang sama tidak akan menghasilkan kosakata yang persis sama. Ini karena saat ada beberapa pasangan dengan frekuensi tertinggi yang sama, kita memilih yang pertama ditemukan, sedangkan pustaka 🤗 Tokenizers memilih berdasarkan ID internalnya.
+
+</Tip>
+
+Untuk men-tokenisasi teks baru, kita lakukan pra-tokenisasi, pembagian karakter, lalu terapkan semua aturan penggabungan yang telah dipelajari:
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    splits = [[l for l in word] for word in pre_tokenized_text]
+    for pair, merge in merges.items():
+        for idx, split in enumerate(splits):
+            i = 0
+            while i < len(split) - 1:
+                if split[i] == pair[0] and split[i + 1] == pair[1]:
+                    split = split[:i] + [merge] + split[i + 2 :]
+                else:
+                    i += 1
+            splits[idx] = split
+
+    return sum(splits, [])
+```
+
+Kita bisa coba pada teks yang hanya berisi karakter yang ada di alfabet:
+
+```python
+tokenize("This is not a token.")
+```
+
+```python out
+['This', 'Ġis', 'Ġ', 'n', 'o', 't', 'Ġa', 'Ġtoken', '.']
+```
+
+<Tip warning={true}>
+
+⚠️ Implementasi kita akan menghasilkan error jika ada karakter yang tidak dikenal karena kita tidak menambahkan penanganan untuk kasus tersebut. GPT-2 sebenarnya tidak memiliki token tidak dikenal (tidak mungkin mendapatkan karakter yang tidak dikenal saat menggunakan BPE level-byte), namun hal ini bisa terjadi di sini karena kita tidak menyertakan semua kemungkinan byte dalam kosakata awal. Aspek BPE ini berada di luar cakupan bagian ini, jadi kami tidak membahas detailnya.
+
+</Tip>
+
+Itulah keseluruhan algoritma BPE! Selanjutnya, kita akan melihat algoritma WordPiece.

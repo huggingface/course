@@ -1,0 +1,447 @@
+# Memproses Data[[processing-the-data]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section2.ipynb"},
+]} />
+
+Melanjutkan contoh dari [bab sebelumnya](/course/chapter2), berikut adalah cara kita melatih classifier urutan pada satu batch:
+
+```python
+import torch
+from torch.optim import AdamW
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+# Sama seperti sebelumnya
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+sequences = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "This course is amazing!",
+]
+batch = tokenizer(sequences, padding=True, truncation=True, return_tensors="pt")
+
+# Ini yang baru
+batch["labels"] = torch.tensor([1, 1])
+
+optimizer = AdamW(model.parameters())
+loss = model(**batch).loss
+loss.backward()
+optimizer.step()
+```
+
+Tentu saja, hanya melatih model dengan dua kalimat tidak akan memberikan hasil yang baik. Untuk hasil yang lebih baik, Anda perlu menyiapkan dataset yang lebih besar.
+
+Di bagian ini kita akan menggunakan dataset MRPC (Microsoft Research Paraphrase Corpus) sebagai contoh, yang diperkenalkan dalam sebuah [makalah](https://www.aclweb.org/anthology/I05-5002.pdf) oleh William B. Dolan dan Chris Brockett. Dataset ini terdiri dari 5.801 pasangan kalimat, dengan label yang menunjukkan apakah keduanya merupakan parafrasa (yaitu, apakah kedua kalimat memiliki makna yang sama). Dataset ini dipilih karena ukurannya kecil sehingga mudah untuk digunakan dalam eksperimen pelatihan.
+
+### Memuat Dataset dari Hub[[loading-a-dataset-from-the-hub]]
+
+<Youtube id="_BZearw7f0w"/>
+
+Hub tidak hanya berisi model; ia juga memiliki banyak dataset dalam berbagai bahasa. Anda dapat menjelajahi dataset [di sini](https://huggingface.co/datasets), dan kami sarankan Anda mencoba memuat dan memproses dataset baru setelah menyelesaikan bagian ini (lihat dokumentasi umum [di sini](https://huggingface.co/docs/datasets/loading)). Untuk saat ini, kita fokus pada dataset MRPC! Dataset ini adalah salah satu dari 10 dataset dalam [benchmark GLUE](https://gluebenchmark.com/), yang digunakan untuk mengukur performa model ML dalam 10 tugas klasifikasi teks berbeda.
+
+Modul 🤗 Datasets menyediakan perintah sederhana untuk mengunduh dan menyimpan dataset dari Hub. Kita bisa mengunduh dataset MRPC seperti ini:
+
+<Tip>
+
+💡 **Sumber Tambahan**: Untuk teknik dan contoh pemuatan dataset lainnya, lihat [dokumentasi 🤗 Datasets](https://huggingface.co/docs/datasets/).
+
+</Tip> 
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("glue", "mrpc")
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 3668
+    })
+    validation: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 408
+    })
+    test: Dataset({
+        features: ['sentence1', 'sentence2', 'label', 'idx'],
+        num_rows: 1725
+    })
+})
+```
+
+Seperti yang Anda lihat, kita mendapatkan objek `DatasetDict` yang berisi data pelatihan, validasi, dan pengujian. Masing-masing memiliki kolom (`sentence1`, `sentence2`, `label`, dan `idx`) dan sejumlah baris (misalnya, 3.668 pasangan kalimat di pelatihan, 408 di validasi, dan 1.725 di pengujian).
+
+<Tip>
+
+Perintah ini akan mengunduh dan menyimpan dataset secara lokal di *~/.cache/huggingface/datasets* secara default. Ingat dari Bab 2 bahwa Anda dapat menyesuaikan folder cache dengan mengatur variabel lingkungan `HF_HOME`.
+
+</Tip>
+
+Kita dapat mengakses setiap pasangan kalimat dengan melakukan indexing seperti dictionary:
+
+```py
+raw_train_dataset = raw_datasets["train"]
+raw_train_dataset[0]
+```
+
+```python out
+{'idx': 0,
+ 'label': 1,
+ 'sentence1': 'Amrozi accused his brother , whom he called " the witness " , of deliberately distorting his evidence .',
+ 'sentence2': 'Referring to him as only " the witness " , Amrozi accused his brother of deliberately distorting his evidence .'}
+```
+
+Kita dapat melihat bahwa label-labelnya sudah berupa bilangan bulat, jadi kita tidak perlu melakukan praproses pada bagian tersebut. Untuk mengetahui bilangan bulat mana yang sesuai dengan label tertentu, kita bisa memeriksa `features` dari `raw_train_dataset` kita. Ini akan memberi tahu kita tipe dari setiap kolom:
+
+```py
+raw_train_dataset.features
+```
+
+```python out
+{'sentence1': Value(dtype='string', id=None),
+ 'sentence2': Value(dtype='string', id=None),
+ 'label': ClassLabel(num_classes=2, names=['not_equivalent', 'equivalent'], names_file=None, id=None),
+ 'idx': Value(dtype='int32', id=None)}
+```
+
+Di balik layar, `label` bertipe `ClassLabel`, dan pemetaan dari bilangan bulat ke nama label disimpan di dalam folder *names*. `0` berarti `not_equivalent`, dan `1` berarti `equivalent`.
+
+<Tip>
+
+✏️ **Coba Sendiri!** Lihat elemen ke-15 dari data pelatihan dan elemen ke-87 dari data validasi. Apa label mereka?
+
+</Tip>
+
+### Pra-pemrosesan Dataset[[preprocessing-a-dataset]]
+
+<Youtube id="0u3ioSwev3s"/>
+
+Untuk melakukan praproses pada dataset, kita perlu mengubah teks menjadi angka yang dapat dipahami oleh model. Seperti yang telah Anda lihat di [bab sebelumnya](/course/chapter2), hal ini dilakukan dengan menggunakan tokenizer. Kita dapat memberikan satu kalimat atau daftar kalimat ke tokenizer, sehingga kita bisa langsung melakukan tokenisasi pada semua kalimat pertama dan semua kalimat kedua dari setiap pasangan seperti ini:
+
+```py
+from transformers import AutoTokenizer
+
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+tokenized_sentences_1 = tokenizer(raw_datasets["train"]["sentence1"])
+tokenized_sentences_2 = tokenizer(raw_datasets["train"]["sentence2"])
+```
+
+<Tip>
+
+💡 **Penjelasan Lanjutan**: Untuk teknik tokenisasi lanjutan, kunjungi [dokumentasi 🤗 Tokenizers](https://huggingface.co/docs/transformers/main/en/tokenizer_summary) dan [panduan tokenisasi di cookbook](https://huggingface.co/learn/cookbook/en/advanced_rag#tokenization-strategies).
+
+</Tip>
+
+Namun, kita tidak bisa langsung memberikan dua kalimat ke model dan mendapatkan prediksi apakah kedua kalimat tersebut merupakan parafrase atau tidak. Kita perlu menangani kedua kalimat tersebut sebagai pasangan, dan menerapkan praproses yang sesuai. Untungnya, tokenizer juga dapat menerima pasangan kalimat dan mempersiapkannya sesuai dengan yang diharapkan oleh model BERT kita:
+
+```py
+inputs = tokenizer("This is the first sentence.", "This is the second one.")
+inputs
+```
+
+```python out
+{ 
+  'input_ids': [101, 2023, 2003, 1996, 2034, 6251, 1012, 102, 2023, 2003, 1996, 2117, 2028, 1012, 102],
+  'token_type_ids': [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+  'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+}
+```
+
+Kita telah membahas kunci `input_ids` dan `attention_mask` di [Bab 2](/course/chapter2), tetapi kita menunda pembahasan tentang `token_type_ids`. Dalam contoh ini, `token_type_ids` memberi tahu model bagian mana dari input yang merupakan kalimat pertama dan mana yang merupakan kalimat kedua.
+
+<Tip>
+
+✏️ **Coba Sendiri!** Ambil elemen ke-15 dari data pelatihan dan tokenisasi kalimatnya secara terpisah serta sebagai pasangan. Apa perbedaannya?
+
+</Tip>
+
+Jika kita mendekode ID di dalam `input_ids` kembali menjadi kata-kata:
+
+```py
+tokenizer.convert_ids_to_tokens(inputs["input_ids"])
+```
+
+Kita akan mendapatkan:
+
+```python out
+['[CLS]', 'this', 'is', 'the', 'first', 'sentence', '.', '[SEP]', 'this', 'is', 'the', 'second', 'one', '.', '[SEP]']
+```
+
+Jadi kita melihat bahwa model mengharapkan input dalam format `[CLS] kalimat1 [SEP] kalimat2 [SEP]` ketika terdapat dua kalimat. Menyesuaikan ini dengan `token_type_ids` memberi kita:
+
+```python out
+['[CLS]', 'this', 'is', 'the', 'first', 'sentence', '.', '[SEP]', 'this', 'is', 'the', 'second', 'one', '.', '[SEP]']
+[      0,      0,    0,     0,       0,          0,   0,       0,      1,    1,     1,        1,     1,   1,       1]
+```
+
+Seperti yang Anda lihat, bagian input yang sesuai dengan `[CLS] kalimat1 [SEP]` semuanya memiliki token type ID `0`, sementara bagian lainnya, yang sesuai dengan `kalimat2 [SEP]`, semuanya memiliki token type ID `1`.
+
+Perlu dicatat bahwa jika Anda memilih checkpoint yang berbeda, Anda mungkin tidak akan mendapatkan `token_type_ids` dalam hasil tokenisasi (misalnya, `token_type_ids` tidak disediakan jika Anda menggunakan model DistilBERT). `token_type_ids` hanya dikembalikan jika model mengetahui cara menggunakannya, yaitu jika model tersebut telah melihatnya selama pelatihan pralatih.
+
+Dalam hal ini, BERT telah dilatih sebelumnya dengan `token_type_ids`, dan selain tujuan masked language modeling yang telah kita bahas di [Bab 1](/course/chapter1), model ini juga memiliki tujuan tambahan yang disebut _next sentence prediction_. Tujuan dari tugas ini adalah untuk memodelkan hubungan antara pasangan kalimat.
+
+Dalam next sentence prediction, model diberikan pasangan kalimat (dengan token yang secara acak dimasker) dan diminta untuk memprediksi apakah kalimat kedua mengikuti kalimat pertama. Untuk membuat tugas ini tidak sepele, setengah dari waktu pasangan kalimat berasal dari dokumen yang sama secara berurutan, dan setengah lainnya berasal dari dokumen yang berbeda.
+
+Secara umum, Anda tidak perlu khawatir apakah ada `token_type_ids` dalam input yang telah ditokenisasi: selama Anda menggunakan checkpoint yang sama untuk tokenizer dan model, semuanya akan berjalan baik karena tokenizer tahu apa yang perlu diberikan ke modelnya.
+
+Sekarang setelah kita melihat bagaimana tokenizer dapat menangani satu pasangan kalimat, kita bisa menggunakannya untuk melakukan tokenisasi pada seluruh dataset: seperti di [bab sebelumnya](/course/chapter2), kita dapat memberikan daftar pasangan kalimat ke tokenizer dengan memberikan daftar kalimat pertama dan kemudian daftar kalimat kedua. Ini juga kompatibel dengan opsi padding dan truncation yang telah kita bahas di [Bab 2](/course/chapter2). Jadi, salah satu cara untuk melakukan praproses pada dataset pelatihan adalah:
+
+
+```py
+tokenized_dataset = tokenizer(
+    raw_datasets["train"]["sentence1"],
+    raw_datasets["train"]["sentence2"],
+    padding=True,
+    truncation=True,
+)
+```
+
+Pendekatan ini bekerja dengan baik, tetapi memiliki kelemahan yaitu mengembalikan sebuah dictionary (dengan kunci seperti `input_ids`, `attention_mask`, dan `token_type_ids`, serta nilai berupa daftar dari daftar). Selain itu, cara ini hanya akan berhasil jika Anda memiliki cukup RAM untuk menyimpan seluruh dataset selama proses tokenisasi (sementara dataset dari pustaka 🤗 Datasets disimpan sebagai berkas [Apache Arrow](https://arrow.apache.org/) di disk, sehingga hanya sampel yang Anda minta saja yang dimuat ke dalam memori).
+
+Untuk menjaga data tetap dalam bentuk dataset, kita akan menggunakan metode [`Dataset.map()`](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.map). Metode ini juga memberi kita fleksibilitas tambahan jika kita ingin melakukan praproses lebih dari sekadar tokenisasi. Metode `map()` bekerja dengan menerapkan sebuah fungsi pada setiap elemen dalam dataset, jadi mari kita definisikan sebuah fungsi untuk melakukan tokenisasi pada input kita:
+
+```py
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+```
+
+Fungsi ini menerima sebuah dictionary (seperti item dalam dataset kita) dan mengembalikan dictionary baru dengan kunci `input_ids`, `attention_mask`, dan `token_type_ids`. Perlu dicatat bahwa fungsi ini juga akan berfungsi jika dictionary `example` berisi beberapa sampel sekaligus (setiap kunci berisi daftar kalimat), karena `tokenizer` dapat menangani daftar pasangan kalimat, seperti yang telah kita lihat sebelumnya. Ini memungkinkan kita menggunakan opsi `batched=True` saat memanggil `map()`, yang secara signifikan akan mempercepat proses tokenisasi. `tokenizer` ini didukung oleh tokenizer yang ditulis dalam bahasa Rust dari pustaka [🤗 Tokenizers](https://github.com/huggingface/tokenizers). Tokenizer ini bisa sangat cepat, tetapi hanya jika kita memberinya banyak input sekaligus.
+
+Perhatikan bahwa kita belum menyertakan argumen `padding` dalam fungsi tokenisasi kita saat ini. Hal ini karena melakukan padding pada semua sampel hingga panjang maksimum tidaklah efisien: akan lebih baik jika kita melakukan padding saat membangun sebuah batch, karena kita hanya perlu menyesuaikan padding hingga panjang maksimum dalam batch tersebut, bukan panjang maksimum dalam seluruh dataset. Ini bisa menghemat banyak waktu dan daya komputasi terutama saat panjang input sangat bervariasi!
+
+<Tip>
+
+📚 **Tips Performa**: Pelajari lebih lanjut tentang teknik pemrosesan data yang efisien di [panduan performa 🤗 Datasets](https://huggingface.co/docs/datasets/about_arrow).
+
+</Tip>
+
+Berikut adalah cara kita menerapkan fungsi tokenisasi pada seluruh dataset sekaligus. Kita menggunakan `batched=True` dalam pemanggilan `map`, agar fungsi diterapkan pada beberapa elemen dataset sekaligus, bukan satu per satu. Ini memungkinkan praproses berjalan lebih cepat.
+
+```py
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+tokenized_datasets
+```
+
+Cara pustaka 🤗 Datasets menerapkan proses ini adalah dengan menambahkan field baru ke dalam dataset, satu untuk setiap kunci dalam dictionary yang dikembalikan oleh fungsi praproses:
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 3668
+    })
+    validation: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 408
+    })
+    test: Dataset({
+        features: ['attention_mask', 'idx', 'input_ids', 'label', 'sentence1', 'sentence2', 'token_type_ids'],
+        num_rows: 1725
+    })
+})
+```
+
+Anda bahkan bisa menggunakan multiprocessing saat menerapkan fungsi praproses dengan `map()` dengan menambahkan argumen `num_proc`. Kami tidak melakukannya di sini karena pustaka 🤗 Tokenizers sudah menggunakan beberapa thread untuk melakukan tokenisasi sampel dengan lebih cepat. Namun, jika Anda tidak menggunakan tokenizer cepat yang didukung oleh pustaka tersebut, penggunaan multiprocessing ini bisa mempercepat proses praproses Anda.
+
+Fungsi `tokenize_function` kita mengembalikan sebuah dictionary dengan kunci `input_ids`, `attention_mask`, dan `token_type_ids`, sehingga ketiga field tersebut akan ditambahkan ke semua bagian (split) dari dataset kita. Perlu dicatat bahwa kita juga bisa mengganti field yang sudah ada jika fungsi praproses kita mengembalikan nilai baru untuk kunci yang sudah ada dalam dataset yang kita terapkan `map()` padanya.
+
+Hal terakhir yang perlu kita lakukan adalah melakukan padding pada semua contoh hingga panjang elemen terpanjang saat kita menggabungkan elemen-elemen ke dalam batch — teknik ini disebut *padding dinamis* (*dynamic padding*).
+
+#### Padding Dinamis[[dynamic-padding]]
+
+<Youtube id="7q5NyFT8REg"/>
+
+Fungsi yang bertanggung jawab untuk menggabungkan sampel-sampel ke dalam sebuah batch disebut *collate function*. Ini adalah argumen yang bisa Anda berikan saat membangun sebuah `DataLoader`, dengan fungsi default yang hanya akan mengonversi sampel Anda menjadi tensor PyTorch dan menggabungkannya (secara rekursif jika elemen Anda berupa list, tuple, atau dictionary). Namun, ini tidak akan bisa dilakukan dalam kasus kita karena input yang kita miliki tidak semuanya memiliki ukuran yang sama. Kita sengaja menunda proses padding agar hanya dilakukan seperlunya pada setiap batch, guna menghindari input yang terlalu panjang dengan banyak padding. Ini akan mempercepat proses pelatihan secara signifikan, tetapi perlu dicatat bahwa jika Anda melakukan pelatihan di TPU, ini bisa menimbulkan masalah — TPU lebih menyukai bentuk input yang tetap (fixed shapes), meskipun itu berarti harus menambahkan padding ekstra.
+
+<Tip>
+
+🚀 **Panduan Optimasi**: Untuk detail lebih lanjut tentang mengoptimalkan performa pelatihan, termasuk strategi padding dan pertimbangan saat menggunakan TPU, lihat [dokumentasi performa 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/performance).
+
+</Tip>
+
+Untuk menerapkannya dalam praktik, kita harus mendefinisikan sebuah *collate function* yang akan menerapkan jumlah padding yang tepat pada item-item dataset yang ingin kita batch-kan bersama. Untungnya, pustaka 🤗 Transformers menyediakan fungsi seperti itu melalui `DataCollatorWithPadding`. Fungsi ini menerima sebuah tokenizer saat diinisialisasi (untuk mengetahui token padding yang digunakan, dan apakah model mengharapkan padding di sebelah kiri atau kanan input), dan akan melakukan semua yang Anda butuhkan:
+
+```py
+from transformers import DataCollatorWithPadding
+
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+Contoh padding:
+
+```py
+samples = tokenized_datasets["train"][:8]
+samples = {k: v for k, v in samples.items() if k not in ["idx", "sentence1", "sentence2"]}
+[len(x) for x in samples["input_ids"]]
+```
+
+```python out
+[50, 59, 47, 67, 59, 50, 62, 32]
+```
+
+Tidak mengejutkan, kita mendapatkan sampel dengan panjang yang bervariasi, dari 32 hingga 67. Padding dinamis berarti semua sampel dalam batch ini akan dipadkan hingga panjang 67, yaitu panjang maksimum di dalam batch tersebut. Tanpa padding dinamis, semua sampel harus dipadkan hingga panjang maksimum dari seluruh dataset, atau hingga panjang maksimum yang dapat diterima oleh model. Mari kita periksa kembali apakah `data_collator` kita benar-benar melakukan padding dinamis dengan benar:
+
+```py
+batch = data_collator(samples)
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 67]),
+ 'input_ids': torch.Size([8, 67]),
+ 'token_type_ids': torch.Size([8, 67]),
+ 'labels': torch.Size([8])}
+```
+
+Terlihat bagus! Sekarang, setelah kita berhasil mengubah teks mentah menjadi batch yang bisa diproses oleh model, kita siap untuk melakukan fine-tuning!
+
+<Tip>
+
+✏️ **Coba Sendiri!** Ulangi proses pra-pemrosesan pada dataset GLUE SST-2. Dataset ini sedikit berbeda karena terdiri dari kalimat tunggal, bukan pasangan kalimat, tetapi sisanya akan terlihat serupa. Untuk tantangan yang lebih sulit, coba tulis fungsi pra-pemrosesan yang bisa digunakan untuk semua tugas dalam GLUE.
+
+📖 **Latihan Tambahan**: Lihat contoh langsung di [🤗 Transformers examples](https://huggingface.co/docs/transformers/main/en/notebooks).
+
+</Tip>
+
+Sempurna! Sekarang setelah kita memproses data kita menggunakan praktik terbaik terbaru dari pustaka 🤗 Datasets, kita siap untuk melatih model menggunakan API Trainer modern. Bagian selanjutnya akan menunjukkan cara melakukan fine-tuning model secara efektif menggunakan fitur dan optimasi terbaru dalam ekosistem Hugging Face.
+
+## Kuis Bagian[[section-quiz]]
+
+Uji pemahamanmu tentang konsep pemrosesan data:
+
+### 1. Apa keuntungan utama menggunakan `Dataset.map()` dengan `batched=True`?
+
+<Question
+  choices={[
+    {
+      text: "Itu menggunakan lebih sedikit memori.",
+      explain: "Meskipun bisa lebih efisien dalam penggunaan memori, ini bukan keuntungan utamanya."
+    },
+    {
+      text: "Itu memproses beberapa contoh sekaligus, membuat tokenisasi jauh lebih cepat.",
+      explain: "Benar! Memproses dalam bentuk batch memungkinkan tokenizer cepat bekerja lebih efisien, secara signifikan meningkatkan kecepatan.",
+      correct: true
+    },
+    {
+      text: "Itu secara otomatis menangani padding untuk Anda.",
+      explain: "Batching tidak secara otomatis menangani padding — hal ini dilakukan oleh data collator."
+    },
+    {
+      text: "Itu mengonversi data menjadi tensor PyTorch.",
+      explain: "Konversi tensor dilakukan saat Anda mengatur format, bukan saat melakukan mapping batch."
+    }
+  ]}
+/>
+
+### 2. Mengapa kita menggunakan padding dinamis daripada mem-pad semua urutan ke panjang maksimum dalam dataset?
+
+<Question
+  choices={[
+    {
+      text: "Padding dinamis diperlukan oleh arsitektur model.",
+      explain: "Tidak, model dapat menangani padding tetap maupun padding dinamis."
+    },
+    {
+      text: "Itu mengurangi beban komputasi dengan hanya padding ke panjang maksimum dalam setiap batch.",
+      explain: "Benar! Padding dinamis menghindari komputasi yang tidak perlu dengan hanya padding hingga panjang maksimum dalam batch, bukan keseluruhan dataset.",
+      correct: true
+    },
+    {
+      text: "Itu meningkatkan akurasi model.",
+      explain: "Strategi padding tidak secara langsung memengaruhi akurasi model."
+    },
+    {
+      text: "Itu wajib digunakan saat memakai DataCollatorWithPadding.",
+      explain: "DataCollatorWithPadding mendukung padding dinamis, tapi Anda tetap bisa menggunakan padding tetap jika diinginkan."
+    }
+  ]}
+/>
+
+### 3. Apa yang direpresentasikan oleh field `token_type_ids` dalam tokenisasi BERT?
+
+<Question
+  choices={[
+    {
+      text: "Posisi setiap token dalam urutan.",
+      explain: "Itu adalah embeddings posisi, bukan token_type_ids."
+    },
+    {
+      text: "Kalimat mana yang dimiliki setiap token saat memproses pasangan kalimat.",
+      explain: "Benar! token_type_ids membedakan antara kalimat pertama (0) dan kedua (1) dalam tugas pasangan kalimat.",
+      correct: true
+    },
+    {
+      text: "Attention mask untuk setiap token.",
+      explain: "Attention mask adalah field terpisah yang menunjukkan token mana yang harus diperhatikan."
+    },
+    {
+      text: "ID kosakata dari setiap token.",
+      explain: "Itu adalah field input_ids, bukan token_type_ids."
+    }
+  ]}
+/>
+
+### 4. Saat memuat dataset dengan `load_dataset('glue', 'mrpc')`, apa arti dari argumen kedua?
+
+<Question
+  choices={[
+    {
+      text: "Versi dataset yang akan dimuat.",
+      explain: "Spesifikasi versi menggunakan parameter yang berbeda."
+    },
+    {
+      text: "Tugas atau subset spesifik dalam benchmark GLUE.",
+      explain: "Benar! MRPC adalah salah satu tugas dalam koleksi benchmark GLUE.",
+      correct: true
+    },
+    {
+      text: "Split dataset (train/validation/test).",
+      explain: "Split diakses setelah pemuatan, bukan ditentukan dalam pemanggilan load_dataset."
+    },
+    {
+      text: "Format data yang akan dikembalikan.",
+      explain: "Format diatur menggunakan metode set_format() setelah pemuatan."
+    }
+  ]}
+/>
+
+### 5. Apa tujuan dari menghapus kolom seperti 'sentence1' dan 'sentence2' sebelum pelatihan?
+
+<Question
+  choices={[
+    {
+      text: "Untuk menghemat memori selama pelatihan.",
+      explain: "Meskipun dapat menghemat sedikit memori, ini bukan alasan utamanya."
+    },
+    {
+      text: "Model tidak mengharapkan kolom teks mentah ini dan akan menghasilkan error.",
+      explain: "Benar! Model mengharapkan tensor numerik, bukan string teks mentah. Menyimpan kolom teks dapat menyebabkan error.",
+      correct: true
+    },
+    {
+      text: "Kolom-kolom ini tidak diperlukan untuk evaluasi.",
+      explain: "Meskipun benar, alasan utamanya adalah karena model tidak bisa memproses teks mentah."
+    },
+    {
+      text: "Ini secara signifikan meningkatkan kecepatan pelatihan.",
+      explain: "Peningkatan kecepatan minim, tapi menghindari error akibat tipe data yang tidak cocok jauh lebih penting."
+    }
+  ]}
+/>
+
+<Tip>
+
+💡 **Inti Penting**:
+- Gunakan `batched=True` dengan `Dataset.map()` untuk mempercepat pra-pemrosesan secara signifikan
+- Padding dinamis dengan `DataCollatorWithPadding` lebih efisien dibandingkan padding dengan panjang tetap
+- Selalu pra-proses data Anda agar sesuai dengan ekspektasi model (tensor numerik, nama kolom yang benar)
+- Pustaka 🤗 Datasets menyediakan alat-alat canggih untuk memproses data secara efisien dalam skala besar
+
+</Tip>
