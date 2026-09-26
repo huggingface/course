@@ -1,0 +1,857 @@
+# ऑप्टिमाइज्ड इन्फरन्स डिप्लॉयमेंट
+
+या विभागात, आपण LLM डिप्लॉयमेंट्सना ऑप्टिमाइझ करण्यासाठी प्रगत फ्रेमवर्क्सचा शोध घेणार आहोत: Text Generation Inference (TGI), vLLM, आणि llama.cpp. या अ‍ॅप्लिकेशन्सचा वापर प्रामुख्याने प्रोडक्शन एन्व्हायर्नमेंट्समध्ये वापरकर्त्यांना LLMs सर्व्ह करण्यासाठी केला जातो. हा विभाग या फ्रेमवर्क्सना एकाच मशीनवर इन्फरन्ससाठी कसे वापरायचे यापेक्षा प्रोडक्शनमध्ये कसे डिप्लॉय करायचे यावर लक्ष केंद्रित करतो.
+
+आपण या टूल्सद्वारे इन्फरन्स कार्यक्षमता कशी वाढवली जाते आणि लार्ज लँग्वेज मॉडेल्सचे प्रोडक्शन डिप्लॉयमेंट्स कसे सुलभ केले जातात याबद्दल जाणून घेऊ.
+
+## फ्रेमवर्क निवड मार्गदर्शक
+
+TGI, vLLM, आणि llama.cpp हे समान उद्देश पूर्ण करतात परंतु त्यांची वेगळी वैशिष्ट्ये आहेत जी त्यांना वेगवेगळ्या वापर प्रकरणांसाठी अधिक योग्य बनवतात. चला त्यांच्यातील मुख्य फरक पाहूया, कामगिरी आणि इंटिग्रेशनवर लक्ष केंद्रित करून.
+
+### मेमरी व्यवस्थापन आणि कामगिरी
+
+**TGI** प्रोडक्शनमध्ये स्थिर आणि अंदाज करण्यायोग्य असण्यासाठी डिझाइन केलेले आहे, मेमरी वापर सुसंगत ठेवण्यासाठी निश्चित सिक्वेन्स लांबी वापरते. TGI Flash Attention 2 आणि सतत बॅचिंग (continuous batching) तंत्रांचा वापर करून मेमरी व्यवस्थापित करते. याचा अर्थ ते अटेंशन गणना खूप कार्यक्षमतेने प्रक्रिया करू शकते आणि GPU ला सतत काम पुरवून व्यस्त ठेवू शकते. आवश्यकतेनुसार प्रणाली मॉडेलचे भाग CPU आणि GPU दरम्यान हलवू शकते, ज्यामुळे मोठ्या मॉडेल्सना हाताळण्यास मदत होते.
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/tgi/flash-attn.png" alt="Flash Attention" />
+
+<Tip title="Flash Attention कसे कार्य करते">
+
+Flash Attention हे एक तंत्र आहे जे मेमरी बँडविड्थ अडथळ्यांचे निराकरण करून ट्रान्सफॉर्मर मॉडेल्समधील अटेंशन यंत्रणा ऑप्टिमाइझ करते. आधी [प्रकरण 1.8](/course/chapter1/8) मध्ये चर्चा केल्याप्रमाणे, अटेंशन यंत्रणेची क्वाड्रॅटिक कॉम्प्लेक्सिटी आणि मेमरी वापर असतो, ज्यामुळे लांब सिक्वेन्सेससाठी ती अकार्यक्षम ठरते.
+
+मुख्य नावीन्य म्हणजे ते High Bandwidth Memory (HBM) आणि जलद SRAM कॅश दरम्यान मेमरी ट्रान्सफर्स कसे व्यवस्थापित करते यात आहे. पारंपरिक अटेंशन HBM आणि SRAM दरम्यान वारंवार डेटा ट्रान्सफर करते, ज्यामुळे GPU निष्क्रिय राहून अडथळे निर्माण होतात. Flash Attention डेटा एकदाच SRAM मध्ये लोड करते आणि सर्व गणना तिथेच करते, ज्यामुळे महागडे मेमरी ट्रान्सफर्स कमीत कमी होतात.
+
+प्रशिक्षणादरम्यान फायदे सर्वात लक्षणीय असले तरी, Flash Attention चा कमी झालेला VRAM वापर आणि सुधारित कार्यक्षमता इन्फरन्ससाठी देखील मौल्यवान ठरते, ज्यामुळे जलद आणि अधिक स्केलेबल LLM सर्व्हिंग शक्य होते.
+
+</Tip>
+
+**vLLM** PagedAttention वापरून वेगळा दृष्टिकोन घेते. ज्याप्रमाणे संगणक त्याची मेमरी पेजेसमध्ये व्यवस्थापित करतो, त्याचप्रमाणे vLLM मॉडेलच्या मेमरीला लहान ब्लॉक्समध्ये विभागते. या हुशार प्रणालीमुळे ते वेगवेगळ्या आकाराच्या रिक्वेस्ट्सना अधिक लवचिकपणे हाताळू शकते आणि मेमरी स्पेस वाया घालवत नाही. वेगवेगळ्या रिक्वेस्ट्समध्ये मेमरी शेअर करण्यात हे विशेषतः चांगले आहे आणि मेमरी फ्रॅगमेंटेशन कमी करते, ज्यामुळे संपूर्ण प्रणाली अधिक कार्यक्षम बनते.
+
+<Tip title="PagedAttention कसे कार्य करते">
+
+PagedAttention हे एक तंत्र आहे जे LLM इन्फरन्समधील आणखी एका महत्त्वाच्या अडथळ्याचे निराकरण करते: KV कॅश मेमरी व्यवस्थापन. [प्रकरण 1.8](/course/chapter1/8) मध्ये चर्चा केल्याप्रमाणे, मजकूर निर्मितीदरम्यान, मॉडेल पुनरावृत्ती होणाऱ्या गणना कमी करण्यासाठी प्रत्येक तयार झालेल्या टोकनसाठी अटेंशन कीज आणि व्हॅल्यूज (KV कॅश) साठवते. विशेषतः लांब सिक्वेन्सेस किंवा अनेक समवर्ती रिक्वेस्ट्ससह KV कॅश प्रचंड मोठे होऊ शकते.
+
+vLLM चे मुख्य नावीन्य ते हा कॅश कसे व्यवस्थापित करते यात आहे:
+
+1. **मेमरी पेजिंग**: KV कॅशला एक मोठा ब्लॉक मानण्याऐवजी, त्याचे निश्चित आकाराच्या "पेजेस" मध्ये विभाजन केले जाते (ऑपरेटिंग सिस्टम्समधील व्हर्च्युअल मेमरीसारखे).
+2. **नॉन-कॉन्टिग्युअस स्टोरेज**: पेजेसना GPU मेमरीमध्ये सलग साठवण्याची गरज नसते, ज्यामुळे अधिक लवचिक मेमरी वाटप शक्य होते.
+3. **पेज टेबल व्यवस्थापन**: एक पेज टेबल कोणती पेजेस कोणत्या सिक्वेन्सशी संबंधित आहेत याचा मागोवा ठेवते, ज्यामुळे कार्यक्षम शोध आणि प्रवेश शक्य होतो.
+4. **मेमरी शेअरिंग**: पॅरलल सॅम्पलिंगसारख्या ऑपरेशन्ससाठी, प्रॉम्प्टचे KV कॅश साठवणारी पेजेस अनेक सिक्वेन्सेसमध्ये शेअर केली जाऊ शकतात.
+
+PagedAttention दृष्टिकोन पारंपरिक पद्धतींच्या तुलनेत 24 पट जास्त थ्रूपुटपर्यंत नेऊ शकतो, ज्यामुळे तो प्रोडक्शन LLM डिप्लॉयमेंट्ससाठी गेम-चेंजर ठरतो. PagedAttention कसे कार्य करते याबद्दल अधिक सखोलपणे जाणून घ्यायचे असल्यास, तुम्ही [vLLM डॉक्युमेंटेशनमधील मार्गदर्शक](https://docs.vllm.ai/en/latest/design/kernel/paged_attention.html) वाचू शकता.
+
+</Tip>
+
+**llama.cpp** हे मूळतः कन्झ्युमर हार्डवेअरवर LLaMA मॉडेल्स चालवण्यासाठी डिझाइन केलेले अत्यंत ऑप्टिमाइझ केलेले C/C++ इम्प्लिमेंटेशन आहे. ते पर्यायी GPU प्रवेगासह CPU कार्यक्षमतेवर लक्ष केंद्रित करते आणि संसाधन-मर्यादित वातावरणांसाठी आदर्श आहे. llama.cpp चांगली कामगिरी राखत मॉडेलचा आकार आणि मेमरी आवश्यकता कमी करण्यासाठी क्वांटायझेशन तंत्रांचा वापर करते. ते वेगवेगळ्या CPU आर्किटेक्चर्ससाठी ऑप्टिमाइझ केलेले कर्नल्स इम्प्लिमेंट करते आणि कार्यक्षम टोकन जनरेशनसाठी मूलभूत KV कॅश व्यवस्थापन सपोर्ट करते.
+
+<Tip title="llama.cpp क्वांटायझेशन कसे कार्य करते">
+
+llama.cpp मधील क्वांटायझेशन मॉडेल वेट्सची अचूकता 32-बिट किंवा 16-बिट फ्लोटिंग पॉइंटवरून 8-बिट इंटिजर्स (INT8), 4-बिट, किंवा त्याहूनही कमी अचूकतेच्या फॉरमॅट्सपर्यंत कमी करते. यामुळे किमान गुणवत्ता हानीसह मेमरी वापर लक्षणीयरीत्या कमी होतो आणि इन्फरन्स गती सुधारते.
+
+llama.cpp मधील मुख्य क्वांटायझेशन वैशिष्ट्यांमध्ये समाविष्ट आहे:
+1. **अनेक क्वांटायझेशन लेव्हल्स**: 8-बिट, 4-बिट, 3-बिट, आणि अगदी 2-बिट क्वांटायझेशन सपोर्ट करते
+2. **GGML/GGUF फॉरमॅट**: क्वांटाइज्ड इन्फरन्ससाठी ऑप्टिमाइझ केलेले कस्टम टेन्सर फॉरमॅट्स वापरते
+3. **मिश्र अचूकता**: मॉडेलच्या वेगवेगळ्या भागांना वेगवेगळे क्वांटायझेशन लेव्हल्स लागू करू शकते
+4. **हार्डवेअर-विशिष्ट ऑप्टिमायझेशन्स**: वेगवेगळ्या CPU आर्किटेक्चर्ससाठी (AVX2, AVX-512, NEON) ऑप्टिमाइझ केलेले कोड पाथ्स समाविष्ट करते
+
+हा दृष्टिकोन मर्यादित मेमरी असलेल्या कन्झ्युमर हार्डवेअरवर अब्जावधी-पॅरामीटर मॉडेल्स चालवणे शक्य करतो, ज्यामुळे तो स्थानिक डिप्लॉयमेंट्स आणि एज डिव्हाइसेससाठी परिपूर्ण ठरतो.
+
+</Tip>
+
+### डिप्लॉयमेंट आणि इंटिग्रेशन
+
+चला फ्रेमवर्क्समधील डिप्लॉयमेंट आणि इंटिग्रेशन फरकांकडे वळूया.
+
+**TGI** त्याच्या प्रोडक्शन-रेडी वैशिष्ट्यांसह एंटरप्राइझ-स्तरीय डिप्लॉयमेंटमध्ये उत्कृष्ट आहे. ते Kubernetes साठी अंगभूत सपोर्टसह येते आणि प्रोडक्शनमध्ये चालवण्यासाठी आवश्यक असलेले सर्वकाही समाविष्ट करते, जसे की Prometheus आणि Grafana द्वारे मॉनिटरिंग, स्वयंचलित स्केलिंग, आणि सर्वसमावेशक सुरक्षा वैशिष्ट्ये. प्रणालीमध्ये एंटरप्राइझ-दर्जाचे लॉगिंग आणि तुमचे डिप्लॉयमेंट सुरक्षित आणि स्थिर ठेवण्यासाठी कंटेंट फिल्टरिंग आणि रेट लिमिटिंग सारखे विविध संरक्षणात्मक उपाय देखील समाविष्ट आहेत.
+
+**vLLM** डिप्लॉयमेंटसाठी अधिक लवचिक, डेव्हलपर-अनुकूल दृष्टिकोन घेते. ते Python च्या गाभ्यासह तयार केले गेले आहे आणि तुमच्या विद्यमान अ‍ॅप्लिकेशन्समध्ये OpenAI च्या API ला सहजपणे बदलू शकते. फ्रेमवर्क कच्च्या कामगिरीवर लक्ष केंद्रित करते आणि तुमच्या विशिष्ट गरजांनुसार कस्टमाइझ केले जाऊ शकते. क्लस्टर व्यवस्थापित करण्यासाठी हे Ray सोबत विशेषतः चांगले काम करते, ज्यामुळे तुम्हाला उच्च कामगिरी आणि अनुकूलतेची गरज असताना हा एक उत्तम पर्याय ठरतो.
+
+**llama.cpp** साधेपणा आणि पोर्टेबिलिटीला प्राधान्य देते. त्याची सर्व्हर इम्प्लिमेंटेशन हलकी आहे आणि शक्तिशाली सर्व्हर्सपासून ते कन्झ्युमर लॅपटॉप्स आणि काही उच्च-दर्जाच्या मोबाइल डिव्हाइसेसपर्यंत विविध हार्डवेअरवर चालू शकते. किमान अवलंबित्व आणि साधा C/C++ कोर असल्यामुळे, Python फ्रेमवर्क्स इन्स्टॉल करणे आव्हानात्मक असलेल्या वातावरणांमध्ये देखील ते सहजपणे डिप्लॉय करता येते. सर्व्हर इतर सोल्युशन्सपेक्षा खूपच लहान रिसोर्स फूटप्रिंट राखत OpenAI-सुसंगत API पुरवते.
+
+## सुरुवात करणे
+
+चला LLMs डिप्लॉय करण्यासाठी हे फ्रेमवर्क्स कसे वापरायचे ते पाहूया, इन्स्टॉलेशन आणि मूलभूत सेटअपपासून सुरुवात करून.
+
+### इन्स्टॉलेशन आणि मूलभूत सेटअप
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI इन्स्टॉल करणे आणि वापरणे सोपे आहे, Hugging Face इकोसिस्टमसह सखोल इंटिग्रेशनसह.
+
+प्रथम, Docker वापरून TGI सर्व्हर लाँच करा:
+
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct
+```
+
+नंतर Hugging Face च्या InferenceClient चा वापर करून त्याच्याशी संवाद साधा:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to TGI endpoint
+client = InferenceClient(
+    model="http://localhost:8080",  # URL to the TGI server
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+    stop_sequences=[],
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+पर्यायाने, तुम्ही OpenAI क्लायंट वापरू शकता:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to TGI endpoint
+client = OpenAI(
+    base_url="http://localhost:8080/v1",  # Make sure to include /v1
+    api_key="not-needed",  # TGI doesn't require an API key by default
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp इन्स्टॉल करणे आणि वापरणे सोपे आहे, किमान अवलंबित्वाची आवश्यकता असते आणि CPU व GPU दोन्ही इन्फरन्स सपोर्ट करते.
+
+प्रथम, llama.cpp इन्स्टॉल आणि बिल्ड करा:
+
+```sh
+# Clone the repository
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Build the project
+make
+
+# Download the SmolLM2-1.7B-Instruct-GGUF model
+curl -L -O https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct.Q4_K_M.gguf
+```
+
+नंतर, सर्व्हर लाँच करा (OpenAI API सुसंगततेसह):
+
+```sh
+# Start the server
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \
+    --n-gpu-layers 0  # Set to a higher number to use GPU
+```
+
+Hugging Face च्या InferenceClient चा वापर करून सर्व्हरशी संवाद साधा:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to llama.cpp server
+client = InferenceClient(
+    model="http://localhost:8080/v1",  # URL to the llama.cpp server
+    token="sk-no-key-required",  # llama.cpp server requires this placeholder
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+पर्यायाने, तुम्ही OpenAI क्लायंट वापरू शकता:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to llama.cpp server
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-no-key-required",  # llama.cpp server requires this placeholder
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",  # Model identifier can be anything as server only loads one model
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM इन्स्टॉल करणे आणि वापरणे सोपे आहे, OpenAI API सुसंगतता आणि नेटिव्ह Python इंटरफेस दोन्हीसह.
+
+प्रथम, vLLM OpenAI-सुसंगत सर्व्हर लाँच करा:
+
+```sh
+python -m vllm.entrypoints.openai.api_server \
+    --model HuggingFaceTB/SmolLM2-360M-Instruct \
+    --host 0.0.0.0 \
+    --port 8000
+```
+
+नंतर Hugging Face च्या InferenceClient चा वापर करून त्याच्याशी संवाद साधा:
+
+```python
+from huggingface_hub import InferenceClient
+
+# Initialize client pointing to vLLM endpoint
+client = InferenceClient(
+    model="http://localhost:8000/v1",  # URL to the vLLM server
+)
+
+# Text generation
+response = client.text_generation(
+    "Tell me a story",
+    max_new_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+
+# For chat format
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+पर्यायाने, तुम्ही OpenAI क्लायंट वापरू शकता:
+
+```python
+from openai import OpenAI
+
+# Initialize client pointing to vLLM endpoint
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed",  # vLLM doesn't require an API key by default
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Tell me a story"},
+    ],
+    max_tokens=100,
+    temperature=0.7,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### मूलभूत मजकूर निर्मिती
+
+चला फ्रेमवर्क्ससह मजकूर निर्मितीची उदाहरणे पाहूया:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+प्रथम, प्रगत पॅरामीटर्ससह TGI डिप्लॉय करा:
+```sh
+docker run --gpus all \
+    --shm-size 1g \
+    -p 8080:80 \
+    -v ~/.cache/huggingface:/data \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --max-total-tokens 4096 \
+    --max-input-length 3072 \
+    --max-batch-total-tokens 8192 \
+    --waiting-served-ratio 1.2
+```
+
+लवचिक मजकूर निर्मितीसाठी InferenceClient वापरा:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# Raw text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    do_sample=True,
+    details=True,
+)
+print(response.generated_text)
+```
+
+किंवा OpenAI क्लायंट वापरा:
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # Higher for more creativity
+)
+print(response.choices[0].message.content)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp साठी, तुम्ही सर्व्हर लाँच करताना प्रगत पॅरामीटर्स सेट करू शकता:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 4096 \            # Context size
+    --threads 8 \        # CPU threads to use
+    --batch-size 512 \   # Batch size for prompt evaluation
+    --n-gpu-layers 0     # GPU layers (0 = CPU only)
+```
+
+InferenceClient वापरा:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8080/v1", token="sk-no-key-required")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# For direct text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+    details=True,
+)
+print(response.generated_text)
+```
+
+किंवा सॅम्पलिंग पॅरामीटर्सवर नियंत्रणासह जनरेशनसाठी OpenAI क्लायंट वापरा:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="sk-no-key-required")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="smollm2-1.7b-instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Nucleus sampling probability
+    frequency_penalty=0.5,  # Reduce repetition of frequent tokens
+    presence_penalty=0.5,  # Reduce repetition by penalizing tokens already present
+    max_tokens=200,  # Maximum generation length
+)
+print(response.choices[0].message.content)
+```
+
+तुम्ही आणखी अधिक नियंत्रणासाठी llama.cpp ची नेटिव्ह लायब्ररी देखील वापरू शकता:
+
+```python
+# Using llama-cpp-python package for direct model access
+from llama_cpp import Llama
+
+# Load the model
+llm = Llama(
+    model_path="smollm2-1.7b-instruct.Q4_K_M.gguf",
+    n_ctx=4096,  # Context window size
+    n_threads=8,  # CPU threads
+    n_gpu_layers=0,  # GPU layers (0 = CPU only)
+)
+
+# Format prompt according to the model's expected format
+prompt = """<|im_start|>system
+You are a creative storyteller.
+<|im_end|>
+<|im_start|>user
+Write a creative story
+<|im_end|>
+<|im_start|>assistant
+"""
+
+# Generate response with precise parameter control
+output = llm(
+    prompt,
+    max_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    frequency_penalty=0.5,
+    presence_penalty=0.5,
+    stop=["<|im_end|>"],
+)
+
+print(output["choices"][0]["text"])
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM सह प्रगत वापरासाठी, तुम्ही InferenceClient वापरू शकता:
+
+```python
+from huggingface_hub import InferenceClient
+
+client = InferenceClient(model="http://localhost:8000/v1")
+
+# Advanced parameters example
+response = client.chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    max_tokens=200,
+    top_p=0.95,
+)
+print(response.choices[0].message.content)
+
+# For direct text generation
+response = client.text_generation(
+    "Write a creative story about space exploration",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_p=0.95,
+    details=True,
+)
+print(response.generated_text)
+```
+
+तुम्ही OpenAI क्लायंट देखील वापरू शकता:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# Advanced parameters example
+response = client.chat.completions.create(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a creative storyteller."},
+        {"role": "user", "content": "Write a creative story"},
+    ],
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+```
+
+vLLM बारकाईने नियंत्रणासह एक नेटिव्ह Python इंटरफेस देखील पुरवते:
+
+```python
+from vllm import LLM, SamplingParams
+
+# Initialize the model with advanced parameters
+llm = LLM(
+    model="HuggingFaceTB/SmolLM2-360M-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    max_num_seqs=256,
+    block_size=16,
+)
+
+# Configure sampling parameters
+sampling_params = SamplingParams(
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    max_tokens=100,  # Maximum length
+    presence_penalty=1.1,  # Reduce repetition
+    frequency_penalty=1.1,  # Reduce repetition
+    stop=["\n\n", "###"],  # Stop sequences
+)
+
+# Generate text
+prompt = "Write a creative story"
+outputs = llm.generate(prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+
+# For chat-style interactions
+chat_prompt = [
+    {"role": "system", "content": "You are a creative storyteller."},
+    {"role": "user", "content": "Write a creative story"},
+]
+formatted_prompt = llm.get_chat_template()(chat_prompt)  # Uses model's chat template
+outputs = llm.generate(formatted_prompt, sampling_params)
+print(outputs[0].outputs[0].text)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## प्रगत जनरेशन नियंत्रण
+
+### टोकन निवड आणि सॅम्पलिंग
+
+मजकूर निर्मितीच्या प्रक्रियेत प्रत्येक टप्प्यावर पुढील टोकन निवडणे समाविष्ट असते. या निवड प्रक्रियेला विविध पॅरामीटर्सद्वारे नियंत्रित केले जाऊ शकते:
+
+1. **कच्चे लॉजिट्स (Raw Logits)**: प्रत्येक टोकनसाठी प्रारंभिक आउटपुट संभाव्यता
+2. **तापमान (Temperature)**: निवडीतील यादृच्छिकता नियंत्रित करते (जास्त = अधिक सर्जनशील)
+3. **टॉप-p (Nucleus) सॅम्पलिंग**: संभाव्यतेच्या X% भाग बनवणाऱ्या टॉप टोकन्सपर्यंत फिल्टर करते
+4. **टॉप-k फिल्टरिंग**: निवड सर्वात संभाव्य k टोकन्सपुरती मर्यादित करते
+
+हे पॅरामीटर्स कसे कॉन्फिगर करायचे ते इथे आहे:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Write a creative story",
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    top_k=50,  # Consider top 50 tokens
+    max_new_tokens=100,  # Maximum length
+    repetition_penalty=1.1,  # Reduce repetition
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API compatibility
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",  # Model name (can be any string for llama.cpp server)
+    prompt="Write a creative story",
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    frequency_penalty=1.1,  # Reduce repetition
+    presence_penalty=0.1,  # Reduce repetition
+    max_tokens=100,  # Maximum length
+)
+
+# Via llama-cpp-python direct access
+output = llm(
+    "Write a creative story",
+    temperature=0.8,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=100,
+    repeat_penalty=1.1,
+)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    temperature=0.8,  # Higher for more creativity
+    top_p=0.95,  # Consider top 95% probability mass
+    top_k=50,  # Consider top 50 tokens
+    max_tokens=100,  # Maximum length
+    presence_penalty=0.1,  # Reduce repetition
+)
+llm.generate("Write a creative story", sampling_params=params)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### पुनरावृत्ती नियंत्रित करणे
+
+दोन्ही फ्रेमवर्क्स पुनरावृत्ती होणारी मजकूर निर्मिती रोखण्याचे मार्ग पुरवतात:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Write a varied text",
+    repetition_penalty=1.1,  # Penalize repeated tokens
+    no_repeat_ngram_size=3,  # Prevent 3-gram repetition
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Write a varied text",
+    frequency_penalty=1.1,  # Penalize frequent tokens
+    presence_penalty=0.8,  # Penalize tokens already present
+)
+
+# Via direct library
+output = llm(
+    "Write a varied text",
+    repeat_penalty=1.1,  # Penalize repeated tokens
+    frequency_penalty=0.5,  # Additional frequency penalty
+    presence_penalty=0.5,  # Additional presence penalty
+)
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    presence_penalty=0.1,  # Penalize token presence
+    frequency_penalty=0.1,  # Penalize token frequency
+)
+```
+
+</hfoption>
+
+</hfoptions>
+
+### लांबी नियंत्रण आणि स्टॉप सिक्वेन्सेस
+
+तुम्ही जनरेशनची लांबी नियंत्रित करू शकता आणि ते केव्हा थांबवायचे हे निर्दिष्ट करू शकता:
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+```python
+client.generate(
+    "Generate a short paragraph",
+    max_new_tokens=100,
+    min_new_tokens=10,
+    stop_sequences=["\n\n", "###"],
+)
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+```python
+# Via OpenAI API
+response = client.completions.create(
+    model="smollm2-1.7b-instruct",
+    prompt="Generate a short paragraph",
+    max_tokens=100,
+    stop=["\n\n", "###"],
+)
+
+# Via direct library
+output = llm("Generate a short paragraph", max_tokens=100, stop=["\n\n", "###"])
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+```python
+params = SamplingParams(
+    max_tokens=100,
+    min_tokens=10,
+    stop=["###", "\n\n"],
+    ignore_eos=False,
+    skip_special_tokens=True,
+)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## मेमरी व्यवस्थापन
+
+कार्यक्षम इन्फरन्ससाठी दोन्ही फ्रेमवर्क्स प्रगत मेमरी व्यवस्थापन तंत्रे इम्प्लिमेंट करतात.
+
+<hfoptions id="inference-frameworks" >
+
+<hfoption value="tgi" label="TGI">
+
+TGI Flash Attention 2 आणि सतत बॅचिंग वापरते:
+
+```sh
+# Docker deployment with memory optimization
+docker run --gpus all -p 8080:80 \
+    --shm-size 1g \
+    ghcr.io/huggingface/text-generation-inference:latest \
+    --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct \
+    --max-batch-total-tokens 8192 \
+    --max-input-length 4096
+```
+
+</hfoption>
+
+<hfoption value="llama.cpp" label="llama.cpp">
+
+llama.cpp क्वांटायझेशन आणि ऑप्टिमाइझ केलेला मेमरी लेआउट वापरते:
+
+```sh
+# Server with memory optimizations
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8080 \
+    -c 2048 \               # Context size
+    --threads 4 \           # CPU threads
+    --n-gpu-layers 32 \     # Use more GPU layers for larger models
+    --mlock \               # Lock memory to prevent swapping
+    --cont-batching         # Enable continuous batching
+```
+
+तुमच्या GPU साठी खूप मोठ्या असलेल्या मॉडेल्ससाठी, तुम्ही CPU ऑफलोडिंग वापरू शकता:
+
+```sh
+./server \
+    -m smollm2-1.7b-instruct.Q4_K_M.gguf \
+    --n-gpu-layers 20 \     # Keep first 20 layers on GPU
+    --threads 8             # Use more CPU threads for CPU layers
+```
+
+</hfoption>
+
+<hfoption value="vllm" label="vLLM">
+
+vLLM उत्कृष्ट मेमरी व्यवस्थापनासाठी PagedAttention वापरते:
+
+```python
+from vllm.engine.arg_utils import AsyncEngineArgs
+
+engine_args = AsyncEngineArgs(
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    gpu_memory_utilization=0.85,
+    max_num_batched_tokens=8192,
+    block_size=16,
+)
+
+llm = LLM(engine_args=engine_args)
+```
+
+</hfoption>
+
+</hfoptions>
+
+## संसाधने
+
+- [Text Generation Inference डॉक्युमेंटेशन](https://huggingface.co/docs/text-generation-inference)
+- [TGI GitHub रिपॉझिटरी](https://github.com/huggingface/text-generation-inference)
+- [vLLM डॉक्युमेंटेशन](https://vllm.readthedocs.io/)
+- [vLLM GitHub रिपॉझिटरी](https://github.com/vllm-project/vllm)
+- [PagedAttention पेपर](https://arxiv.org/abs/2309.06180)
+- [llama.cpp GitHub रिपॉझिटरी](https://github.com/ggerganov/llama.cpp)
+- [llama-cpp-python रिपॉझिटरी](https://github.com/abetlen/llama-cpp-python)
