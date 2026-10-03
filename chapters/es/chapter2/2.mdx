@@ -1,0 +1,232 @@
+<FrameworkSwitchCourse {fw} />
+
+# Detrás del pipeline[[behind-the-pipeline]]
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section2_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section2_pt.ipynb"},
+]} />
+
+<Youtube id="1pedAIvTWXk"/>
+
+Comencemos con un ejemplo completo, observando qué sucede entre bastidores cuando ejecutamos el siguiente código del [Capítulo 1](/course/chapter1):
+
+```python
+from transformers import pipeline
+
+classifier = pipeline("sentiment-analysis")
+classifier(
+    [
+        "I've been waiting for a HuggingFace course my whole life.",
+        "I hate this so much!",
+    ]
+)
+```
+
+y obtuvimos:
+
+```python out
+[{'label': 'POSITIVE', 'score': 0.9598047137260437},
+ {'label': 'NEGATIVE', 'score': 0.9994558095932007}]
+```
+
+Como vimos en el [Capítulo 1](/course/chapter1), este pipeline agrupa tres pasos: preprocesamiento, pasar las entradas a través del modelo y postprocesamiento:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/full_nlp_pipeline.svg" alt="El pipeline completo de PLN: tokenización del texto, conversión a IDs e inferencia a través del modelo Transformer y la cabeza del modelo."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/full_nlp_pipeline-dark.svg" alt="El pipeline completo de PLN: tokenización del texto, conversión a IDs e inferencia a través del modelo Transformer y la cabeza del modelo."/>
+</div>
+
+Repasemos rápidamente cada uno de ellos.
+
+## Preprocesamiento con un tokenizador[[preprocessing-with-a-tokenizer]]
+
+Al igual que otras redes neuronales, los modelos Transformer no pueden procesar texto en bruto directamente, por lo que el primer paso de nuestro pipeline es convertir las entradas de texto en números que el modelo pueda entender. Para ello utilizamos un *tokenizador*, que se encarga de:
+
+- Dividir la entrada en palabras, subpalabras o símbolos (como signos de puntuación) que denominamos *tokens*
+- Mapear cada token a un número entero
+- Añadir entradas adicionales que puedan ser útiles para el modelo
+
+Todo este preprocesamiento debe realizarse exactamente de la misma manera que cuando el modelo fue preentrenado, por lo que primero necesitamos descargar esa información desde el [Model Hub](https://huggingface.co/models). Para ello, usamos la clase `AutoTokenizer` y su método `from_pretrained()`. Pasando el nombre del checkpoint de nuestro modelo, obtendrá automáticamente los datos asociados con el tokenizador del modelo y los guardará en caché (por lo que solo se descargará la primera vez que ejecutes el código a continuación).
+
+Dado que el checkpoint por defecto del pipeline `sentiment-analysis` es `distilbert-base-uncased-finetuned-sst-2-english` (puedes consultar su model card [aquí](https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english)), ejecutamos lo siguiente:
+
+```python
+from transformers import AutoTokenizer
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+```
+
+Una vez que tenemos el tokenizador, podemos pasarle directamente nuestras frases y obtendremos un diccionario listo para alimentar a nuestro modelo. ¡Lo único que queda por hacer es convertir la lista de identificadores de entrada (input IDs) en tensores!
+
+Puedes usar 🤗 Transformers sin preocuparte por qué framework de ML se utiliza como backend; puede ser PyTorch o Flax para algunos modelos. Sin embargo, los modelos Transformer solo aceptan *tensores* como entrada. Si es la primera vez que oyes hablar de tensores, puedes pensar en ellos como arrays de NumPy. Un array de NumPy puede ser un escalar (0D), un vector (1D), una matriz (2D) o tener más dimensiones. En esencia es un tensor; los tensores de otros frameworks de ML se comportan de manera similar y generalmente son tan sencillos de instanciar como los arrays de NumPy.
+
+Para especificar el tipo de tensores que queremos recibir de vuelta (PyTorch o NumPy estándar), utilizamos el argumento `return_tensors`:
+
+```python
+raw_inputs = [
+    "I've been waiting for a HuggingFace course my whole life.",
+    "I hate this so much!",
+]
+inputs = tokenizer(raw_inputs, padding=True, truncation=True, return_tensors="pt")
+print(inputs)
+```
+
+No te preocupes por el padding y la truncación por ahora; los explicaremos más adelante. Lo principal que debes recordar aquí es que puedes pasar una sola frase o una lista de frases, así como especificar el tipo de tensores que deseas obtener (si no se pasa ningún tipo, obtendrás una lista de listas como resultado).
+
+Así es como se ven los resultados en forma de tensores de PyTorch:
+
+```python out
+{
+    'input_ids': tensor([
+        [  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172, 2607,  2026,  2878,  2166,  1012,   102],
+        [  101,  1045,  5223,  2023,  2061,  2172,   999,   102,     0,     0,     0,     0,     0,     0,     0,     0]
+    ]), 
+    'attention_mask': tensor([
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+    ])
+}
+```
+
+La salida es un diccionario que contiene dos claves: `input_ids` y `attention_mask`. `input_ids` contiene dos filas de números enteros (una para cada frase) que son los identificadores únicos de los tokens en cada frase. Explicaremos qué es la `attention_mask` más adelante en este capítulo.
+
+## Pasar las entradas a través del modelo[[going-through-the-model]]
+
+Podemos descargar nuestro modelo preentrenado de la misma manera que hicimos con nuestro tokenizador. 🤗 Transformers proporciona una clase `AutoModel` que también dispone del método `from_pretrained()`:
+
+```python
+from transformers import AutoModel
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = AutoModel.from_pretrained(checkpoint)
+```
+
+En este fragmento de código, hemos descargado el mismo checkpoint que usamos en nuestro pipeline anteriormente (de hecho, ya debería estar en caché) e instanciamos un modelo con él.
+
+Esta arquitectura contiene únicamente el módulo base de Transformer: dadas unas entradas, produce lo que llamaremos *hidden states* (estados ocultos), también conocidos como *features* (características). Para cada entrada del modelo, recuperaremos un vector de alta dimensionalidad que representa la **comprensión contextual de dicha entrada por parte del modelo Transformer**.
+
+Si esto te resulta confuso, no te preocupes. Lo explicaremos todo en detalle más adelante.
+
+Aunque estos estados ocultos pueden ser útiles por sí mismos, normalmente sirven como entrada para otra parte del modelo, conocida como la *cabeza* (*head*). En el [Capítulo 1](/course/chapter1), vimos que distintas tareas podían realizarse con la misma arquitectura base, pero cada una de esas tareas tendrá una cabeza distinta asociada.
+
+### ¿Un vector de alta dimensionalidad?[[a-high-dimensional-vector]]
+
+El vector producido por el módulo Transformer suele ser de gran tamaño. Generalmente consta de tres dimensiones:
+
+- **Tamaño del lote** (*Batch size*): El número de secuencias procesadas al mismo tiempo (2 en nuestro ejemplo).
+- **Longitud de secuencia** (*Sequence length*): La longitud de la representación numérica de la secuencia (16 en nuestro ejemplo).
+- **Tamaño oculto** (*Hidden size*): La dimensión vectorial de cada entrada del modelo.
+
+Se dice que es de "alta dimensionalidad" debido a este último valor. El tamaño oculto puede ser muy grande (768 es habitual en modelos pequeños, y en modelos más grandes puede alcanzar 3072 o más).
+
+Podemos comprobarlo si alimentamos al modelo con las entradas preprocesadas:
+
+```python
+outputs = model(**inputs)
+print(outputs.last_hidden_state.shape)
+```
+
+```python out
+torch.Size([2, 16, 768])
+```
+
+Ten en cuenta que las salidas de los modelos de 🤗 Transformers se comportan como `namedtuple`s o diccionarios. Puedes acceder a los elementos mediante atributos (como acabamos de hacer), por clave (`outputs["last_hidden_state"]`), o incluso por índice si sabes exactamente dónde se encuentra lo que buscas (`outputs[0]`).
+
+### Cabezas del modelo: Dando sentido a los números[[model-heads-making-sense-out-of-numbers]]
+
+Las cabezas del modelo toman el vector de alta dimensionalidad de los estados ocultos como entrada y lo proyectan en una dimensión diferente. Normalmente están compuestas por una o unas pocas capas lineales:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/transformer_and_head.svg" alt="Una red Transformer junto a su cabeza."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter2/transformer_and_head-dark.svg" alt="Una red Transformer junto a su cabeza."/>
+</div>
+
+La salida del modelo Transformer se envía directamente a la cabeza del modelo para ser procesada.
+
+En este diagrama, el modelo está representado por su capa de embeddings y las capas posteriores. La capa de embeddings convierte cada ID de entrada del texto tokenizado en un vector que representa el token asociado. Las capas posteriores manipulan dichos vectores utilizando el mecanismo de atención para producir la representación final de las oraciones.
+
+Hay muchas arquitecturas distintas disponibles en 🤗 Transformers, cada una diseñada para abordar una tarea específica. Aquí tienes una lista no exhaustiva:
+
+- `*Model` (recupera los estados ocultos)
+- `*ForCausalLM`
+- `*ForMaskedLM`
+- `*ForMultipleChoice`
+- `*ForQuestionAnswering`
+- `*ForSequenceClassification`
+- `*ForTokenClassification`
+- y otros 🤗
+
+Para nuestro ejemplo, necesitaremos un modelo con una cabeza para clasificación de secuencias (para poder clasificar las frases como positivas o negativas). Por lo tanto, en lugar de la clase `AutoModel`, utilizaremos `AutoModelForSequenceClassification`:
+
+```python
+from transformers import AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+outputs = model(**inputs)
+```
+
+Ahora, si observamos las dimensiones de nuestras salidas, la dimensionalidad será mucho menor: la cabeza del modelo toma como entrada los vectores de alta dimensionalidad que vimos antes y devuelve vectores que contienen dos valores (uno por cada etiqueta):
+
+```python
+print(outputs.logits.shape)
+```
+
+```python out
+torch.Size([2, 2])
+```
+
+Dado que tenemos exactamente dos frases y dos etiquetas, el resultado devuelto por nuestro modelo tiene dimensiones 2 x 2.
+
+## Postprocesamiento de la salida[[postprocessing-the-output]]
+
+Los valores que obtenemos como salida de nuestro modelo no tienen por qué ser comprensibles directamente por sí mismos. Echemos un vistazo:
+
+```python
+print(outputs.logits)
+```
+
+```python out
+tensor([[-1.5607,  1.6123],
+        [ 4.1692, -3.3464]], grad_fn=<AddmmBackward>)
+```
+
+Nuestro modelo predijo `[-1.5607, 1.6123]` para la primera frase y `[ 4.1692, -3.3464]` para la segunda. No son probabilidades, sino *logits*, las puntuaciones en bruto y sin normalizar que produce la última capa del modelo. Para convertirlos en probabilidades, deben pasar por una capa [SoftMax](https://es.wikipedia.org/wiki/Funci%C3%B3n_Softmax) (todos los modelos de 🤗 Transformers devuelven logits, ya que la función de pérdida durante el entrenamiento suele fusionar la última función de activación, como SoftMax, con la función de pérdida real, como la entropía cruzada):
+
+```py
+import torch
+
+predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+print(predictions)
+```
+
+```python out
+tensor([[4.0195e-02, 9.5980e-01],
+        [9.9946e-01, 5.4418e-04]], grad_fn=<SoftmaxBackward>)
+```
+
+Ahora podemos ver que el modelo predijo `[0.0402, 0.9598]` para la primera frase y `[0.9995,  0.0005]` para la segunda. Estas sí son probabilidades claramente reconocibles.
+
+Para obtener las etiquetas correspondientes a cada posición, podemos inspeccionar el atributo `id2label` de la configuración del modelo (más sobre esto en la siguiente sección):
+
+```python
+model.config.id2label
+```
+
+```python out
+{0: 'NEGATIVE', 1: 'POSITIVE'}
+```
+
+Ahora podemos concluir que el modelo predijo lo siguiente:
+ 
+- Primera frase: NEGATIVE: 0.0402, POSITIVE: 0.9598
+- Segunda frase: NEGATIVE: 0.9995, POSITIVE: 0.0005
+
+Hemos reproducido con éxito los tres pasos del pipeline: preprocesamiento con tokenizadores, paso de las entradas a través del modelo y postprocesamiento. Ahora dediquemos un tiempo a profundizar en cada uno de estos pasos.
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Elige dos (o más) textos propios y pásalos por el pipeline de `sentiment-analysis`. ¡Luego replica tú mismo los pasos que has visto aquí y comprueba que obtienes los mismos resultados!
