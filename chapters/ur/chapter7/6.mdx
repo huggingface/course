@@ -1,0 +1,944 @@
+<FrameworkSwitchCourse {fw} />
+
+# ابتداء سے ایک اسبابی زبان ماڈل کی تربیت[[training-a-causal-language-model-from-scratch]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+اب تک، ہم نے زیادہ تر پہلے سے تربیت یافتہ ماڈلز کا استعمال کیا ہے اور نئے استعمالات کے لیے انہیں فائن ٹیون کیا ہے، جس میں پری ٹریننگ کے وزن کو دوبارہ استعمال کیا جاتا ہے۔ جیسا کہ ہم نے [Chapter 1](/course/chapter1) میں دیکھا، اسے عام طور پر _transfer learning_ کہا جاتا ہے، اور یہ ان زیادہ تر حقیقی دنیا کے استعمالات کے لیے ایک بہت کامیاب حکمت عملی ہے جہاں لیبل شدہ ڈیٹا کم ہوتا ہے۔ اس باب میں، ہم ایک مختلف طریقہ اپنائیں گے اور بالکل نیا ماڈل ابتداء سے تربیت دیں گے۔ اگر آپ کے پاس بہت سا ڈیٹا موجود ہے اور وہ دستیاب ماڈلز کے لیے استعمال شدہ پری ٹریننگ ڈیٹا سے کافی مختلف ہے، تو یہ ایک اچھا نقطہ نظر ہے۔ تاہم، ایک زبان ماڈل کو پری ٹرین کرنے کے مقابلے میں صرف موجودہ ماڈل کو فائن ٹیون کرنے کے لیے کہیں زیادہ کمپیوٹ وسائل درکار ہوتے ہیں۔ ایسے ڈیٹاسیٹس جن میں موسیقی کے نوٹس، مالیکیولر سلسلے جیسے DNA، یا پروگرامنگ زبانیں شامل ہوں، کے لیے نیا ماڈل تربیت دینا معقول ثابت ہو سکتا ہے۔ حال ہی میں، پروگرامنگ زبانوں نے نمایاں توجہ حاصل کی ہے، خاص طور پر TabNine اور GitHub کے Copilot جیسے ٹولز کی بدولت، جو OpenAI کے Codex ماڈل کی طاقت سے طویل کوڈ کے تسلسل پیدا کر سکتے ہیں۔ متن کی تخلیق کا یہ کام auto-regressive یا اسبابی زبان ماڈلز جیسے GPT-2 کے ذریعے بہترین طریقے سے حل کیا جا سکتا ہے۔
+
+اس حصے میں ہم کوڈ جنریشن ماڈل کا ایک مختصر ورژن بنائیں گے: ہم مکمل فنکشنز یا کلاسز کی بجائے ایک لائن کی تکمیل پر توجہ مرکوز کریں گے، جس کے لیے Python کوڈ کا ایک ذیلی مجموعہ استعمال کیا جائے گا۔ جب آپ Python میں ڈیٹا پر کام کر رہے ہوتے ہیں تو آپ اکثر Python ڈیٹا سائنس اسٹیک کے رابطے میں رہتے ہیں، جس میں `matplotlib`, `seaborn`, `pandas`, اور `scikit-learn` لائبریریز شامل ہیں۔ ان فریم ورکس کا استعمال کرتے وقت مخصوص کمانڈز تلاش کرنا عام بات ہے، اس لیے یہ بہت مفید ہوگا اگر ہم ایک ماڈل استعمال کر سکیں جو ہماری کالز کی تکمیل کر دے۔
+
+<Youtube id="Vpjb1lu0MDk"/>
+
+[Chapter 6](/course/chapter6) میں ہم نے Python سورس کوڈ کو پراسیس کرنے کے لیے ایک موثر tokenizer تیار کیا، لیکن ہمیں ابھی بھی ایک بڑے پیمانے کا ڈیٹاسیٹ درکار ہے جس پر ماڈل کو پری ٹرین کیا جا سکے۔ یہاں، ہم اپنے tokenizer کو GitHub ریپوزٹریز سے حاصل کردہ Python کوڈ کے مجموعے پر لاگو کریں گے۔ اس کے بعد ہم ماڈل کی تربیت کے لیے `Trainer` API اور 🤗 Accelerate کا استعمال کریں گے۔ چلیے شروع کرتے ہیں!
+
+<iframe src="https://course-demos-codeparrot-ds.hf.space" frameBorder="0" height="300" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+یہ دراصل اس ماڈل کو ظاہر کر رہا ہے جس کی تربیت کی گئی تھی اور اسے Hub پر اپلوڈ کیا گیا ہے، جیسا کہ اس حصے میں دکھایا گیا کوڈ استعمال کیا گیا ہے۔ آپ اسے [یہاں](https://huggingface.co/huggingface-course/codeparrot-ds?text=plt.imshow%28) دیکھ سکتے ہیں۔ نوٹ کریں کہ چونکہ متن کی تخلیق میں کچھ بے ترتیبی موجود ہے، اس لیے آپ کو ممکنہ طور پر تھوڑا مختلف نتیجہ مل سکتا ہے.
+
+## ڈیٹا اکٹھا کرنا[[gathering-the-data]]
+
+Python کوڈ GitHub جیسے کوڈ ریپوزٹریز سے وافر مقدار میں دستیاب ہے، جس کا استعمال ہم ہر Python ریپوزٹری کی سکریپنگ کر کے ایک ڈیٹاسیٹ بنانے کے لیے کر سکتے ہیں۔ یہ وہ طریقہ تھا جو [Transformers textbook](https://learning.oreilly.com/library/view/natural-language-processing/9781098136789/) میں استعمال کیا گیا تھا تاکہ ایک بڑے GPT-2 ماڈل کو پری ٹرین کیا جا سکے۔ `codeparrot` نامی تقریباً 180 GB کے GitHub ڈمپ کا استعمال کرتے ہوئے، جس میں تقریباً 20 ملین Python فائلیں شامل تھیں، مصنفین نے ایک ڈیٹاسیٹ تیار کیا جسے انہوں نے بعد میں [Hugging Face Hub](https://huggingface.co/datasets/transformersbook/codeparrot) پر شیئر کیا۔
+
+تاہم، مکمل مجموعہ پر تربیت دینا وقت اور کمپیوٹنگ وسائل کا بہت زیادہ مطالبہ کرتا ہے، اور ہمیں صرف اس ڈیٹاسیٹ کا وہ حصہ چاہیے جو Python ڈیٹا سائنس اسٹیک سے متعلق ہو۔ تو، آئیے `codeparrot` ڈیٹاسیٹ کو فلٹر کرنا شروع کرتے ہیں تاکہ ان تمام فائلوں کو منتخب کیا جا سکے جن میں اس اسٹیک کی کوئی لائبریری شامل ہو۔ ڈیٹاسیٹ کے حجم کی وجہ سے، ہم اسے ڈاؤن لوڈ کرنے سے بچنا چاہتے ہیں؛ اس کے بجائے، ہم سٹریمنگ فیچر کا استعمال کرتے ہوئے اسے فلٹر کریں گے۔ ان لائبریریز کا استعمال کرتے ہوئے کوڈ نمونوں کو فلٹر کرنے میں ہماری مدد کے لیے، ہم مندرجہ ذیل فنکشن استعمال کریں گے:
+
+
+```py
+def any_keyword_in_string(string, keywords):
+    for keyword in keywords:
+        if keyword in string:
+            return True
+    return False
+```
+
+آئیے اسے دو مثالوں پر آزمائیں:
+
+
+```py
+filters = ["pandas", "sklearn", "matplotlib", "seaborn"]
+example_1 = "import numpy as np"
+example_2 = "import pandas as pd"
+
+print(
+    any_keyword_in_string(example_1, filters), any_keyword_in_string(example_2, filters)
+)
+```
+
+```python out
+False True
+```
+
+ہم اسے ایک فنکشن بنانے کے لیے استعمال کر سکتے ہیں جو ڈیٹاسیٹ کو اسٹریم کرے گا اور ان عناصر کو فلٹر کرے گا جنہیں ہم چاہتے ہیں:
+
+```py
+from collections import defaultdict
+from tqdm import tqdm
+from datasets import Dataset
+
+
+def filter_streaming_dataset(dataset, filters):
+    filtered_dict = defaultdict(list)
+    total = 0
+    for sample in tqdm(iter(dataset)):
+        total += 1
+        if any_keyword_in_string(sample["content"], filters):
+            for k, v in sample.items():
+                filtered_dict[k].append(v)
+    print(f"{len(filtered_dict['content'])/total:.2%} of data after filtering.")
+    return Dataset.from_dict(filtered_dict)
+```
+پھر ہم بس اس فنکشن کو اسٹریمنگ ڈیٹاسیٹ پر لاگو کر سکتے ہیں
+
+```py
+# This cell will take a very long time to execute, so you should skip it and go to
+# the next one!
+from datasets import load_dataset
+
+split = "train"  # "valid"
+filters = ["pandas", "sklearn", "matplotlib", "seaborn"]
+
+data = load_dataset(f"transformersbook/codeparrot-{split}", split=split, streaming=True)
+filtered_data = filter_streaming_dataset(data, filters)
+```
+
+```python out
+3.26% of data after filtering.
+```
+
+یہ ہمیں اصل ڈیٹاسیٹ کا تقریباً 3٪ چھوڑ دیتا ہے، جو اب بھی کافی بڑا ہے -- نتیجہ خیز ڈیٹاسیٹ 6 جی بی کا ہے اور اس میں 600,000 پائتھون اسکرپٹس شامل ہیں!  
+
+مکمل ڈیٹاسیٹ کو فلٹر کرنے میں آپ کی مشین اور بینڈوتھ پر منحصر کرتے ہوئے 2-3 گھنٹے لگ سکتے ہیں۔ اگر آپ خود اس طویل عمل سے نہیں گزرنا چاہتے تو ہم آپ کے لیے ہب پر فلٹر شدہ ڈیٹاسیٹ فراہم کرتے ہیں تاکہ آپ اسے ڈاؤن لوڈ کر سکیں۔
+
+```py
+from datasets import load_dataset, DatasetDict
+
+ds_train = load_dataset("huggingface-course/codeparrot-ds-train", split="train")
+ds_valid = load_dataset("huggingface-course/codeparrot-ds-valid", split="validation")
+
+raw_datasets = DatasetDict(
+    {
+        "train": ds_train,  # .shuffle().select(range(50000)),
+        "valid": ds_valid,  # .shuffle().select(range(500))
+    }
+)
+
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['repo_name', 'path', 'copies', 'size', 'content', 'license'],
+        num_rows: 606720
+    })
+    valid: Dataset({
+        features: ['repo_name', 'path', 'copies', 'size', 'content', 'license'],
+        num_rows: 3322
+    })
+})
+```
+
+<Tip>  
+
+لینگویج ماڈل کی پری ٹریننگ میں کچھ وقت لگے گا۔ ہم تجویز کرتے ہیں کہ آپ پہلے ڈیٹا کے ایک نمونے پر ٹریننگ لوپ چلا کر آزمائیں، ان دو جزوی لائنوں کو ان کومنٹ کر کے، اور یقینی بنائیں کہ ٹریننگ کامیابی سے مکمل ہو رہی ہے اور ماڈلز محفوظ ہو رہے ہیں۔ ٹریننگ کے آخری مرحلے میں صرف اس لیے ناکام ہونا کہ آپ نے فولڈر بنانا بھول گئے یا ٹریننگ لوپ کے آخر میں کوئی ٹائپو رہ گیا، انتہائی مایوس کن ہو سکتا ہے!  
+
+</Tip>  
+
+آئیے ڈیٹاسیٹ سے ایک مثال دیکھتے ہیں۔ ہم صرف ہر فیلڈ کے پہلے 200 کریکٹرز دکھائیں گے:
+
+```py
+for key in raw_datasets["train"][0]:
+    print(f"{key.upper()}: {raw_datasets['train'][0][key][:200]}")
+```
+
+```python out
+'REPO_NAME: kmike/scikit-learn'
+'PATH: sklearn/utils/__init__.py'
+'COPIES: 3'
+'SIZE: 10094'
+'''CONTENT: """
+The :mod:`sklearn.utils` module includes various utilites.
+"""
+
+from collections import Sequence
+
+import numpy as np
+from scipy.sparse import issparse
+import warnings
+
+from .murmurhash import murm
+LICENSE: bsd-3-clause'''
+```
+
+ہم دیکھ سکتے ہیں کہ `content` فیلڈ میں وہ کوڈ موجود ہے جس پر ہم اپنا ماڈل تربیت دینا چاہتے ہیں۔ اب جبکہ ہمارے پاس ڈیٹاسیٹ موجود ہے، ہمیں متون کو اس فارمیٹ میں تیار کرنے کی ضرورت ہے جو پری ٹریننگ کے لیے موزوں ہو۔
+
+## ڈیٹاسیٹ کی تیاری[[preparing-the-dataset]]
+
+<Youtube id="ma1TrR7gE7I"/>
+
+پہلا قدم ڈیٹا کو tokenize کرنا ہوگا تاکہ ہم اسے تربیت کے لیے استعمال کر سکیں۔ چونکہ ہمارا مقصد بنیادی طور پر مختصر فنکشن کالز کو آٹو کمپلیٹ کرنا ہے، ہم context size کو نسبتاً چھوٹا رکھ سکتے ہیں۔ اس کا فائدہ یہ ہے کہ ہم ماڈل کو بہت تیزی سے تربیت دے سکتے ہیں اور اس کے لیے نمایاں طور پر کم میموری درکار ہوگی۔ اگر آپ کی ایپلیکیشن کے لیے زیادہ context ہونا ضروری ہے (مثلاً اگر آپ چاہتے ہیں کہ ماڈل کسی فنکشن کی تعریف والی فائل کی بنیاد پر یونٹ ٹیسٹ لکھے)، تو اس تعداد میں اضافہ کرنا یقینی بنائیں، مگر یہ بھی ذہن میں رکھیں کہ اس سے GPU میموری کا بوجھ بھی بڑھ جائے گا۔ فی الحال، آئیے context size کو 128 tokens پر مقرر کر دیتے ہیں، جبکہ GPT-2 یا GPT-3 میں بالترتیب 1,024 یا 2,048 tokens استعمال ہوتے ہیں۔
+
+زیادہ تر دستاویزات میں 128 tokens سے کہیں زیادہ مواد ہوتا ہے، لہٰذا صرف inputs کو زیادہ سے زیادہ لمبائی تک truncate کرنے سے ہمارے ڈیٹاسیٹ کا ایک بڑا حصہ ختم ہو جائے گا۔ اس کے بجائے، ہم `return_overflowing_tokens` آپشن کا استعمال کریں گے تاکہ پورے input کو tokenize کیا جا سکے اور اسے کئی حصوں میں تقسیم کیا جا سکے، جیسا کہ ہم نے [Chapter 6](/course/chapter6/4) میں کیا تھا۔ ہم `return_length` آپشن کا بھی استعمال کریں گے تاکہ ہر بنائے گئے ٹکڑے کی لمبائی خود بخود واپس مل جائے۔ اکثر آخری ٹکڑا context size سے چھوٹا ہوگا، اور ہم padding کے مسائل سے بچنے کے لیے ان حصوں کو ہٹا دیں گے؛ ہمیں واقعی ان کی ضرورت نہیں ہے کیونکہ ہمارے پاس کافی ڈیٹا موجود ہے۔
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts.svg" alt="Chunking a large texts in several pieces."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts-dark.svg" alt="Chunking a large texts in several pieces."/>
+</div>
+
+آئیے دیکھتے ہیں کہ یہ کیسے کام کرتا ہے، پہلے دو مثالوں کو دیکھ کر:
+
+
+```py
+from transformers import AutoTokenizer
+
+context_length = 128
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+
+outputs = tokenizer(
+    raw_datasets["train"][:2]["content"],
+    truncation=True,
+    max_length=context_length,
+    return_overflowing_tokens=True,
+    return_length=True,
+)
+
+print(f"Input IDs length: {len(outputs['input_ids'])}")
+print(f"Input chunk lengths: {(outputs['length'])}")
+print(f"Chunk mapping: {outputs['overflow_to_sample_mapping']}")
+```
+
+```python out
+Input IDs length: 34
+Input chunk lengths: [128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 117, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 41]
+Chunk mapping: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+ہم دیکھ سکتے ہیں کہ ان دو مثالوں سے ہمیں کل 34 سیگمنٹس ملتے ہیں۔ اگر ہم چنک کی لمبائیوں کو دیکھیں تو معلوم ہوتا ہے کہ دونوں ڈاکیومنٹس کے آخر میں موجود چنکس میں 128 سے کم ٹوکنز ہیں (بالترتیب 117 اور 41)۔ یہ ہماری کل چنکس کا ایک چھوٹا سا حصہ ہیں، اس لیے ہم انہیں محفوظ طریقے سے خارج کر سکتے ہیں۔ `overflow_to_sample_mapping` فیلڈ کی مدد سے ہم یہ بھی معلوم کر سکتے ہیں کہ کون سے چنکس کس ان پٹ سیمپل سے تعلق رکھتے تھے۔  
+
+اس آپریشن کے دوران ہم 🤗 Datasets کی `Dataset.map()` فنکشن کی ایک مفید خصوصیت استعمال کر رہے ہیں، جو یہ ہے کہ اسے ایک سے ایک میپنگ کی ضرورت نہیں ہوتی؛ جیسا کہ ہم نے [سیکشن 3](/course/chapter7/3) میں دیکھا، ہم ان پٹ بیچ سے زیادہ یا کم عناصر کے ساتھ بیچز بنا سکتے ہیں۔ یہ خاصیت ڈیٹا آگمینٹیشن یا ڈیٹا فلٹرنگ جیسے آپریشنز میں مفید ہوتی ہے، جہاں عناصر کی تعداد تبدیل ہوتی ہے۔ ہمارے معاملے میں، جب ہم ہر عنصر کو مخصوص کانٹیکسٹ سائز کے چنکس میں ٹوکنائز کرتے ہیں، تو ہر ڈاکیومنٹ سے کئی سیمپلز بن جاتے ہیں۔ ہمیں بس یہ یقینی بنانا ہوتا ہے کہ موجودہ کالمز کو حذف کر دیں، کیونکہ ان کی سائز میں تضاد ہو سکتا ہے۔ اگر ہم انہیں برقرار رکھنا چاہتے تو انہیں مناسب طریقے سے دہرایا جا سکتا تھا اور `Dataset.map()` کال کے اندر واپس کیا جا سکتا تھا۔
+
+
+```py
+def tokenize(element):
+    outputs = tokenizer(
+        element["content"],
+        truncation=True,
+        max_length=context_length,
+        return_overflowing_tokens=True,
+        return_length=True,
+    )
+    input_batch = []
+    for length, input_ids in zip(outputs["length"], outputs["input_ids"]):
+        if length == context_length:
+            input_batch.append(input_ids)
+    return {"input_ids": input_batch}
+
+
+tokenized_datasets = raw_datasets.map(
+    tokenize, batched=True, remove_columns=raw_datasets["train"].column_names
+)
+tokenized_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['input_ids'],
+        num_rows: 16702061
+    })
+    valid: Dataset({
+        features: ['input_ids'],
+        num_rows: 93164
+    })
+})
+```
+اب ہمارے پاس 16.7 ملین مثالیں ہیں، جن میں سے ہر ایک میں 128 ٹوکنز ہیں، جو کل ملا کر تقریباً 2.1 بلین ٹوکنز بنتے ہیں۔ حوالہ کے لیے، OpenAI کے GPT-3 اور Codex ماڈلز بالترتیب 300 اور 100 بلین ٹوکنز پر تربیت یافتہ ہیں، جہاں Codex ماڈلز کو GPT-3 چیک پوائنٹس سے انیشلائز کیا گیا ہے۔ اس سیکشن میں ہمارا مقصد ان ماڈلز کا مقابلہ کرنا نہیں ہے، جو طویل، مربوط متن تخلیق کر سکتے ہیں، بلکہ ڈیٹا سائنسدانوں کے لیے ایک چھوٹے پیمانے پر، تیز آٹو کمپلیٹ فنکشن بنانا ہے۔  
+
+اب جب کہ ہمارا ڈیٹاسیٹ تیار ہے، آئیے ماڈل کو سیٹ اپ کریں!  
+
+<Tip>  
+
+✏️ **آزما کر دیکھیں!** ان تمام چنکس کو ہٹانا جو کانٹیکسٹ سائز سے چھوٹے ہیں، یہاں کوئی بڑا مسئلہ نہیں تھا کیونکہ ہم چھوٹے کانٹیکسٹ ونڈوز استعمال کر رہے ہیں۔ جیسے جیسے آپ کانٹیکسٹ سائز بڑھائیں گے (یا اگر آپ کے پاس مختصر ڈاکیومنٹس کا کارپس ہے)، تو ان چنکس کا تناسب بھی بڑھے گا جو ضائع کیے جا رہے ہیں۔ ڈیٹا تیار کرنے کا ایک زیادہ مؤثر طریقہ یہ ہے کہ تمام ٹوکنائزڈ سیمپلز کو ایک بیچ میں `eos_token_id` ٹوکن کے ساتھ جوڑیں، اور پھر کنکیٹینیٹڈ سیکوینسز پر چنکنگ کریں۔ ایک مشق کے طور پر، `tokenize()` فنکشن میں ترمیم کریں تاکہ وہ اس طریقہ کو اپنائے۔ یاد رکھیں کہ آپ کو `truncation=False` سیٹ کرنا ہوگا اور ٹوکنائزر سے دیگر آرگیومنٹس ہٹانے ہوں گے تاکہ مکمل سیکوینس آف ٹوکن آئی ڈیز حاصل ہو سکے۔  
+
+</Tip>  
+
+## نیا ماڈل انیشلائز کرنا[[initializing-a-new-model]]  
+
+ہمارا پہلا قدم ایک نیا GPT-2 ماڈل انیشلائز کرنا ہے۔ ہم اپنے ماڈل کے لیے وہی کنفیگریشن استعمال کریں گے جو چھوٹے GPT-2 ماڈل کے لیے ہے، اس لیے ہم پہلے سے تربیت یافتہ کنفیگریشن لوڈ کریں گے، یقینی بنائیں گے کہ ٹوکنائزر سائز ماڈل کے وکیبلری سائز سے میل کھاتا ہے، اور `bos` اور `eos` (سیکوینس کے آغاز اور اختتام) کے ٹوکن آئی ڈیز پاس کریں گے۔
+
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, GPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+```
+
+اس کنفیگریشن کے ساتھ، ہم ایک نیا ماڈل لوڈ کر سکتے ہیں۔ نوٹ کریں کہ یہ پہلا موقع ہے جب ہم `from_pretrained()` فنکشن استعمال نہیں کر رہے، کیونکہ ہم درحقیقت خود سے ایک ماڈل انیشلائز کر رہے ہیں:
+
+```py
+model = GPT2LMHeadModel(config)
+model_size = sum(t.numel() for t in model.parameters())
+print(f"GPT-2 size: {model_size/1000**2:.1f}M parameters")
+```
+
+```python out
+GPT-2 size: 124.2M parameters
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFGPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+```
+
+اس کنفیگریشن کے ساتھ، ہم ایک نیا ماڈل لوڈ کر سکتے ہیں۔ نوٹ کریں کہ یہ پہلا موقع ہے جب ہم `from_pretrained()` فنکشن استعمال نہیں کر رہے، کیونکہ ہم حقیقت میں خود سے ایک ماڈل انیشلائز کر رہے ہیں:
+
+```py
+model = TFGPT2LMHeadModel(config)
+model(model.dummy_inputs)  # Builds the model
+model.summary()
+```
+
+```python out
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #   
+=================================================================
+transformer (TFGPT2MainLayer multiple                  124242432 
+=================================================================
+Total params: 124,242,432
+Trainable params: 124,242,432
+Non-trainable params: 0
+_________________________________________________________________
+```
+
+{/if}
+
+ہمارے ماڈل میں 124 ملین پیرامیٹرز ہیں جنہیں ہمیں ٹیون کرنا ہوگا۔ تربیت شروع کرنے سے پہلے، ہمیں ایک ڈیٹا کولیٹر سیٹ اپ کرنا ہوگا جو بیچز بنانے کا خیال رکھے گا۔ ہم `DataCollatorForLanguageModeling` کولیٹر استعمال کر سکتے ہیں، جو خاص طور پر لینگویج ماڈلنگ کے لیے ڈیزائن کیا گیا ہے (جیسا کہ نام سے ظاہر ہوتا ہے)۔ یہ بیچز کو اسٹیک اور پیڈ کرنے کے علاوہ لینگویج ماڈل کے لیبلز بنانے کا بھی خیال رکھتا ہے — کیونکہ کازول لینگویج ماڈلنگ میں ان پٹس ہی لیبلز کے طور پر کام کرتے ہیں (بس ایک عنصر سے شفٹ کر کے)، اور یہ ڈیٹا کولیٹر انہیں تربیت کے دوران خودکار طور پر بناتا ہے، لہٰذا ہمیں `input_ids` کو ڈپلیکیٹ کرنے کی ضرورت نہیں ہوتی۔  
+
+نوٹ کریں کہ `DataCollatorForLanguageModeling` ماسکڈ لینگویج ماڈلنگ (MLM) اور کازول لینگویج ماڈلنگ (CLM) دونوں کو سپورٹ کرتا ہے۔ ڈیفالٹ کے طور پر یہ ڈیٹا کو MLM کے لیے تیار کرتا ہے، لیکن ہم `mlm=False` سیٹ کر کے CLM میں تبدیل کر سکتے ہیں:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False, return_tensors="tf")
+```
+
+{/if}
+
+چلیں ایک مثال پر نظر ڈالتے ہیں:
+
+```py
+out = data_collator([tokenized_datasets["train"][i] for i in range(5)])
+for key in out:
+    print(f"{key} shape: {out[key].shape}")
+```
+
+{#if fw === 'pt'}
+
+```python out
+input_ids shape: torch.Size([5, 128])
+attention_mask shape: torch.Size([5, 128])
+labels shape: torch.Size([5, 128])
+```
+
+{:else}
+
+```python out
+input_ids shape: (5, 128)
+attention_mask shape: (5, 128)
+labels shape: (5, 128)
+```
+
+{/if}
+
+ہم دیکھ سکتے ہیں کہ مثالیں اسٹیک کی گئی ہیں اور تمام ٹینسرز کی شکل ایک جیسی ہے۔
+
+{#if fw === 'tf'}
+
+اب ہم `prepare_tf_dataset()` میتھڈ استعمال کر سکتے ہیں تاکہ اپنے ڈیٹاسیٹس کو TensorFlow ڈیٹاسیٹس میں تبدیل کریں، اس ڈیٹا کولیٹر کے ساتھ جو ہم نے اوپر بنایا تھا:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["train"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=32,
+)
+tf_eval_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["valid"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=32,
+)
+```
+
+{/if}
+
+<Tip warning={true}>
+
+⚠️ ان پٹس اور لیبلز کو سیدھ میں لانے کے لیے شفٹ کرنا ماڈل کے اندر ہوتا ہے، لہٰذا ڈیٹا کولیٹر صرف ان پٹس کو کاپی کر کے لیبلز بناتا ہے۔
+
+</Tip>
+
+اب ہمارے پاس سب کچھ تیار ہے تاکہ ہم حقیقت میں اپنے ماڈل کو ٹرین کر سکیں — آخرکار یہ زیادہ مشکل کام نہیں تھا! تربیت شروع کرنے سے پہلے، ہمیں Hugging Face میں لاگ ان کرنا چاہیے۔ اگر آپ نوٹ بک میں کام کر رہے ہیں، تو آپ درج ذیل یوٹیلیٹی فنکشن سے ایسا کر سکتے ہیں:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+یہ ایک ویجیٹ دکھائے گا جہاں آپ اپنے Hugging Face لاگ ان اسناد درج کر سکتے ہیں۔  
+
+اگر آپ نوٹ بک میں کام نہیں کر رہے، تو بس اپنے ٹرمینل میں درج ذیل لائن ٹائپ کریں:
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+اب صرف ٹریننگ کے آرگومنٹس کو کنفیگر کرنا اور `Trainer` کو شروع کرنا باقی ہے۔ ہم ایک کوسائن لرننگ ریٹ شیڈول استعمال کریں گے جس میں کچھ وارم اپ ہوگا اور ایک مؤثر بیچ سائز 256 ہوگا (`per_device_train_batch_size` * `gradient_accumulation_steps`)۔  
+
+گریڈینٹ اکومیولیشن اس وقت استعمال ہوتی ہے جب ایک واحد بیچ میموری میں فٹ نہیں ہوتا، اور یہ کئی فارورڈ/بیک ورڈ پاسز کے ذریعے گریڈینٹ کو بتدریج بناتی ہے۔ ہم اسے عملی طور پر دیکھیں گے جب ہم 🤗 Accelerate کے ساتھ ٹریننگ لوپ بنائیں گے۔
+
+
+```py
+from transformers import Trainer, TrainingArguments
+
+args = TrainingArguments(
+    output_dir="codeparrot-ds",
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=32,
+    evaluation_strategy="steps",
+    eval_steps=5_000,
+    logging_steps=5_000,
+    gradient_accumulation_steps=8,
+    num_train_epochs=1,
+    weight_decay=0.1,
+    warmup_steps=1_000,
+    lr_scheduler_type="cosine",
+    learning_rate=5e-4,
+    save_steps=5_000,
+    fp16=True,
+    push_to_hub=True,
+)
+
+trainer = Trainer(
+    model=model,
+    tokenizer=tokenizer,
+    args=args,
+    data_collator=data_collator,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["valid"],
+)
+```
+
+اب ہم بس `Trainer` کو شروع کر سکتے ہیں اور تربیت کے مکمل ہونے کا انتظار کر سکتے ہیں۔ یہ اس بات پر منحصر ہے کہ آپ اسے پورے تربیتی سیٹ پر چلاتے ہیں یا اس کے کسی ذیلی حصے پر، جس کے مطابق یہ 20 یا 2 گھنٹے لے گا، لہٰذا چند کافی کا کپ اور ایک اچھی کتاب اٹھا لیں!
+
+```py
+trainer.train()
+```
+
+تربیت مکمل ہونے کے بعد، ہم ماڈل اور tokenizer کو Hub پر دھکیل سکتے ہیں:
+
+```py
+trainer.push_to_hub()
+```
+
+{:else}
+
+اب صرف اتنا کرنا باقی رہ گیا ہے کہ تربیتی ہائپرپیرا میٹرز کو ترتیب دیں اور `compile()` اور `fit()` کو کال کریں۔ ہم تربیت کی استحکام کو بہتر بنانے کے لیے کچھ warmup کے ساتھ learning rate schedule استعمال کریں گے:
+
+```py
+from transformers import create_optimizer
+import tensorflow as tf
+
+num_train_steps = len(tf_train_dataset)
+optimizer, schedule = create_optimizer(
+    init_lr=5e-5,
+    num_warmup_steps=1_000,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Train in mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+اب ہم بس `model.fit()` کو کال کر سکتے ہیں اور تربیت کے مکمل ہونے کا انتظار کر سکتے ہیں۔ یہ اس بات پر منحصر ہے کہ آپ اسے پورے تربیتی سیٹ پر چلاتے ہیں یا اس کے کسی ذیلی حصے پر، جس کے مطابق یہ 20 یا 2 گھنٹے لے گا، لہٰذا چند کافی کا کپ اور ایک اچھی کتاب اٹھا لیں! تربیت مکمل ہونے کے بعد ہم ماڈل اور tokenizer کو Hub پر دھکیل سکتے ہیں:
+
+```py
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(output_dir="codeparrot-ds", tokenizer=tokenizer)
+
+model.fit(tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback])
+```
+
+{/if}
+
+<Tip>
+
+✏️ **آزمائیں!** کچے متون سے GPT-2 کی تربیت تک پہنچنے کے لیے ہمیں `TrainingArguments` کے علاوہ تقریباً 30 کوڈ لائنز کی ضرورت پڑی۔ اسے اپنے ڈیٹاسیٹ کے ساتھ آزمائیں اور دیکھیں کہ کیا آپ اچھے نتائج حاصل کر سکتے ہیں!
+
+</Tip>
+
+<Tip>
+
+{#if fw === 'pt'}
+
+💡 اگر آپ کے پاس ایک ایسی مشین تک رسائی ہے جس میں متعدد GPUs موجود ہوں، تو کوڈ کو وہاں چلانے کی کوشش کریں۔ `Trainer` خود بخود متعدد مشینوں کا انتظام کرتا ہے، اور اس سے تربیت کی رفتار میں نمایاں اضافہ ہو سکتا ہے۔
+
+{:else}
+
+💡 اگر آپ کے پاس ایک ایسی مشین تک رسائی ہے جس میں متعدد GPUs موجود ہوں، تو آپ `MirroredStrategy` context استعمال کرنے کی کوشش کر سکتے ہیں تاکہ تربیت کی رفتار میں خاطر خواہ اضافہ ہو۔ آپ کو ایک `tf.distribute.MirroredStrategy` آبجیکٹ بنانا ہوگا، اور اس بات کو یقینی بنانا ہوگا کہ کوئی بھی `to_tf_dataset()` یا `prepare_tf_dataset()` میتھڈز، ساتھ ہی ماڈل کی تخلیق اور `fit()` کال، اس کے `scope()` context میں چلائی جائیں۔ آپ اس کی دستاویزات [یہاں](https://www.tensorflow.org/guide/distributed_training#use_tfdistributestrategy_with_keras_modelfit) دیکھ سکتے ہیں۔
+
+{/if}
+
+</Tip>
+
+## پائپ لائن کے ساتھ کوڈ جنریشن[[code-generation-with-a-pipeline]]
+
+اب سچ کا لمحہ آ گیا ہے: آئیے دیکھتے ہیں کہ تربیت یافتہ ماڈل واقعی کتنا اچھا کام کرتا ہے! ہم لاگز میں دیکھ سکتے ہیں کہ نقصان (loss) مسلسل کم ہو رہا ہے، لیکن ماڈل کو آزمائش میں ڈالنے کے لیے آئیے دیکھتے ہیں کہ یہ کچھ prompts پر کتنا مؤثر کام کرتا ہے۔ ایسا کرنے کے لیے ہم ماڈل کو ایک text generation `pipeline` میں لپیٹیں گے، اور اگر کوئی GPU دستیاب ہو تو تیز جنریشن کے لیے اسے اس پر منتقل کر دیں گے:
+
+{#if fw === 'pt'}
+
+```py
+import torch
+from transformers import pipeline
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+pipe = pipeline(
+    "text-generation", model="huggingface-course/codeparrot-ds", device=device
+)
+```
+
+{:else}
+
+```py
+from transformers import pipeline
+
+course_model = TFGPT2LMHeadModel.from_pretrained("huggingface-course/codeparrot-ds")
+course_tokenizer = AutoTokenizer.from_pretrained("huggingface-course/codeparrot-ds")
+pipe = pipeline(
+    "text-generation", model=course_model, tokenizer=course_tokenizer, device=0
+)
+```
+
+{/if}
+
+چلیں، سب سے پہلے ایک سادہ اسکیٹر پلاٹ بنانے کا کام شروع کرتے ہیں:
+
+```py
+txt = """\
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create scatter plot with x, y
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create scatter plot with x, y
+plt.scatter(x, y)
+
+# create scatter
+```
+
+نتیجہ درست نظر آ رہا ہے۔ کیا یہ `pandas` آپریشن کے لیے بھی کام کرتا ہے؟ آئیے دیکھتے ہیں کہ کیا ہم دو arrays سے ایک `DataFrame` بنا سکتے ہیں:
+
+```py
+txt = """\
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create dataframe from x and y
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create dataframe from x and y
+df = pd.DataFrame({'x': x, 'y': y})
+df.insert(0,'x', x)
+for
+```
+
+بہترین! یہ درست جواب ہے — اگرچہ یہ دوبارہ `x` کالم داخل کر دیتا ہے۔ چونکہ تیار کردہ ٹوکنز کی تعداد محدود ہے، اس لیے درج ذیل `for` لوپ کٹ گیا ہے۔ آئیے دیکھتے ہیں کہ کیا ہم کچھ زیادہ پیچیدہ کر سکتے ہیں اور ماڈل کی مدد سے `groupby` آپریشن استعمال کر سکتے ہیں:
+
+```py
+txt = """\
+# dataframe with profession, income and name
+df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
+
+# calculate the mean income per profession
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# dataframe with profession, income and name
+df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
+
+# calculate the mean income per profession
+profession = df.groupby(['profession']).mean()
+
+# compute the
+```
+
+برا نہیں؛ یہی صحیح طریقہ ہے۔ آخر میں، آئیے دیکھتے ہیں کہ کیا ہم اسے `scikit-learn` کے لیے بھی استعمال کر سکتے ہیں اور ایک رینڈم فاریسٹ ماڈل سیٹ اپ کر سکتے ہیں:
+
+```py
+txt = """
+# import random forest regressor from scikit-learn
+from sklearn.ensemble import RandomForestRegressor
+
+# fit random forest model with 300 estimators on X, y:
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# import random forest regressor from scikit-learn
+from sklearn.ensemble import RandomForestRegressor
+
+# fit random forest model with 300 estimators on X, y:
+rf = RandomForestRegressor(n_estimators=300, random_state=random_state, max_depth=3)
+rf.fit(X, y)
+rf
+```
+
+{#if fw === 'tf'}
+
+یہ ظاہر ہوتا ہے کہ ماڈل نے Python ڈیٹا سائنس اسٹیک کی کچھ سنٹیکس سیکھ لی ہے۔ تاہم، حقیقی دنیا میں اسے ڈپلائے کرنے سے پہلے ہمیں اسے مزید تفصیل سے جانچنے کی ضرورت ہوگی۔ بعض اوقات مطلوبہ کارکردگی حاصل کرنے کے لیے ماڈل ٹریننگ میں مزید تخصیص کی ضرورت ہوتی ہے، جیسے کہ بیچ سائز کو متحرک طور پر اپ ڈیٹ کرنا یا خراب مثالوں کو فوری طور پر چھوڑ دینا۔  
+
+ایسی صورتحال میں، `Trainer` کو سب کلاس کر کے ضروری تبدیلیاں شامل کرنا ایک آپشن ہو سکتا ہے، لیکن بعض اوقات صفر سے اپنا ٹریننگ لوپ لکھنا زیادہ آسان ہوتا ہے۔ یہی وہ جگہ ہے جہاں 🤗 Accelerate مددگار ثابت ہوتا ہے۔  
+
+### 🤗 Accelerate کے ساتھ ٹریننگ  
+
+ہم نے `Trainer` کا استعمال کر کے ماڈل ٹریننگ دیکھی، جو کچھ حد تک تخصیص کی اجازت دیتا ہے۔ لیکن بعض اوقات ہمیں مکمل کنٹرول کی ضرورت ہوتی ہے، یا ہم کوئی منفرد تبدیلیاں کرنا چاہتے ہیں۔ اس صورت میں، 🤗 Accelerate ایک بہترین انتخاب ہے۔  
+
+چونکہ ہمارا بنیادی مقصد ڈیٹا سائنس لائبریریوں کے لیے مناسب آٹو کمپلیشن فراہم کرنا ہے، اس لیے ان نمونوں کو زیادہ وزن دینا بہتر ہوگا جن میں `matplotlib.pyplot`, `pandas`, اور `sklearn` جیسی لائبریریوں کا زیادہ استعمال ہوتا ہے۔ ہم عام طور پر استعمال ہونے والے الفاظ جیسے `plt`, `pd`, `sk`, `fit`, اور `predict` کے ذریعے ان نمونوں کو آسانی سے شناخت کر سکتے ہیں۔
+
+
+```py
+keytoken_ids = []
+for keyword in [
+    "plt",
+    "pd",
+    "sk",
+    "fit",
+    "predict",
+    " plt",
+    " pd",
+    " sk",
+    " fit",
+    " predict",
+    "testtest",
+]:
+    ids = tokenizer([keyword]).input_ids[0]
+    if len(ids) == 1:
+        keytoken_ids.append(ids[0])
+    else:
+        print(f"Keyword has not single token: {keyword}")
+```
+
+```python out
+'Keyword has not single token: testtest'
+```
+
+زبردست، یہ اچھی طرح کام کر رہا ہے! اب ہم ایک کسٹم نقصان (loss) فنکشن لکھ سکتے ہیں جو ان پٹ سیکوینس، logits، اور وہ key tokens کو بطور ان پٹ لیتا ہے جو ہم نے ابھی منتخب کیے ہیں۔ سب سے پہلے ہمیں logits اور inputs کو ہم آہنگ (align) کرنا ہے: input سیکوینس جسے ایک token دائیں شفٹ کیا گیا ہے، لیبلز بناتا ہے، کیونکہ اگلا token موجودہ token کا لیبل ہوتا ہے۔ ہم یہ اس طرح حاصل کر سکتے ہیں کہ لیبلز کو input سیکوینس کے دوسرے token سے شروع کریں، کیونکہ ماڈل پہلے token کے لیے پیش گوئی نہیں کرتا۔ پھر ہم آخری logit کو کاٹ دیتے ہیں، کیونکہ ہمارے پاس مکمل input سیکوینس کے بعد آنے والے token کے لیے کوئی لیبل نہیں ہوتا۔ اس کے ساتھ ہم ہر sample پر loss حساب کر سکتے ہیں اور ہر sample میں تمام keywords کے وقوع پذیر ہونے (occurrences) کو گن سکتے ہیں۔ آخر میں، ہم ان occurrences کو weights کے طور پر استعمال کرتے ہوئے تمام samples کا weighted average حساب کرتے ہیں۔ چونکہ ہم ان تمام samples کو ضائع نہیں کرنا چاہتے جن میں کوئی keywords نہیں ہیں، اس لیے ہم weights میں 1 شامل کر دیتے ہیں:
+
+```py
+from torch.nn import CrossEntropyLoss
+import torch
+
+
+def keytoken_weighted_loss(inputs, logits, keytoken_ids, alpha=1.0):
+    # Shift so that tokens < n predict n
+    shift_labels = inputs[..., 1:].contiguous()
+    shift_logits = logits[..., :-1, :].contiguous()
+    # Calculate per-token loss
+    loss_fct = CrossEntropyLoss(reduce=False)
+    loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+    # Resize and average loss per sample
+    loss_per_sample = loss.view(shift_logits.size(0), shift_logits.size(1)).mean(axis=1)
+    # Calculate and scale weighting
+    weights = torch.stack([(inputs == kt).float() for kt in keytoken_ids]).sum(
+        axis=[0, 2]
+    )
+    weights = alpha * (1.0 + weights)
+    # Calculate weighted average
+    weighted_loss = (loss_per_sample * weights).mean()
+    return weighted_loss
+```
+
+اس شاندار نئے نقصان (loss) فنکشن کے ساتھ تربیت شروع کرنے سے پہلے، ہمیں چند چیزیں تیار کرنے کی ضرورت ہے:
+
+- ہمیں ڈیٹا کو بیچز میں لوڈ کرنے کے لیے dataloaders کی ضرورت ہے۔
+- ہمیں weight decay پیرامیٹرز ترتیب دینے ہیں۔
+- کبھی کبھار ہمیں ماڈل کی جانچ (evaluation) کرنی ہوتی ہے، لہٰذا evaluation کوڈ کو ایک فنکشن میں لپیٹنا معقول ہے۔
+
+آئیے سب سے پہلے dataloaders سے آغاز کرتے ہیں۔ ہمیں صرف ڈیٹاسیٹ کے فارمیٹ کو `"torch"` پر سیٹ کرنا ہے، اور پھر ہم اسے مناسب بیچ سائز کے ساتھ PyTorch `DataLoader` کو دے سکتے ہیں:
+
+```py
+from torch.utils.data.dataloader import DataLoader
+
+tokenized_datasets.set_format("torch")
+train_dataloader = DataLoader(tokenized_datasets["train"], batch_size=32, shuffle=True)
+eval_dataloader = DataLoader(tokenized_datasets["valid"], batch_size=32)
+```
+
+اگلا مرحلہ یہ ہے کہ ہم پیرامیٹرز کو گروپ کریں تاکہ optimizer کو معلوم ہو کہ کون سے پیرامیٹرز پر اضافی weight decay لگایا جائے گا۔ عموماً، تمام bias اور LayerNorm وزن والے پیرامیٹرز کو اس سے مستثنیٰ رکھا جاتا ہے؛ یہ رہا طریقہ:
+
+```py
+weight_decay = 0.1
+
+
+def get_grouped_params(model, no_decay=["bias", "LayerNorm.weight"]):
+    params_with_wd, params_without_wd = [], []
+    for n, p in model.named_parameters():
+        if any(nd in n for nd in no_decay):
+            params_without_wd.append(p)
+        else:
+            params_with_wd.append(p)
+    return [
+        {"params": params_with_wd, "weight_decay": weight_decay},
+        {"params": params_without_wd, "weight_decay": 0.0},
+    ]
+```
+
+چونکہ ہم تربیت کے دوران validation سیٹ پر ماڈل کا باقاعدگی سے evaluation کرنا چاہتے ہیں، اس لیے آئیے اس کے لیے ایک فنکشن بھی لکھتے ہیں۔ یہ صرف evaluation dataloader کے ذریعے چلتا ہے اور تمام processes سے losses کو جمع کرتا ہے:
+
+```py
+def evaluate():
+    model.eval()
+    losses = []
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(batch["input_ids"], labels=batch["input_ids"])
+
+        losses.append(accelerator.gather(outputs.loss))
+    loss = torch.mean(torch.cat(losses))
+    try:
+        perplexity = torch.exp(loss)
+    except OverflowError:
+        perplexity = float("inf")
+    return loss.item(), perplexity.item()
+```
+
+`evaluate()` فنکشن کی مدد سے ہم باقاعدگی سے loss اور [perplexity](/course/chapter7/3) کی رپورٹ کر سکتے ہیں۔ اگلا، ہم اپنا ماڈل دوبارہ تعریف کرتے ہیں تاکہ یہ یقینی بنایا جا سکے کہ ہم دوبارہ ابتداء سے تربیت کر رہے ہیں:
+
+```py
+model = GPT2LMHeadModel(config)
+```
+
+پھر ہم اپنے optimizer کو تعریف کرتے ہیں، پہلے والے فنکشن کا استعمال کرتے ہوئے وزن کمی (weight decay) کے لیے پیرامیٹرز کو تقسیم کرنے کے لیے:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(get_grouped_params(model), lr=5e-4)
+```
+
+اب آئیے ماڈل، optimizer، اور dataloaders کو تیار کرتے ہیں تاکہ ہم تربیت شروع کر سکیں:
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator(fp16=True)
+
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+<Tip>
+
+🚨 اگر آپ TPU پر تربیت کر رہے ہیں، تو آپ کو اوپر والے سیل سے شروع ہونے والا تمام کوڈ ایک مخصوص تربیتی فنکشن میں منتقل کرنا ہوگا۔ مزید تفصیلات کے لیے [Chapter 3](/course/chapter3) دیکھیں۔
+
+</Tip>
+
+اب جبکہ ہم نے اپنے `train_dataloader` کو `accelerator.prepare()` میں بھیج دیا ہے، ہم اس کی لمبائی استعمال کر کے تربیتی مراحل کی تعداد حساب کر سکتے ہیں۔ یاد رکھیں کہ یہ عمل ہمیشہ dataloader کی تیاری کے بعد کیا جانا چاہیے، کیونکہ اس طریقہ کار سے اس کی لمبائی تبدیل ہو جائے گی۔ ہم learning rate سے 0 تک ایک کلاسیکی linear schedule استعمال کرتے ہیں:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 1
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    name="linear",
+    optimizer=optimizer,
+    num_warmup_steps=1_000,
+    num_training_steps=num_training_steps,
+)
+```
+
+آخر میں، اپنے ماڈل کو Hub پر دھکیلنے کے لیے، ہمیں ایک working folder میں `Repository` آبجیکٹ بنانے کی ضرورت ہوگی۔ اگر آپ پہلے سے لاگ ان نہیں ہیں تو پہلے Hugging Face Hub میں لاگ ان کریں۔ ہم اپنے ماڈل کو دینے والے model ID سے repository کا نام طے کریں گے (آپ اپنے اختیار سے `repo_name` کو تبدیل کر سکتے ہیں؛ اس میں صرف آپ کا username شامل ہونا چاہیے، جیسا کہ `get_full_repo_name()` فنکشن کرتا ہے):
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "codeparrot-ds-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/codeparrot-ds-accelerate'
+```
+
+پھر ہم اس repository کو ایک لوکل فولڈر میں کلون کر سکتے ہیں۔ اگر یہ پہلے سے موجود ہے، تو یہ لوکل فولڈر اُس repository کا ایک موجودہ کلون ہونا چاہیے جس پر ہم کام کر رہے ہیں:
+
+```py
+output_dir = "codeparrot-ds-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+ہم اب `output_dir` میں محفوظ کی جانے والی کسی بھی چیز کو `repo.push_to_hub()` میتھڈ کو کال کر کے اپلوڈ کر سکتے ہیں۔ یہ ہمیں ہر epoch کے آخر میں intermediate models اپلوڈ کرنے میں مدد دے گا۔
+
+تربیت شروع کرنے سے پہلے، آئیے ایک فوری جانچ چلائیں تاکہ یہ معلوم ہو سکے کہ evaluation فنکشن صحیح کام کر رہا ہے:
+
+```py
+evaluate()
+```
+
+```python out
+(10.934126853942871, 56057.14453125)
+```
+
+یہ loss اور perplexity کی قدریں بہت زیادہ ہیں، لیکن چونکہ ہم نے ابھی ماڈل کی تربیت نہیں کی ہے، اس لیے یہ حیران کن بات نہیں ہے۔ اس کے ساتھ، ہمارے پاس training script کے core حصے کو لکھنے کے لیے سب کچھ تیار ہے: training loop۔ training loop میں ہم dataloader پر iterate کرتے ہیں اور batches کو ماڈل کو پاس کرتے ہیں۔ logits کی مدد سے، ہم پھر اپنے custom loss فنکشن کا حساب لگا سکتے ہیں۔ ہم loss کو gradient accumulation steps کی تعداد سے scale کرتے ہیں تاکہ اضافی steps کو aggregate کرنے سے loss بہت زیادہ نہ ہو جائے۔ Optimize کرنے سے پہلے، ہم بہتر convergence کے لیے gradients کو clip بھی کرتے ہیں۔ آخر میں، ہر چند steps پر ہم اپنے نئے `evaluate()` فنکشن کی مدد سے evaluation set پر ماڈل کا جائزہ لیتے ہیں:
+
+```py
+from tqdm.notebook import tqdm
+
+gradient_accumulation_steps = 8
+eval_steps = 5_000
+
+model.train()
+completed_steps = 0
+for epoch in range(num_train_epochs):
+    for step, batch in tqdm(
+        enumerate(train_dataloader, start=1), total=num_training_steps
+    ):
+        logits = model(batch["input_ids"]).logits
+        loss = keytoken_weighted_loss(batch["input_ids"], logits, keytoken_ids)
+        if step % 100 == 0:
+            accelerator.print(
+                {
+                    "samples": step * samples_per_step,
+                    "steps": completed_steps,
+                    "loss/train": loss.item() * gradient_accumulation_steps,
+                }
+            )
+        loss = loss / gradient_accumulation_steps
+        accelerator.backward(loss)
+        if step % gradient_accumulation_steps == 0:
+            accelerator.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+            completed_steps += 1
+        if (step % (eval_steps * gradient_accumulation_steps)) == 0:
+            eval_loss, perplexity = evaluate()
+            accelerator.print({"loss/eval": eval_loss, "perplexity": perplexity})
+            model.train()
+            accelerator.wait_for_everyone()
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+            if accelerator.is_main_process:
+                tokenizer.save_pretrained(output_dir)
+                repo.push_to_hub(
+                    commit_message=f"Training in progress step {step}", blocking=False
+                )
+```
+
+اور بس یہی ہے -- اب آپ کے پاس causal language models جیسے GPT-2 کے لیے اپنا custom training loop موجود ہے جسے آپ اپنی ضروریات کے مطابق مزید تخصیص کر سکتے ہیں۔ 
+
+<Tip>
+
+✏️ **آزمائیں!** یا تو اپنی مرضی کا custom loss فنکشن بنائیں جو آپ کے use case کے مطابق ہو، یا training loop میں کوئی اور custom step شامل کریں۔
+
+</Tip>
+
+<Tip>
+
+✏️ **آزمائیں!** جب طویل training experiments چل رہے ہوں تو اہم metrics کو log کرنا ایک اچھا خیال ہے، جیسے TensorBoard یا Weights & Biases جیسے tools استعمال کر کے۔ training loop میں مناسب logging شامل کریں تاکہ آپ ہمیشہ جان سکیں کہ training کیسے جا رہی ہے۔
+
+</Tip>
+
+{/if}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
