@@ -1,0 +1,377 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section3.ipynb"},
+]} />
+
+# Ajuste fino supervisado[[ajuste-fino-supervisado]]
+
+El ajuste fino supervisado (SFT, por sus siglas en inglés: *Supervised Fine-Tuning*) es un proceso utilizado principalmente para adaptar modelos de lenguaje preentrenados a seguir instrucciones, entablar diálogos y utilizar formatos de salida específicos. Si bien los modelos preentrenados tienen capacidades generales impresionantes, el SFT ayuda a transformarlos en modelos tipo asistente que pueden comprender y responder mejor a las solicitudes del usuario. Por lo general, esto se hace entrenando con conjuntos de datos de conversaciones e instrucciones escritas por humanos.
+
+Esta página proporciona una guía paso a paso para ajustar finamente el modelo [`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B) utilizando el [`SFTTrainer`](https://huggingface.co/docs/trl/en/sft_trainer). Siguiendo estos pasos, podrás adaptar el modelo para realizar tareas específicas de manera más efectiva.
+
+## Cuándo utilizar SFT
+
+Antes de sumergirte en la implementación, es importante comprender cuándo el SFT es la opción adecuada para tu proyecto. Como primer paso, debes considerar si el uso de un modelo ajustado a instrucciones existente con prompts bien elaborados sería suficiente para tu caso de uso. El SFT implica considerables recursos computacionales y esfuerzo de ingeniería, por lo que solo debe buscarse cuando la formulación de prompts en modelos existentes resulte insuficiente.
+
+> [!TIP]
+> Considera el SFT solo si:
+> - Necesitas rendimiento adicional más allá de lo que los prompts pueden lograr
+> - Tienes un caso de uso específico donde el costo de utilizar un modelo grande de propósito general supera el costo de ajustar un modelo más pequeño
+> - Requieres formatos de salida especializados o conocimientos específicos del dominio con los que los modelos existentes tienen dificultades
+
+Si determinas que el SFT es necesario, la decisión de proceder depende de dos factores principales:
+
+### Control de plantilla
+El SFT permite un control preciso sobre la estructura de salida del modelo. Esto es particularmente valioso cuando necesitas que el modelo:
+1. Genere respuestas en un formato de plantilla de chat específico
+2. Siga esquemas de salida estrictos
+3. Mantenga un estilo consistente en todas las respuestas
+
+### Adaptación de dominio
+Al trabajar en dominios especializados, el SFT ayuda a alinear el modelo con los requisitos específicos del dominio al:
+1. Enseñar terminología y conceptos del dominio
+2. Hacer cumplir estándares profesionales
+3. Manejar consultas técnicas adecuadamente
+4. Seguir pautas específicas de la industria
+
+> [!TIP]
+> Antes de comenzar con el SFT, evalúa si tu caso de uso requiere:
+> - Formateo preciso de la salida
+> - Conocimiento específico del dominio
+> - Patrones de respuesta consistentes
+> - Adherencia a pautas específicas
+>
+> Esta evaluación ayudará a determinar si el SFT es el enfoque adecuado para tus necesidades.
+
+## Preparación del conjunto de datos
+
+El proceso de ajuste fino supervisado requiere un conjunto de datos específico de la tarea estructurado con pares de entrada y salida. Cada par debe constar de:
+1. Un prompt de entrada
+2. La respuesta esperada del modelo
+3. Cualquier contexto adicional o metadatos
+
+La calidad de tus datos de entrenamiento es crucial para un ajuste fino exitoso. Veamos cómo preparar y validar tu conjunto de datos:
+
+<iframe
+  src="https://huggingface.co/datasets/HuggingFaceTB/smoltalk/embed/viewer/all/train?row=0"
+  frameborder="0"
+  width="100%"
+  height="360px"
+></iframe>
+
+## Configuración del entrenamiento
+
+El éxito de tu ajuste fino depende en gran medida de elegir los parámetros de entrenamiento correctos. Exploremos cada parámetro importante y cómo configurarlos eficazmente:
+
+La configuración de SFTTrainer requiere la consideración de varios parámetros que controlan el proceso de entrenamiento. Exploremos cada parámetro y su propósito:
+
+1. **Parámetros de duración del entrenamiento**:
+   - `num_train_epochs`: Controla la duración total del entrenamiento
+   - `max_steps`: Alternativa a las épocas, establece el número máximo de pasos de entrenamiento
+   - Más épocas permiten un mejor aprendizaje pero conllevan el riesgo de sobreajuste (*overfitting*)
+
+2. **Parámetros de tamaño de lote**:
+   - `per_device_train_batch_size`: Determina el uso de memoria y la estabilidad del entrenamiento
+   - `gradient_accumulation_steps`: Permite tamaños de lote efectivos más grandes
+   - Lotes más grandes proporcionan gradientes más estables pero requieren más memoria
+
+3. **Parámetros de tasa de aprendizaje**:
+   - `learning_rate`: Controla el tamaño de las actualizaciones de peso
+   - `warmup_ratio`: Parte del entrenamiento utilizada para el calentamiento de la tasa de aprendizaje
+   - Un valor demasiado alto puede causar inestabilidad; uno demasiado bajo produce un aprendizaje lento
+
+4. **Parámetros de monitoreo**:
+   - `logging_steps`: Frecuencia de registro de métricas
+   - `eval_steps`: Con qué frecuencia evaluar en los datos de validación
+   - `save_steps`: Frecuencia con la que se guardan los puntos de control (*checkpoints*) del modelo
+
+> [!TIP]
+> Comienza con valores conservadores y ajústalos según el monitoreo:
+> - Empieza con 1 a 3 épocas
+> - Usa tamaños de lote más pequeños al principio
+> - Monitorea de cerca las métricas de validación
+> - Ajusta la tasa de aprendizaje si el entrenamiento es inestable
+
+## Implementación con TRL
+
+Ahora que comprendemos los componentes clave, implementemos el entrenamiento con una validación y un monitoreo adecuados. Utilizaremos la clase `SFTTrainer` de la librería Transformers Reinforcement Learning (TRL), construida sobre la librería `transformers`. Aquí tienes un ejemplo completo utilizando la librería TRL:
+
+```python
+from datasets import load_dataset
+from trl import SFTConfig, SFTTrainer
+import torch
+
+# Establecer dispositivo
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Cargar conjunto de datos
+dataset = load_dataset("HuggingFaceTB/smoltalk", "all")
+
+# Configurar modelo y tokenizador
+model_name = "HuggingFaceTB/SmolLM2-135M"
+model = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name).to(
+    device
+)
+tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_name)
+# Configurar plantilla de chat
+model, tokenizer = setup_chat_format(model=model, tokenizer=tokenizer)
+
+# Configurar entrenador
+training_args = SFTConfig(
+    output_dir="./sft_output",
+    max_steps=1000,
+    per_device_train_batch_size=4,
+    learning_rate=5e-5,
+    logging_steps=10,
+    save_steps=100,
+    eval_strategy="steps",
+    eval_steps=50,
+)
+
+# Inicializar entrenador
+trainer = SFTTrainer(
+    model=model,
+    args=training_args,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["test"],
+    processing_class=tokenizer,
+)
+
+# Iniciar entrenamiento
+trainer.train()
+```
+
+> [!TIP]
+> Cuando se utiliza un conjunto de datos con un campo "messages" (como el ejemplo anterior), el SFTTrainer aplica automáticamente la plantilla de chat del modelo, que recupera del hub. Esto significa que no necesitas ninguna configuración adicional para manejar conversaciones de estilo chat: el entrenador formateará los mensajes de acuerdo con el formato de plantilla esperado por el modelo.
+
+## Empaquetado del conjunto de datos (*Dataset Packing*)
+
+El SFTTrainer admite el empaquetado de ejemplos (*example packing*) para optimizar la eficiencia del entrenamiento. Esta característica permite empaquetar múltiples ejemplos cortos en la misma secuencia de entrada, maximizando la utilización de la GPU durante el entrenamiento. Para habilitar el empaquetado, simplemente establece `packing=True` en el constructor de `SFTConfig`. Al usar conjuntos de datos empaquetados con `max_steps`, ten en cuenta que puedes entrenar durante más épocas de lo esperado dependiendo de tu configuración de empaquetado. Puedes personalizar cómo se combinan los ejemplos usando una función de formateo, lo cual es particularmente útil cuando se trabaja con conjuntos de datos que tienen múltiples campos, como pares de pregunta-respuesta. Para los conjuntos de datos de evaluación, puedes desactivar el empaquetado configurando `eval_packing=False` en el `SFTConfig`. Aquí hay un ejemplo básico de personalización de la configuración de empaquetado:
+
+```python
+# Configurar empaquetado
+training_args = SFTConfig(packing=True)
+
+trainer = SFTTrainer(model=model, train_dataset=dataset, args=training_args)
+
+trainer.train()
+```
+
+Al empaquetar el conjunto de datos con múltiples campos, puedes definir una función de formateo personalizada para combinar los campos en una sola secuencia de entrada. Esta función debe tomar una lista de ejemplos y devolver un diccionario con la secuencia de entrada empaquetada. Aquí hay un ejemplo de una función de formateo personalizada:
+
+```python
+def formatting_func(example):
+    text = f"### Question: {example['question']}\n ### Answer: {example['answer']}"
+    return text
+
+
+training_args = SFTConfig(packing=True)
+trainer = SFTTrainer(
+    "facebook/opt-350m",
+    train_dataset=dataset,
+    args=training_args,
+    formatting_func=formatting_func,
+)
+```
+
+## Monitorear el progreso del entrenamiento
+
+El monitoreo efectivo es crucial para un ajuste fino exitoso. Exploremos a qué prestar atención durante el entrenamiento:
+
+### Comprender los patrones de pérdida
+
+La pérdida de entrenamiento suele seguir tres fases distintas:
+1. Caída brusca inicial: Adaptación rápida a la nueva distribución de datos
+2. Estabilización gradual: La tasa de aprendizaje disminuye a medida que el modelo se ajusta
+3. Convergencia: Los valores de pérdida se estabilizan, lo que indica la finalización del entrenamiento
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/nlp_course_sft_loss_graphic.png" alt="Entrenamiento con SFTTrainer" />
+
+### Métricas para monitorear
+
+Un monitoreo efectivo implica realizar un seguimiento de métricas cuantitativas y evaluar métricas cualitativas. Las métricas disponibles son:
+
+- Pérdida de entrenamiento (*training loss*)
+- Pérdida de validación (*validation loss*)
+- Progresión de la tasa de aprendizaje
+- Normas de gradiente
+
+> [!WARNING]
+> Presta atención a estas señales de advertencia durante el entrenamiento:
+> 1. La pérdida de validación aumenta mientras la pérdida de entrenamiento disminuye (sobreajuste / *overfitting*)
+> 2. No hay una mejora significativa en los valores de pérdida (subajuste / *underfitting*)
+> 3. Valores de pérdida extremadamente bajos (posible memorización)
+> 4. Formato de salida inconsistente (problemas en el aprendizaje de plantillas)
+
+### El camino hacia la convergencia
+
+A medida que avanza el entrenamiento, la curva de pérdida debería estabilizarse gradualmente. El indicador clave de un entrenamiento saludable es una pequeña brecha entre la pérdida de entrenamiento y la de validación, lo que sugiere que el modelo está aprendiendo patrones generalizables en lugar de memorizar ejemplos específicos. Los valores absolutos de pérdida variarán según tu tarea y conjunto de datos.
+
+### Monitoreo del progreso del entrenamiento
+
+El gráfico anterior muestra una progresión de entrenamiento típica. Observa cómo tanto la pérdida de entrenamiento como la de validación disminuyen drásticamente al principio y luego se estabilizan gradualmente. Este patrón indica que el modelo está aprendiendo eficazmente manteniendo la capacidad de generalización.
+
+### Señales de advertencia a observar
+
+Varios patrones en las curvas de pérdida pueden indicar posibles problemas. A continuación ilustramos las señales de advertencia habituales y las soluciones que podemos considerar.
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/sft_loss_1.png" alt="Entrenamiento con SFTTrainer" />
+
+Si la pérdida de validación disminuye a un ritmo significativamente más lento que la pérdida de entrenamiento, es probable que tu modelo se esté sobreajustando a los datos de entrenamiento. Considera:
+- Reducir los pasos de entrenamiento
+- Aumentar el tamaño del conjunto de datos
+- Validar la calidad y diversidad del conjunto de datos
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/sft_loss_2.png" alt="Entrenamiento con SFTTrainer" />
+
+Si la pérdida no muestra una mejora significativa, el modelo podría estar:
+- Aprendiendo demasiado lento (prueba aumentando la tasa de aprendizaje)
+- Teniendo dificultades con la tarea (verifica la calidad de los datos y la complejidad de la tarea)
+- Llegando a los límites de la arquitectura (considera un modelo diferente)
+
+<img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/sft_loss_3.png" alt="Entrenamiento con SFTTrainer" />
+
+Los valores de pérdida extremadamente bajos podrían sugerir memorización en lugar de aprendizaje. Esto es particularmente preocupante si:
+- El modelo tiene un rendimiento deficiente en ejemplos nuevos y similares
+- Las respuestas carecen de diversidad
+- Las respuestas son demasiado similares a los ejemplos de entrenamiento
+
+> [!WARNING]
+> Monitorea tanto los valores de pérdida como las salidas reales del modelo durante el entrenamiento. A veces, la pérdida puede parecer buena mientras el modelo desarrolla comportamientos no deseados. La evaluación cualitativa regular de las respuestas del modelo ayuda a detectar problemas que las métricas por sí solas podrían pasar por alto.
+
+Debemos tener en cuenta que la interpretación de los valores de pérdida que describimos aquí está orientada al caso más común y, de hecho, los valores de pérdida pueden comportarse de diversas formas según el modelo, el conjunto de datos, los parámetros de entrenamiento, etc. Si estás interesado en explorar más sobre los patrones descritos, deberías consultar esta publicación de blog del equipo de [Fast AI](https://www.fast.ai/posts/2023-09-04-learning-jumps/).
+
+## Evaluación después de SFT
+
+En la sección [11.4](/course/chapter11/4) aprenderemos a evaluar el modelo utilizando conjuntos de datos de referencia (*benchmarks*). Por ahora, nos centraremos en la evaluación cualitativa del modelo.
+
+Después de completar el SFT, considera las siguientes acciones de seguimiento:
+
+1. Evaluar el modelo a fondo en datos de prueba reservados
+2. Validar el cumplimiento de la plantilla en varias entradas
+3. Comprobar la retención de conocimientos específicos del dominio
+4. Monitorear las métricas de rendimiento en el mundo real
+
+> [!TIP]
+> Documenta tu proceso de entrenamiento, incluyendo:
+> - Características del conjunto de datos
+> - Parámetros de entrenamiento
+> - Métricas de rendimiento
+> - Limitaciones conocidas
+> Esta documentación será valiosa para futuras iteraciones del modelo.
+
+## Cuestionario
+
+### 1. ¿Qué parámetros controlan la duración del entrenamiento en SFT?
+
+<Question
+	choices={[
+		{
+			text: "num_train_epochs y max_steps",
+			explain: "¡Correcto! Estos parámetros determinan cuánto tiempo se entrenará el modelo, ya sea por número de épocas o por pasos totales.",
+			correct: true
+		},
+		{
+			text: "batch_size y learning_rate",
+			explain: "Aunque estos afectan el entrenamiento, no controlan directamente la duración."
+		},
+		{
+			text: "gradient_checkpointing y warmup_ratio",
+			explain: "Estos parámetros afectan la eficiencia y la estabilidad del entrenamiento, no la duración."
+		}
+	]}
+/>
+
+### 2. ¿Qué patrón en las curvas de pérdida indica un posible sobreajuste?
+
+<Question
+    choices={[
+        {
+            text: "La pérdida de validación aumenta mientras que la pérdida de entrenamiento continúa disminuyendo",
+            explain: "¡Correcto! Esta divergencia entre la pérdida de entrenamiento y la de validación es un signo clásico de sobreajuste.",
+            correct: true
+        },
+        {
+            text: "Tanto la pérdida de entrenamiento como la de validación disminuyen constantemente",
+            explain: "Este patrón en realidad indica un entrenamiento saludable."
+        },
+        {
+            text: "La pérdida de entrenamiento permanece constante mientras que la pérdida de validación disminuye",
+            explain: "Este sería un patrón inusual y no indica sobreajuste."
+        }
+    ]}
+/>
+
+### 3. ¿Para qué se utiliza gradient_accumulation_steps?
+
+<Question
+    choices={[
+        {
+            text: "Para aumentar el tamaño de lote efectivo sin usar más memoria",
+            explain: "¡Correcto! Acumula gradientes a lo largo de múltiples pasos hacia adelante antes de actualizar los pesos.",
+            correct: true
+        },
+        {
+            text: "Para guardar puntos de control durante el entrenamiento",
+            explain: "Esto se gestiona mediante los parámetros save_steps y save_strategy."
+        },
+        {
+            text: "Para controlar el esquema de la tasa de aprendizaje",
+            explain: "El esquema de la tasa de aprendizaje se controla mediante learning_rate y warmup_ratio."
+        }
+    ]}
+/>
+
+### 4. ¿Qué deberías monitorear durante el entrenamiento de SFT?
+
+<Question
+    choices={[
+        {
+            text: "Tanto las métricas cuantitativas como las salidas cualitativas",
+            explain: "¡Correcto! Monitorear ambos tipos de métricas ayuda a detectar todos los posibles problemas.",
+            correct: true
+        },
+        {
+            text: "Solo la pérdida de entrenamiento",
+            explain: "La pérdida de entrenamiento por sí sola no es suficiente para garantizar un buen comportamiento del modelo."
+        },
+        {
+            text: "Solo la calidad de salida del modelo",
+            explain: "Aunque es importante, la evaluación cualitativa por sí sola pasa por alto dinámicas de entrenamiento importantes."
+        }
+    ]}
+/>
+
+### 5. ¿Qué indica una convergencia saludable durante el entrenamiento?
+
+<Question
+    choices={[
+        {
+            text: "Una pequeña brecha entre la pérdida de entrenamiento y la de validación",
+            explain: "¡Correcto! Esto indica que el modelo está aprendiendo patrones generalizables.",
+            correct: true
+        },
+        {
+            text: "La pérdida de entrenamiento llega a cero",
+            explain: "Valores de pérdida extremadamente bajos pueden indicar memorización en lugar de aprendizaje."
+        },
+        {
+            text: "La pérdida de validación es menor que la pérdida de entrenamiento",
+            explain: "Esto sería inusual y podría indicar problemas con el conjunto de validación."
+        }
+    ]}
+/>
+
+## 💐 ¡Buen trabajo!
+
+¡Has aprendido cómo ajustar finamente modelos usando SFT! Para continuar tu aprendizaje:
+1. Prueba el cuaderno con diferentes parámetros
+2. Experimenta con otros conjuntos de datos
+3. Contribuye con mejoras al material del curso
+
+## Recursos adicionales
+
+- [Documentación de TRL](https://huggingface.co/docs/trl)
+- [Repositorio de ejemplos de SFT](https://github.com/huggingface/trl/blob/main/trl/scripts/sft.py)
+- [Mejores prácticas de ajuste fino](https://huggingface.co/docs/transformers/training)
