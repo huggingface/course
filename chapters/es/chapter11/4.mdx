@@ -1,0 +1,164 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section4.ipynb"},
+]} />
+
+# LoRA (Adaptación de bajo rango)[[lora-adaptacion-de-bajo-rango]]
+
+El ajuste fino de modelos de lenguaje grandes es un proceso intensivo en recursos. LoRA es una técnica que nos permite ajustar finamente grandes modelos de lenguaje con una pequeña cantidad de parámetros. Funciona agregando y optimizando matrices más pequeñas a los pesos de atención, reduciendo típicamente los parámetros entrenables en aproximadamente un 90%.
+
+## Comprender LoRA
+
+LoRA (*Low-Rank Adaptation*) es una técnica de ajuste fino eficiente en parámetros (*Parameter-Efficient Fine-Tuning*, PEFT) que congela los pesos del modelo preentrenado e inyecta matrices de descomposición de rango entrenables en las capas del modelo. En lugar de entrenar todos los parámetros del modelo durante el ajuste fino, LoRA descompone las actualizaciones de peso en matrices más pequeñas mediante descomposición de bajo rango, reduciendo significativamente la cantidad de parámetros entrenables manteniendo el rendimiento del modelo. Por ejemplo, cuando se aplicó a GPT-3 175B, LoRA redujo los parámetros entrenables en 10.000 veces y los requisitos de memoria de la GPU en 3 veces en comparación con el ajuste fino completo. Puedes leer más sobre LoRA en el [artículo de LoRA](https://arxiv.org/pdf/2106.09685).
+
+LoRA funciona agregando pares de matrices de descomposición de rango a las capas transformer, centrándose típicamente en los pesos de atención. Durante la inferencia, estos pesos del adaptador se pueden fusionar con el modelo base, lo que resulta en una sobrecarga de latencia nula. LoRA es particularmente útil para adaptar grandes modelos de lenguaje a tareas o dominios específicos mientras se mantienen manejables los requisitos de recursos.
+
+## Ventajas clave de LoRA
+
+1. **Eficiencia de memoria**: 
+   - Solo los parámetros del adaptador se almacenan en la memoria de la GPU
+   - Los pesos del modelo base permanecen congelados y se pueden cargar en menor precisión
+   - Permite el ajuste fino de modelos grandes en GPUs de consumo
+
+2. **Funciones de entrenamiento**:
+   - Integración nativa de PEFT/LoRA con configuración mínima
+   - Soporte para QLoRA (LoRA cuantizado) para una eficiencia de memoria aún mayor
+
+3. **Gestión de adaptadores**:
+   - Guardado de pesos del adaptador durante los puntos de control (*checkpoints*)
+   - Funciones para fusionar adaptadores nuevamente en el modelo base
+
+## Cargar adaptadores LoRA con PEFT
+
+[PEFT](https://github.com/huggingface/peft) es una librería que proporciona una interfaz unificada para cargar y gestionar métodos PEFT, incluido LoRA. Te permite cargar y alternar fácilmente entre diferentes métodos PEFT, lo que facilita la experimentación con diferentes técnicas de ajuste fino.
+
+Los adaptadores se pueden cargar en un modelo preentrenado con `load_adapter()`, lo cual es útil para probar diferentes adaptadores cuyos pesos no están fusionados. Establece los pesos del adaptador activo con la función `set_adapter()`. Para volver al modelo base, puedes usar `unload()` para descargar todos los módulos LoRA. Esto facilita el cambio entre diferentes pesos específicos de cada tarea.
+
+```python
+from peft import PeftModel, PeftConfig
+
+config = PeftConfig.from_pretrained("ybelkada/opt-350m-lora")
+model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path)
+lora_model = PeftModel.from_pretrained(model, "ybelkada/opt-350m-lora")
+```
+
+![lora_load_adapter](https://github.com/huggingface/smol-course/raw/main/v1/3_parameter_efficient_finetuning/images/lora_adapter.png)
+
+## Ajustar finamente LLMs usando `trl` y el `SFTTrainer` con LoRA
+
+El [SFTTrainer](https://huggingface.co/docs/trl/sft_trainer) de `trl` proporciona integración con adaptadores LoRA a través de la librería [PEFT](https://huggingface.co/docs/peft/en/index). Esto significa que podemos ajustar un modelo de la misma manera que lo hicimos con SFT, pero usar LoRA para reducir la cantidad de parámetros que necesitamos entrenar.
+
+Usaremos la clase `LoraConfig` de PEFT en nuestro ejemplo. La configuración requiere solo unos pocos pasos:
+
+1. Definir la configuración de LoRA (rango, alfa, dropout)
+2. Crear el SFTTrainer con la configuración de PEFT
+3. Entrenar y guardar los pesos del adaptador
+
+## Configuración de LoRA
+
+Repasemos la configuración de LoRA y sus parámetros clave.
+
+| Parámetro | Descripción |
+|-----------|-------------|
+| `r` (rango) | Dimensión de las matrices de bajo rango utilizadas para las actualizaciones de peso. Típicamente entre 4-32. Los valores más bajos proporcionan mayor compresión pero potencialmente menor expresividad. |
+| `lora_alpha` | Factor de escala para las capas de LoRA, generalmente establecido en 2x el valor del rango. Valores más altos dan como resultado efectos de adaptación más fuertes. |
+| `lora_dropout` | Probabilidad de dropout para las capas de LoRA, típicamente 0.05-0.1. Valores más altos ayudan a prevenir el sobreajuste durante el entrenamiento. |
+| `bias` | Controla el entrenamiento de los términos de sesgo (*bias*). Las opciones son "none", "all" o "lora_only". "none" es la más común para la eficiencia de memoria. |
+| `target_modules` | Especifica a qué módulos del modelo aplicar LoRA. Puede ser "all-linear" o módulos específicos como "q_proj,v_proj". Más módulos permiten una mayor adaptabilidad pero aumentan el uso de memoria. |
+
+> [!TIP]
+> Al implementar métodos PEFT, comienza con valores de rango pequeños (4-8) para LoRA y monitorea la pérdida de entrenamiento. Utiliza conjuntos de validación para evitar el sobreajuste y compara los resultados con líneas de base de ajuste fino completo siempre que sea posible. La efectividad de los diferentes métodos puede variar según la tarea, por lo que la experimentación es clave.
+
+## Usar TRL con PEFT
+
+Los métodos PEFT se pueden combinar con TRL para el ajuste fino con el fin de reducir los requisitos de memoria. Podemos pasar `LoraConfig` al modelo al cargarlo.
+
+```python
+from peft import LoraConfig
+
+# r: dimensión del rango para las matrices de actualización de LoRA (más pequeño = más compresión)
+rank_dimension = 6
+# lora_alpha: factor de escala para las capas de LoRA (más alto = adaptación más fuerte)
+lora_alpha = 8
+# lora_dropout: probabilidad de dropout para las capas de LoRA (ayuda a prevenir el sobreajuste)
+lora_dropout = 0.05
+
+peft_config = LoraConfig(
+    r=rank_dimension,  # Dimensión del rango - típicamente entre 4-32
+    lora_alpha=lora_alpha,  # Factor de escala de LoRA - típicamente 2x el rango
+    lora_dropout=lora_dropout,  # Probabilidad de dropout para las capas de LoRA
+    bias="none",  # Tipo de sesgo para LoRA. Los sesgos correspondientes se actualizarán durante el entrenamiento.
+    target_modules="all-linear",  # A qué módulos aplicar LoRA
+    task_type="CAUSAL_LM",  # Tipo de tarea para la arquitectura del modelo
+)
+```
+
+Arriba usamos `device_map="auto"` para asignar automáticamente el modelo al dispositivo correcto. También puedes asignar manualmente el modelo a un dispositivo específico utilizando `device_map={"": device_index}`.
+
+También necesitaremos definir el `SFTTrainer` con la configuración de LoRA.
+
+```python
+# Crear SFTTrainer con configuración de LoRA
+trainer = SFTTrainer(
+    model=model,
+    args=args,
+    train_dataset=dataset["train"],
+    peft_config=peft_config,  # Configuración de LoRA
+    max_seq_length=max_seq_length,  # Longitud máxima de secuencia
+    processing_class=tokenizer,
+)
+```
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Continúa con tu modelo ajustado finamente de la sección anterior, pero ajústalo con LoRA. Usa el conjunto de datos `HuggingFaceTB/smoltalk` para ajustar un modelo `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`, utilizando la configuración de LoRA que definimos anteriormente.
+
+## Fusionar adaptadores LoRA
+
+Después de entrenar con LoRA, es posible que desees fusionar los pesos del adaptador nuevamente en el modelo base para una implementación más sencilla. Esto crea un único modelo con los pesos combinados, eliminando la necesidad de cargar adaptadores por separado durante la inferencia.
+
+El proceso de fusión requiere atención a la gestión de la memoria y la precisión. Dado que necesitarás cargar tanto el modelo base como los pesos del adaptador simultáneamente, asegúrate de que haya suficiente memoria GPU/CPU disponible. Usar `device_map="auto"` en `transformers` encontrará el dispositivo correcto para el modelo según tu hardware.
+
+Mantén una precisión uniforme (por ejemplo, float16) durante todo el proceso, haciendo coincidir la precisión utilizada durante el entrenamiento y guardando el modelo fusionado en el mismo formato para su despliegue.
+
+## Implementación de la fusión
+
+Después de entrenar un adaptador LoRA, puedes fusionar los pesos del adaptador nuevamente en el modelo base. Así es como se hace:
+
+```python
+import torch
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
+
+# 1. Cargar el modelo base
+base_model = AutoModelForCausalLM.from_pretrained(
+    "base_model_name", torch_dtype=torch.float16, device_map="auto"
+)
+
+# 2. Cargar el modelo PEFT con el adaptador
+peft_model = PeftModel.from_pretrained(
+    base_model, "path/to/adapter", torch_dtype=torch.float16
+)
+
+# 3. Fusionar los pesos del adaptador con el modelo base
+merged_model = peft_model.merge_and_unload()
+```
+
+Si encuentras discrepancias de tamaño en el modelo guardado, asegúrate de guardar también el tokenizador:
+
+```python
+# Guardar tanto el modelo como el tokenizador
+tokenizer = AutoTokenizer.from_pretrained("base_model_name")
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
+```
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Fusiona los pesos del adaptador nuevamente en el modelo base. Usa el conjunto de datos `HuggingFaceTB/smoltalk` para ajustar un modelo `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`, utilizando la configuración de LoRA que definimos anteriormente.
+
+
+# Recursos
+
+- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/pdf/2106.09685)
+- [Documentación de PEFT](https://huggingface.co/docs/peft)
+- [Publicación de blog de Hugging Face sobre PEFT](https://huggingface.co/blog/peft)

@@ -1,0 +1,249 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section2.ipynb"},
+]} />
+
+# Plantillas de chat[[plantillas-de-chat]]
+
+## Introducción
+
+Las plantillas de chat son esenciales para estructurar las interacciones entre los modelos de lenguaje y los usuarios. Ya sea que estés construyendo un chatbot simple o un agente de IA complejo, comprender cómo formatear adecuadamente tus conversaciones es crucial para obtener los mejores resultados de tu modelo. En esta guía, exploraremos qué son las plantillas de chat, por qué son importantes y cómo utilizarlas eficazmente.
+
+> [!TIP]
+> Las plantillas de chat son fundamentales para:
+> - Mantener una estructura de conversación coherente
+> - Garantizar una identificación adecuada de los roles
+> - Gestionar el contexto a lo largo de múltiples turnos
+> - Admitir funciones avanzadas como el uso de herramientas (*tool use*)
+
+## Tipos de modelos y plantillas
+
+### Modelos base frente a modelos Instruct
+Un modelo base se entrena con datos de texto sin procesar para predecir el siguiente token, mientras que un modelo *instruct* se ajusta finamente de manera específica para seguir instrucciones y participar en conversaciones. Por ejemplo, [`SmolLM2-135M`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) es un modelo base, mientras que [`SmolLM2-135M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct) es su variante ajustada para instrucciones.
+
+Los modelos ajustados para instrucciones se entrenan para seguir una estructura conversacional específica, lo que los hace más adecuados para aplicaciones de chatbot. Además, los modelos instruct pueden manejar interacciones complejas, incluido el uso de herramientas, entradas multimodales y llamadas a funciones (*function calling*).
+
+Para hacer que un modelo base se comporte como un modelo instruct, necesitamos formatear nuestros prompts de una manera consistente que el modelo pueda entender. Aquí es donde entran las plantillas de chat. ChatML es uno de esos formatos de plantilla que estructura las conversaciones con indicadores de rol claros (`system`, `user`, `assistant`). Aquí tienes una guía sobre [ChatML](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/blob/e2c3f7557efbdec707ae3a336371d169783f1da1/tokenizer_config.json#L146).
+
+> [!WARNING]
+> Al usar un modelo instruct, verifica siempre que estés utilizando el formato de plantilla de chat correcto. El uso de una plantilla incorrecta puede provocar un rendimiento deficiente del modelo o un comportamiento inesperado. La forma más sencilla de garantizar esto es verificar la configuración del tokenizador del modelo en el Hub. Por ejemplo, el modelo `SmolLM2-135M-Instruct` utiliza <a href="https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/blob/e2c3f7557efbdec707ae3a336371d169783f1da1/tokenizer_config.json#L146">esta configuración</a>.
+
+### Formatos de plantilla comunes
+
+Antes de sumergirnos en implementaciones específicas, es importante entender cómo los diferentes modelos esperan que se formateen sus conversaciones. Exploremos algunos formatos de plantilla comunes utilizando un ejemplo sencillo de conversación:
+
+Usaremos la siguiente estructura de conversación para todos los ejemplos:
+
+```python
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+    {"role": "assistant", "content": "Hi! How can I help you today?"},
+    {"role": "user", "content": "What's the weather?"},
+]
+```
+
+Esta es la plantilla ChatML utilizada en modelos como SmolLM2 y Qwen 2:
+
+```sh
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Hello!<|im_end|>
+<|im_start|>assistant
+Hi! How can I help you today?<|im_end|>
+<|im_start|>user
+What's the weather?<|im_start|>assistant
+```
+
+Este formato utiliza la plantilla de `mistral`:
+
+```sh
+<s>[INST] You are a helpful assistant. [/INST]
+Hi! How can I help you today?</s>
+[INST] Hello! [/INST]
+```
+
+Las diferencias clave entre estos formatos incluyen:
+1. **Manejo de mensajes del sistema**: 
+   - Llama 2 envuelve los mensajes del sistema en etiquetas `<<SYS>>`
+   - Llama 3 utiliza etiquetas `<|system|>` con cierres `</s>`
+   - Mistral incluye el mensaje del sistema en la primera instrucción
+   - Qwen utiliza un rol `system` explícito con etiquetas `<|im_start|>`
+   - ChatGPT utiliza el prefijo `SYSTEM:`
+
+2. **Límites de mensajes**:
+   - Llama 2 utiliza etiquetas `[INST]` y `[/INST]`
+   - Llama 3 utiliza etiquetas específicas de rol (`<|system|>`, `<|user|>`, `<|assistant|>`) con terminaciones `</s>`
+   - Mistral utiliza `[INST]` y `[/INST]` con `<s>` y `</s>`
+   - Qwen utiliza tokens de inicio y fin específicos de cada rol
+
+3. **Tokens especiales**:
+   - Llama 2 utiliza `<s>` y `</s>` para los límites de la conversación
+   - Llama 3 utiliza `</s>` para finalizar cada mensaje
+   - Mistral utiliza `<s>` y `</s>` para los límites de turno
+   - Qwen utiliza tokens de inicio y fin específicos de cada rol
+
+Comprender estas diferencias es clave para trabajar con varios modelos. Veamos cómo la librería `transformers` nos ayuda a manejar estas variaciones automáticamente:
+
+```python
+from transformers import AutoTokenizer
+
+# Estos usarán diferentes plantillas automáticamente
+mistral_tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.1")
+qwen_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen-7B-Chat")
+smol_tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
+
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+]
+
+# Cada uno formateará de acuerdo con la plantilla de su modelo
+mistral_chat = mistral_tokenizer.apply_chat_template(messages, tokenize=False)
+qwen_chat = qwen_tokenizer.apply_chat_template(messages, tokenize=False)
+smol_chat = smol_tokenizer.apply_chat_template(messages, tokenize=False)
+```
+
+<details>
+<summary>Haz clic para ver ejemplos de plantillas</summary>
+
+Plantilla ChatML de Qwen 2 y SmolLM2:
+
+```sh
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Hello!<|im_end|>
+<|im_start|>assistant
+Hi! How can I help you today?<|im_end|>
+<|im_start|>user
+What's the weather?<|im_start|>assistant
+```
+
+Plantilla de Mistral:
+
+```sh
+<s>[INST] You are a helpful assistant. [/INST]
+Hi! How can I help you today?</s>
+[INST] Hello! [/INST]
+```
+
+</details>
+
+
+### Funciones avanzadas
+Las plantillas de chat pueden manejar escenarios más complejos más allá de las interacciones meramente conversacionales, incluyendo:
+
+1. **Uso de herramientas (*Tool Use*)**: Cuando los modelos necesitan interactuar con herramientas externas o APIs
+2. **Entradas multimodales**: Para manejar imágenes, audio u otros tipos de medios
+3. **Llamadas a funciones (*Function Calling*)**: Para la ejecución estructurada de funciones
+4. **Contexto multiturno**: Para mantener el historial de la conversación
+
+> [!TIP]
+> Al implementar funciones avanzadas:
+> - Prueba a fondo con tu modelo específico. Las plantillas de visión y de uso de herramientas son particularmente diversas.
+> - Monitorea cuidadosamente el uso de tokens entre cada función y modelo.
+> - Documenta el formato esperado para cada característica.
+
+Para conversaciones multimodales, las plantillas de chat pueden incluir referencias a imágenes o imágenes codificadas en base64:
+
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are a helpful vision assistant that can analyze images.",
+    },
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image", "image_url": "https://example.com/image.jpg"},
+        ],
+    },
+]
+```
+
+Aquí tienes un ejemplo de una plantilla de chat con uso de herramientas:
+
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are an AI assistant that can use tools. Available tools: calculator, weather_api",
+    },
+    {"role": "user", "content": "What's 123 * 456 and is it raining in Paris?"},
+    {
+        "role": "assistant",
+        "content": "Let me help you with that.",
+        "tool_calls": [
+            {
+                "tool": "calculator",
+                "parameters": {"operation": "multiply", "x": 123, "y": 456},
+            },
+            {"tool": "weather_api", "parameters": {"city": "Paris", "country": "France"}},
+        ],
+    },
+    {"role": "tool", "tool_name": "calculator", "content": "56088"},
+    {
+        "role": "tool",
+        "tool_name": "weather_api",
+        "content": "{'condition': 'rain', 'temperature': 15}",
+    },
+]
+```
+
+## Buenas prácticas
+
+### Pautas generales
+Al trabajar con plantillas de chat, sigue estas prácticas clave:
+
+1. **Formato uniforme**: Utiliza siempre el mismo formato de plantilla en toda tu aplicación
+2. **Definición clara de roles**: Especifica claramente los roles (`system`, `user`, `assistant`, `tool`) para cada mensaje
+3. **Gestión del contexto**: Ten en cuenta los límites de tokens al mantener el historial de conversaciones
+4. **Manejo de errores**: Incluye un manejo adecuado de errores para llamadas a herramientas y entradas multimodales
+5. **Validación**: Valida la estructura de los mensajes antes de enviarlos al modelo
+
+> [!WARNING]
+> Errores comunes a evitar:
+> - Mezclar diferentes formatos de plantillas en la misma aplicación
+> - Exceder los límites de tokens con historiales de conversación largos
+> - No escapar adecuadamente los caracteres especiales en los mensajes
+> - Olvidar validar la estructura de los mensajes de entrada
+> - Ignorar los requisitos de plantilla específicos del modelo
+
+## Ejercicio práctico
+
+Practiquemos la implementación de plantillas de chat con un ejemplo del mundo real.
+
+> [!TIP]
+> Sigue estos pasos para convertir el conjunto de datos `HuggingFaceTB/smoltalk` al formato ChatML:
+>
+> 1. Carga el conjunto de datos:
+> ```python
+> from datasets import load_dataset
+>
+> dataset = load_dataset("HuggingFaceTB/smoltalk")
+> ```
+>
+> 2. Crea una función de procesamiento:
+> ```python
+> def convert_to_chatml(example):
+>     return {
+>         "messages": [
+>             {"role": "user", "content": example["input"]},
+>             {"role": "assistant", "content": example["output"]},
+>         ]
+>     }
+> ```
+>
+> 3. Aplica la plantilla de chat utilizando el tokenizador de tu modelo elegido
+>
+> ¡Recuerda validar que tu formato de salida coincida con los requisitos de tu modelo objetivo!
+
+## Recursos adicionales
+
+- [Guía de plantillas de chat de Hugging Face](https://huggingface.co/docs/transformers/main/en/chat_templating)
+- [Documentación de Transformers](https://huggingface.co/docs/transformers)
+- [Repositorio de ejemplos de plantillas de chat](https://github.com/chujiezheng/chat_templates)
