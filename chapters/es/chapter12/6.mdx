@@ -1,0 +1,368 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/HuggingFace%20Course-Gemma3_(1B)-GRPO.ipynb"},
+]} />
+
+# Ejercicio práctico: GRPO con Unsloth[[ejercicio-practico-grpo-con-unsloth]]
+
+En este ejercicio, ajustarás finamente un modelo con GRPO (Group Relative Policy Optimization) usando Unsloth, para mejorar las capacidades de razonamiento de un modelo. Cubrimos GRPO en el [Capítulo 3](/course/chapter3/3).
+
+Unsloth es una librería que acelera el ajuste fino de LLMs, haciendo posible entrenar modelos más rápido y con menos recursos computacionales. Unsloth se conecta con TRL, por lo que aprovecharemos lo que aprendimos en las secciones anteriores y lo adaptaremos a las particularidades de Unsloth.
+
+> [!TIP]
+> Este ejercicio se puede ejecutar en una GPU Google Colab T4 gratuita. Para disfrutar de la mejor experiencia, sigue el cuaderno enlazado arriba y pruébalo tú mismo.
+
+## Instalar dependencias
+
+Primero, instalemos las librerías necesarias. Necesitaremos Unsloth para el ajuste fino acelerado y vLLM para una inferencia rápida.
+
+```bash
+pip install unsloth vllm
+pip install --upgrade pillow
+```
+
+## Configurar Unsloth
+
+Unsloth proporciona una clase (`FastLanguageModel`) que integra transformers con las optimizaciones de Unsloth. Vamos a importarla:
+
+```python
+from unsloth import FastLanguageModel
+```
+
+Ahora, carguemos el modelo Gemma 3 1B Instruct de Google y configurémoslo para el ajuste fino:
+
+```python
+from unsloth import FastLanguageModel
+import torch
+
+max_seq_length = 1024  # Se puede aumentar para secuencias de razonamiento más largas
+lora_rank = 32  # Mayor rango = más inteligente, pero más lento
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="google/gemma-3-1b-it",
+    max_seq_length=max_seq_length,
+    load_in_4bit=True,  # False para LoRA 16bit
+    fast_inference=True,  # Habilitar inferencia rápida con vLLM
+    max_lora_rank=lora_rank,
+    gpu_memory_utilization=0.6,  # Reducir si se agota la memoria
+)
+
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=lora_rank,  # ¡Elige cualquier número > 0! Sugeridos: 8, 16, 32, 64, 128
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],  # Eliminar QKVO si se agota la memoria
+    lora_alpha=lora_rank,
+    use_gradient_checkpointing="unsloth",  # Habilitar ajuste fino con contexto largo
+    random_state=3407,
+)
+```
+
+Este código carga el modelo en cuantización de 4 bits para ahorrar memoria y aplica LoRA (Low-Rank Adaptation) para un ajuste fino eficiente. El parámetro `target_modules` especifica qué capas del modelo ajustar, y `use_gradient_checkpointing` permite entrenar con contextos más largos.
+
+> [!TIP]
+> No cubriremos los detalles de LoRA en este capítulo, pero puedes aprender más en el [Capítulo 11](/course/chapter11/3).
+
+## Preparación de datos
+
+Para este ejercicio, utilizaremos el conjunto de datos GSM8K, que contiene problemas matemáticos de escuela primaria. Formatearemos los datos para alentar al modelo a mostrar su razonamiento antes de proporcionar una respuesta.
+
+Primero, definiremos el formato de los prompts y las respuestas:
+
+```python
+# Definir el prompt del sistema que instruye al modelo a usar un formato específico
+SYSTEM_PROMPT = """
+Respond in the following format:
+<reasoning>
+...
+</reasoning>
+<answer>
+...
+</answer>
+"""
+
+XML_COT_FORMAT = """\
+<reasoning>
+{reasoning}
+</reasoning>
+<answer>
+{answer}
+</answer>
+"""
+```
+
+Ahora, preparemos el conjunto de datos:
+
+```python
+import re
+from datasets import load_dataset, Dataset
+
+
+# Funciones auxiliares para extraer respuestas de diferentes formatos
+def extract_xml_answer(text: str) -> str:
+    answer = text.split("<answer>")[-1]
+    answer = answer.split("</answer>")[0]
+    return answer.strip()
+
+
+def extract_hash_answer(text: str) -> str | None:
+    if "####" not in text:
+        return None
+    return text.split("####")[1].strip()
+
+
+# Función para preparar el conjunto de datos GSM8K
+def get_gsm8k_questions(split="train") -> Dataset:
+    data = load_dataset("openai/gsm8k", "main")[split]
+    data = data.map(
+        lambda x: {
+            "prompt": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": x["question"]},
+            ],
+            "answer": extract_hash_answer(x["answer"]),
+        }
+    )
+    return data
+
+
+dataset = get_gsm8k_questions()
+```
+
+El conjunto de datos se prepara extrayendo la respuesta y formateándola como una cadena.
+
+## Definir funciones de recompensa
+
+Como comentamos en [una página anterior](/course/chapter12/4), GRPO puede utilizar funciones de recompensa para guiar el aprendizaje del modelo según criterios verificables como longitud y formato.
+
+En este ejercicio, definiremos varias funciones de recompensa que fomentan diferentes aspectos de un buen razonamiento. Por ejemplo, recompensaremos al modelo por proporcionar una respuesta entera y por seguir el formato estricto.
+
+```python
+# Función de recompensa que comprueba si la respuesta es correcta
+def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+    responses = [completion[0]["content"] for completion in completions]
+    q = prompts[0][-1]["content"]
+    extracted_responses = [extract_xml_answer(r) for r in responses]
+    print(
+        "-" * 20,
+        f"Question:\n{q}",
+        f"\nAnswer:\n{answer[0]}",
+        f"\nResponse:\n{responses[0]}",
+        f"\nExtracted:\n{extracted_responses[0]}",
+    )
+    return [2.0 if r == a else 0.0 for r, a in zip(extracted_responses, answer)]
+
+
+# Función de recompensa que comprueba si la respuesta es un número entero
+def int_reward_func(completions, **kwargs) -> list[float]:
+    responses = [completion[0]["content"] for completion in completions]
+    extracted_responses = [extract_xml_answer(r) for r in responses]
+    return [0.5 if r.isdigit() else 0.0 for r in extracted_responses]
+
+
+# Función de recompensa que comprueba si la respuesta sigue el formato estricto
+def strict_format_reward_func(completions, **kwargs) -> list[float]:
+    pattern = r"^<reasoning>\n.*?\n</reasoning>\n<answer>\n.*?\n</answer>\n$"
+    responses = [completion[0]["content"] for completion in completions]
+    matches = [re.match(pattern, r) for r in responses]
+    return [0.5 if match else 0.0 for match in matches]
+
+
+# Función de recompensa que comprueba si la respuesta sigue un formato más flexible
+def soft_format_reward_func(completions, **kwargs) -> list[float]:
+    pattern = r"<reasoning>.*?</reasoning>\s*<answer>.*?</answer>"
+    responses = [completion[0]["content"] for completion in completions]
+    matches = [re.match(pattern, r) for r in responses]
+    return [0.5 if match else 0.0 for match in matches]
+
+
+# Función de recompensa que cuenta las etiquetas XML y penaliza el contenido adicional
+def count_xml(text) -> float:
+    count = 0.0
+    if text.count("<reasoning>\n") == 1:
+        count += 0.125
+    if text.count("\n</reasoning>\n") == 1:
+        count += 0.125
+    if text.count("\n<answer>\n") == 1:
+        count += 0.125
+        count -= len(text.split("\n</answer>\n")[-1]) * 0.001
+    if text.count("\n</answer>") == 1:
+        count += 0.125
+        count -= (len(text.split("\n</answer>")[-1]) - 1) * 0.001
+    return count
+
+
+def xmlcount_reward_func(completions, **kwargs) -> list[float]:
+    contents = [completion[0]["content"] for completion in completions]
+    return [count_xml(c) for c in contents]
+```
+
+Estas funciones de recompensa tienen diferentes propósitos:
+
+| Función de recompensa | Propósito |
+|-----------------------|-----------|
+| `correctness_reward_func` | Recompensa al modelo cuando su respuesta coincide con la correcta |
+| `int_reward_func` | Recompensa al modelo por proporcionar una respuesta numérica |
+| `strict_format_reward_func` y `soft_format_reward_func` | Recompensan al modelo por seguir el formato especificado |
+| `xmlcount_reward_func` | Recompensa el uso adecuado de etiquetas XML y penaliza el contenido extra después de las etiquetas de cierre |
+
+## Entrenamiento con GRPO
+
+Ahora configuraremos el entrenador GRPO con nuestro modelo, tokenizador y funciones de recompensa. Esta parte sigue el mismo enfoque que el [ejercicio anterior](/course/chapter12/5).
+
+```python
+from trl import GRPOConfig, GRPOTrainer
+
+max_prompt_length = 256
+
+training_args = GRPOConfig(
+    learning_rate=5e-6,
+    adam_beta1=0.9,
+    adam_beta2=0.99,
+    weight_decay=0.1,
+    warmup_ratio=0.1,
+    lr_scheduler_type="cosine",
+    optim="paged_adamw_8bit",
+    logging_steps=1,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=1,  # Aumentar a 4 para un entrenamiento más fluido
+    num_generations=6,  # Disminuir si se agota la memoria
+    max_prompt_length=max_prompt_length,
+    max_completion_length=max_seq_length - max_prompt_length,
+    # num_train_epochs = 1, # Establecer en 1 para una ejecución de entrenamiento completa
+    max_steps=250,
+    save_steps=250,
+    max_grad_norm=0.1,
+    report_to="none",  # Se puede usar Weights & Biases
+    output_dir="outputs",
+)
+
+trainer = GRPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    reward_funcs=[
+        xmlcount_reward_func,
+        soft_format_reward_func,
+        strict_format_reward_func,
+        int_reward_func,
+        correctness_reward_func,
+    ],
+    args=training_args,
+    train_dataset=dataset,
+)
+```
+
+`GRPOConfig` establece varios hiperparámetros para el entrenamiento:
+- `use_vllm`: Permite inferencia rápida con vLLM
+- `learning_rate`: Controla la rapidez con la que aprende el modelo
+- `num_generations`: Número de terminaciones a generar para cada prompt
+- `max_steps`: Número total de pasos de entrenamiento a realizar
+
+Ahora comencemos el entrenamiento:
+
+```python
+trainer.train()
+```
+
+> [!WARNING]
+> El entrenamiento puede llevar algún tiempo. Es posible que no veas aumentar las recompensas inmediatamente; pueden pasar entre 150 y 200 pasos antes de que comiences a ver mejoras. ¡Sé paciente!
+
+## Probar el modelo
+
+Después del entrenamiento, probemos nuestro modelo para ver cómo se comporta. Primero, guardaremos los pesos de LoRA:
+
+```python
+model.save_lora("grpo_saved_lora")
+```
+
+Ahora, probemos el modelo con una nueva pregunta:
+
+```python
+from vllm import SamplingParams
+
+text = tokenizer.apply_chat_template(
+    [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": "Calculate pi."},
+    ],
+    tokenize=False,
+    add_generation_prompt=True,
+)
+
+sampling_params = SamplingParams(
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=1024,
+)
+output = (
+    model.fast_generate(
+        text,
+        sampling_params=sampling_params,
+        lora_request=model.load_lora("grpo_saved_lora"),
+    )[0]
+    .outputs[0]
+    .text
+)
+
+print(output)
+```
+
+Deberías ver que el modelo ahora sigue el formato especificado, mostrando su razonamiento antes de proporcionar una respuesta.
+
+## Guardar el modelo
+
+Unsloth ofrece varias opciones para guardar tu modelo ajustado finamente, pero nos centraremos en la más habitual:
+
+```python
+# Guardar en precisión de 16 bits
+model.save_pretrained_merged("model", tokenizer, save_method="merged_16bit")
+```
+
+## Subir al Hugging Face Hub
+
+Subiremos el modelo al Hugging Face Hub utilizando el método `push_to_hub_merged`. Este método nos permite subir el modelo en múltiples formatos de cuantización:
+
+```python
+# Subir al Hugging Face Hub (requiere un token)
+model.push_to_hub_merged(
+    "your-username/model-name", tokenizer, save_method="merged_16bit", token="your-token"
+)
+```
+
+Unsloth también admite guardar en formato GGUF para su uso con llama.cpp:
+
+```python
+model.push_to_hub_gguf(
+    "your-username/model-name",
+    tokenizer,
+    quantization_method=["q4_k_m", "q8_0", "q5_k_m"],
+    token="your-token",
+)
+```
+
+Los archivos GGUF se pueden usar con llama.cpp o sistemas basados en interfaz de usuario como Jan u Open WebUI.
+
+## Conclusión
+
+En este ejercicio, has aprendido a:
+1. Configurar Unsloth para un ajuste fino acelerado
+2. Preparar datos para el entrenamiento con GRPO
+3. Definir funciones de recompensa personalizadas para guiar el aprendizaje del modelo
+4. Entrenar un modelo usando GRPO
+5. Probar el modelo ajustado
+6. Guardar el modelo en varios formatos
+
+GRPO es una técnica poderosa para alinear modelos de lenguaje con comportamientos específicos, y Unsloth la hace accesible incluso en hardware limitado. Al combinar múltiples funciones de recompensa, puedes guiar al modelo para que siga un formato específico y al mismo tiempo mejore sus capacidades de razonamiento.
+
+Para más información y recursos, consulta:
+- [Documentación de Unsloth](https://docs.unsloth.ai/)
+- [Discord de Unsloth](https://discord.gg/unsloth)
+- [GitHub de Unsloth](https://github.com/unslothai/unsloth)
