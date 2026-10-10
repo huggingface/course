@@ -1,0 +1,1019 @@
+<FrameworkSwitchCourse {fw} />
+
+# Ajuste fino de un modelo de lenguaje enmascarado[[ajuste-fino-de-un-modelo-de-lenguaje-enmascarado]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section3_tf.ipynb"},
+]} />
+
+{/if}
+
+Para muchas aplicaciones de PLN que involucran modelos Transformer, simplemente puedes tomar un modelo preentrenado del Hugging Face Hub y ajustarlo directamente en tus datos para la tarea en cuestión. Siempre que el corpus utilizado para el preentrenamiento no sea demasiado diferente del corpus utilizado para el ajuste fino, el aprendizaje por transferencia (*transfer learning*) generalmente producirá buenos resultados.
+
+Sin embargo, hay algunos casos en los que querrás ajustar primero los modelos de lenguaje en tus datos antes de entrenar un cabezal específico para la tarea. Por ejemplo, si tu dataset contiene contratos legales o artículos científicos, un modelo Transformer estándar como BERT típicamente tratará las palabras específicas del dominio en tu corpus como tokens raros, y el rendimiento resultante puede ser menos que satisfactorio. Al ajustar el modelo de lenguaje en datos del propio dominio, puedes impulsar el rendimiento de muchas tareas posteriores (*downstream tasks*), ¡lo que significa que por lo general solo tienes que hacer este paso una vez!
+
+Este proceso de ajustar un modelo de lenguaje preentrenado en datos dentro del dominio generalmente se denomina _adaptación de dominio_ (*domain adaptation*). Fue popularizado en 2018 por [ULMFiT](https://arxiv.org/abs/1801.06146), que fue una de las primeras arquitecturas neuronales (basada en LSTMs) en hacer que el aprendizaje por transferencia realmente funcionara para PLN. En la imagen a continuación se muestra un ejemplo de adaptación de dominio con ULMFiT; en esta sección haremos algo similar, ¡pero con un Transformer en lugar de un LSTM!
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/ulmfit.svg" alt="ULMFiT."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/ulmfit-dark.svg" alt="ULMFiT."/>
+</div>
+
+Al final de esta sección, tendrás un [modelo de lenguaje enmascarado](https://huggingface.co/huggingface-course/distilbert-base-uncased-finetuned-imdb?text=This+is+a+great+%5BMASK%5D.) en el Hub que puede autocompletar oraciones como se muestra a continuación:
+
+<iframe src="https://course-demos-distilbert-base-uncased-finetuned-imdb.hf.space" frameBorder="0" height="300" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+¡Comencemos!
+
+<Youtube id="mqElG5QJWUg"/>
+
+> [!TIP]
+> 🙋 Si los términos "modelado de lenguaje enmascarado" y "modelo preentrenado" te suenan desconocidos, echa un vistazo al [Capítulo 1](/course/chapter1), donde explicamos todos estos conceptos básicos, ¡con videos incluidos!
+
+## Elegir un modelo preentrenado para el modelado de lenguaje enmascarado[[elegir-un-modelo-preentrenado-para-el-modelado-de-lenguaje-enmascarado]]
+
+Para comenzar, escojamos un modelo preentrenado adecuado para el modelado de lenguaje enmascarado. Como se muestra en la siguiente captura de pantalla, puedes encontrar una lista de candidatos aplicando el filtro "Fill-Mask" en el [Hugging Face Hub](https://huggingface.co/models?pipeline_tag=fill-mask&sort=downloads):
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/mlm-models.png" alt="Modelos del Hub." width="80%"/>
+</div>
+
+Aunque la familia de modelos BERT y RoBERTa son los más descargados, utilizaremos un modelo llamado [DistilBERT](https://huggingface.co/distilbert-base-uncased) que puede entrenarse mucho más rápido con poca o ninguna pérdida en el rendimiento posterior. Este modelo fue entrenado utilizando una técnica especial llamada [_destilación de conocimiento_](https://en.wikipedia.org/wiki/Knowledge_distillation) (*knowledge distillation*), donde un modelo grande "profesor" como BERT se usa para guiar el entrenamiento de un modelo "estudiante" que tiene muchos menos parámetros. Una explicación detallada de la destilación de conocimiento nos llevaría demasiado lejos en esta sección, pero si estás interesado puedes leer todo al respecto en [_Natural Language Processing with Transformers_](https://www.oreilly.com/library/view/natural-language-processing/9781098136789/) (conocido coloquialmente como el libro de texto de Transformers).
+
+{#if fw === 'pt'}
+
+Descarguemos DistilBERT usando la clase `AutoModelForMaskedLM`:
+
+```python
+from transformers import AutoModelForMaskedLM
+
+model_checkpoint = "distilbert-base-uncased"
+model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)
+```
+
+Podemos ver cuántos parámetros tiene este modelo llamando al método `num_parameters()`:
+
+```python
+distilbert_num_parameters = model.num_parameters() / 1_000_000
+print(f"'>>> DistilBERT number of parameters: {round(distilbert_num_parameters)}M'")
+print(f"'>>> BERT number of parameters: 110M'")
+```
+
+```python out
+'>>> DistilBERT number of parameters: 67M'
+'>>> BERT number of parameters: 110M'
+```
+
+{:else}
+
+Descarguemos DistilBERT usando la clase `TFAutoModelForMaskedLM`:
+
+```python
+from transformers import TFAutoModelForMaskedLM
+
+model_checkpoint = "distilbert-base-uncased"
+model = TFAutoModelForMaskedLM.from_pretrained(model_checkpoint)
+```
+
+Podemos ver cuántos parámetros tiene este modelo llamando al método `summary()`:
+
+```python
+model.summary()
+```
+
+```python out
+Model: "tf_distil_bert_for_masked_lm"
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #   
+=================================================================
+distilbert (TFDistilBertMain multiple                  66362880  
+_________________________________________________________________
+vocab_transform (Dense)      multiple                  590592    
+_________________________________________________________________
+vocab_layer_norm (LayerNorma multiple                  1536      
+_________________________________________________________________
+vocab_projector (TFDistilBer multiple                  23866170  
+=================================================================
+Total params: 66,985,530
+Trainable params: 66,985,530
+Non-trainable params: 0
+_________________________________________________________________
+```
+
+{/if}
+
+Con alrededor de 67 millones de parámetros, DistilBERT es aproximadamente dos veces más pequeño que el modelo base de BERT, lo que se traduce a grandes rasgos en una aceleración al doble en el entrenamiento, ¡genial! Veamos ahora qué tipos de tokens predice este modelo como las terminaciones más probables para una pequeña muestra de texto:
+
+```python
+text = "This is a great [MASK]."
+```
+
+Como humanos, podemos imaginar muchas posibilidades para el token `[MASK]`, como "day", "ride" o "painting". Para los modelos preentrenados, las predicciones dependen del corpus en el que se entrenó el modelo, ya que aprende a captar los patrones estadísticos presentes en los datos. Al igual que BERT, DistilBERT fue preentrenado en los datasets [English Wikipedia](https://huggingface.co/datasets/wikipedia) y [BookCorpus](https://huggingface.co/datasets/bookcorpus), por lo que esperamos que las predicciones para `[MASK]` reflejen estos dominios. Para predecir la máscara necesitamos el tokenizador de DistilBERT para producir las entradas para el modelo, así que descarguémoslo del Hub también:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+Con un tokenizador y un modelo, ahora podemos pasar nuestro ejemplo de texto al modelo, extraer los logits e imprimir los 5 mejores candidatos:
+
+{#if fw === 'pt'}
+
+```python
+import torch
+
+inputs = tokenizer(text, return_tensors="pt")
+token_logits = model(**inputs).logits
+# Encontrar la ubicación de [MASK] y extraer sus logits
+mask_token_index = torch.where(inputs["input_ids"] == tokenizer.mask_token_id)[1]
+mask_token_logits = token_logits[0, mask_token_index, :]
+# Elegir los candidatos a [MASK] con los logits más altos
+top_5_tokens = torch.topk(mask_token_logits, 5, dim=1).indices[0].tolist()
+
+for token in top_5_tokens:
+    print(f"'>>> {text.replace(tokenizer.mask_token, tokenizer.decode([token]))}'")
+```
+
+{:else}
+
+```python
+import numpy as np
+import tensorflow as tf
+
+inputs = tokenizer(text, return_tensors="np")
+token_logits = model(**inputs).logits
+# Encontrar la ubicación de [MASK] y extraer sus logits
+mask_token_index = np.argwhere(inputs["input_ids"] == tokenizer.mask_token_id)[0, 1]
+mask_token_logits = token_logits[0, mask_token_index, :]
+# Elegir los candidatos a [MASK] con los logits más altos
+# Negamos el array antes de argsort para obtener los logits más grandes, no los más pequeños
+top_5_tokens = np.argsort(-mask_token_logits)[:5].tolist()
+
+for token in top_5_tokens:
+    print(f">>> {text.replace(tokenizer.mask_token, tokenizer.decode([token]))}")
+```
+
+{/if}
+
+```python out
+'>>> This is a great deal.'
+'>>> This is a great success.'
+'>>> This is a great adventure.'
+'>>> This is a great idea.'
+'>>> This is a great feat.'
+```
+
+Podemos ver en las salidas que las predicciones del modelo se refieren a términos cotidianos, lo cual no es sorprendente dada la base de la Wikipedia en inglés. Veamos cómo podemos cambiar este dominio a algo un poco más específico: ¡reseñas de películas altamente polarizadas!
+
+
+## El dataset[[el-dataset]]
+
+Para mostrar la adaptación de dominio, utilizaremos el famoso dataset [Large Movie Review Dataset](https://huggingface.co/datasets/imdb) (o IMDb para abreviar), que es un corpus de reseñas de películas que a menudo se utiliza para evaluar modelos de análisis de sentimientos. Al ajustar DistilBERT en este corpus, esperamos que el modelo de lenguaje adapte su vocabulario de los datos fácticos de Wikipedia en los que fue preentrenado a los elementos más subjetivos de las reseñas de películas. Podemos obtener los datos del Hugging Face Hub con la función `load_dataset()` de 🤗 Datasets:
+
+```python
+from datasets import load_dataset
+
+imdb_dataset = load_dataset("imdb")
+imdb_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['text', 'label'],
+        num_rows: 25000
+    })
+    test: Dataset({
+        features: ['text', 'label'],
+        num_rows: 25000
+    })
+    unsupervised: Dataset({
+        features: ['text', 'label'],
+        num_rows: 50000
+    })
+})
+```
+
+Podemos ver que las divisiones `train` y `test` constan cada una de 25,000 reseñas, mientras que hay una división sin etiquetar llamada `unsupervised` que contiene 50,000 reseñas. Echemos un vistazo a algunas muestras para tener una idea de qué tipo de texto estamos tratando. Como hemos hecho en capítulos anteriores del curso, encadenaremos las funciones `Dataset.shuffle()` y `Dataset.select()` para crear una muestra aleatoria:
+
+```python
+sample = imdb_dataset["train"].shuffle(seed=42).select(range(3))
+
+for row in sample:
+    print(f"\n'>>> Review: {row['text']}'")
+    print(f"'>>> Label: {row['label']}'")
+```
+
+```python out
+
+'>>> Review: This is your typical Priyadarshan movie--a bunch of loony characters out on some silly mission. His signature climax has the entire cast of the film coming together and fighting each other in some crazy moshpit over hidden money. Whether it is a winning lottery ticket in Malamaal Weekly, black money in Hera Pheri, "kodokoo" in Phir Hera Pheri, etc., etc., the director is becoming ridiculously predictable. Don\'t get me wrong; as clichéd and preposterous his movies may be, I usually end up enjoying the comedy. However, in most his previous movies there has actually been some good humor, (Hungama and Hera Pheri being noteworthy ones). Now, the hilarity of his films is fading as he is using the same formula over and over again.<br /><br />Songs are good. Tanushree Datta looks awesome. Rajpal Yadav is irritating, and Tusshar is not a whole lot better. Kunal Khemu is OK, and Sharman Joshi is the best.'
+'>>> Label: 0'
+
+'>>> Review: Okay, the story makes no sense, the characters lack any dimensionally, the best dialogue is ad-libs about the low quality of movie, the cinematography is dismal, and only editing saves a bit of the muddle, but Sam" Peckinpah directed the film. Somehow, his direction is not enough. For those who appreciate Peckinpah and his great work, this movie is a disappointment. Even a great cast cannot redeem the time the viewer wastes with this minimal effort.<br /><br />The proper response to the movie is the contempt that the director San Peckinpah, James Caan, Robert Duvall, Burt Young, Bo Hopkins, Arthur Hill, and even Gig Young bring to their work. Watch the great Peckinpah films. Skip this mess.'
+'>>> Label: 0'
+
+'>>> Review: I saw this movie at the theaters when I was about 6 or 7 years old. I loved it then, and have recently come to own a VHS version. <br /><br />My 4 and 6 year old children love this movie and have been asking again and again to watch it. <br /><br />I have enjoyed watching it again too. Though I have to admit it is not as good on a little TV.<br /><br />I do not have older children so I do not know what they would think of it. <br /><br />The songs are very cute. My daughter keeps singing them over and over.<br /><br />Hope this helps.'
+'>>> Label: 1'
+```
+
+Sí, estas son sin duda reseñas de películas, y si tienes la edad suficiente, ¡quizás incluso entiendas el comentario en la última reseña sobre tener una versión en VHS 😜! Aunque no necesitaremos las etiquetas para el modelado de lenguaje, ya podemos ver que un `0` denota una reseña negativa, mientras que un `1` corresponde a una positiva.
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Crea una muestra aleatoria de la división `unsupervised` y verifica que las etiquetas no sean ni `0` ni `1`. Ya que estás en ello, también podrías comprobar que las etiquetas en las divisiones `train` y `test` sean efectivamente `0` o `1`: ¡esta es una verificación útil de cordura que todo profesional de PLN debería realizar al comienzo de un nuevo proyecto!
+
+Ahora que hemos echado un vistazo rápido a los datos, pasemos a prepararlos para el modelado de lenguaje enmascarado. Como veremos, hay algunos pasos adicionales que se deben tomar en comparación con las tareas de clasificación de secuencias que vimos en el [Capítulo 3](/course/chapter3). ¡Vamos allá!
+
+## Preprocesamiento de los datos[[preprocesamiento-de-los-datos]]
+
+<Youtube id="8PmhEIXhBvI"/>
+
+Tanto para el modelado de lenguaje autorregresivo como para el enmascarado, un paso de preprocesamiento común es concatenar todos los ejemplos y luego dividir todo el corpus en fragmentos de igual tamaño. Esto es bastante diferente de nuestro enfoque habitual, donde simplemente tokenizamos ejemplos individuales. ¿Por qué concatenar todo junto? ¡La razón es que los ejemplos individuales pueden truncarse si son demasiado largos, y eso resultaría en la pérdida de información que podría ser útil para la tarea de modelado de lenguaje!
+
+Así que para comenzar, primero tokenizaremos nuestro corpus como de costumbre, pero _sin_ establecer la opción `truncation=True` en nuestro tokenizador. También obtendremos los IDs de palabras si están disponibles (lo que sucederá si estamos usando un tokenizador rápido, como se describe en el [Capítulo 6](/course/chapter6/3)), ya que los necesitaremos más adelante para hacer enmascaramiento de palabras completas (*whole word masking*). Envolveremos esto en una función simple y, ya que estamos en ello, eliminaremos las columnas `text` y `label` ya que no las necesitamos más:
+
+```python
+def tokenize_function(examples):
+    result = tokenizer(examples["text"])
+    if tokenizer.is_fast:
+        result["word_ids"] = [result.word_ids(i) for i in range(len(result["input_ids"]))]
+    return result
+
+
+# ¡Usa batched=True para activar el multithreading rápido!
+tokenized_datasets = imdb_dataset.map(
+    tokenize_function, batched=True, remove_columns=["text", "label"]
+)
+tokenized_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'input_ids', 'word_ids'],
+        num_rows: 25000
+    })
+    test: Dataset({
+        features: ['attention_mask', 'input_ids', 'word_ids'],
+        num_rows: 25000
+    })
+    unsupervised: Dataset({
+        features: ['attention_mask', 'input_ids', 'word_ids'],
+        num_rows: 50000
+    })
+})
+```
+
+Dado que DistilBERT es un modelo similar a BERT, podemos ver que los textos codificados consisten en los `input_ids` y el `attention_mask` que hemos visto en otros capítulos, así como los `word_ids` que agregamos.
+
+Ahora que hemos tokenizado nuestras reseñas de películas, el siguiente paso es agruparlas todas y dividir el resultado en fragmentos. Pero, ¿qué tan grandes deberían ser estos fragmentos? Esto vendrá determinado en última instancia por la cantidad de memoria de GPU que tengas disponible, pero un buen punto de partida es ver cuál es el tamaño máximo de contexto del modelo. Esto se puede deducir inspeccionando el atributo `model_max_length` del tokenizador:
+
+```python
+tokenizer.model_max_length
+```
+
+```python out
+512
+```
+
+Este valor se deriva del archivo *tokenizer_config.json* asociado con un punto de control (*checkpoint*); en este caso podemos ver que el tamaño del contexto es de 512 tokens, al igual que con BERT.
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Algunos modelos Transformer, como [BigBird](https://huggingface.co/google/bigbird-roberta-base) y [Longformer](https://huggingface.co/allenai/longformer-base-4096), tienen una longitud de contexto mucho mayor que BERT y otros modelos Transformer tempranos. Instancia el tokenizador para uno de estos puntos de control y verifica que el `model_max_length` coincida con lo que se indica en su tarjeta de modelo.
+
+Por lo tanto, para ejecutar nuestros experimentos en GPUs como las que se encuentran en Google Colab, elegiremos algo un poco más pequeño que quepa en la memoria:
+
+```python
+chunk_size = 128
+```
+
+> [!WARNING]
+> Ten en cuenta que usar un tamaño de fragmento pequeño puede ser perjudicial en escenarios del mundo real, por lo que debes usar un tamaño que corresponda al caso de uso al que aplicarás tu modelo.
+
+Ahora viene la parte divertida. Para mostrar cómo funciona la concatenación, tomemos algunas reseñas de nuestro conjunto de entrenamiento tokenizado e imprimamos el número de tokens por reseña:
+
+```python
+# El seccionamiento produce una lista de listas para cada característica
+tokenized_samples = tokenized_datasets["train"][:3]
+
+for idx, sample in enumerate(tokenized_samples["input_ids"]):
+    print(f"'>>> Review {idx} length: {len(sample)}'")
+```
+
+```python out
+'>>> Review 0 length: 200'
+'>>> Review 1 length: 559'
+'>>> Review 2 length: 192'
+```
+
+Luego podemos concatenar todos estos ejemplos con una simple comprensión de diccionario, de la siguiente manera:
+
+```python
+concatenated_examples = {
+    k: sum(tokenized_samples[k], []) for k in tokenized_samples.keys()
+}
+total_length = len(concatenated_examples["input_ids"])
+print(f"'>>> Concatenated reviews length: {total_length}'")
+```
+
+```python out
+'>>> Concatenated reviews length: 951'
+```
+
+Genial, la longitud total cuadra, así que ahora dividamos las reseñas concatenadas en fragmentos del tamaño dado por `chunk_size`. Para hacerlo, iteramos sobre las características en `concatenated_examples` y usamos una comprensión de lista para crear divisiones de cada característica. El resultado es un diccionario de fragmentos para cada característica:
+
+```python
+chunks = {
+    k: [t[i : i + chunk_size] for i in range(0, total_length, chunk_size)]
+    for k, t in concatenated_examples.items()
+}
+
+for chunk in chunks["input_ids"]:
+    print(f"'>>> Chunk length: {len(chunk)}'")
+```
+
+```python out
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 128'
+'>>> Chunk length: 55'
+```
+
+Como puedes ver en este ejemplo, el último fragmento generalmente será más pequeño que el tamaño máximo del fragmento. Hay dos estrategias principales para lidiar con esto:
+
+* Descartar el último fragmento si es menor que `chunk_size`.
+* Rellenar el último fragmento hasta que su longitud sea igual a `chunk_size`.
+
+Adoptaremos el primer enfoque aquí, así que envolvamos toda la lógica anterior en una sola función que podamos aplicar a nuestros datasets tokenizados:
+
+```python
+def group_texts(examples):
+    # Concatenar todos los textos
+    concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+    # Calcular la longitud de los textos concatenados
+    total_length = len(concatenated_examples[list(examples.keys())[0]])
+    # Descartamos el último fragmento si es más pequeño que chunk_size
+    total_length = (total_length // chunk_size) * chunk_size
+    # Dividir por fragmentos de max_len
+    result = {
+        k: [t[i : i + chunk_size] for i in range(0, total_length, chunk_size)]
+        for k, t in concatenated_examples.items()
+    }
+    # Crear una nueva columna de etiquetas
+    result["labels"] = result["input_ids"].copy()
+    return result
+```
+
+Ten en cuenta que en el último paso de `group_texts()` creamos una nueva columna `labels` que es una copia de `input_ids`. Como veremos en breve, esto se debe a que en el modelado de lenguaje enmascarado el objetivo es predecir tokens enmascarados aleatoriamente en el lote de entrada, y al crear una columna `labels` proporcionamos la verdad básica (*ground truth*) para que nuestro modelo de lenguaje aprenda de ella.
+
+Apliquemos ahora `group_texts()` a nuestros datasets tokenizados utilizando nuestra confiable función `Dataset.map()`:
+
+```python
+lm_datasets = tokenized_datasets.map(group_texts, batched=True)
+lm_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 61289
+    })
+    test: Dataset({
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 59905
+    })
+    unsupervised: Dataset({
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 122963
+    })
+})
+```
+
+Puedes ver que agrupar y luego fragmentar los textos ha producido muchos más ejemplos que nuestros 25,000 originales para las divisiones `train` y `test`. Esto se debe a que ahora tenemos ejemplos que involucran _tokens contiguos_ que se extienden a través de múltiples ejemplos del corpus original. Puedes ver esto explícitamente buscando los tokens especiales `[SEP]` y `[CLS]` en uno de los fragmentos:
+
+```python
+tokenizer.decode(lm_datasets["train"][1]["input_ids"])
+```
+
+```python out
+".... at.......... high. a classic line : inspector : i'm here to sack one of your teachers. student : welcome to bromwell high. i expect that many adults of my age think that bromwell high is far fetched. what a pity that it isn't! [SEP] [CLS] homelessness ( or houselessness as george carlin stated ) has been an issue for years but never a plan to help those on the street that were once considered human who did everything from going to school, work, or vote for the matter. most people think of the homeless"
+```
+
+En este ejemplo puedes ver dos reseñas de películas superpuestas, una sobre una película escolar y la otra sobre personas sin hogar. Comprobemos también cómo se ven las etiquetas para el modelado de lenguaje enmascarado:
+
+```python out
+tokenizer.decode(lm_datasets["train"][1]["labels"])
+```
+
+```python out
+".... at.......... high. a classic line : inspector : i'm here to sack one of your teachers. student : welcome to bromwell high. i expect that many adults of my age think that bromwell high is far fetched. what a pity that it isn't! [SEP] [CLS] homelessness ( or houselessness as george carlin stated ) has been an issue for years but never a plan to help those on the street that were once considered human who did everything from going to school, work, or vote for the matter. most people think of the homeless"
+```
+
+Como se esperaba de nuestra función `group_texts()` anterior, esto se ve idéntico a los `input_ids` decodificados, pero entonces ¿cómo es posible que nuestro modelo aprenda algo? Nos falta un paso clave: ¡insertar tokens `[MASK]` en posiciones aleatorias en las entradas! Veamos cómo podemos hacer esto sobre la marcha durante el ajuste fino utilizando un collator de datos especial.
+
+## Ajuste fino de DistilBERT con la API `Trainer`[[ajuste-fino-de-distilbert-con-la-api-trainer]]
+
+El ajuste fino de un modelo de lenguaje enmascarado es casi idéntico al ajuste fino de un modelo de clasificación de secuencias, como hicimos en el [Capítulo 3](/course/chapter3). La única diferencia es que necesitamos un collator de datos especial que pueda enmascarar aleatoriamente algunos de los tokens en cada lote de textos. Afortunadamente, 🤗 Transformers viene preparado con un `DataCollatorForLanguageModeling` dedicado precisamente a esta tarea. Solo tenemos que pasarle el tokenizador y un argumento `mlm_probability` que especifica qué fracción de los tokens enmascarar. Elegiremos el 15%, que es la cantidad utilizada para BERT y una opción común en la literatura:
+
+```python
+from transformers import DataCollatorForLanguageModeling
+
+data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
+```
+
+Para ver cómo funciona el enmascaramiento aleatorio, introduzcamos algunos ejemplos en el collator de datos. Dado que espera una lista de `dict`s, donde cada `dict` representa un solo fragmento de texto contiguo, primero iteramos sobre el dataset antes de alimentar el lote al collator. Eliminamos la clave `"word_ids"` para este collator de datos, ya que no la espera:
+
+```python
+samples = [lm_datasets["train"][i] for i in range(2)]
+for sample in samples:
+    _ = sample.pop("word_ids")
+
+for chunk in data_collator(samples)["input_ids"]:
+    print(f"\n'>>> {tokenizer.decode(chunk)}'")
+```
+
+```python output
+'>>> [CLS] bromwell [MASK] is a cartoon comedy. it ran at the same [MASK] as some other [MASK] about school life, [MASK] as " teachers ". [MASK] [MASK] [MASK] in the teaching [MASK] lead [MASK] to believe that bromwell high\'[MASK] satire is much closer to reality than is " teachers ". the scramble [MASK] [MASK] financially, the [MASK]ful students whogn [MASK] right through [MASK] pathetic teachers\'pomp, the pettiness of the whole situation, distinction remind me of the schools i knew and their students. when i saw [MASK] episode in [MASK] a student repeatedly tried to burn down the school, [MASK] immediately recalled. [MASK]...'
+
+'>>> .... at.. [MASK]... [MASK]... high. a classic line plucked inspector : i\'[MASK] here to [MASK] one of your [MASK]. student : welcome to bromwell [MASK]. i expect that many adults of my age think that [MASK]mwell [MASK] is [MASK] fetched. what a pity that it isn\'t! [SEP] [CLS] [MASK]ness ( or [MASK]lessness as george 宇in stated )公 been an issue for years but never [MASK] plan to help those on the street that were once considered human [MASK] did everything from going to school, [MASK], [MASK] vote for the matter. most people think [MASK] the homeless'
+```
+
+¡Qué bien, funcionó! Podemos ver que el token `[MASK]` se ha insertado aleatoriamente en varias ubicaciones de nuestro texto. Estos serán los tokens que nuestro modelo tendrá que predecir durante el entrenamiento, ¡y la belleza del collator de datos es que asignará la inserción de `[MASK]` de forma aleatoria con cada lote!
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** ¡Ejecuta el fragmento de código anterior varias veces para ver el enmascaramiento aleatorio ocurrir ante tus propios ojos! También reemplaza el método `tokenizer.decode()` con `tokenizer.convert_ids_to_tokens()` para ver que a veces solo se enmascara un único token de una palabra dada, y no los demás.
+
+{#if fw === 'pt'}
+
+Un efecto secundario del enmascaramiento aleatorio es que nuestras métricas de evaluación no serán deterministas al usar `Trainer`, ya que usamos el mismo collator de datos para los conjuntos de entrenamiento y prueba. Veremos más adelante, cuando examinemos el ajuste fino con 🤗 Accelerate, cómo podemos usar la flexibilidad de un bucle de evaluación personalizado para congelar la aleatoriedad.
+
+{/if}
+
+Al entrenar modelos para modelado de lenguaje enmascarado, una técnica que se puede utilizar es enmascarar palabras completas juntas, no solo tokens individuales. Este enfoque se denomina _enmascaramiento de palabras completas_ (*whole word masking*). Si queremos usar el enmascaramiento de palabras completas, tendremos que construir un collator de datos nosotros mismos. Un collator de datos es simplemente una función que toma una lista de muestras y las convierte en un lote, ¡así que hagámoslo ahora! Usaremos los IDs de palabras calculados anteriormente para hacer un mapa entre los índices de palabras y los tokens correspondientes, luego decidiremos aleatoriamente qué palabras enmascarar y aplicaremos esa máscara en las entradas. Ten en cuenta que las etiquetas son todas `-100` excepto las correspondientes a las palabras enmascaradas.
+
+{#if fw === 'pt'}
+
+```py
+import collections
+import numpy as np
+
+from transformers import default_data_collator
+
+wwm_probability = 0.2
+
+
+def whole_word_masking_data_collator(features):
+    for feature in features:
+        word_ids = feature.pop("word_ids")
+
+        # Crear un mapa entre palabras e índices de tokens correspondientes
+        mapping = collections.defaultdict(list)
+        current_word_index = -1
+        current_word = None
+        for idx, word_id in enumerate(word_ids):
+            if word_id is not None:
+                if word_id != current_word:
+                    current_word = word_id
+                    current_word_index += 1
+                mapping[current_word_index].append(idx)
+
+        # Enmascarar palabras aleatoriamente
+        mask = np.random.binomial(1, wwm_probability, (len(mapping),))
+        input_ids = feature["input_ids"]
+        labels = feature["labels"]
+        new_labels = [-100] * len(labels)
+        for word_id in np.where(mask)[0]:
+            word_id = word_id.item()
+            for idx in mapping[word_id]:
+                new_labels[idx] = labels[idx]
+                input_ids[idx] = tokenizer.mask_token_id
+        feature["labels"] = new_labels
+
+    return default_data_collator(features)
+```
+
+{:else}
+
+```py
+import collections
+import numpy as np
+
+from transformers.data.data_collator import tf_default_data_collator
+
+wwm_probability = 0.2
+
+
+def whole_word_masking_data_collator(features):
+    for feature in features:
+        word_ids = feature.pop("word_ids")
+
+        # Crear un mapa entre palabras e índices de tokens correspondientes
+        mapping = collections.defaultdict(list)
+        current_word_index = -1
+        current_word = None
+        for idx, word_id in enumerate(word_ids):
+            if word_id is not None:
+                if word_id != current_word:
+                    current_word = word_id
+                    current_word_index += 1
+                mapping[current_word_index].append(idx)
+
+        # Enmascarar palabras aleatoriamente
+        mask = np.random.binomial(1, wwm_probability, (len(mapping),))
+        input_ids = feature["input_ids"]
+        labels = feature["labels"]
+        new_labels = [-100] * len(labels)
+        for word_id in np.where(mask)[0]:
+            word_id = word_id.item()
+            for idx in mapping[word_id]:
+                new_labels[idx] = labels[idx]
+                input_ids[idx] = tokenizer.mask_token_id
+        feature["labels"] = new_labels
+
+    return tf_default_data_collator(features)
+```
+
+{/if}
+
+A continuación, podemos probarlo en las mismas muestras que antes:
+
+```py
+samples = [lm_datasets["train"][i] for i in range(2)]
+batch = whole_word_masking_data_collator(samples)
+
+for chunk in batch["input_ids"]:
+    print(f"\n'>>> {tokenizer.decode(chunk)}'")
+```
+
+```python out
+'>>> [CLS] bromwell high is a cartoon comedy [MASK] it ran at the same time as some other programs about school life, such as " teachers ". my 35 years in the teaching profession lead me to believe that bromwell high\'s satire is much closer to reality than is " teachers ". the scramble to survive financially, the insightful students who can see right through their pathetic teachers\'pomp, the pettiness of the whole situation, all remind me of the schools i knew and their students. when i saw the episode in which a student repeatedly tried to burn down the school, i immediately recalled.....'
+
+'>>> .... [MASK] [MASK] [MASK] [MASK]....... high. a classic line : inspector : i\'m here to sack one of your teachers. student : welcome to bromwell high. i expect that many adults of my age think that bromwell high is far fetched. what a pity that it isn\'t! [SEP] [CLS] homelessness ( or houselessness as george carlin stated ) has been an issue for years but never a plan to help those on the street that were once considered human who did everything from going to school, work, or vote for the matter. most people think of the homeless'
+```
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** ¡Ejecuta el fragmento de código anterior varias veces para ver el enmascaramiento aleatorio ocurrir ante tus propios ojos! También reemplaza el método `tokenizer.decode()` con `tokenizer.convert_ids_to_tokens()` para ver que los tokens de una palabra determinada siempre se enmascaran juntos.
+
+Ahora que tenemos dos collators de datos, el resto de los pasos de ajuste fino son estándar. El entrenamiento puede llevar un tiempo en Google Colab si no tienes la suerte de contar con una GPU P100 😭, por lo que primero reduciremos el tamaño del conjunto de entrenamiento a unos pocos miles de ejemplos. No te preocupes, ¡aún obtendremos un modelo de lenguaje bastante decente! Una forma rápida de reducir el tamaño de un dataset en 🤗 Datasets es mediante la función `Dataset.train_test_split()` que vimos en el [Capítulo 5](/course/chapter5):
+
+```python
+train_size = 10_000
+test_size = int(0.1 * train_size)
+
+downsampled_dataset = lm_datasets["train"].train_test_split(
+    train_size=train_size, test_size=test_size, seed=42
+)
+downsampled_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 10000
+    })
+    test: Dataset({
+        features: ['attention_mask', 'input_ids', 'labels', 'word_ids'],
+        num_rows: 1000
+    })
+})
+```
+
+Esto ha creado automáticamente nuevas divisiones `train` y `test`, con el tamaño del conjunto de entrenamiento establecido en 10,000 ejemplos y el conjunto de validación al 10% de eso; ¡siéntete libre de aumentarlo si tienes una GPU potente! Lo siguiente que debemos hacer es iniciar sesión en el Hugging Face Hub. Si estás ejecutando este código en un notebook, puedes hacerlo con la siguiente función de utilidad:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+lo cual mostrará un widget donde puedes ingresar tus credenciales. Alternativamente, puedes ejecutar:
+
+```
+huggingface-cli login
+```
+
+en tu terminal favorito e iniciar sesión allí.
+
+{#if fw === 'tf'}
+
+Una vez que hayamos iniciado sesión, podemos crear nuestros datasets `tf.data`. Para hacerlo, usaremos el método `prepare_tf_dataset()`, que utiliza nuestro modelo para deducir automáticamente qué columnas deben ir en el dataset. Si deseas controlar exactamente qué columnas usar, puedes usar el método `Dataset.to_tf_dataset()` en su lugar. Para simplificar las cosas, utilizaremos el collator de datos estándar aquí, pero también puedes probar el collator de enmascaramiento de palabras completas y comparar los resultados como ejercicio:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    downsampled_dataset["train"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=32,
+)
+
+tf_eval_dataset = model.prepare_tf_dataset(
+    downsampled_dataset["test"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=32,
+)
+```
+
+A continuación, configuramos nuestros hiperparámetros de entrenamiento y compilamos nuestro modelo. Usamos la función `create_optimizer()` de la biblioteca 🤗 Transformers, que nos brinda un optimizador `AdamW` con decaimiento lineal de la tasa de aprendizaje. También usamos la pérdida incorporada del modelo, que es la predeterminada cuando no se especifica ninguna pérdida como argumento para `compile()`, y configuramos la precisión de entrenamiento en `"mixed_float16"`. Ten en cuenta que si estás utilizando una GPU de Colab u otra GPU que no tenga soporte acelerado para float16, probablemente deberías comentar esa línea.
+
+Además, configuramos un `PushToHubCallback` que guardará el modelo en el Hub después de cada época. Puedes especificar el nombre del repositorio al que deseas subirlo con el argumento `hub_model_id` (en particular, deberás usar este argumento para subirlo a una organización). Por ejemplo, para subir el modelo a la [organización `huggingface-course`](https://huggingface.co/huggingface-course), añadimos `hub_model_id="huggingface-course/distilbert-finetuned-imdb"`. De forma predeterminada, el repositorio utilizado estará en tu espacio de nombres y llevará el nombre del directorio de salida que hayas configurado, por lo que en nuestro caso será `"lewtun/distilbert-finetuned-imdb"`.
+
+```python
+from transformers import create_optimizer
+from transformers.keras_callbacks import PushToHubCallback
+import tensorflow as tf
+
+num_train_steps = len(tf_train_dataset)
+optimizer, schedule = create_optimizer(
+    init_lr=2e-5,
+    num_warmup_steps=1_000,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Entrenar en precisión mixta float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+
+model_name = model_checkpoint.split("/")[-1]
+callback = PushToHubCallback(
+    output_dir=f"{model_name}-finetuned-imdb", tokenizer=tokenizer
+)
+```
+
+Ahora estamos listos para ejecutar `model.fit()`, pero antes de hacerlo veamos brevemente la _perplejidad_ (*perplexity*), que es una métrica común para evaluar el rendimiento de los modelos de lenguaje.
+
+{:else}
+
+Una vez que hayamos iniciado sesión, podemos especificar los argumentos para el `Trainer`:
+
+```python
+from transformers import TrainingArguments
+
+batch_size = 64
+# Mostrar la pérdida de entrenamiento con cada época
+logging_steps = len(downsampled_dataset["train"]) // batch_size
+model_name = model_checkpoint.split("/")[-1]
+
+training_args = TrainingArguments(
+    output_dir=f"{model_name}-finetuned-imdb",
+    overwrite_output_dir=True,
+    evaluation_strategy="epoch",
+    learning_rate=2e-5,
+    weight_decay=0.01,
+    per_device_train_batch_size=batch_size,
+    per_device_eval_batch_size=batch_size,
+    push_to_hub=True,
+    fp16=True,
+    logging_steps=logging_steps,
+)
+```
+
+Aquí modificamos algunas de las opciones predeterminadas, incluyendo `logging_steps` para asegurarnos de rastrear la pérdida de entrenamiento con cada época. También hemos utilizado `fp16=True` para habilitar el entrenamiento de precisión mixta, lo que nos da otro impulso en velocidad. Por defecto, el `Trainer` eliminará cualquier columna que no forme parte del método `forward()` del modelo. Esto significa que si estás utilizando el collator de enmascaramiento de palabras completas, también deberás configurar `remove_unused_columns=False` para asegurarte de no perder la columna `word_ids` durante el entrenamiento.
+
+Ten en cuenta que puedes especificar el nombre del repositorio al que deseas subir con el argumento `hub_model_id` (en particular, deberás usar este argumento para subirlo a una organización). Por ejemplo, cuando subimos el modelo a la [organización `huggingface-course`](https://huggingface.co/huggingface-course), agregamos `hub_model_id="huggingface-course/distilbert-finetuned-imdb"` a `TrainingArguments`. De forma predeterminada, el repositorio utilizado estará en tu espacio de nombres y llevará el nombre del directorio de salida que establezcas, por lo que en nuestro caso será `"lewtun/distilbert-finetuned-imdb"`.
+
+Ahora tenemos todos los ingredientes para instanciar el `Trainer`. Aquí solo usamos el `data_collator` estándar, pero puedes probar el collator de enmascaramiento de palabras completas y comparar los resultados como ejercicio:
+
+```python
+from transformers import Trainer
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=downsampled_dataset["train"],
+    eval_dataset=downsampled_dataset["test"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+)
+```
+
+Ahora estamos listos para ejecutar `trainer.train()`, pero antes de hacerlo veamos brevemente la _perplejidad_ (*perplexity*), que es una métrica común para evaluar el rendimiento de los modelos de lenguaje.
+
+{/if}
+
+### Perplejidad para modelos de lenguaje[[perplejidad-para-modelos-de-lenguaje]]
+
+<Youtube id="NURcDHhYe98"/>
+
+A diferencia de otras tareas como la clasificación de textos o la respuesta a preguntas donde se nos proporciona un corpus etiquetado para entrenar, con el modelado de lenguaje no tenemos ninguna etiqueta explícita. Entonces, ¿cómo determinamos qué hace que un modelo de lenguaje sea bueno? Al igual que con la función de autocorrección en tu teléfono, un buen modelo de lenguaje es aquel que asigna altas probabilidades a oraciones que son gramaticalmente correctas y bajas probabilidades a oraciones sin sentido. Para darte una mejor idea de cómo se ve esto, ¡puedes encontrar colecciones enteras de "fallos del autocorrector" en línea, donde el modelo en el teléfono de una persona ha producido algunas terminaciones bastante divertidas (y a menudo inapropiadas)!
+
+{#if fw === 'pt'}
+
+Asumiendo que nuestro conjunto de prueba consiste principalmente en oraciones que son gramaticalmente correctas, una forma de medir la calidad de nuestro modelo de lenguaje es calcular las probabilidades que asigna a la siguiente palabra en todas las oraciones del conjunto de prueba. Las probabilidades altas indican que el modelo no está "sorprendido" ni "perplejo" por los ejemplos no vistos, y sugiere que ha aprendido los patrones básicos de la gramática en el lenguaje. Existen varias definiciones matemáticas de perplejidad, pero la que usaremos la define como el exponencial de la pérdida de entropía cruzada. Por lo tanto, podemos calcular la perplejidad de nuestro modelo preentrenado utilizando la función `Trainer.evaluate()` para calcular la pérdida de entropía cruzada en el conjunto de prueba y luego tomando el exponencial del resultado:
+
+```python
+import math
+
+eval_results = trainer.evaluate()
+print(f">>> Perplexity: {math.exp(eval_results['eval_loss']):.2f}")
+```
+
+{:else}
+
+Asumiendo que nuestro conjunto de prueba consiste principalmente en oraciones que son gramaticalmente correctas, una forma de medir la calidad de nuestro modelo de lenguaje es calcular las probabilidades que asigna a la siguiente palabra en todas las oraciones del conjunto de prueba. Las probabilidades altas indican que el modelo no está "sorprendido" ni "perplejo" por los ejemplos no vistos, y sugiere que ha aprendido los patrones básicos de la gramática en el lenguaje. Existen varias definiciones matemáticas de perplejidad, pero la que usaremos la define como el exponencial de la pérdida de entropía cruzada. Por lo tanto, podemos calcular la perplejidad de nuestro modelo preentrenado utilizando el método `model.evaluate()` para calcular la pérdida de entropía cruzada en el conjunto de prueba y luego tomando el exponencial del resultado:
+
+```python
+import math
+
+eval_loss = model.evaluate(tf_eval_dataset)
+print(f"Perplexity: {math.exp(eval_loss):.2f}")
+```
+
+{/if}
+
+```python out
+>>> Perplexity: 21.75
+```
+
+Una puntuación de perplejidad más baja significa un mejor modelo de lenguaje, y podemos ver aquí que nuestro modelo inicial tiene un valor algo grande. ¡Veamos si podemos reducirlo ajustándolo! Para hacer eso, primero ejecutamos el bucle de entrenamiento:
+
+{#if fw === 'pt'}
+
+```python
+trainer.train()
+```
+
+{:else}
+
+```python
+model.fit(tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback])
+```
+
+{/if}
+
+y luego calculamos la perplejidad resultante en el conjunto de prueba como antes:
+
+{#if fw === 'pt'}
+
+```python
+eval_results = trainer.evaluate()
+print(f">>> Perplexity: {math.exp(eval_results['eval_loss']):.2f}")
+```
+
+{:else}
+
+```python
+eval_loss = model.evaluate(tf_eval_dataset)
+print(f"Perplexity: {math.exp(eval_loss):.2f}")
+```
+
+{/if}
+
+```python out
+>>> Perplexity: 11.32
+```
+
+Genial: esta es una reducción considerable en la perplejidad, lo que nos indica que el modelo ha aprendido algo sobre el dominio de las reseñas de películas.
+
+{#if fw === 'pt'}
+
+Una vez finalizado el entrenamiento, podemos subir la tarjeta de modelo con la información de entrenamiento al Hub (los checkpoints se guardan durante el entrenamiento mismo):
+
+```python
+trainer.push_to_hub()
+```
+
+{/if}
+
+> [!TIP]
+> ✏️ **¡Tu turno!** Ejecuta el entrenamiento anterior después de cambiar el collator de datos al collator de enmascaramiento de palabras completas. ¿Obtienes mejores resultados?
+
+{#if fw === 'pt'} 
+
+En nuestro caso de uso no necesitamos hacer nada especial con el bucle de entrenamiento, pero en algunos casos es posible que debas implementar alguna lógica personalizada. Para estas aplicaciones, puedes usar 🤗 Accelerate, ¡veámoslo!
+
+## Ajuste fino de DistilBERT con 🤗 Accelerate[[ajuste-fino-de-distilbert-con-accelerate]]
+
+Como vimos con el `Trainer`, el ajuste fino de un modelo de lenguaje enmascarado es muy similar al ejemplo de clasificación de texto del [Capítulo 3](/course/chapter3). De hecho, la única sutileza es el uso de un collator de datos especial, ¡y ya hemos cubierto eso antes en esta sección!
+
+Sin embargo, vimos que `DataCollatorForLanguageModeling` también aplica enmascaramiento aleatorio con cada evaluación, por lo que veremos algunas fluctuaciones en nuestras puntuaciones de perplejidad con cada ejecución de entrenamiento. Una forma de eliminar esta fuente de aleatoriedad es aplicar el enmascaramiento _una sola vez_ en todo el conjunto de prueba, y luego usar el collator de datos predeterminado en 🤗 Transformers para recopilar los lotes durante la evaluación. Para ver cómo funciona esto, implementemos una función simple que aplique el enmascaramiento en un lote, similar a nuestro primer encuentro con `DataCollatorForLanguageModeling`:
+
+```python
+def insert_random_mask(batch):
+    features = [dict(zip(batch, t)) for t in zip(*batch.values())]
+    masked_inputs = data_collator(features)
+    # Crear una nueva columna "masked" para cada columna en el dataset
+    return {"masked_" + k: v.numpy() for k, v in masked_inputs.items()}
+```
+
+A continuación, aplicaremos esta función a nuestro conjunto de prueba y eliminaremos las columnas sin enmascarar para poder reemplazarlas por las enmascaradas. Puedes usar el enmascaramiento de palabras completas reemplazando el `data_collator` anterior por el apropiado, en cuyo caso debes eliminar la primera línea aquí:
+
+```py
+downsampled_dataset = downsampled_dataset.remove_columns(["word_ids"])
+eval_dataset = downsampled_dataset["test"].map(
+    insert_random_mask,
+    batched=True,
+    remove_columns=downsampled_dataset["test"].column_names,
+)
+eval_dataset = eval_dataset.rename_columns(
+    {
+        "masked_input_ids": "input_ids",
+        "masked_attention_mask": "attention_mask",
+        "masked_labels": "labels",
+    }
+)
+```
+
+Luego podemos configurar los dataloaders como de costumbre, pero usaremos el `default_data_collator` de 🤗 Transformers para el conjunto de evaluación:
+
+```python
+from torch.utils.data import DataLoader
+from transformers import default_data_collator
+
+batch_size = 64
+train_dataloader = DataLoader(
+    downsampled_dataset["train"],
+    shuffle=True,
+    batch_size=batch_size,
+    collate_fn=data_collator,
+)
+eval_dataloader = DataLoader(
+    eval_dataset, batch_size=batch_size, collate_fn=default_data_collator
+)
+```
+
+A partir de aquí, seguimos los pasos estándar con 🤗 Accelerate. La primera tarea es cargar una versión nueva del modelo preentrenado:
+
+```
+model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)
+```
+
+Luego necesitamos especificar el optimizador; usaremos el estándar `AdamW`:
+
+```python
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+Con estos objetos, ahora podemos preparar todo para el entrenamiento con el objeto `Accelerator`:
+
+```python
+from accelerate import Accelerator
+
+accelerator = Accelerator()
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+Ahora que nuestro modelo, optimizador y dataloaders están configurados, podemos especificar el programador de la tasa de aprendizaje de la siguiente manera:
+
+```python
+from transformers import get_scheduler
+
+num_train_epochs = 3
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+Solo falta una última cosa por hacer antes del entrenamiento: ¡crear un repositorio de modelos en el Hugging Face Hub! Podemos usar la biblioteca 🤗 Hub para generar primero el nombre completo de nuestro repositorio:
+
+```python
+from huggingface_hub import get_full_repo_name
+
+model_name = "distilbert-base-uncased-finetuned-imdb-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'lewtun/distilbert-base-uncased-finetuned-imdb-accelerate'
+```
+
+luego crear y clonar el repositorio usando la clase `Repository` de 🤗 Hub:
+
+```python
+from huggingface_hub import Repository
+
+output_dir = model_name
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+Con eso hecho, es simplemente cuestión de escribir el bucle completo de entrenamiento y evaluación:
+
+```python
+from tqdm.auto import tqdm
+import torch
+import math
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Entrenamiento
+    model.train()
+    for batch in train_dataloader:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluación
+    model.eval()
+    losses = []
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        loss = outputs.loss
+        losses.append(accelerator.gather(loss.repeat(batch_size)))
+
+    losses = torch.cat(losses)
+    losses = losses[: len(eval_dataset)]
+    try:
+        perplexity = math.exp(torch.mean(losses))
+    except OverflowError:
+        perplexity = float("inf")
+
+    print(f">>> Epoch {epoch}: Perplexity: {perplexity}")
+
+    # Guardar y subir
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+```python out
+>>> Epoch 0: Perplexity: 11.397545307900472
+>>> Epoch 1: Perplexity: 10.904909330983092
+>>> Epoch 2: Perplexity: 10.729503505340409
+```
+
+¡Excelente! ¡Hemos podido evaluar la perplejidad con cada época y asegurarnos de que múltiples ejecuciones de entrenamiento sean reproducibles!
+
+{/if}
+
+## Uso de nuestro modelo ajustado[[uso-de-nuestro-modelo-ajustado]]
+
+Puedes interactuar con tu modelo ajustado utilizando su widget en el Hub o localmente con el `pipeline` de 🤗 Transformers. Usemos este último para descargar nuestro modelo utilizando el pipeline `fill-mask`:
+
+```python
+from transformers import pipeline
+
+mask_filler = pipeline(
+    "fill-mask", model="huggingface-course/distilbert-base-uncased-finetuned-imdb"
+)
+```
+
+Luego podemos pasar al pipeline nuestro texto de muestra "This is a great [MASK]" y ver cuáles son las 5 mejores predicciones:
+
+```python
+preds = mask_filler(text)
+
+for pred in preds:
+    print(f">>> {pred['sequence']}")
+```
+
+```python out
+'>>> this is a great movie.'
+'>>> this is a great film.'
+'>>> this is a great story.'
+'>>> this is a great movies.'
+'>>> this is a great character.'
+```
+
+¡Genial! ¡Nuestro modelo claramente ha adaptado sus pesos para predecir palabras que están más fuertemente asociadas con películas!
+
+<Youtube id="0Oxphw4Q9fo"/>
+
+Esto concluye nuestro primer experimento con el entrenamiento de un modelo de lenguaje. En la [sección 6](/course/es/chapter7/6) aprenderás cómo entrenar un modelo autorregresivo como GPT-2 desde cero; ¡dirígete allí si quieres ver cómo preentrenar tu propio modelo Transformer!
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Para cuantificar los beneficios de la adaptación de dominio, ajusta un clasificador sobre las etiquetas de IMDb tanto para los puntos de control de DistilBERT preentrenados como para los ajustados. Si necesitas un repaso sobre la clasificación de texto, consulta el [Capítulo 3](/course/chapter3).
