@@ -1,0 +1,890 @@
+<FrameworkSwitchCourse {fw} />
+
+# Entrenar un modelo de lenguaje causal desde cero[[entrenar-un-modelo-de-lenguaje-causal-desde-cero]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+Hasta ahora, hemos utilizado principalmente modelos preentrenados y los hemos ajustado finamente para nuevos casos de uso reutilizando los pesos del preentrenamiento. Como vimos en el [Capítulo 1](/course/chapter1), esto se conoce comúnmente como _aprendizaje por transferencia_ (*transfer learning*), y es una estrategia muy exitosa para aplicar modelos Transformer a la mayoría de los casos de uso del mundo real donde los datos etiquetados son escasos. En este capítulo adoptaremos un enfoque diferente y entrenaremos un modelo completamente nuevo desde cero. Este es un buen enfoque si tienes muchos datos y estos son muy diferentes de los datos de preentrenamiento utilizados para los modelos disponibles. Sin embargo, preentrenar un modelo de lenguaje requiere considerablemente más recursos computacionales que simplemente ajustar uno existente. Algunos ejemplos en los que puede tener sentido entrenar un nuevo modelo incluyen conjuntos de datos consistentes en notas musicales, secuencias moleculares como el ADN o lenguajes de programación. Estos últimos han ganado gran popularidad recientemente gracias a herramientas como TabNine y Copilot de GitHub, impulsadas por el modelo Codex de OpenAI, que pueden generar secuencias largas de código. Esta tarea de generación de texto se aborda mejor con modelos de lenguaje autorregresivos o causales como GPT-2.
+
+En esta sección construiremos una versión a escala reducida de un modelo de generación de código: nos centraremos en completar una sola línea en lugar de funciones o clases completas, utilizando un subconjunto de código Python. Al trabajar con datos en Python estás en contacto frecuente con el stack de ciencia de datos de Python, compuesto por las librerías `matplotlib`, `seaborn`, `pandas` y `scikit-learn`. Al usar estos frameworks, es común necesitar buscar comandos específicos, por lo que sería genial si pudiéramos usar un modelo para completar estas llamadas por nosotros.
+
+<Youtube id="Vpjb1lu0MDk"/>
+
+En el [Capítulo 6](/course/chapter6) creamos un tokenizador eficiente para procesar código fuente en Python, pero lo que todavía necesitamos es un conjunto de datos a gran escala sobre el cual preentrenar un modelo. Aquí aplicaremos nuestro tokenizador a un corpus de código Python derivado de repositorios de GitHub. Luego utilizaremos la API `Trainer` y 🤗 Accelerate para entrenar el modelo. ¡Manos a la obra!
+
+<iframe src="https://course-demos-codeparrot-ds.hf.space" frameBorder="0" height="300" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+Esto en realidad muestra el modelo que fue entrenado y subido al Hub usando el código que se muestra en esta sección. Puedes encontrarlo [aquí](https://huggingface.co/huggingface-course/codeparrot-ds?text=plt.imshow%28). Ten en cuenta que dado que ocurre cierta aleatorización en la generación de texto, es probable que obtengas un resultado ligeramente diferente.
+ 
+## Recopilar los datos[[recopilar-los-datos]]
+
+El código Python abunda en repositorios de código como GitHub, que podemos utilizar para crear un conjunto de datos extrayendo información de cada repositorio de Python. Este fue el enfoque adoptado en el [libro de texto de Transformers](https://learning.oreilly.com/library/view/natural-language-processing/9781098136789/) para preentrenar un modelo GPT-2 grande. A partir de un volcado de GitHub de unos 180 GB que contenía aproximadamente 20 millones de archivos Python llamado `codeparrot`, los autores construyeron un conjunto de datos que luego compartieron en el [Hugging Face Hub](https://huggingface.co/datasets/transformersbook/codeparrot).
+
+Sin embargo, entrenar sobre el corpus completo consume mucho tiempo y recursos de cómputo, y solo necesitamos el subconjunto del conjunto de datos relacionado con el stack de ciencia de datos de Python. Por lo tanto, comencemos filtrando el conjunto de datos `codeparrot` para obtener todos los archivos que incluyan alguna de las librerías de este stack. Debido al tamaño del conjunto de datos, queremos evitar descargarlo; en su lugar, utilizaremos la función de transmisión (*streaming*) para filtrarlo sobre la marcha. Para ayudarnos a filtrar los ejemplos de código que utilizan las librerías mencionadas anteriormente, usaremos la siguiente función:
+
+```py
+def any_keyword_in_string(string, keywords):
+    for keyword in keywords:
+        if keyword in string:
+            return True
+    return False
+```
+
+Probémosla en dos ejemplos:
+
+```py
+filters = ["pandas", "sklearn", "matplotlib", "seaborn"]
+example_1 = "import numpy as np"
+example_2 = "import pandas as pd"
+
+print(
+    any_keyword_in_string(example_1, filters), any_keyword_in_string(example_2, filters)
+)
+```
+
+```python out
+False True
+```
+
+Podemos usar esto para crear una función que transmitirá el conjunto de datos mediante streaming y filtrará los elementos que queremos:
+
+```py
+from collections import defaultdict
+from tqdm import tqdm
+from datasets import Dataset
+
+
+def filter_streaming_dataset(dataset, filters):
+    filtered_dict = defaultdict(list)
+    total = 0
+    for sample in tqdm(iter(dataset)):
+        total += 1
+        if any_keyword_in_string(sample["content"], filters):
+            for k, v in sample.items():
+                filtered_dict[k].append(v)
+    print(f"{len(filtered_dict['content'])/total:.2%} of data after filtering.")
+    return Dataset.from_dict(filtered_dict)
+```
+
+Luego podemos simplemente aplicar esta función al conjunto de datos en streaming:
+
+```py
+# ¡Esta celda tardará mucho tiempo en ejecutarse, así que deberías saltártela y pasar a
+# la siguiente!
+from datasets import load_dataset
+
+split = "train"  # "valid"
+filters = ["pandas", "sklearn", "matplotlib", "seaborn"]
+
+data = load_dataset(f"transformersbook/codeparrot-{split}", split=split, streaming=True)
+filtered_data = filter_streaming_dataset(data, filters)
+```
+
+```python out
+3.26% of data after filtering.
+```
+
+Esto nos deja con aproximadamente el 3% del conjunto de datos original, lo cual sigue siendo bastante considerable: ¡el conjunto de datos resultante tiene 6 GB y consta de 600.000 scripts de Python!
+
+Filtrar el conjunto de datos completo puede tardar de 2 a 3 horas dependiendo de tu máquina y ancho de banda. Si no quieres pasar por este largo proceso tú mismo, ponemos a tu disposición el conjunto de datos filtrado en el Hub para que lo descargues:
+
+```py
+from datasets import load_dataset, DatasetDict
+
+ds_train = load_dataset("huggingface-course/codeparrot-ds-train", split="train")
+ds_valid = load_dataset("huggingface-course/codeparrot-ds-valid", split="validation")
+
+raw_datasets = DatasetDict(
+    {
+        "train": ds_train,  # .shuffle().select(range(50000)),
+        "valid": ds_valid,  # .shuffle().select(range(500))
+    }
+)
+
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['repo_name', 'path', 'copies', 'size', 'content', 'license'],
+        num_rows: 606720
+    })
+    valid: Dataset({
+        features: ['repo_name', 'path', 'copies', 'size', 'content', 'license'],
+        num_rows: 3322
+    })
+})
+```
+
+> [!TIP]
+> El preentrenamiento del modelo de lenguaje llevará un tiempo. Te sugerimos que primero ejecutes el bucle de entrenamiento en una muestra de los datos descomentando las dos líneas parciales anteriores, y te asegures de que el entrenamiento se complete exitosamente y los modelos se guarden. ¡No hay nada más frustrante que una ejecución de entrenamiento falle en el último paso porque olvidaste crear una carpeta o porque hay un error tipográfico al final del bucle de entrenamiento!
+
+Veamos un ejemplo del conjunto de datos. Solo mostraremos los primeros 200 caracteres de cada campo:
+
+```py
+for key in raw_datasets["train"][0]:
+    print(f"{key.upper()}: {raw_datasets['train'][0][key][:200]}")
+```
+
+```python out
+'REPO_NAME: kmike/scikit-learn'
+'PATH: sklearn/utils/__init__.py'
+'COPIES: 3'
+'SIZE: 10094'
+'''CONTENT: """
+The :mod:`sklearn.utils` module includes various utilites.
+"""
+
+from collections import Sequence
+
+import numpy as np
+from scipy.sparse import issparse
+import warnings
+
+from .murmurhash import murm
+LICENSE: bsd-3-clause'''
+```
+
+Podemos ver que el campo `content` contiene el código sobre el cual queremos que nuestro modelo se entrene. Ahora que tenemos un conjunto de datos, necesitamos preparar los textos para que estén en un formato adecuado para el preentrenamiento.
+
+## Preparar el conjunto de datos[[preparar-el-conjunto-de-datos]]
+
+<Youtube id="ma1TrR7gE7I"/>
+
+El primer paso será tokenizar los datos, para que podamos usarlos en el entrenamiento. Dado que nuestro objetivo principal es autocompletar llamadas a funciones cortas, podemos mantener el tamaño de contexto relativamente pequeño. Esto tiene la ventaja de que podemos entrenar el modelo mucho más rápido y requiere significativamente menos memoria. Si para tu aplicación es importante tener más contexto (por ejemplo, si deseas que el modelo escriba pruebas unitarias basadas en un archivo con la definición de la función), asegúrate de aumentar ese número, pero ten en cuenta también que esto conlleva un mayor consumo de memoria en la GPU. Por ahora, fijemos el tamaño de contexto en 128 tokens, en contraposición a los 1.024 o 2.048 utilizados en GPT-2 o GPT-3, respectivamente.
+
+La mayoría de los documentos contienen muchos más de 128 tokens, por lo que simplemente truncar las entradas a la longitud máxima eliminaría una gran fracción de nuestro conjunto de datos. En su lugar, usaremos la opción `return_overflowing_tokens` para tokenizar toda la entrada y dividirla en varios fragmentos (*chunks*), tal como hicimos en el [Capítulo 6](/course/chapter6/4). También utilizaremos la opción `return_length` para obtener la longitud de cada fragmento creado automáticamente. Con frecuencia, el último fragmento será menor que el tamaño de contexto, y nos desharemos de estas partes para evitar problemas de relleno (*padding*); realmente no las necesitamos ya que de todos modos disponemos de abundantes datos.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts.svg" alt="Chunking a large texts in several pieces."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts-dark.svg" alt="Chunking a large texts in several pieces."/>
+</div>
+
+Veamos exactamente cómo funciona esto observando los dos primeros ejemplos:
+
+```py
+from transformers import AutoTokenizer
+
+context_length = 128
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+
+outputs = tokenizer(
+    raw_datasets["train"][:2]["content"],
+    truncation=True,
+    max_length=context_length,
+    return_overflowing_tokens=True,
+    return_length=True,
+)
+
+print(f"Input IDs length: {len(outputs['input_ids'])}")
+print(f"Input chunk lengths: {(outputs['length'])}")
+print(f"Chunk mapping: {outputs['overflow_to_sample_mapping']}")
+```
+
+```python out
+Input IDs length: 34
+Input chunk lengths: [128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 117, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 41]
+Chunk mapping: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+Podemos ver que obtenemos 34 segmentos en total a partir de esos dos ejemplos. Observando las longitudes de los fragmentos, podemos ver que los fragmentos al final de ambos documentos tienen menos de 128 tokens (117 y 41, respectivamente). Estos representan solo una pequeña fracción del total de fragmentos que tenemos, por lo que podemos descartarlos de forma segura. Con el campo `overflow_to_sample_mapping`, también podemos reconstruir qué fragmentos pertenecían a qué muestras de entrada.
+
+Con esta operación estamos utilizando una práctica característica de la función `Dataset.map()` en 🤗 Datasets, que consiste en que no requiere mapeos uno a uno; como vimos en la [sección 3](/course/chapter7/3), podemos crear lotes con más o menos elementos que el lote de entrada. Esto es útil al realizar operaciones como el aumento de datos o el filtrado de datos que cambian la cantidad de elementos. En nuestro caso, al tokenizar cada elemento en fragmentos del tamaño de contexto especificado, creamos muchas muestras a partir de cada documento. Solo debemos asegurarnos de eliminar las columnas existentes, ya que tienen un tamaño en conflicto. Si quisiéramos conservarlas, podríamos repetirlas adecuadamente y devolverlas dentro de la llamada a `Dataset.map()`:
+
+```py
+def tokenize(element):
+    outputs = tokenizer(
+        element["content"],
+        truncation=True,
+        max_length=context_length,
+        return_overflowing_tokens=True,
+        return_length=True,
+    )
+    input_batch = []
+    for length, input_ids in zip(outputs["length"], outputs["input_ids"]):
+        if length == context_length:
+            input_batch.append(input_ids)
+    return {"input_ids": input_batch}
+
+
+tokenized_datasets = raw_datasets.map(
+    tokenize, batched=True, remove_columns=raw_datasets["train"].column_names
+)
+tokenized_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['input_ids'],
+        num_rows: 16702061
+    })
+    valid: Dataset({
+        features: ['input_ids'],
+        num_rows: 93164
+    })
+})
+```
+
+Ahora tenemos 16,7 millones de ejemplos con 128 tokens cada uno, lo que corresponde a aproximadamente 2.100 millones de tokens en total. Como referencia, los modelos GPT-3 y Codex de OpenAI se entrenan en 300 y 100 mil millones de tokens, respectivamente, donde los modelos Codex se inicializan a partir de los puntos de control de GPT-3. Nuestro objetivo en esta sección no es competir con estos modelos, que pueden generar textos largos y coherentes, sino crear una versión a escala reducida que proporcione una función de autocompletado rápido para científicos de datos.
+
+Ahora que tenemos el conjunto de datos listo, ¡configuremos el modelo!
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Deshacerse de todos los fragmentos que son más pequeños que el tamaño de contexto no fue un gran problema aquí porque estamos usando ventanas de contexto pequeñas. A medida que aumentes el tamaño de contexto (o si tienes un corpus de documentos cortos), la fracción de fragmentos que se descartan también crecerá. Una forma más eficiente de preparar los datos es unir todas las muestras tokenizadas en un lote con un token `eos_token_id` en medio, y luego realizar la fragmentación en las secuencias concatenadas. Como ejercicio, modifica la función `tokenize()` para hacer uso de ese enfoque. Ten en cuenta que querrás establecer `truncation=False` y eliminar los demás argumentos del tokenizador para obtener la secuencia completa de ID de tokens.
+
+
+## Inicializar un nuevo modelo[[inicializar-un-nuevo-modelo]]
+
+Nuestro primer paso es inicializar desde cero un modelo GPT-2. Usaremos la misma configuración para nuestro modelo que para el modelo GPT-2 pequeño, por lo que cargamos la configuración preentrenada, nos aseguramos de que el tamaño del tokenizador coincida con el tamaño del vocabulario del modelo y pasamos los ID de los tokens `bos` y `eos` (inicio y final de secuencia):
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, GPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+```
+
+Con esa configuración, podemos cargar un nuevo modelo. Ten en cuenta que esta es la primera vez que no usamos la función `from_pretrained()`, ya que en realidad estamos inicializando un modelo nosotros mismos:
+
+```py
+model = GPT2LMHeadModel(config)
+model_size = sum(t.numel() for t in model.parameters())
+print(f"GPT-2 size: {model_size/1000**2:.1f}M parameters")
+```
+
+```python out
+GPT-2 size: 124.2M parameters
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFGPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+```
+
+Con esa configuración, podemos cargar un nuevo modelo. Ten en cuenta que esta es la primera vez que no usamos la función `from_pretrained()`, ya que en realidad estamos inicializando un modelo nosotros mismos:
+
+```py
+model = TFGPT2LMHeadModel(config)
+model(model.dummy_inputs)  # Construye el modelo
+model.summary()
+```
+
+```python out
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #   
+=================================================================
+transformer (TFGPT2MainLayer multiple                  124242432 
+=================================================================
+Total params: 124,242,432
+Trainable params: 124,242,432
+Non-trainable params: 0
+_________________________________________________________________
+```
+
+{/if}
+
+Nuestro modelo tiene 124M de parámetros que tendremos que ajustar. Antes de poder comenzar el entrenamiento, necesitamos configurar un ensamblador de datos (*data collator*) que se encargará de crear los lotes. Podemos usar el agrupador `DataCollatorForLanguageModeling`, que está diseñado específicamente para el modelado de lenguaje (como su nombre sugiere sutilmente). Además de apilar y rellenar los lotes, también se encarga de crear las etiquetas del modelo de lenguaje: en el modelado de lenguaje causal las entradas también sirven como etiquetas (simplemente desplazadas un elemento), y este agrupador de datos las crea sobre la marcha durante el entrenamiento para que no necesitemos duplicar los `input_ids`.
+
+Ten en cuenta que `DataCollatorForLanguageModeling` admite tanto el modelado de lenguaje enmascarado (MLM) como el modelado de lenguaje causal (CLM). Por defecto prepara datos para MLM, pero podemos cambiar a CLM configurando el argumento `mlm=False`:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False, return_tensors="tf")
+```
+
+{/if}
+
+Echemos un vistazo a un ejemplo:
+
+```py
+out = data_collator([tokenized_datasets["train"][i] for i in range(5)])
+for key in out:
+    print(f"{key} shape: {out[key].shape}")
+```
+
+{#if fw === 'pt'}
+
+```python out
+input_ids shape: torch.Size([5, 128])
+attention_mask shape: torch.Size([5, 128])
+labels shape: torch.Size([5, 128])
+```
+
+{:else}
+
+```python out
+input_ids shape: (5, 128)
+attention_mask shape: (5, 128)
+labels shape: (5, 128)
+```
+
+{/if}
+
+Podemos ver que los ejemplos se han apilado y todos los tensores tienen la misma forma.
+
+{#if fw === 'tf'}
+
+Ahora podemos usar el método `prepare_tf_dataset()` para convertir nuestros conjuntos de datos a conjuntos de datos de TensorFlow con el ensamblador de datos que creamos anteriormente:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["train"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=32,
+)
+tf_eval_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["valid"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=32,
+)
+```
+
+{/if}
+
+> [!WARNING]
+> ⚠️ El desplazamiento de las entradas y las etiquetas para alinearlas ocurre dentro del modelo, por lo que el ensamblador de datos simplemente copia las entradas para crear las etiquetas.
+
+
+Ahora tenemos todo listo para entrenar nuestro modelo; ¡después de todo, no fue tanto trabajo! Antes de comenzar a entrenar debemos iniciar sesión en Hugging Face. Si estás trabajando en un cuaderno, puedes hacerlo con la siguiente función de utilidad:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+Esto mostrará un widget donde podrás ingresar tus credenciales de inicio de sesión de Hugging Face.
+
+Si no estás trabajando en un cuaderno, simplemente escribe la siguiente línea en tu terminal:
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+Todo lo que queda por hacer es configurar los argumentos de entrenamiento y poner en marcha el `Trainer`. Utilizaremos un esquema de tasa de aprendizaje de coseno con algo de calentamiento (*warmup*) y un tamaño de lote efectivo de 256 (`per_device_train_batch_size` * `gradient_accumulation_steps`). La acumulación de gradiente se utiliza cuando un solo lote no cabe en la memoria, y acumula incrementalmente el gradiente a través de varios pasos hacia adelante y hacia atrás. Veremos esto en acción cuando creemos el bucle de entrenamiento con 🤗 Accelerate.
+
+```py
+from transformers import Trainer, TrainingArguments
+
+args = TrainingArguments(
+    output_dir="codeparrot-ds",
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=32,
+    evaluation_strategy="steps",
+    eval_steps=5_000,
+    logging_steps=5_000,
+    gradient_accumulation_steps=8,
+    num_train_epochs=1,
+    weight_decay=0.1,
+    warmup_steps=1_000,
+    lr_scheduler_type="cosine",
+    learning_rate=5e-4,
+    save_steps=5_000,
+    fp16=True,
+    push_to_hub=True,
+)
+
+trainer = Trainer(
+    model=model,
+    tokenizer=tokenizer,
+    args=args,
+    data_collator=data_collator,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["valid"],
+)
+```
+
+Ahora simplemente podemos iniciar el `Trainer` y esperar a que termine el entrenamiento. Dependiendo de si lo ejecutas en el conjunto de entrenamiento completo o en un subconjunto, esto llevará 20 o 2 horas, respectivamente, ¡así que tómate unos cafés y lee un buen libro!
+
+```py
+trainer.train()
+```
+
+Una vez completado el entrenamiento, podemos subir el modelo y el tokenizador al Hub:
+
+```py
+trainer.push_to_hub()
+```
+
+{:else}
+
+Todo lo que queda por hacer es configurar los hiperparámetros de entrenamiento y llamar a `compile()` y `fit()`. Utilizaremos un esquema de tasa de aprendizaje con algo de calentamiento para mejorar la estabilidad del entrenamiento:
+
+```py
+from transformers import create_optimizer
+import tensorflow as tf
+
+num_train_steps = len(tf_train_dataset)
+optimizer, schedule = create_optimizer(
+    init_lr=5e-5,
+    num_warmup_steps=1_000,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Entrenar en precisión mixta float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+Ahora simplemente podemos llamar a `model.fit()` y esperar a que termine el entrenamiento. Dependiendo de si lo ejecutas en el conjunto de entrenamiento completo o en un subconjunto, esto llevará 20 o 2 horas, respectivamente, ¡así que tómate unos cafés y lee un buen libro! Una vez completado el entrenamiento, podemos subir el modelo y el tokenizador al Hub:
+
+```py
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(output_dir="codeparrot-ds", tokenizer=tokenizer)
+
+model.fit(tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback])
+```
+
+{/if}
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Solo nos tomó alrededor de 30 líneas de código además de los `TrainingArguments` pasar de los textos sin procesar al entrenamiento de GPT-2. ¡Pruébalo con tu propio conjunto de datos y mira si puedes obtener buenos resultados!
+
+> [!TIP]
+> {#if fw === 'pt'}
+>
+> 💡 Si tienes acceso a una máquina con varias GPUs, intenta ejecutar el código allí. El `Trainer` gestiona automáticamente múltiples máquinas, y esto puede acelerar el entrenamiento enormemente.
+>
+> {:else}
+>
+> 💡 Si tienes acceso a una máquina con varias GPUs, puedes intentar usar un contexto de `MirroredStrategy` para acelerar sustancialmente el entrenamiento. Necesitarás crear un objeto `tf.distribute.MirroredStrategy` y asegurarte de que cualquier método `to_tf_dataset()` o `prepare_tf_dataset()`, así como la creación del modelo y la llamada a `fit()`, se ejecuten dentro de su contexto `scope()`. Puedes consultar la documentación al respecto [aquí](https://www.tensorflow.org/guide/distributed_training#use_tfdistributestrategy_with_keras_modelfit).
+>
+> {/if}
+
+## Generación de código con un pipeline[[generacion-de-codigo-con-un-pipeline]]
+
+Ahora es el momento de la verdad: ¡veamos qué tan bien funciona realmente el modelo entrenado! Podemos ver en los registros que la pérdida disminuyó de manera constante, pero para poner a prueba el modelo, veamos cómo funciona en algunas instrucciones (*prompts*). Para hacer eso, envolveremos el modelo en un `pipeline` de generación de texto y lo colocaremos en la GPU para generaciones rápidas si hay una disponible:
+
+{#if fw === 'pt'}
+
+```py
+import torch
+from transformers import pipeline
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+pipe = pipeline(
+    "text-generation", model="huggingface-course/codeparrot-ds", device=device
+)
+```
+
+{:else}
+
+```py
+from transformers import pipeline
+
+course_model = TFGPT2LMHeadModel.from_pretrained("huggingface-course/codeparrot-ds")
+course_tokenizer = AutoTokenizer.from_pretrained("huggingface-course/codeparrot-ds")
+pipe = pipeline(
+    "text-generation", model=course_model, tokenizer=course_tokenizer, device=0
+)
+```
+
+{/if}
+
+Comencemos con la sencilla tarea de crear un gráfico de dispersión:
+
+```py
+txt = """\
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create scatter plot with x, y
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create scatter plot with x, y
+plt.scatter(x, y)
+
+# create scatter
+```
+
+El resultado parece correcto. ¿Funciona también para una operación de `pandas`? Veamos si podemos crear un `DataFrame` a partir de dos matrices:
+
+```py
+txt = """\
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create dataframe from x and y
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create dataframe from x and y
+df = pd.DataFrame({'x': x, 'y': y})
+df.insert(0,'x', x)
+for
+```
+
+Genial, esa es la respuesta correcta, aunque luego vuelve a insertar la columna `x`. Dado que la cantidad de tokens generados es limitada, el bucle `for` siguiente queda cortado. Veamos si podemos hacer algo un poco más complejo y hacer que el modelo nos ayude a usar la operación `groupby`:
+
+```py
+txt = """\
+# dataframe with profession, income and name
+df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
+
+# calculate the mean income per profession
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# dataframe with profession, income and name
+df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
+
+# calculate the mean income per profession
+profession = df.groupby(['profession']).mean()
+
+# compute the
+```
+
+Nada mal; esa es la forma correcta de hacerlo. Por último, veamos si también podemos usarlo para `scikit-learn` y configurar un modelo de Random Forest:
+
+```py
+txt = """
+# import random forest regressor from scikit-learn
+from sklearn.ensemble import RandomForestRegressor
+
+# fit random forest model with 300 estimators on X, y:
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# import random forest regressor from scikit-learn
+from sklearn.ensemble import RandomForestRegressor
+
+# fit random forest model with 300 estimators on X, y:
+rf = RandomForestRegressor(n_estimators=300, random_state=random_state, max_depth=3)
+rf.fit(X, y)
+rf
+```
+
+{#if fw === 'tf'}
+
+Mirando estos pocos ejemplos, parece que el modelo ha aprendido parte de la sintaxis del stack de ciencia de datos de Python. Por supuesto, necesitaríamos evaluar el modelo más a fondo antes de implementarlo en el mundo real, pero este sigue siendo un prototipo impresionante.
+
+{:else}
+
+Mirando estos pocos ejemplos, parece que el modelo ha aprendido parte de la sintaxis del stack de ciencia de datos de Python (por supuesto, necesitaríamos evaluarlo más a fondo antes de implementar el modelo en el mundo real). Sin embargo, a veces se requiere una mayor personalización del entrenamiento del modelo para lograr el rendimiento necesario para un caso de uso determinado. Por ejemplo, ¿qué pasaría si quisiéramos actualizar dinámicamente el tamaño del lote o tener un bucle de entrenamiento condicional que omita los ejemplos defectuosos sobre la marcha? Una opción sería crear una subclase de `Trainer` y agregar los cambios necesarios, pero a veces es más sencillo escribir el bucle de entrenamiento desde cero. Ahí es donde entra 🤗 Accelerate.
+
+{/if}
+
+{#if fw === 'pt'}
+
+## Entrenamiento con 🤗 Accelerate[[entrenamiento-con-accelerate]]
+
+Hemos visto cómo entrenar un modelo con el `Trainer`, lo que permite cierta personalización. Sin embargo, a veces queremos un control total sobre el bucle de entrenamiento o queremos realizar algunos cambios exóticos. En este caso, 🤗 Accelerate es una excelente opción, y en esta sección repasaremos los pasos para usarlo en el entrenamiento de nuestro modelo. Para hacer las cosas más interesantes, también agregaremos un toque especial al bucle de entrenamiento.
+
+<Youtube id="Hm8_PgVTFuc"/>
+
+Dado que nos interesa principalmente la autocompletación sensata para las librerías de ciencia de datos, tiene sentido dar más peso a las muestras de entrenamiento que hacen un mayor uso de estas librerías. Podemos identificar fácilmente estos ejemplos mediante el uso de palabras clave como `plt`, `pd`, `sk`, `fit` y `predict`, que son los nombres de importación más frecuentes para `matplotlib.pyplot`, `pandas` y `sklearn`, así como el patrón de ajuste/predicción de este último. Si cada uno de estos está representado como un solo token, podemos comprobar fácilmente si ocurren en la secuencia de entrada. Los tokens pueden tener un prefijo de espacio en blanco, por lo que también verificaremos esas versiones en el vocabulario del tokenizador. Para comprobar que funciona, agregaremos un token de prueba que debería dividirse en múltiples tokens:
+
+```py
+keytoken_ids = []
+for keyword in [
+    "plt",
+    "pd",
+    "sk",
+    "fit",
+    "predict",
+    " plt",
+    " pd",
+    " sk",
+    " fit",
+    " predict",
+    "testtest",
+]:
+    ids = tokenizer([keyword]).input_ids[0]
+    if len(ids) == 1:
+        keytoken_ids.append(ids[0])
+    else:
+        print(f"Keyword has not single token: {keyword}")
+```
+
+```python out
+'Keyword has not single token: testtest'
+```
+
+Genial, ¡parece que funciona muy bien! Ahora podemos escribir una función de pérdida personalizada que tome como entradas la secuencia de entrada, los logits y los tokens clave que acabamos de seleccionar. Primero necesitamos alinear los logits y las entradas: la secuencia de entrada desplazada uno hacia la derecha forma las etiquetas, ya que el siguiente token es la etiqueta para el token actual. Podemos lograr esto comenzando las etiquetas a partir del segundo token de la secuencia de entrada, ya que el modelo no hace una predicción para el primer token de todos modos. Luego cortamos el último logit, ya que no tenemos una etiqueta para el token que sigue a la secuencia de entrada completa. Con eso podemos calcular la pérdida por muestra y contar las apariciones de todas las palabras clave en cada muestra. Finalmente, calculamos el promedio ponderado sobre todas las muestras utilizando las apariciones como pesos. Dado que no queremos descartar todas las muestras que no tienen palabras clave, sumamos 1 a los pesos:
+
+```py
+from torch.nn import CrossEntropyLoss
+import torch
+
+
+def keytoken_weighted_loss(inputs, logits, keytoken_ids, alpha=1.0):
+    # Shift so that tokens < n predict n
+    shift_labels = inputs[..., 1:].contiguous()
+    shift_logits = logits[..., :-1, :].contiguous()
+    # Calculate per-token loss
+    loss_fct = CrossEntropyLoss(reduce=False)
+    loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+    # Resize and average loss per sample
+    loss_per_sample = loss.view(shift_logits.size(0), shift_logits.size(1)).mean(axis=1)
+    # Calculate and scale weighting
+    weights = torch.stack([(inputs == kt).float() for kt in keytoken_ids]).sum(
+        axis=[0, 2]
+    )
+    weights = alpha * (1.0 + weights)
+    # Calculate weighted average
+    weighted_loss = (loss_per_sample * weights).mean()
+    return weighted_loss
+```
+
+Antes de poder comenzar a entrenar con esta fantástica nueva función de pérdida, necesitamos preparar algunas cosas:
+
+- Necesitamos cargadores de datos (*dataloaders*) para cargar los datos en lotes.
+- Necesitamos configurar los parámetros de decaimiento de peso (*weight decay*).
+- De vez en cuando queremos evaluar, por lo que tiene sentido envolver el código de evaluación en una función.
+
+Comencemos con los dataloaders. Solo necesitamos establecer el formato del conjunto de datos en `"torch"`, y luego podemos pasarlo a un `DataLoader` de PyTorch con el tamaño de lote apropiado:
+
+```py
+from torch.utils.data.dataloader import DataLoader
+
+tokenized_datasets.set_format("torch")
+train_dataloader = DataLoader(tokenized_datasets["train"], batch_size=32, shuffle=True)
+eval_dataloader = DataLoader(tokenized_datasets["valid"], batch_size=32)
+```
+
+A continuación, agrupamos los parámetros para que el optimizador sepa cuáles recibirán un decaimiento de peso adicional. Por lo general, todos los términos de sesgo (*bias*) y pesos de LayerNorm están exentos de esto; así es como podemos hacerlo:
+
+```py
+weight_decay = 0.1
+
+
+def get_grouped_params(model, no_decay=["bias", "LayerNorm.weight"]):
+    params_with_wd, params_without_wd = [], []
+    for n, p in model.named_parameters():
+        if any(nd in n for nd in no_decay):
+            params_without_wd.append(p)
+        else:
+            params_with_wd.append(p)
+    return [
+        {"params": params_with_wd, "weight_decay": weight_decay},
+        {"params": params_without_wd, "weight_decay": 0.0},
+    ]
+```
+
+Dado que queremos evaluar el modelo con regularidad en el conjunto de validación durante el entrenamiento, escribamos también una función para eso. Simplemente recorre el dataloader de evaluación y recopila todas las pérdidas a través de los procesos:
+
+```py
+def evaluate():
+    model.eval()
+    losses = []
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(batch["input_ids"], labels=batch["input_ids"])
+
+        losses.append(accelerator.gather(outputs.loss))
+    loss = torch.mean(torch.cat(losses))
+    try:
+        perplexity = torch.exp(loss)
+    except OverflowError:
+        perplexity = float("inf")
+    return loss.item(), perplexity.item()
+```
+
+Con la función `evaluate()` podemos reportar la pérdida y la [perplejidad](/course/chapter7/3) a intervalos regulares. A continuación, redefinimos nuestro modelo para asegurarnos de volver a entrenar desde cero:
+
+```py
+model = GPT2LMHeadModel(config)
+```
+
+Luego podemos definir nuestro optimizador, utilizando la función anterior para dividir los parámetros para el decaimiento de peso:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(get_grouped_params(model), lr=5e-4)
+```
+
+Ahora preparemos el modelo, el optimizador y los dataloaders para poder comenzar a entrenar:
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator(fp16=True)
+
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+> [!TIP]
+> 🚨 Si estás entrenando en una TPU, deberás mover todo el código a partir de la celda anterior a una función de entrenamiento dedicada. Consulta el [Capítulo 3](/course/chapter3) para obtener más detalles.
+
+Ahora que hemos enviado nuestro `train_dataloader` a `accelerator.prepare()`, podemos usar su longitud para calcular el número de pasos de entrenamiento. Recuerda que siempre debemos hacer esto después de preparar el dataloader, ya que ese método cambiará su longitud. Usamos un esquema lineal clásico desde la tasa de aprendizaje hasta 0:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 1
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    name="linear",
+    optimizer=optimizer,
+    num_warmup_steps=1_000,
+    num_training_steps=num_training_steps,
+)
+```
+
+Por último, para subir nuestro modelo al Hub, necesitaremos crear un objeto `Repository` en una carpeta de trabajo. Primero inicia sesión en el Hugging Face Hub, si aún no lo has hecho. Determinaremos el nombre del repositorio a partir del ID de modelo que queremos darle a nuestro modelo (siéntete libre de reemplazar `repo_name` con tu propia elección; solo necesita contener tu nombre de usuario, que es lo que hace la función `get_full_repo_name()`):
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "codeparrot-ds-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/codeparrot-ds-accelerate'
+```
+
+Luego podemos clonar ese repositorio en una carpeta local. Si ya existe, esta carpeta local debe ser un clon existente del repositorio con el que estamos trabajando:
+
+```py
+output_dir = "codeparrot-ds-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+Ahora podemos subir cualquier cosa que guardemos en `output_dir` llamando al método `repo.push_to_hub()`. Esto nos ayudará a subir los modelos intermedios al final de cada época.
+
+Antes de entrenar, ejecutemos una prueba rápida para ver si la función de evaluación funciona correctamente:
+
+```py
+evaluate()
+```
+
+```python out
+(10.934126853942871, 56057.14453125)
+```
+
+Esos son valores muy altos para la pérdida y la perplejidad, pero no es de extrañar ya que aún no hemos entrenado el modelo. Con esto, tenemos todo preparado para escribir la parte central del script de entrenamiento: el bucle de entrenamiento. En el bucle de entrenamiento iteramos sobre el dataloader y pasamos los lotes al modelo. Con los logits, podemos entonces evaluar nuestra función de pérdida personalizada. Escalamos la pérdida por la cantidad de pasos de acumulación de gradiente para no generar pérdidas mayores al agregar más pasos. Antes de optimizar, también recortamos los gradientes (*gradient clipping*) para una mejor convergencia. Finalmente, cada pocos pasos evaluamos el modelo en el conjunto de evaluación con nuestra nueva función `evaluate()`:
+
+```py
+from tqdm.notebook import tqdm
+
+gradient_accumulation_steps = 8
+eval_steps = 5_000
+
+model.train()
+completed_steps = 0
+for epoch in range(num_train_epochs):
+    for step, batch in tqdm(
+        enumerate(train_dataloader, start=1), total=num_training_steps
+    ):
+        logits = model(batch["input_ids"]).logits
+        loss = keytoken_weighted_loss(batch["input_ids"], logits, keytoken_ids)
+        if step % 100 == 0:
+            accelerator.print(
+                {
+                    "samples": step * samples_per_step,
+                    "steps": completed_steps,
+                    "loss/train": loss.item() * gradient_accumulation_steps,
+                }
+            )
+        loss = loss / gradient_accumulation_steps
+        accelerator.backward(loss)
+        if step % gradient_accumulation_steps == 0:
+            accelerator.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+            completed_steps += 1
+        if (step % (eval_steps * gradient_accumulation_steps)) == 0:
+            eval_loss, perplexity = evaluate()
+            accelerator.print({"loss/eval": eval_loss, "perplexity": perplexity})
+            model.train()
+            accelerator.wait_for_everyone()
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+            if accelerator.is_main_process:
+                tokenizer.save_pretrained(output_dir)
+                repo.push_to_hub(
+                    commit_message=f"Training in progress step {step}", blocking=False
+                )
+```
+
+Y eso es todo: ahora tienes tu propio bucle de entrenamiento personalizado para modelos de lenguaje causal como GPT-2 que puedes personalizar aún más según tus necesidades.
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Crea tu propia función de pérdida personalizada adaptada a tu caso de uso o agrega otro paso personalizado en el bucle de entrenamiento.
+
+> [!TIP]
+> ✏️ **¡Pruébalo!** Al ejecutar experimentos de entrenamiento prolongados, es una buena idea registrar métricas importantes utilizando herramientas como TensorBoard o Weights & Biases. Agrega un registro adecuado al bucle de entrenamiento para que siempre puedas verificar cómo va el entrenamiento.
+
+{/if}
