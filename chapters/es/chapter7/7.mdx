@@ -1,0 +1,1191 @@
+<FrameworkSwitchCourse {fw} />
+
+# Respuesta a preguntas[[respuesta-a-preguntas]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section7_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section7_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section7_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section7_tf.ipynb"},
+]} />
+
+{/if}
+
+¡Es hora de explorar la respuesta a preguntas (*question answering*)! Esta tarea se presenta en muchas variantes, pero en la que nos centraremos en esta sección se denomina respuesta a preguntas *extractiva*. Esto implica plantear preguntas sobre un documento e identificar las respuestas como _fragmentos de texto_ en el propio documento.
+
+<Youtube id="ajPx5LwJD-I"/>
+
+Ajustaremos finamente un modelo BERT en el [conjunto de datos SQuAD](https://rajpurkar.github.io/SQuAD-explorer/), que consta de preguntas planteadas por trabajadores colaborativos sobre un conjunto de artículos de Wikipedia. Esto nos dará un modelo capaz de generar predicciones como esta:
+
+<iframe src="https://course-demos-bert-finetuned-squad.hf.space" frameBorder="0" height="450" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+Esto en realidad muestra el modelo que fue entrenado y subido al Hub usando el código que se muestra en esta sección. Puedes encontrarlo y verificar las predicciones [aquí](https://huggingface.co/huggingface-course/bert-finetuned-squad?context=%F0%9F%A4%97+Transformers+is+backed+by+the+three+most+popular+deep+learning+libraries+%E2%80%94+Jax%2C+PyTorch+and+TensorFlow+%E2%80%94+with+a+seamless+integration+between+them.+It%27s+straightforward+to+train+your+models+with+one+before+loading+them+for+inference+with+the+other.&question=Which+deep+learning+libraries+back+%F0%9F%A4%97+Transformers%3F).
+
+> [!TIP]
+> 💡 Los modelos de solo codificador como BERT tienden a ser excelentes para extraer respuestas a preguntas factuales como "¿Quién inventó la arquitectura Transformer?", pero funcionan mal cuando se les plantean preguntas abiertas como "¿Por qué el cielo es azul?". En estos casos más desafiantes, los modelos de codificador-decodificador como T5 y BART se utilizan normalmente para sintetizar la información de una manera muy similar al [resumen de textos](/course/chapter7/5). Si te interesa este tipo de respuesta a preguntas *generativa*, te recomendamos consultar nuestra [demo](https://yjernite.github.io/lfqa.html) basada en el [conjunto de datos ELI5](https://huggingface.co/datasets/eli5).
+
+## Preparar los datos[[preparar-los-datos]]
+
+El conjunto de datos más utilizado como referencia académica para la respuesta a preguntas extractiva es [SQuAD](https://rajpurkar.github.io/SQuAD-explorer/), por lo que es el que utilizaremos aquí. También existe un benchmark más difícil, [SQuAD v2](https://huggingface.co/datasets/squad_v2), que incluye preguntas que no tienen respuesta. Siempre que tu propio conjunto de datos contenga una columna para contextos, una columna para preguntas y una columna para respuestas, deberías poder adaptar los pasos que se detallan a continuación.
+
+### El conjunto de datos SQuAD[[el-conjunto-de-datos-squad]]
+
+Como de costumbre, podemos descargar y almacenar en caché el conjunto de datos en un solo paso gracias a `load_dataset()`:
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("squad")
+```
+
+Luego podemos inspeccionar este objeto para conocer más sobre el conjunto de datos SQuAD:
+
+```py
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'title', 'context', 'question', 'answers'],
+        num_rows: 87599
+    })
+    validation: Dataset({
+        features: ['id', 'title', 'context', 'question', 'answers'],
+        num_rows: 10570
+    })
+})
+```
+
+Parece que tenemos todo lo que necesitamos con los campos `context`, `question` y `answers`, así que imprimámoslos para el primer elemento de nuestro conjunto de entrenamiento:
+
+```py
+print("Context: ", raw_datasets["train"][0]["context"])
+print("Question: ", raw_datasets["train"][0]["question"])
+print("Answer: ", raw_datasets["train"][0]["answers"])
+```
+
+```python out
+Context: 'Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend "Venite Ad Me Omnes". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive (and in a direct line that connects through 3 statues and the Gold Dome), is a simple, modern stone statue of Mary.'
+Question: 'To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France?'
+Answer: {'text': ['Saint Bernadette Soubirous'], 'answer_start': [515]}
+```
+
+Los campos `context` y `question` son muy directos de usar. El campo `answers` es un poco más complejo, ya que incluye un diccionario con dos campos que son listas. Este es el formato esperado por la métrica `squad` durante la evaluación; si utilizas tus propios datos, no es estrictamente necesario que pongas las respuestas en este mismo formato. El campo `text` es bastante evidente, y el campo `answer_start` contiene el índice del carácter inicial de cada respuesta en el contexto.
+
+Durante el entrenamiento, solo hay una respuesta posible. Podemos comprobarlo utilizando el método `Dataset.filter()`:
+
+```py
+raw_datasets["train"].filter(lambda x: len(x["answers"]["text"]) != 1)
+```
+
+```python out
+Dataset({
+    features: ['id', 'title', 'context', 'question', 'answers'],
+    num_rows: 0
+})
+```
+
+Sin embargo, para la evaluación existen varias respuestas posibles para cada muestra, que pueden ser iguales o diferentes:
+
+```py
+print(raw_datasets["validation"][0]["answers"])
+print(raw_datasets["validation"][2]["answers"])
+```
+
+```python out
+{'text': ['Denver Broncos', 'Denver Broncos', 'Denver Broncos'], 'answer_start': [177, 177, 177]}
+{'text': ['Santa Clara, California', "Levi's Stadium", "Levi's Stadium in the San Francisco Bay Area at Santa Clara, California."], 'answer_start': [403, 355, 355]}
+```
+
+No profundizaremos en el script de evaluación, ya que una métrica de 🤗 Datasets se encargará de todo por nosotros, pero la versión resumida es que algunas de las preguntas tienen varias respuestas posibles, y este script comparará una respuesta predicha con todas las respuestas aceptables y tomará la mejor puntuación. Si echamos un vistazo a la muestra en el índice 2, por ejemplo:
+
+```py
+print(raw_datasets["validation"][2]["context"])
+print(raw_datasets["validation"][2]["question"])
+```
+
+```python out
+'Super Bowl 50 was an American football game to determine the champion of the National Football League (NFL) for the 2015 season. The American Football Conference (AFC) champion Denver Broncos defeated the National Football Conference (NFC) champion Carolina Panthers 24–10 to earn their third Super Bowl title. The game was played on February 7, 2016, at Levi\'s Stadium in the San Francisco Bay Area at Santa Clara, California. As this was the 50th Super Bowl, the league emphasized the "golden anniversary" with various gold-themed initiatives, as well as temporarily suspending the tradition of naming each Super Bowl game with Roman numerals (under which the game would have been known as "Super Bowl L"), so that the logo could prominently feature the Arabic numerals 50.'
+'Where did Super Bowl 50 take place?'
+```
+
+podemos ver que la respuesta puede ser efectivamente una de las tres posibilidades que vimos antes.
+
+### Procesar los datos de entrenamiento[[procesar-los-datos-de-entrenamiento]]
+
+<Youtube id="qgaM0weJHpA"/>
+
+Comencemos preprocesando los datos de entrenamiento. La parte difícil será generar etiquetas para la respuesta a la pregunta, que serán las posiciones inicial y final de los tokens correspondientes a la respuesta dentro del contexto.
+
+Pero no nos adelantemos. Primero, necesitamos convertir el texto de entrada en identificadores que el modelo pueda comprender, utilizando un tokenizador:
+
+```py
+from transformers import AutoTokenizer
+
+model_checkpoint = "bert-base-cased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+Como se mencionó anteriormente, ajustaremos finamente un modelo BERT, pero puedes usar cualquier otro tipo de modelo siempre que tenga un tokenizador rápido implementado. Puedes ver todas las arquitecturas que vienen con una versión rápida en [esta gran tabla](https://huggingface.co/transformers/#supported-frameworks), y para comprobar que el objeto `tokenizer` que estás utilizando está respaldado por 🤗 Tokenizers puedes mirar su atributo `is_fast`:
+
+```py
+tokenizer.is_fast
+```
+
+```python out
+True
+```
+
+Podemos pasar a nuestro tokenizador la pregunta y el contexto juntos, y este insertará adecuadamente los tokens especiales para formar una oración como esta:
+
+```
+[CLS] question [SEP] context [SEP]
+```
+
+Comprobémoslo:
+
+```py
+context = raw_datasets["train"][0]["context"]
+question = raw_datasets["train"][0]["question"]
+
+inputs = tokenizer(question, context)
+tokenizer.decode(inputs["input_ids"])
+```
+
+```python out
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Architecturally, '
+'the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin '
+'Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms '
+'upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred '
+'Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a '
+'replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette '
+'Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 statues '
+'and the Gold Dome ), is a simple, modern stone statue of Mary. [SEP]'
+```
+
+Las etiquetas serán entonces el índice de los tokens que inician y terminan la respuesta, y el modelo tendrá la tarea de predecir un logit de inicio y un logit de final por token en la entrada, siendo las etiquetas teóricas las siguientes:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/qa_labels.svg" alt="One-hot encoded labels for question answering."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/qa_labels-dark.svg" alt="One-hot encoded labels for question answering."/>
+</div>
+
+En este caso el contexto no es demasiado largo, pero algunos de los ejemplos en el conjunto de datos tienen contextos muy extensos que excederán la longitud máxima que establezcamos (que en este caso es 384). Como vimos en el [Capítulo 6](/course/chapter6/4) cuando exploramos el funcionamiento interno del pipeline `question-answering`, abordaremos los contextos largos creando varias características de entrenamiento a partir de una sola muestra de nuestro conjunto de datos, con una ventana deslizante entre ellas.
+
+Para ver cómo funciona esto utilizando el ejemplo actual, podemos limitar la longitud a 100 y utilizar una ventana deslizante de 50 tokens. Como recordatorio, utilizamos:
+
+- `max_length` para fijar la longitud máxima (aquí 100)
+- `truncation="only_second"` para truncar el contexto (que está en la segunda posición) cuando la pregunta con su contexto sea demasiado larga
+- `stride` para establecer el número de tokens superpuestos entre dos fragmentos sucesivos (aquí 50)
+- `return_overflowing_tokens=True` para indicarle al tokenizador que queremos los tokens que se desbordan
+
+```py
+inputs = tokenizer(
+    question,
+    context,
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+```python out
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basi [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP] Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grotto, a Marian place of prayer and reflection. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 [SEP]'
+'[CLS] To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France? [SEP]. It is a replica of the grotto at Lourdes, France where the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858. At the end of the main drive ( and in a direct line that connects through 3 statues and the Gold Dome ), is a simple, modern stone statue of Mary. [SEP]'
+```
+
+Como podemos ver, nuestro ejemplo se ha dividido en cuatro entradas, cada una de las cuales contiene la pregunta y una parte del contexto. Ten en cuenta que la respuesta a la pregunta ("Bernadette Soubirous") solo aparece en la tercera y última entrada, por lo que al tratar los contextos largos de esta manera crearemos algunos ejemplos de entrenamiento donde la respuesta no está incluida en el contexto. Para esos ejemplos, las etiquetas serán `start_position = end_position = 0` (por lo que predecimos el token `[CLS]`). También estableceremos esas etiquetas en el desafortunado caso de que la respuesta se haya truncado de modo que solo tengamos el principio (o el final) de ella. Para los ejemplos donde la respuesta está completamente en el contexto, las etiquetas serán el índice del token donde comienza la respuesta y el índice del token donde termina la respuesta.
+
+El conjunto de datos nos proporciona el carácter inicial de la respuesta en el contexto, y sumando la longitud de la respuesta, podemos encontrar el carácter final en el contexto. Para asignarlos a índices de tokens, necesitaremos utilizar los mapeos de desplazamiento (*offset mappings*) que estudiamos en el [Capítulo 6](/course/chapter6/4). Podemos hacer que nuestro tokenizador los devuelva pasando `return_offsets_mapping=True`:
+
+```py
+inputs = tokenizer(
+    question,
+    context,
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+inputs.keys()
+```
+
+```python out
+dict_keys(['input_ids', 'token_type_ids', 'attention_mask', 'offset_mapping', 'overflow_to_sample_mapping'])
+```
+
+Como podemos ver, recuperamos los habituales IDs de entrada, IDs de tipo de token y máscara de atención, así como el mapeo de desplazamiento que requerimos y una clave adicional: `overflow_to_sample_mapping`. El valor correspondiente nos resultará de utilidad cuando tokenicemos varios textos al mismo tiempo (lo que deberíamos hacer para beneficiarnos del hecho de que nuestro tokenizador está implementado en Rust). Dado que una sola muestra puede generar varias características, mapea cada característica con el ejemplo del que se originó. Dado que aquí solo tokenizamos un ejemplo, obtenemos una lista de `0`:
+
+```py
+inputs["overflow_to_sample_mapping"]
+```
+
+```python out
+[0, 0, 0, 0]
+```
+
+Pero si tokenizamos más ejemplos, esto resultará mucho más útil:
+
+```py
+inputs = tokenizer(
+    raw_datasets["train"][2:6]["question"],
+    raw_datasets["train"][2:6]["context"],
+    max_length=100,
+    truncation="only_second",
+    stride=50,
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+
+print(f"The 4 examples gave {len(inputs['input_ids'])} features.")
+print(f"Here is where each comes from: {inputs['overflow_to_sample_mapping']}.")
+```
+
+```python out
+'The 4 examples gave 19 features.'
+'Here is where each comes from: [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3].'
+```
+
+Como podemos ver, los primeros tres ejemplos (en los índices 2, 3 y 4 del conjunto de entrenamiento) dieron cada uno cuatro características y el último ejemplo (en el índice 5 del conjunto de entrenamiento) dio 7 características.
+
+Esta información será útil para mapear cada característica que obtenemos con su etiqueta correspondiente. Como se mencionó anteriormente, esas etiquetas son:
+
+- `(0, 0)` si la respuesta no está en el fragmento correspondiente del contexto
+- `(start_position, end_position)` si la respuesta está en el fragmento correspondiente del contexto, donde `start_position` es el índice del token (en los IDs de entrada) al comienzo de la respuesta y `end_position` es el índice del token (en los IDs de entrada) donde termina la respuesta
+
+Para determinar cuál de estos es el caso y, si procede, las posiciones de los tokens, primero encontramos los índices que inician y terminan el contexto en los IDs de entrada. Podríamos usar los IDs de tipo de token para hacer esto, pero como estos no existen necesariamente para todos los modelos (DistilBERT no los requiere, por ejemplo), utilizaremos en su lugar el método `sequence_ids()` del `BatchEncoding` que devuelve nuestro tokenizador.
+
+Una vez que tenemos esos índices de tokens, observamos los desplazamientos correspondientes, que son tuplas de dos enteros que representan el intervalo de caracteres dentro del contexto original. De este modo, podemos detectar si el fragmento del contexto en esta característica comienza después de la respuesta o termina antes de que comience la respuesta (en cuyo caso la etiqueta es `(0, 0)`). Si no es así, iteramos para encontrar el primer y el último token de la respuesta:
+
+```py
+answers = raw_datasets["train"][2:6]["answers"]
+start_positions = []
+end_positions = []
+
+for i, offset in enumerate(inputs["offset_mapping"]):
+    sample_idx = inputs["overflow_to_sample_mapping"][i]
+    answer = answers[sample_idx]
+    start_char = answer["answer_start"][0]
+    end_char = answer["answer_start"][0] + len(answer["text"][0])
+    sequence_ids = inputs.sequence_ids(i)
+
+    # Encontrar el inicio y final del contexto
+    idx = 0
+    while sequence_ids[idx] != 1:
+        idx += 1
+    context_start = idx
+    while sequence_ids[idx] == 1:
+        idx += 1
+    context_end = idx - 1
+
+    # Si la respuesta no está completamente dentro del contexto, la etiqueta es (0, 0)
+    if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+        start_positions.append(0)
+        end_positions.append(0)
+    else:
+        # De lo contrario son las posiciones de token inicial y final
+        idx = context_start
+        while idx <= context_end and offset[idx][0] <= start_char:
+            idx += 1
+        start_positions.append(idx - 1)
+
+        idx = context_end
+        while idx >= context_start and offset[idx][1] >= end_char:
+            idx -= 1
+        end_positions.append(idx + 1)
+
+start_positions, end_positions
+```
+
+```python out
+([83, 51, 19, 0, 0, 64, 27, 0, 34, 0, 0, 0, 67, 34, 0, 0, 0, 0, 0],
+ [85, 53, 21, 0, 0, 70, 33, 0, 40, 0, 0, 0, 68, 35, 0, 0, 0, 0, 0])
+```
+
+Veamos algunos resultados para verificar que nuestro enfoque es correcto. Para la primera característica encontramos `(83, 85)` como etiquetas, así que comparemos la respuesta teórica con el fragmento decodificado de tokens de 83 a 85 (inclusive):
+
+```py
+idx = 0
+sample_idx = inputs["overflow_to_sample_mapping"][idx]
+answer = answers[sample_idx]["text"][0]
+
+start = start_positions[idx]
+end = end_positions[idx]
+labeled_answer = tokenizer.decode(inputs["input_ids"][idx][start : end + 1])
+
+print(f"Theoretical answer: {answer}, labels give: {labeled_answer}")
+```
+
+```python out
+'Theoretical answer: the Main Building, labels give: the Main Building'
+```
+
+¡Coincide perfectamente! Ahora comprobemos el índice 4, donde establecimos las etiquetas en `(0, 0)`, lo que significa que la respuesta no está en el fragmento de contexto de esa característica:
+
+```py
+idx = 4
+sample_idx = inputs["overflow_to_sample_mapping"][idx]
+answer = answers[sample_idx]["text"][0]
+
+decoded_example = tokenizer.decode(inputs["input_ids"][idx])
+print(f"Theoretical answer: {answer}, decoded example: {decoded_example}")
+```
+
+```python out
+'Theoretical answer: a Marian place of prayer and reflection, decoded example: [CLS] What is the Grotto at Notre Dame? [SEP] Architecturally, the school has a Catholic character. Atop the Main Building\'s gold dome is a golden statue of the Virgin Mary. Immediately in front of the Main Building and facing it, is a copper statue of Christ with arms upraised with the legend " Venite Ad Me Omnes ". Next to the Main Building is the Basilica of the Sacred Heart. Immediately behind the basilica is the Grot [SEP]'
+```
+
+En efecto, no vemos la respuesta dentro del contexto.
+
+> [!TIP]
+> ✏️ **¡Te toca!** Al usar la arquitectura XLNet, el relleno se aplica a la izquierda y la pregunta y el contexto se intercambian. Adapta todo el código que acabamos de ver a la arquitectura XLNet (y agrega `padding=True`). Ten en cuenta que el token `[CLS]` puede no estar en la posición 0 cuando se aplica el relleno.
+
+Ahora que hemos visto paso a paso cómo preprocesar nuestros datos de entrenamiento, podemos agruparlo en una función que aplicaremos en todo el conjunto de datos de entrenamiento. Rellenaremos cada característica a la longitud máxima que establezcamos, ya que la mayoría de los contextos serán largos (y las muestras correspondientes se dividirán en varias características), por lo que no hay un beneficio real en aplicar relleno dinámico aquí:
+
+```py
+max_length = 384
+stride = 128
+
+
+def preprocess_training_examples(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=max_length,
+        truncation="only_second",
+        stride=stride,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    offset_mapping = inputs.pop("offset_mapping")
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    answers = examples["answers"]
+    start_positions = []
+    end_positions = []
+
+    for i, offset in enumerate(offset_mapping):
+        sample_idx = sample_map[i]
+        answer = answers[sample_idx]
+        start_char = answer["answer_start"][0]
+        end_char = answer["answer_start"][0] + len(answer["text"][0])
+        sequence_ids = inputs.sequence_ids(i)
+
+        # Encontrar el inicio y final del contexto
+        idx = 0
+        while sequence_ids[idx] != 1:
+            idx += 1
+        context_start = idx
+        while sequence_ids[idx] == 1:
+            idx += 1
+        context_end = idx - 1
+
+        # Si la respuesta no está completamente dentro del contexto, la etiqueta es (0, 0)
+        if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+            start_positions.append(0)
+            end_positions.append(0)
+        else:
+            # De lo contrario son las posiciones de token inicial y final
+            idx = context_start
+            while idx <= context_end and offset[idx][0] <= start_char:
+                idx += 1
+            start_positions.append(idx - 1)
+
+            idx = context_end
+            while idx >= context_start and offset[idx][1] >= end_char:
+                idx -= 1
+            end_positions.append(idx + 1)
+
+    inputs["start_positions"] = start_positions
+    inputs["end_positions"] = end_positions
+    return inputs
+```
+
+Ten en cuenta que definimos dos constantes para determinar la longitud máxima utilizada así como la longitud de la ventana deslizante, y que agregamos una pequeña limpieza antes de tokenizar: algunas de las preguntas en el conjunto de datos SQuAD tienen espacios adicionales al principio y al final que no aportan nada (y ocupan espacio al ser tokenizadas si usas un modelo como RoBERTa), por lo que eliminamos esos espacios adicionales.
+
+Para aplicar esta función a todo el conjunto de entrenamiento, usamos el método `Dataset.map()` con la opción `batched=True`. Es necesario aquí ya que estamos cambiando la longitud del conjunto de datos (dado que un ejemplo puede generar varias características de entrenamiento):
+
+```py
+train_dataset = raw_datasets["train"].map(
+    preprocess_training_examples,
+    batched=True,
+    remove_columns=raw_datasets["train"].column_names,
+)
+len(raw_datasets["train"]), len(train_dataset)
+```
+
+```python out
+(87599, 88729)
+```
+
+Como podemos ver, el preprocesamiento agregó aproximadamente 1.000 características. Nuestro conjunto de entrenamiento ya está listo para ser utilizado: ¡profundicemos en el preprocesamiento del conjunto de validación!
+
+### Procesar los datos de validación[[procesar-los-datos-de-validacion]]
+
+El preprocesamiento de los datos de validación será un poco más sencillo, ya que no necesitamos generar etiquetas (a menos que queramos calcular una pérdida de validación, pero ese número no nos ayudará realmente a comprender qué tan bueno es el modelo). La verdadera alegría será interpretar las predicciones del modelo en fragmentos del contexto original. Para ello, solo necesitaremos almacenar tanto los mapeos de desplazamiento como alguna forma de hacer coincidir cada característica creada con el ejemplo original del que proviene. Como existe una columna ID en el conjunto de datos original, utilizaremos ese ID.
+
+Lo único que agregaremos aquí es una pequeña limpieza de los mapeos de desplazamiento. Contendrán desplazamientos para la pregunta y el contexto, pero una vez que estemos en la etapa de posprocesamiento no tendremos forma de saber qué parte de los IDs de entrada correspondía al contexto y qué parte era la pregunta (el método `sequence_ids()` que utilizamos solo está disponible para la salida del tokenizador). Por lo tanto, estableceremos los desplazamientos correspondientes a la pregunta en `None`:
+
+```py
+def preprocess_validation_examples(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=max_length,
+        truncation="only_second",
+        stride=stride,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    example_ids = []
+
+    for i in range(len(inputs["input_ids"])):
+        sample_idx = sample_map[i]
+        example_ids.append(examples["id"][sample_idx])
+
+        sequence_ids = inputs.sequence_ids(i)
+        offset = inputs["offset_mapping"][i]
+        inputs["offset_mapping"][i] = [
+            o if sequence_ids[k] == 1 else None for k, o in enumerate(offset)
+        ]
+
+    inputs["example_id"] = example_ids
+    return inputs
+```
+
+Podemos aplicar esta función en todo el conjunto de datos de validación como antes:
+
+```py
+validation_dataset = raw_datasets["validation"].map(
+    preprocess_validation_examples,
+    batched=True,
+    remove_columns=raw_datasets["validation"].column_names,
+)
+len(raw_datasets["validation"]), len(validation_dataset)
+```
+
+```python out
+(10570, 10822)
+```
+
+En este caso solo hemos agregado un par de cientos de muestras, por lo que parece que los contextos en el conjunto de datos de validación son un poco más cortos.
+
+Ahora que hemos preprocesado todos los datos, podemos pasar al entrenamiento.
+
+{#if fw === 'pt'}
+
+## Ajuste fino del modelo con la API Trainer[[ajuste-fino-del-modelo-con-la-api-trainer]]
+
+El código de entrenamiento para este ejemplo se parecerá mucho al de las secciones anteriores; lo más difícil será escribir la función `compute_metrics()`. Como rellenamos todas las muestras a la longitud máxima que establecimos, no hay ningún ensamblador de datos que definir, por lo que este cálculo de métricas es realmente de lo único que tenemos que preocuparnos. La parte difícil será posprocesar las predicciones del modelo en fragmentos de texto en los ejemplos originales; una vez hecho esto, la métrica de la librería 🤗 Datasets hará la mayor parte del trabajo por nosotros.
+
+{:else}
+
+## Ajuste fino del modelo con Keras[[ajuste-fino-del-modelo-con-keras]]
+
+El código de entrenamiento para este ejemplo se parecerá mucho al de las secciones anteriores, pero calcular las métricas será un desafío único. Como rellenamos todas las muestras a la longitud máxima que establecimos, no hay ningún ensamblador de datos que definir, por lo que este cálculo de métricas es realmente de lo único que tenemos que preocuparnos. La parte difícil será posprocesar las predicciones del modelo en fragmentos de texto en los ejemplos originales; una vez hecho esto, la métrica de la librería 🤗 Datasets hará la mayor parte del trabajo por nosotros.
+
+{/if}
+
+### Posprocesamiento[[posprocesamiento]]
+
+{#if fw === 'pt'}
+
+<Youtube id="BNy08iIWVJM"/>
+
+{:else}
+
+<Youtube id="VN67ZpN33Ss"/>
+
+{/if}
+
+El modelo emitirá logits para las posiciones inicial y final de la respuesta en los IDs de entrada, como vimos durante nuestra exploración del [pipeline `question-answering`](/course/chapter6/3b). El paso de posprocesamiento será similar al que hicimos allí, así que aquí hay un recordatorio rápido de las acciones que realizamos:
+
+- Enmascaramos los logits iniciales y finales correspondientes a tokens fuera del contexto.
+- Luego convertimos los logits iniciales y finales en probabilidades mediante un softmax.
+- Atribuimos una puntuación a cada par `(start_token, end_token)` tomando el producto de las dos probabilidades correspondientes.
+- Buscamos el par con la puntuación máxima que produjera una respuesta válida (por ejemplo, un `start_token` inferior a `end_token`).
+
+Aquí cambiaremos este proceso ligeramente porque no necesitamos calcular puntuaciones reales (solo la respuesta predicha). Esto significa que podemos omitir el paso de softmax. Para ir más rápido, tampoco puntuaremos todos los posibles pares `(start_token, end_token)`, sino solo los correspondientes a los `n_best` logits más altos (con `n_best=20`). Dado que omitiremos el softmax, esas puntuaciones serán puntuaciones de logits y se obtendrán tomando la suma de los logits de inicio y fin (en lugar del producto, debido a la regla \\(\log(ab) = \log(a) + \log(b)\\)).
+
+Para demostrar todo esto, necesitaremos algún tipo de predicciones. Como aún no hemos entrenado nuestro modelo, utilizaremos el modelo predeterminado para el pipeline de QA para generar algunas predicciones en una pequeña parte del conjunto de validación. Podemos usar la misma función de procesamiento que antes; dado que depende de la constante global `tokenizer`, solo tenemos que cambiar temporalmente ese objeto al tokenizador del modelo que queremos usar:
+
+```python
+small_eval_set = raw_datasets["validation"].select(range(100))
+trained_checkpoint = "distilbert-base-cased-distilled-squad"
+
+tokenizer = AutoTokenizer.from_pretrained(trained_checkpoint)
+eval_set = small_eval_set.map(
+    preprocess_validation_examples,
+    batched=True,
+    remove_columns=raw_datasets["validation"].column_names,
+)
+```
+
+Ahora que el preprocesamiento está listo, volvemos a cambiar el tokenizador al que seleccionamos originalmente:
+
+```python
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+Luego eliminamos las columnas de nuestro `eval_set` que el modelo no espera, creamos un lote con todo ese pequeño conjunto de validación y lo pasamos por el modelo. Si hay una GPU disponible, la usamos para acelerar el proceso:
+
+{#if fw === 'pt'}
+
+```python
+import torch
+from transformers import AutoModelForQuestionAnswering
+
+eval_set_for_model = eval_set.remove_columns(["example_id", "offset_mapping"])
+eval_set_for_model.set_format("torch")
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+batch = {k: eval_set_for_model[k].to(device) for k in eval_set_for_model.column_names}
+trained_model = AutoModelForQuestionAnswering.from_pretrained(trained_checkpoint).to(
+    device
+)
+
+with torch.no_grad():
+    outputs = trained_model(**batch)
+```
+
+Dado que el `Trainer` nos proporcionará predicciones como matrices NumPy, tomamos los logits de inicio y fin y los convertimos a ese formato:
+
+```python
+start_logits = outputs.start_logits.cpu().numpy()
+end_logits = outputs.end_logits.cpu().numpy()
+```
+
+{:else}
+
+```python
+import tensorflow as tf
+from transformers import TFAutoModelForQuestionAnswering
+
+eval_set_for_model = eval_set.remove_columns(["example_id", "offset_mapping"])
+eval_set_for_model.set_format("numpy")
+
+batch = {k: eval_set_for_model[k] for k in eval_set_for_model.column_names}
+trained_model = TFAutoModelForQuestionAnswering.from_pretrained(trained_checkpoint)
+
+outputs = trained_model(**batch)
+```
+
+Para facilitar la experimentación, convirtamos estas salidas en matrices NumPy:
+
+```python
+start_logits = outputs.start_logits.numpy()
+end_logits = outputs.end_logits.numpy()
+```
+
+{/if}
+
+Ahora necesitamos encontrar la respuesta predicha para cada ejemplo en nuestro `small_eval_set`. Un ejemplo puede haberse dividido en varias características en `eval_set`, por lo que el primer paso es mapear cada ejemplo en `small_eval_set` con las características correspondientes en `eval_set`:
+
+```python
+import collections
+
+example_to_features = collections.defaultdict(list)
+for idx, feature in enumerate(eval_set):
+    example_to_features[feature["example_id"]].append(idx)
+```
+
+Con esto en mano, podemos ponernos a trabajar iterando a través de todos los ejemplos y, para cada ejemplo, a través de todas las características asociadas. Como dijimos antes, analizaremos las puntuaciones de logits para los `n_best` logits de inicio y de fin, excluyendo las posiciones que generen:
+
+- Una respuesta que no esté dentro del contexto
+- Una respuesta con longitud negativa
+- Una respuesta que sea demasiado larga (limitamos las posibilidades a `max_answer_length=30`)
+
+Una vez que tengamos todas las posibles respuestas puntuadas para un ejemplo, simplemente elegimos la que tenga la mejor puntuación de logit:
+
+```python
+import numpy as np
+
+n_best = 20
+max_answer_length = 30
+predicted_answers = []
+
+for example in small_eval_set:
+    example_id = example["id"]
+    context = example["context"]
+    answers = []
+
+    for feature_index in example_to_features[example_id]:
+        start_logit = start_logits[feature_index]
+        end_logit = end_logits[feature_index]
+        offsets = eval_set["offset_mapping"][feature_index]
+
+        start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+        end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+        for start_index in start_indexes:
+            for end_index in end_indexes:
+                # Omitir respuestas que no estén completamente dentro del contexto
+                if offsets[start_index] is None or offsets[end_index] is None:
+                    continue
+                # Omitir respuestas con longitud < 0 o > max_answer_length
+                if (
+                    end_index < start_index
+                    or end_index - start_index + 1 > max_answer_length
+                ):
+                    continue
+
+                answers.append(
+                    {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                )
+
+    best_answer = max(answers, key=lambda x: x["logit_score"])
+    predicted_answers.append({"id": example_id, "prediction_text": best_answer["text"]})
+```
+
+El formato final de las respuestas predichas es el esperado por la métrica que usaremos. Como de costumbre, podemos cargarla con la ayuda de la librería 🤗 Evaluate:
+
+```python
+import evaluate
+
+metric = evaluate.load("squad")
+```
+
+Esta métrica espera las respuestas predichas en el formato que vimos anteriormente (una lista de diccionarios con una clave para el ID del ejemplo y una clave para el texto predicho) y las respuestas teóricas en el formato siguiente (una lista de diccionarios con una clave para el ID del ejemplo y una clave para las posibles respuestas):
+
+```python
+theoretical_answers = [
+    {"id": ex["id"], "answers": ex["answers"]} for ex in small_eval_set
+]
+```
+
+Ahora podemos comprobar que obtenemos resultados coherentes observando el primer elemento de ambas listas:
+
+```python
+print(predicted_answers[0])
+print(theoretical_answers[0])
+```
+
+```python out
+{'id': '56be4db0acb8001400a502ec', 'prediction_text': 'Denver Broncos'}
+{'id': '56be4db0acb8001400a502ec', 'answers': {'text': ['Denver Broncos', 'Denver Broncos', 'Denver Broncos'], 'answer_start': [177, 177, 177]}}
+```
+
+¡Nada mal! Ahora veamos la puntuación que nos da la métrica:
+
+```python
+metric.compute(predictions=predicted_answers, references=theoretical_answers)
+```
+
+```python out
+{'exact_match': 83.0, 'f1': 88.25}
+```
+
+Nuevamente, es un resultado bastante bueno considerando que según [su artículo original](https://arxiv.org/abs/1910.01108v2) DistilBERT ajustado en SQuAD obtiene 79.1 y 86.9 para esas puntuaciones en el conjunto de datos completo.
+
+{#if fw === 'pt'}
+
+Ahora pongamos todo lo que acabamos de hacer en una función `compute_metrics()` que utilizaremos en el `Trainer`. Normalmente, esa función `compute_metrics()` solo recibe una tupla `eval_preds` con logits y etiquetas. Aquí necesitaremos un poco más, ya que tenemos que buscar en el conjunto de datos de características para el desplazamiento y en el conjunto de datos de ejemplos para los contextos originales, por lo que no podremos usar esta función para obtener resultados regulares de evaluación durante el entrenamiento. Solo la usaremos al final del entrenamiento para comprobar los resultados.
+
+La función `compute_metrics()` agrupa los mismos pasos que antes; simplemente agregamos una pequeña comprobación en caso de que no obtengamos respuestas válidas (en cuyo caso predecimos una cadena vacía).
+
+{:else}
+
+Ahora pongamos todo lo que acabamos de hacer en una función `compute_metrics()` que utilizaremos después de entrenar nuestro modelo. Deberemos pasar un poco más que solo los logits de salida, ya que tenemos que buscar en el conjunto de datos de características para el desplazamiento y en el conjunto de datos de ejemplos para los contextos originales:
+
+{/if}
+
+```python
+from tqdm.auto import tqdm
+
+
+def compute_metrics(start_logits, end_logits, features, examples):
+    example_to_features = collections.defaultdict(list)
+    for idx, feature in enumerate(features):
+        example_to_features[feature["example_id"]].append(idx)
+
+    predicted_answers = []
+    for example in tqdm(examples):
+        example_id = example["id"]
+        context = example["context"]
+        answers = []
+
+        # Recorrer todas las características asociadas con ese ejemplo
+        for feature_index in example_to_features[example_id]:
+            start_logit = start_logits[feature_index]
+            end_logit = end_logits[feature_index]
+            offsets = features[feature_index]["offset_mapping"]
+
+            start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+            end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+            for start_index in start_indexes:
+                for end_index in end_indexes:
+                    # Omitir respuestas que no estén completamente dentro del contexto
+                    if offsets[start_index] is None or offsets[end_index] is None:
+                        continue
+                    # Omitir respuestas con longitud < 0 o > max_answer_length
+                    if (
+                        end_index < start_index
+                        or end_index - start_index + 1 > max_answer_length
+                    ):
+                        continue
+
+                    answer = {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                    answers.append(answer)
+
+        # Seleccionar la respuesta con la mejor puntuación
+        if len(answers) > 0:
+            best_answer = max(answers, key=lambda x: x["logit_score"])
+            predicted_answers.append(
+                {"id": example_id, "prediction_text": best_answer["text"]}
+            )
+        else:
+            predicted_answers.append({"id": example_id, "prediction_text": ""})
+
+    theoretical_answers = [{"id": ex["id"], "answers": ex["answers"]} for ex in examples]
+    return metric.compute(predictions=predicted_answers, references=theoretical_answers)
+```
+
+Podemos comprobar que funciona con nuestras predicciones:
+
+```python
+compute_metrics(start_logits, end_logits, eval_set, small_eval_set)
+```
+
+```python out
+{'exact_match': 83.0, 'f1': 88.25}
+```
+
+¡Tiene un aspecto fantástico! Ahora usemos esto para ajustar finamente nuestro modelo.
+
+### Ajuste fino del modelo[[ajuste-fino-del-modelo]]
+
+{#if fw === 'pt'}
+
+Ya estamos listos para entrenar nuestro modelo. Creémoslo primero, utilizando la clase `AutoModelForQuestionAnswering` como antes:
+
+```python
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+Ya estamos listos para entrenar nuestro modelo. Creémoslo primero, utilizando la clase `TFAutoModelForQuestionAnswering` como antes:
+
+```python
+model = TFAutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+{/if}
+
+Como de costumbre, recibimos una advertencia de que algunos pesos no se utilizan (los del cabezal de preentrenamiento) y otros se inicializan aleatoriamente (los del cabezal de respuesta a preguntas). Ya deberías estar acostumbrado a esto, pero significa que este modelo aún no está listo para usarse y necesita un ajuste fino; ¡qué bueno que estamos a punto de hacerlo!
+
+Para poder subir nuestro modelo al Hub, necesitaremos iniciar sesión en Hugging Face. Si estás ejecutando este código en un cuaderno, puedes hacerlo con la siguiente función de utilidad, que muestra un widget donde puedes ingresar tus credenciales de inicio de sesión:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+Si no estás trabajando en un cuaderno, simplemente escribe la siguiente línea en tu terminal:
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+Una vez hecho esto, podemos definir nuestros `TrainingArguments`. Como dijimos cuando definimos nuestra función para calcular la métrica, no podremos tener un bucle de evaluación regular debido a la firma de la función `compute_metrics()`. Podríamos escribir nuestra propia subclase de `Trainer` para hacer esto (un enfoque que puedes encontrar en el [script de ejemplo de respuesta a preguntas](https://github.com/huggingface/transformers/blob/master/examples/pytorch/question-answering/trainer_qa.py)), pero eso es demasiado largo para esta sección. En su lugar, aquí solo evaluaremos el modelo al final del entrenamiento y te mostraremos cómo hacer una evaluación regular en "Un bucle de entrenamiento personalizado" a continuación.
+
+Aquí es realmente donde la API `Trainer` muestra sus limitaciones y la librería 🤗 Accelerate destaca: personalizar la clase para un caso de uso específico puede ser engorroso, pero retocar un bucle de entrenamiento completamente expuesto es sencillo.
+
+Echemos un vistazo a nuestros `TrainingArguments`:
+
+```python
+from transformers import TrainingArguments
+
+args = TrainingArguments(
+    "bert-finetuned-squad",
+    evaluation_strategy="no",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+    fp16=True,
+    push_to_hub=True,
+)
+```
+
+Ya hemos visto la mayoría de estos parámetros: establecemos algunos hiperparámetros (como la tasa de aprendizaje, el número de épocas durante las cuales entrenamos y un decaimiento de peso) e indicamos que queremos guardar el modelo al final de cada época, omitir la evaluación y subir nuestros resultados al Model Hub. También habilitamos el entrenamiento con precisión mixta con `fp16=True`, ya que puede acelerar sustancialmente el entrenamiento en una GPU moderna.
+
+{:else}
+
+Una vez completado esto, podemos crear nuestros conjuntos de datos de TF. Esta vez podemos usar el sencillo ensamblador de datos predeterminado:
+
+```python
+from transformers import DefaultDataCollator
+
+data_collator = DefaultDataCollator(return_tensors="tf")
+```
+
+Y ahora creamos los conjuntos de datos como de costumbre:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    train_dataset,
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=16,
+)
+tf_eval_dataset = model.prepare_tf_dataset(
+    validation_dataset,
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=16,
+)
+```
+
+A continuación, configuramos nuestros hiperparámetros de entrenamiento y compilamos nuestro modelo:
+
+```python
+from transformers import create_optimizer
+from transformers.keras_callbacks import PushToHubCallback
+import tensorflow as tf
+
+# El número de pasos de entrenamiento es el número de muestras en el conjunto de datos, dividido por el tamaño del lote y luego multiplicado
+# por el número total de épocas. Ten en cuenta que el tf_train_dataset aquí es un tf.data.Dataset por lotes,
+# no el Dataset original de Hugging Face, por lo que su len() ya es num_samples // batch_size.
+num_train_epochs = 3
+num_train_steps = len(tf_train_dataset) * num_train_epochs
+optimizer, schedule = create_optimizer(
+    init_lr=2e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Entrenar en precisión mixta float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+Finalmente, estamos listos para entrenar con `model.fit()`. Usamos un `PushToHubCallback` para subir el modelo al Hub después de cada época.
+
+{/if}
+
+Por defecto, el repositorio utilizado estará en tu espacio de usuario y llevará el nombre del directorio de salida que hayas establecido, por lo que en nuestro caso será `"sgugger/bert-finetuned-squad"`. Podemos anular esto pasando un `hub_model_id`; por ejemplo, para subir el modelo a la organización `huggingface_course` usamos `hub_model_id="huggingface_course/bert-finetuned-squad"` (que es el modelo al que enlazamos al comienzo de esta sección).
+
+{#if fw === 'pt'}
+
+> [!TIP]
+> 💡 Si el directorio de salida que estás usando existe, debe ser un clon local del repositorio al que deseas subir (así que establece un nuevo nombre si obtienes un error al definir tu `Trainer`).
+
+Por último, simplemente pasamos todo a la clase `Trainer` y lanzamos el entrenamiento:
+
+```python
+from transformers import Trainer
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=train_dataset,
+    eval_dataset=validation_dataset,
+    tokenizer=tokenizer,
+)
+trainer.train()
+```
+
+{:else}
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(output_dir="bert-finetuned-squad", tokenizer=tokenizer)
+
+# Realizaremos la validación posteriormente, por lo que no habrá validación a mitad del entrenamiento
+model.fit(tf_train_dataset, callbacks=[callback], epochs=num_train_epochs)
+```
+
+{/if}
+
+Ten en cuenta que mientras se lleva a cabo el entrenamiento, cada vez que se guarda el modelo (aquí, en cada época) se sube al Hub en segundo plano. De esta manera, podrás reanudar tu entrenamiento en otra máquina si es necesario. El entrenamiento completo lleva un tiempo (un poco más de una hora en una Titan RTX), por lo que puedes tomarte un café o releer algunas de las partes del curso que te hayan parecido más desafiantes mientras avanza. También ten en cuenta que tan pronto como termine la primera época, verás algunos pesos subidos al Hub y podrás comenzar a probar tu modelo en su página.
+
+{#if fw === 'pt'}
+
+Una vez completado el entrenamiento, finalmente podemos evaluar nuestro modelo (y rezar para no haber gastado todo ese tiempo de computación en vano). El método `predict()` del `Trainer` devolverá una tupla donde los primeros elementos serán las predicciones del modelo (aquí un par con los logits de inicio y fin). Enviamos esto a nuestra función `compute_metrics()`:
+
+```python
+predictions, _, _ = trainer.predict(validation_dataset)
+start_logits, end_logits = predictions
+compute_metrics(start_logits, end_logits, validation_dataset, raw_datasets["validation"])
+```
+
+{:else}
+
+Una vez completado el entrenamiento, finalmente podemos evaluar nuestro modelo (y rezar para no haber gastado todo ese tiempo de computación en vano). El método `predict()` de nuestro `model` se encargará de obtener las predicciones, y como hicimos todo el trabajo duro de definir una función `compute_metrics()` antes, podemos obtener nuestros resultados en una sola línea:
+
+```python
+predictions = model.predict(tf_eval_dataset)
+compute_metrics(
+    predictions["start_logits"],
+    predictions["end_logits"],
+    validation_dataset,
+    raw_datasets["validation"],
+)
+```
+
+{/if}
+
+```python out
+{'exact_match': 81.18259224219489, 'f1': 88.67381321905516}
+```
+
+¡Excelente! Como comparación, las puntuaciones de referencia reportadas en el artículo de BERT para este modelo son 80.8 y 88.5, por lo que estamos exactamente donde deberíamos estar.
+
+{#if fw === 'pt'}
+
+Por último, utilizamos el método `push_to_hub()` para asegurarnos de subir la última versión del modelo:
+
+```py
+trainer.push_to_hub(commit_message="Training complete")
+```
+
+Esto devuelve la URL del commit que acaba de hacer, por si deseas inspeccionarlo:
+
+```python out
+'https://huggingface.co/sgugger/bert-finetuned-squad/commit/9dcee1fbc25946a6ed4bb32efb1bd71d5fa90b68'
+```
+
+El `Trainer` también redacta una tarjeta de modelo (*model card*) con todos los resultados de la evaluación y la sube.
+
+{/if}
+
+En esta etapa, puedes usar el widget de inferencia en el Model Hub para probar el modelo y compartirlo con tus amigos, familiares y mascotas favoritas. Has ajustado finamente un modelo en una tarea de respuesta a preguntas con éxito: ¡felicitaciones!
+
+> [!TIP]
+> ✏️ **¡Te toca!** ¡Prueba otra arquitectura de modelo para ver si funciona mejor en esta tarea!
+
+{#if fw === 'pt'}
+
+Si deseas profundizar un poco más en el bucle de entrenamiento, ahora te mostraremos cómo hacer lo mismo utilizando 🤗 Accelerate.
+
+## Un bucle de entrenamiento personalizado[[un-bucle-de-entrenamiento-personalizado]]
+
+Veamos ahora el bucle de entrenamiento completo, para que puedas personalizar fácilmente las partes que necesites. Se parecerá mucho al bucle de entrenamiento del [Capítulo 3](/course/chapter3/4), con la excepción del bucle de evaluación. Podremos evaluar el modelo regularmente ya que no estamos limitados por la clase `Trainer`.
+
+### Preparar todo para el entrenamiento[[preparar-todo-para-el-entrenamiento]]
+
+Primero debemos construir los `DataLoader` a partir de nuestros conjuntos de datos. Establecemos el formato de esos conjuntos de datos en `"torch"`, y eliminamos las columnas en el conjunto de validación que el modelo no utiliza. Luego, podemos usar el `default_data_collator` proporcionado por Transformers como `collate_fn` y barajar el conjunto de entrenamiento, pero no el de validación:
+
+```py
+from torch.utils.data import DataLoader
+from transformers import default_data_collator
+
+train_dataset.set_format("torch")
+validation_set = validation_dataset.remove_columns(["example_id", "offset_mapping"])
+validation_set.set_format("torch")
+
+train_dataloader = DataLoader(
+    train_dataset,
+    shuffle=True,
+    collate_fn=default_data_collator,
+    batch_size=8,
+)
+eval_dataloader = DataLoader(
+    validation_set, collate_fn=default_data_collator, batch_size=8
+)
+```
+
+A continuación, reinstanciamos nuestro modelo, para asegurarnos de que no estamos continuando el ajuste fino anterior sino comenzando nuevamente desde el modelo preentrenado de BERT:
+
+```py
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+```
+
+Luego necesitaremos un optimizador. Como de costumbre, usamos el clásico `AdamW`, que es como Adam, pero con una corrección en la forma en que se aplica el decaimiento de peso:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+Una vez que tenemos todos esos objetos, podemos enviarlos al método `accelerator.prepare()`. Recuerda que si deseas entrenar en TPUs en un cuaderno de Colab, deberás mover todo este código a una función de entrenamiento, y eso no debería ejecutar ninguna celda que instancie un `Accelerator`. Podemos forzar el entrenamiento con precisión mixta pasando `fp16=True` al `Accelerator` (o, si estás ejecutando el código como un script, simplemente asegúrate de configurar el archivo `config` de 🤗 Accelerate adecuadamente).
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator(fp16=True)
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+Como deberías saber por las secciones anteriores, solo podemos usar la longitud de `train_dataloader` para calcular el número de pasos de entrenamiento después de que haya pasado por el método `accelerator.prepare()`. Usamos el mismo esquema lineal que en las secciones anteriores:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 3
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+Para subir nuestro modelo al Hub, necesitaremos crear un objeto `Repository` en una carpeta de trabajo. Primero inicia sesión en el Hugging Face Hub, si aún no lo has hecho. Determinaremos el nombre del repositorio a partir del ID de modelo que queremos darle a nuestro modelo (siéntete libre de reemplazar `repo_name` con tu propia elección; solo necesita contener tu nombre de usuario, que es lo que hace la función `get_full_repo_name()`):
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "bert-finetuned-squad-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/bert-finetuned-squad-accelerate'
+```
+
+Luego podemos clonar ese repositorio en una carpeta local. Si ya existe, esta carpeta local debe ser un clon del repositorio con el que estamos trabajando:
+
+```py
+output_dir = "bert-finetuned-squad-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+Ahora podemos subir cualquier cosa que guardemos en `output_dir` llamando al método `repo.push_to_hub()`. Esto nos ayudará a subir los modelos intermedios al final de cada época.
+
+## Bucle de entrenamiento[[bucle-de-entrenamiento]]
+
+Ya estamos listos para escribir el bucle de entrenamiento completo. Después de definir una barra de progreso para seguir el curso del entrenamiento, el bucle consta de tres partes:
+
+- El entrenamiento en sí, que es la clásica iteración sobre el `train_dataloader`, el paso hacia adelante a través del modelo, y luego el paso hacia atrás y el paso del optimizador.
+- La evaluación, en la que recopilamos todos los valores de `start_logits` y `end_logits` antes de convertirlos a matrices NumPy. Una vez finalizado el bucle de evaluación, concatenamos todos los resultados. Ten en cuenta que necesitamos truncar porque el `Accelerator` puede haber agregado algunas muestras al final para garantizar que tengamos la misma cantidad de ejemplos en cada proceso.
+- Guardar y subir, donde primero guardamos el modelo y el tokenizador, y luego llamamos a `repo.push_to_hub()`. Como hicimos antes, usamos el argumento `blocking=False` para indicarle a la librería 🤗 Hub que suba los datos en un proceso asíncrono. De esta manera, el entrenamiento continúa con normalidad y esta instrucción (larga) se ejecuta en segundo plano.
+
+Aquí está el código completo para el bucle de entrenamiento:
+
+```py
+from tqdm.auto import tqdm
+import torch
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Entrenamiento
+    model.train()
+    for step, batch in enumerate(train_dataloader):
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluación
+    model.eval()
+    start_logits = []
+    end_logits = []
+    accelerator.print("Evaluation!")
+    for batch in tqdm(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        start_logits.append(accelerator.gather(outputs.start_logits).cpu().numpy())
+        end_logits.append(accelerator.gather(outputs.end_logits).cpu().numpy())
+
+    start_logits = np.concatenate(start_logits)
+    end_logits = np.concatenate(end_logits)
+    start_logits = start_logits[: len(validation_dataset)]
+    end_logits = end_logits[: len(validation_dataset)]
+
+    metrics = compute_metrics(
+        start_logits, end_logits, validation_dataset, raw_datasets["validation"]
+    )
+    print(f"epoch {epoch}:", metrics)
+
+    # Guardar y subir
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+En caso de que esta sea la primera vez que ves un modelo guardado con 🤗 Accelerate, tomémonos un momento para inspeccionar las tres líneas de código correspondientes:
+
+```py
+accelerator.wait_for_everyone()
+unwrapped_model = accelerator.unwrap_model(model)
+unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+```
+
+La primera línea es autoexplicativa: le dice a todos los procesos que esperen hasta que todos estén en esa etapa antes de continuar. Esto es para asegurarnos de tener el mismo modelo en cada proceso antes de guardarlo. Luego tomamos el `unwrapped_model`, que es el modelo base que definimos. El método `accelerator.prepare()` cambia el modelo para que funcione en entrenamiento distribuido, por lo que ya no tendrá el método `save_pretrained()`; el método `accelerator.unwrap_model()` deshace ese paso. Por último, llamamos a `save_pretrained()`, pero le indicamos a ese método que utilice `accelerator.save()` en lugar de `torch.save()`.
+
+Una vez hecho esto, deberías tener un modelo que produzca resultados bastante similares al entrenado con el `Trainer`. Puedes consultar el modelo que entrenamos usando este código en [*huggingface-course/bert-finetuned-squad-accelerate*](https://huggingface.co/huggingface-course/bert-finetuned-squad-accelerate). Y si deseas probar cualquier ajuste en el bucle de entrenamiento, ¡puedes implementarlo directamente editando el código mostrado arriba!
+
+{/if}
+
+## Usar el modelo ajustado finamente[[usar-el-modelo-ajustado-finamente]]
+
+Ya te hemos mostrado cómo puedes usar el modelo que ajustamos finamente en el Model Hub con el widget de inferencia. Para usarlo localmente en un `pipeline`, solo tienes que especificar el identificador del modelo:
+
+```py
+from transformers import pipeline
+
+# Reemplaza esto con tu propio checkpoint
+model_checkpoint = "huggingface-course/bert-finetuned-squad"
+question_answerer = pipeline("question-answering", model=model_checkpoint)
+
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+```python out
+{'score': 0.9979003071784973,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+¡Genial! ¡Nuestro modelo funciona tan bien como el modelo por defecto para este pipeline!
