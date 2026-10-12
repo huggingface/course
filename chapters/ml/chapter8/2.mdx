@@ -1,0 +1,355 @@
+# ഒരു എറർ കിട്ടുമ്പോൾ എന്തു ചെയ്യണം[[what-to-do-when-you-get-an-error]]
+
+<CourseFloatingBanner chapter={8}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter8/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter8/section2.ipynb"},
+]} />
+
+നിങ്ങൾ പുതുതായി ട്യൂൻ ചെയ്ത Transformer മോഡലിൽ നിന്ന് പ്രവചനങ്ങൾ (predictions) ഉണ്ടാക്കാൻ ശ്രമിക്കുമ്പോൾ ഉണ്ടാകാവുന്ന ചില സാധാരണ എററുകൾ ഈ ഭാഗത്തിൽ നമ്മൾ പരിശോധിക്കും. ട്രെയിനിംഗ് ഘട്ടത്തെത്തന്നെ എങ്ങനെ ഡീബഗ് ചെയ്യാമെന്ന് പരിശോധിക്കുന്ന [ഭാഗം 4](/course/chapter8/section4)-ന് ഇത് നിങ്ങളെ തയ്യാറാക്കും.
+
+<Youtube id="DQ-CpJn6Rc4"/>
+
+ഈ ഭാഗത്തിനായി ഞങ്ങൾ ഒരു [ടെംപ്ലേറ്റ് മോഡൽ റിപ്പോസിറ്ററി](https://huggingface.co/lewtun/distilbert-base-uncased-finetuned-squad-d5716d28) തയ്യാറാക്കിയിട്ടുണ്ട്; ഈ അധ്യായത്തിലെ കോഡ് റൺ ചെയ്യണമെങ്കിൽ, ആദ്യം ആ മോഡൽ [Hugging Face Hub](https://huggingface.co)-ലെ നിങ്ങളുടെ അക്കൗണ്ടിലേക്ക് പകർത്തേണ്ടതുണ്ട്. അതിനായി, ആദ്യം ലോഗിൻ ചെയ്യുക — ഒരു Jupyter നോട്ട്‌ബുക്കിൽ ഇത് റൺ ചെയ്തുകൊണ്ട്:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+അല്ലെങ്കിൽ നിങ്ങളുടെ ഇഷ്ട ടെർമിനലിൽ ഇത് റൺ ചെയ്തുകൊണ്ട്:
+
+```bash
+huggingface-cli login
+```
+
+ഇത് നിങ്ങളുടെ യൂസർനെയിമും പാസ്‌വേഡും നൽകാൻ ആവശ്യപ്പെടുകയും, *~/.cache/huggingface/*-ൽ ഒരു ടോക്കൺ സേവ് ചെയ്യുകയും ചെയ്യും. ലോഗിൻ ചെയ്തുകഴിഞ്ഞാൽ, താഴെയുള്ള ഫംഗ്‌ഷൻ ഉപയോഗിച്ച് ടെംപ്ലേറ്റ് റിപ്പോസിറ്ററി പകർത്താം:
+
+```python
+from distutils.dir_util import copy_tree
+from huggingface_hub import Repository, snapshot_download, create_repo, get_full_repo_name
+
+
+def copy_repository_template():
+    # Clone the repo and extract the local path
+    template_repo_id = "lewtun/distilbert-base-uncased-finetuned-squad-d5716d28"
+    commit_hash = "be3eaffc28669d7932492681cd5f3e8905e358b4"
+    template_repo_dir = snapshot_download(template_repo_id, revision=commit_hash)
+    # Create an empty repo on the Hub
+    model_name = template_repo_id.split("/")[1]
+    create_repo(model_name, exist_ok=True)
+    # Clone the empty repo
+    new_repo_id = get_full_repo_name(model_name)
+    new_repo_dir = model_name
+    repo = Repository(local_dir=new_repo_dir, clone_from=new_repo_id)
+    # Copy files
+    copy_tree(template_repo_dir, new_repo_dir)
+    # Push to Hub
+    repo.push_to_hub()
+```
+
+ഇനി `copy_repository_template()` വിളിക്കുമ്പോൾ, ടെംപ്ലേറ്റ് റിപ്പോസിറ്ററിയുടെ ഒരു പകർപ്പ് അത് നിങ്ങളുടെ അക്കൗണ്ടിനു കീഴിൽ ഉണ്ടാക്കും.
+
+## 🤗 Transformers-ലെ പൈപ്പ്‌ലൈൻ ഡീബഗ് ചെയ്യുന്നു[[debugging-the-pipeline-from-transformers]]
+
+Transformer മോഡലുകൾ ഡീബഗ് ചെയ്യുന്ന അത്ഭുതലോകത്തേക്കുള്ള നമ്മുടെ യാത്ര ആരംഭിക്കാൻ, ഈ സാഹചര്യം സങ്കൽപ്പിക്കുക: ഒരു ഇ-കൊമേഴ്‌സ് വെബ്‌സൈറ്റിലെ ഉപഭോക്താക്കൾക്ക് ഉൽപ്പന്നങ്ങളെക്കുറിച്ചുള്ള ഉത്തരങ്ങൾ കണ്ടെത്താൻ സഹായിക്കുന്ന ഒരു ചോദ്യോത്തര (question answering) പ്രോജക്റ്റിൽ ഒരു സഹപ്രവർത്തകനുമായി നിങ്ങൾ ജോലി ചെയ്യുന്നു. നിങ്ങളുടെ സഹപ്രവർത്തകൻ ഇങ്ങനെയൊരു സന്ദേശം അയയ്ക്കുന്നു:
+
+> ഹലോ! Hugging Face കോഴ്‌സിന്റെ [അധ്യായം 7](/course/chapter7/7)-ലെ രീതികൾ ഉപയോഗിച്ച് ഞാൻ ഒരു പരീക്ഷണം നടത്തി, SQuAD-ൽ മികച്ച ഫലങ്ങൾ കിട്ടി! നമ്മുടെ പ്രോജക്റ്റിന്റെ തുടക്കമായി ഈ മോഡൽ ഉപയോഗിക്കാമെന്ന് തോന്നുന്നു. Hub-ലെ മോഡൽ ID "lewtun/distillbert-base-uncased-finetuned-squad-d5716d28" ആണ്. ഒന്ന് പരീക്ഷിച്ചു നോക്കൂ :)
+
+നിങ്ങളുടെ മനസ്സിൽ ആദ്യം വരുന്നത് 🤗 Transformers-ലെ `pipeline` ഉപയോഗിച്ച് മോഡൽ ലോഡ് ചെയ്യുകയാണ്:
+
+```python
+from transformers import pipeline
+
+model_checkpoint = get_full_repo_name("distillbert-base-uncased-finetuned-squad-d5716d28")
+reader = pipeline("question-answering", model=model_checkpoint)
+```
+
+```python out
+"""
+OSError: Can't load config for 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28'. Make sure that:
+
+- 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+അയ്യോ, എന്തോ കുഴപ്പം സംഭവിച്ചതായി തോന്നുന്നു! പ്രോഗ്രാമിംഗിൽ നിങ്ങൾ പുതിയ ആളാണെങ്കിൽ, ഇത്തരം എററുകൾ ആദ്യം കുറച്ച് ദുർഗ്രഹമായി തോന്നാം (`OSError` എന്നു പറഞ്ഞാൽ എന്താണ്?!). ഇവിടെ കാണിച്ചിരിക്കുന്ന എറർ, _Python traceback_ (stack trace എന്നും പറയും) എന്നു വിളിക്കുന്ന വളരെ വലിയ ഒരു എറർ റിപ്പോർട്ടിന്റെ അവസാന ഭാഗം മാത്രമാണ്. ഉദാഹരണത്തിന്, ഈ കോഡ് Google Colab-ൽ റൺ ചെയ്യുകയാണെങ്കിൽ, താഴെയുള്ള സ്‌ക്രീൻഷോട്ട് പോലെ ഒന്ന് നിങ്ങൾ കാണേണ്ടതാണ്:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/traceback.png" alt="ഒരു Python traceback." width="100%"/>
+</div>
+
+ഈ റിപ്പോർട്ടുകളിൽ ധാരാളം വിവരങ്ങൾ അടങ്ങിയിട്ടുണ്ട്; അതിനാൽ പ്രധാന ഭാഗങ്ങളിലൂടെ നമുക്ക് ഒരുമിച്ച് കടന്നുപോകാം. ആദ്യം ശ്രദ്ധിക്കേണ്ട കാര്യം, traceback-കൾ _താഴെ നിന്ന് മുകളിലേക്ക്_ വായിക്കണം എന്നതാണ്. ഇംഗ്ലീഷ് ടെക്‌സ്‌റ്റ് മുകളിൽ നിന്ന് താഴേക്ക് വായിച്ചു ശീലിച്ചവർക്ക് ഇത് വിചിത്രമായി തോന്നാം; പക്ഷേ മോഡലും ടോക്കണൈസറും ഡൗൺലോഡ് ചെയ്യുമ്പോൾ `pipeline` നടത്തുന്ന ഫംഗ്‌ഷൻ കോളുകളുടെ ക്രമമാണ് traceback കാണിക്കുന്നത് എന്ന വസ്തുതയാണ് ഇത് പ്രതിഫലിപ്പിക്കുന്നത്. (`pipeline` തിരശ്ശീലയ്ക്ക് പിന്നിൽ എങ്ങനെ പ്രവർത്തിക്കുന്നു എന്നതിനെക്കുറിച്ച് കൂടുതൽ വിശദാംശങ്ങൾക്ക് [അധ്യായം 2](/course/chapter2) നോക്കുക.)
+
+> [!TIP]
+> 🚨 Google Colab-ലെ traceback-ൽ "6 frames" എന്നതിനു ചുറ്റുമുള്ള നീല ബോക്‌സ് കണ്ടോ? traceback-നെ "frames" ആയി ചുരുക്കുന്ന Colab-ന്റെ ഒരു പ്രത്യേക സവിശേഷതയാണത്. ഒരു എററിന്റെ ഉറവിടം കണ്ടെത്താൻ കഴിയുന്നില്ലെങ്കിൽ, ആ രണ്ട് ചെറിയ ആരോകളിൽ ക്ലിക്ക് ചെയ്ത് മുഴുവൻ traceback-ഉം വികസിപ്പിച്ചു നോക്കാൻ മറക്കരുത്.
+
+അതായത്, traceback-ന്റെ അവസാന വരി ഏറ്റവും ഒടുവിലത്തെ എറർ സന്ദേശം സൂചിപ്പിക്കുകയും, ഉയർത്തപ്പെട്ട (raised) എക്‌സെപ്‌ഷന്റെ (exception) പേര് നൽകുകയും ചെയ്യുന്നു. ഈ സന്ദർഭത്തിൽ, എക്‌സെപ്‌ഷൻ തരം `OSError` ആണ്; ഇത് സിസ്‌റ്റവുമായി ബന്ധപ്പെട്ട ഒരു എററിനെ സൂചിപ്പിക്കുന്നു. കൂടെയുള്ള എറർ സന്ദേശം വായിച്ചാൽ, മോഡലിന്റെ *config.json* ഫയലിൽ ഒരു പ്രശ്നമുണ്ടെന്ന് തോന്നുന്നതായി കാണാം, അത് പരിഹരിക്കാൻ രണ്ട് നിർദ്ദേശങ്ങളും നമുക്ക് നൽകിയിട്ടുണ്ട്:
+
+```python out
+"""
+Make sure that:
+
+- 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+> [!TIP]
+> 💡 മനസ്സിലാക്കാൻ ബുദ്ധിമുട്ടുള്ള ഒരു എറർ സന്ദേശം നേരിട്ടാൽ, ആ സന്ദേശം അതേപടി Google-ന്റെയോ [Stack Overflow](https://stackoverflow.com/)-ന്റെയോ സെർച്ച് ബാറിൽ കോപ്പി-പേസ്‌റ്റ് ചെയ്യുക (അതെ, ശരിക്കും!). ആ എറർ നേരിടുന്ന ആദ്യത്തെ ആൾ നിങ്ങളാകാൻ സാധ്യത കുറവാണ്; കമ്മ്യൂണിറ്റിയിലെ മറ്റുള്ളവർ പോസ്‌റ്റ് ചെയ്ത പരിഹാരങ്ങൾ കണ്ടെത്താനുള്ള നല്ലൊരു മാർഗ്ഗമാണിത്. ഉദാഹരണത്തിന്, Stack Overflow-ൽ `OSError: Can't load config for` എന്ന് തിരഞ്ഞാൽ, പ്രശ്നം പരിഹരിക്കാനുള്ള തുടക്കമായി ഉപയോഗിക്കാവുന്ന പല [ഫലങ്ങളും](https://stackoverflow.com/search?q=OSError%3A+Can%27t+load+config+for+) കിട്ടും.
+
+മോഡൽ ID ശരിക്കും ശരിയാണോ എന്ന് പരിശോധിക്കാനാണ് ആദ്യ നിർദ്ദേശം ആവശ്യപ്പെടുന്നത്; അതിനാൽ ആദ്യം ചെയ്യേണ്ടത് ആ ഐഡന്റിഫയർ കോപ്പി ചെയ്ത് Hub-ന്റെ സെർച്ച് ബാറിൽ പേസ്‌റ്റ് ചെയ്യുകയാണ്:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/wrong-model-id.png" alt="തെറ്റായ മോഡൽ പേര്." width="100%"/>
+</div>
+
+ഹ്മ്, നമ്മുടെ സഹപ്രവർത്തകന്റെ മോഡൽ Hub-ൽ ഇല്ലെന്ന് തന്നെയാണ് തോന്നുന്നത്... ആഹാ, പക്ഷേ മോഡലിന്റെ പേരിൽ ഒരു അക്ഷരത്തെറ്റുണ്ട്! DistilBERT-ന്റെ പേരിൽ ഒരു "l" മാത്രമേയുള്ളൂ; അതിനാൽ അത് തിരുത്തി, പകരം "lewtun/distilbert-base-uncased-finetuned-squad-d5716d28" എന്ന് തിരയാം:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/true-model-id.png" alt="ശരിയായ മോഡൽ പേര്." width="100%"/>
+</div>
+
+ശരി, ഇത് ഫലം തന്നു. ഇനി ശരിയായ മോഡൽ ID ഉപയോഗിച്ച് മോഡൽ വീണ്ടും ഡൗൺലോഡ് ചെയ്യാൻ ശ്രമിക്കാം:
+
+```python
+model_checkpoint = get_full_repo_name("distilbert-base-uncased-finetuned-squad-d5716d28")
+reader = pipeline("question-answering", model=model_checkpoint)
+```
+
+```python out
+"""
+OSError: Can't load config for 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28'. Make sure that:
+
+- 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+അയ്യോ, വീണ്ടും തോറ്റു -- ഒരു മെഷീൻ ലേണിംഗ് എഞ്ചിനീയറുടെ ദിനചര്യയിലേക്ക് സ്വാഗതം! മോഡൽ ID നമ്മൾ തിരുത്തിയതിനാൽ, പ്രശ്നം റിപ്പോസിറ്ററിയിൽ തന്നെയായിരിക്കണം. 🤗 Hub-ലെ ഒരു റിപ്പോസിറ്ററിയുടെ ഉള്ളടക്കം വേഗത്തിൽ കാണാനുള്ള ഒരു വഴി `huggingface_hub` ലൈബ്രറിയിലെ `list_repo_files()` ഫംഗ്‌ഷനാണ്:
+
+```python
+from huggingface_hub import list_repo_files
+
+list_repo_files(repo_id=model_checkpoint)
+```
+
+```python out
+['.gitattributes', 'README.md', 'pytorch_model.bin', 'special_tokens_map.json', 'tokenizer_config.json', 'training_args.bin', 'vocab.txt']
+```
+
+രസകരം -- റിപ്പോസിറ്ററിയിൽ ഒരു *config.json* ഫയൽ ഇല്ലെന്നു തോന്നുന്നു! നമ്മുടെ `pipeline`-ന് മോഡൽ ലോഡ് ചെയ്യാൻ കഴിയാഞ്ഞതിൽ അത്ഭുതമില്ല; ഫൈൻ-ട്യൂൻ ചെയ്തതിനു ശേഷം ഈ ഫയൽ Hub-ലേക്ക് പുഷ് ചെയ്യാൻ നമ്മുടെ സഹപ്രവർത്തകൻ മറന്നുപോയിരിക്കണം. ഈ സന്ദർഭത്തിൽ, പ്രശ്നം പരിഹരിക്കാൻ വളരെ എളുപ്പമാണെന്ന് തോന്നുന്നു: ഫയൽ ചേർക്കാൻ അവരോട് ആവശ്യപ്പെടാം; അല്ലെങ്കിൽ, ഉപയോഗിച്ച പ്രീട്രെയിൻഡ് മോഡൽ [`distilbert-base-uncased`](https://huggingface.co/distilbert-base-uncased) ആണെന്ന് മോഡൽ ID-യിൽ നിന്ന് കാണാൻ കഴിയുന്നതിനാൽ, ഈ മോഡലിന്റെ config ഡൗൺലോഡ് ചെയ്ത് നമ്മുടെ റിപ്പോയിലേക്ക് പുഷ് ചെയ്ത്, അത് പ്രശ്നം പരിഹരിക്കുന്നുണ്ടോ എന്ന് നോക്കാം. അത് പരീക്ഷിക്കാം. [അധ്യായം 2](/course/chapter2)-ൽ പഠിച്ച രീതികൾ ഉപയോഗിച്ച്, `AutoConfig` ക്ലാസ്സ് വഴി മോഡലിന്റെ കോൺഫിഗറേഷൻ ഡൗൺലോഡ് ചെയ്യാം:
+
+```python
+from transformers import AutoConfig
+
+pretrained_checkpoint = "distilbert-base-uncased"
+config = AutoConfig.from_pretrained(pretrained_checkpoint)
+```
+
+> [!WARNING]
+> 🚨 നമ്മൾ ഇവിടെ സ്വീകരിക്കുന്ന സമീപനം പൂർണ്ണമായും വിശ്വസനീയമല്ല; കാരണം മോഡൽ ഫൈൻ-ട്യൂൻ ചെയ്യുന്നതിനു മുമ്പ് നമ്മുടെ സഹപ്രവർത്തകൻ `distilbert-base-uncased`-ന്റെ കോൺഫിഗറേഷനിൽ മാറ്റങ്ങൾ വരുത്തിയിരിക്കാം. യഥാർത്ഥ ജീവിതത്തിൽ, ആദ്യം അവരോട് ചോദിച്ച് ഉറപ്പുവരുത്തേണ്ടതാണ്; പക്ഷേ ഈ ഭാഗത്തിന്റെ ആവശ്യത്തിനായി, അവർ ഡിഫോൾട്ട് കോൺഫിഗറേഷൻ ഉപയോഗിച്ചു എന്ന് നമ്മൾ അനുമാനിക്കും.
+
+തുടർന്ന്, കോൺഫിഗറേഷന്റെ `push_to_hub()` ഫംഗ്‌ഷൻ ഉപയോഗിച്ച് ഇത് നമ്മുടെ മോഡൽ റിപ്പോസിറ്ററിയിലേക്ക് പുഷ് ചെയ്യാം:
+
+```python
+config.push_to_hub(model_checkpoint, commit_message="Add config.json")
+```
+
+ഇനി `main` ബ്രാഞ്ചിലെ ഏറ്റവും പുതിയ കമ്മിറ്റിൽ നിന്ന് മോഡൽ ലോഡ് ചെയ്ത്, ഇത് പ്രവർത്തിച്ചോ എന്ന് പരിശോധിക്കാം:
+
+```python
+reader = pipeline("question-answering", model=model_checkpoint, revision="main")
+
+context = r"""
+Extractive Question Answering is the task of extracting an answer from a text
+given a question. An example of a question answering dataset is the SQuAD
+dataset, which is entirely based on that task. If you would like to fine-tune a
+model on a SQuAD task, you may leverage the
+examples/pytorch/question-answering/run_squad.py script.
+
+🤗 Transformers is interoperable with the PyTorch, TensorFlow, and JAX
+frameworks, so you can use your favourite tools for a wide variety of tasks!
+"""
+
+question = "What is extractive question answering?"
+reader(question=question, context=context)
+```
+
+```python out
+{'score': 0.38669535517692566,
+ 'start': 34,
+ 'end': 95,
+ 'answer': 'the task of extracting an answer from a text given a question'}
+```
+
+ഹായ്, അത് പ്രവർത്തിച്ചു! നിങ്ങൾ ഇപ്പോൾ പഠിച്ചത് ഒന്ന് ഓർത്തെടുക്കാം:
+
+- Python-ലെ എറർ സന്ദേശങ്ങൾ _traceback_-കൾ എന്നറിയപ്പെടുന്നു; അവ താഴെ നിന്ന് മുകളിലേക്ക് വായിക്കണം. പ്രശ്നത്തിന്റെ ഉറവിടം കണ്ടെത്താൻ ആവശ്യമായ വിവരങ്ങൾ സാധാരണയായി എറർ സന്ദേശത്തിന്റെ അവസാന വരിയിൽ ഉണ്ടാകും.
+- അവസാന വരിയിൽ മതിയായ വിവരങ്ങൾ ഇല്ലെങ്കിൽ, traceback-ലൂടെ മുകളിലേക്ക് നീങ്ങി, സോഴ്‌സ് കോഡിൽ എവിടെയാണ് എറർ സംഭവിക്കുന്നത് എന്ന് കണ്ടെത്താൻ കഴിയുമോ എന്ന് നോക്കുക.
+- എറർ സന്ദേശങ്ങളൊന്നും പ്രശ്നം ഡീബഗ് ചെയ്യാൻ സഹായിക്കുന്നില്ലെങ്കിൽ, സമാനമായ ഒരു പ്രശ്നത്തിന്റെ പരിഹാരം ഓൺലൈനിൽ തിരയാൻ ശ്രമിക്കുക.
+- `huggingface_hub` 
+// 🤗 Hub?
+ലൈബ്രറി, Hub-ലെ റിപ്പോസിറ്ററികളുമായി ഇടപഴകാനും അവ ഡീബഗ് ചെയ്യാനും ഉപയോഗിക്കാവുന്ന ഒരു കൂട്ടം ടൂളുകൾ നൽകുന്നു.
+
+ഒരു പൈപ്പ്‌ലൈൻ എങ്ങനെ ഡീബഗ് ചെയ്യാമെന്ന് ഇപ്പോൾ നിങ്ങൾക്കറിയാം; ഇനി മോഡലിന്റെ തന്നെ ഫോർവേഡ് പാസ്സിലെ (forward pass) കുറച്ചുകൂടി കുഴപ്പം പിടിച്ച ഒരു ഉദാഹരണം നോക്കാം.
+
+## നിങ്ങളുടെ മോഡലിന്റെ ഫോർവേഡ് പാസ്സ് ഡീബഗ് ചെയ്യുന്നു[[debugging-the-forward-pass-of-your-model]]
+
+വേഗത്തിൽ പ്രവചനങ്ങൾ ഉണ്ടാക്കേണ്ട മിക്ക ആപ്ലിക്കേഷനുകൾക്കും `pipeline` മികച്ചതാണെങ്കിലും, ചിലപ്പോൾ മോഡലിന്റെ ലോജിറ്റുകൾ (logits) നേരിട്ട് ആക്‌സസ് ചെയ്യേണ്ടിവരും (ഉദാഹരണത്തിന്, പ്രയോഗിക്കാൻ ആഗ്രഹിക്കുന്ന എന്തെങ്കിലും കസ്‌റ്റം പോസ്‌റ്റ്-പ്രോസസ്സിംഗ് നിങ്ങൾക്കുണ്ടെങ്കിൽ). ഈ സന്ദർഭത്തിൽ എന്തൊക്കെ തെറ്റാം എന്ന് കാണാൻ, ആദ്യം നമ്മുടെ `pipeline`-ൽ നിന്ന് മോഡലും ടോക്കണൈസറും എടുക്കാം:
+
+```python
+tokenizer = reader.tokenizer
+model = reader.model
+```
+
+അടുത്തതായി നമുക്ക് ഒരു ചോദ്യം വേണം; അതിനാൽ നമ്മുടെ ഇഷ്ട ഫ്രെയിംവർക്കുകൾ സപ്പോർട്ട് ചെയ്യുന്നുണ്ടോ എന്ന് നോക്കാം:
+
+```python
+question = "Which frameworks can I use?"
+```
+
+[അധ്യായം 7](/course/chapter7)-ൽ കണ്ടതുപോലെ, ഇൻപുട്ടുകൾ ടോക്കണൈസ് ചെയ്യുക, തുടക്ക (start) ടോക്കണിന്റെയും അവസാന (end) ടോക്കണിന്റെയും ലോജിറ്റുകൾ എടുക്കുക, തുടർന്ന് ഉത്തരത്തിന്റെ ഭാഗം (answer span) ഡീകോഡ് ചെയ്യുക എന്നിവയാണ് സാധാരണയായി നമ്മൾ ചെയ്യേണ്ട ഘട്ടങ്ങൾ:
+
+```python
+import torch
+
+inputs = tokenizer(question, context, add_special_tokens=True)
+input_ids = inputs["input_ids"][0]
+outputs = model(**inputs)
+answer_start_scores = outputs.start_logits
+answer_end_scores = outputs.end_logits
+# Get the most likely beginning of answer with the argmax of the score
+answer_start = torch.argmax(answer_start_scores)
+# Get the most likely end of answer with the argmax of the score
+answer_end = torch.argmax(answer_end_scores) + 1
+answer = tokenizer.convert_tokens_to_string(
+    tokenizer.convert_ids_to_tokens(input_ids[answer_start:answer_end])
+)
+print(f"Question: {question}")
+print(f"Answer: {answer}")
+```
+
+```python out
+"""
+---------------------------------------------------------------------------
+AttributeError                            Traceback (most recent call last)
+/var/folders/28/k4cy5q7s2hs92xq7_h89_vgm0000gn/T/ipykernel_75743/2725838073.py in <module>
+      1 inputs = tokenizer(question, text, add_special_tokens=True)
+      2 input_ids = inputs["input_ids"]
+----> 3 outputs = model(**inputs)
+      4 answer_start_scores = outputs.start_logits
+      5 answer_end_scores = outputs.end_logits
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/torch/nn/modules/module.py in _call_impl(self, *input, **kwargs)
+   1049         if not (self._backward_hooks or self._forward_hooks or self._forward_pre_hooks or _global_backward_hooks
+   1050                 or _global_forward_hooks or _global_forward_pre_hooks):
+-> 1051             return forward_call(*input, **kwargs)
+   1052         # Do not call functions when jit is used
+   1053         full_backward_hooks, non_full_backward_hooks = [], []
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, start_positions, end_positions, output_attentions, output_hidden_states, return_dict)
+    723         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    724
+--> 725         distilbert_output = self.distilbert(
+    726             input_ids=input_ids,
+    727             attention_mask=attention_mask,
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/torch/nn/modules/module.py in _call_impl(self, *input, **kwargs)
+   1049         if not (self._backward_hooks or self._forward_hooks or self._forward_pre_hooks or _global_backward_hooks
+   1050                 or _global_forward_hooks or _global_forward_pre_hooks):
+-> 1051             return forward_call(*input, **kwargs)
+   1052         # Do not call functions when jit is used
+   1053         full_backward_hooks, non_full_backward_hooks = [], []
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, output_attentions, output_hidden_states, return_dict)
+    471             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+    472         elif input_ids is not None:
+--> 473             input_shape = input_ids.size()
+    474         elif inputs_embeds is not None:
+    475             input_shape = inputs_embeds.size()[:-1]
+
+AttributeError: 'list' object has no attribute 'size'
+"""
+```
+
+അയ്യോ, നമ്മുടെ കോഡിൽ ഒരു ബഗ് ഉണ്ടെന്ന് തോന്നുന്നു! പക്ഷേ കുറച്ച് ഡീബഗ്ഗിംഗിനെ നമുക്ക് ഭയമില്ല. ഒരു നോട്ട്‌ബുക്കിൽ Python ഡീബഗ്ഗർ നിങ്ങൾക്ക് ഉപയോഗിക്കാം:
+
+<Youtube id="rSPyvPw0p9k"/>
+
+അല്ലെങ്കിൽ ഒരു ടെർമിനലിൽ:
+
+<Youtube id="5PkZ4rbHL6c"/>
+
+ഇവിടെ, എറർ സന്ദേശം വായിച്ചാൽ `'list' object has no attribute 'size'` എന്നാണ് പറയുന്നത്; `model(**inputs)`-ൽ പ്രശ്നം ഉയർത്തപ്പെട്ട വരിയിലേക്ക് ചൂണ്ടുന്ന ഒരു `-->` ആരോയും നമുക്ക് കാണാം. Python ഡീബഗ്ഗർ ഉപയോഗിച്ച് ഇത് ഇന്ററാക്റ്റീവായി ഡീബഗ് ചെയ്യാം; പക്ഷേ ഇപ്പോൾ, നമ്മുടെ കൈയിലുള്ളത് എന്താണെന്ന് കാണാൻ `inputs`-ന്റെ ഒരു ഭാഗം (slice) മാത്രം പ്രിന്റ് ചെയ്യാം:
+
+```python
+inputs["input_ids"][:5]
+```
+
+```python out
+[101, 2029, 7705, 2015, 2064]
+```
+
+ഇത് തീർച്ചയായും ഒരു സാധാരണ Python `list` പോലെ തോന്നുന്നു; പക്ഷേ ടൈപ്പ് ഒന്നുകൂടി ഉറപ്പുവരുത്താം:
+
+```python
+type(inputs["input_ids"])
+```
+
+```python out
+list
+```
+
+അതെ, ഇത് ഉറപ്പായും ഒരു Python `list` ആണ്. അപ്പോൾ എന്താണ് പിഴച്ചത്? [അധ്യായം 2](/course/chapter2)-ൽ നിന്ന് ഓർക്കുക: 🤗 Transformers-ലെ `AutoModelForXxx` ക്ലാസ്സുകൾ _ടെൻസറുകളിലാണ്_ (PyTorch-ലോ TensorFlow-ലോ ഉള്ളവ) പ്രവർത്തിക്കുന്നത്; ഉദാഹരണത്തിന് PyTorch-ൽ `Tensor.size()` ഉപയോഗിച്ച് ഒരു ടെൻസറിന്റെ ഡൈമെൻഷനുകൾ എടുക്കുന്നത് ഒരു സാധാരണ ഓപ്പറേഷനാണ്. ഏത് വരിയാണ് എക്‌സെപ്‌ഷൻ ഉണ്ടാക്കിയത് എന്ന് കാണാൻ traceback ഒന്നുകൂടി നോക്കാം:
+
+```
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, output_attentions, output_hidden_states, return_dict)
+    471             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+    472         elif input_ids is not None:
+--> 473             input_shape = input_ids.size()
+    474         elif inputs_embeds is not None:
+    475             input_shape = inputs_embeds.size()[:-1]
+
+AttributeError: 'list' object has no attribute 'size'
+```
+
+നമ്മുടെ കോഡ് `input_ids.size()` വിളിക്കാൻ ശ്രമിച്ചതായി തോന്നുന്നു; പക്ഷേ ഒരു കണ്ടെയ്‌നർ മാത്രമായ Python `list`-ൽ ഇത് വ്യക്തമായും പ്രവർത്തിക്കില്ല. ഈ പ്രശ്നം എങ്ങനെ പരിഹരിക്കാം? Stack Overflow-ൽ ഈ എറർ സന്ദേശം തിരഞ്ഞാൽ പ്രസക്തമായ കുറേ [ഫലങ്ങൾ](https://stackoverflow.com/search?q=AttributeError%3A+%27list%27+object+has+no+attribute+%27size%27&s=c15ec54c-63cb-481d-a749-408920073e8f) കിട്ടും. ആദ്യത്തേതിൽ ക്ലിക്ക് ചെയ്താൽ നമ്മുടേതിന് സമാനമായ ഒരു ചോദ്യം കാണാം; അതിന്റെ ഉത്തരം താഴെയുള്ള സ്‌ക്രീൻഷോട്ടിൽ കാണിച്ചിരിക്കുന്നു:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/stack-overflow.png" alt="Stack Overflow-ൽ നിന്നുള്ള ഒരു ഉത്തരം." width="100%"/>
+</div>
+
+ടോക്കണൈസറിൽ `return_tensors='pt'` ചേർക്കാനാണ് ഉത്തരം ശുപാർശ ചെയ്യുന്നത്; അതിനാൽ അത് നമുക്ക് പ്രവർത്തിക്കുന്നുണ്ടോ എന്ന് നോക്കാം:
+
+```python out
+inputs = tokenizer(question, context, add_special_tokens=True, return_tensors="pt")
+input_ids = inputs["input_ids"][0]
+outputs = model(**inputs)
+answer_start_scores = outputs.start_logits
+answer_end_scores = outputs.end_logits
+# Get the most likely beginning of answer with the argmax of the score
+answer_start = torch.argmax(answer_start_scores)
+# Get the most likely end of answer with the argmax of the score
+answer_end = torch.argmax(answer_end_scores) + 1
+answer = tokenizer.convert_tokens_to_string(
+    tokenizer.convert_ids_to_tokens(input_ids[answer_start:answer_end])
+)
+print(f"Question: {question}")
+print(f"Answer: {answer}")
+```
+
+```python out
+"""
+Question: Which frameworks can I use?
+Answer: pytorch, tensorflow, and jax
+"""
+```
+
+കൊള്ളാം, അത് പ്രവർത്തിച്ചു! Stack Overflow എത്ര ഉപകാരപ്രദമാകും എന്നതിന്റെ മികച്ച ഉദാഹരണമാണിത്: സമാനമായ ഒരു പ്രശ്നം കണ്ടെത്തിയതിലൂടെ, കമ്മ്യൂണിറ്റിയിലെ മറ്റുള്ളവരുടെ അനുഭവത്തിൽ നിന്ന് പ്രയോജനം നേടാൻ നമുക്ക് കഴിഞ്ഞു. എന്നിരുന്നാലും, ഇത്തരമൊരു തിരച്ചിൽ എപ്പോഴും പ്രസക്തമായ ഉത്തരം തരണമെന്നില്ല; അങ്ങനെയുള്ള സന്ദർഭങ്ങളിൽ എന്തു ചെയ്യാം? ഭാഗ്യവശാൽ, [Hugging Face ഫോറങ്ങളിൽ](https://discuss.huggingface.co/) നിങ്ങളെ സഹായിക്കാൻ കഴിയുന്ന, ഹൃദ്യമായി സ്വാഗതം ചെയ്യുന്ന ഒരു ഡെവലപ്പർ കമ്മ്യൂണിറ്റിയുണ്ട്! ഉത്തരം കിട്ടാൻ സാധ്യതയുള്ള നല്ല ഫോറം ചോദ്യങ്ങൾ എങ്ങനെ രൂപപ്പെടുത്താം എന്ന് അടുത്ത ഭാഗത്തിൽ നമ്മൾ നോക്കും.

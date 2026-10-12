@@ -1,0 +1,720 @@
+# ഡേറ്റ അരിഞ്ഞു മുറിക്കാൻ സമയമായി[[time-to-slice-and-dice]]
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+]} />
+
+മിക്കപ്പോഴും, നിങ്ങൾ പ്രവർത്തിക്കുന്ന ഡേറ്റ മോഡലുകൾ ട്രെയിൻ ചെയ്യാൻ പൂർണ്ണമായി തയ്യാറാക്കിയ രൂപത്തിലായിരിക്കില്ല. നിങ്ങളുടെ ഡേറ്റാസെറ്റുകൾ വൃത്തിയാക്കാൻ (clean up) 🤗 Datasets നൽകുന്ന വിവിധ ഫീച്ചറുകൾ ഈ ഭാഗത്തിൽ നമ്മൾ പരിശോധിക്കും.
+
+<Youtube id="tqfSFcPMgOI"/>
+
+## നമ്മുടെ ഡേറ്റ അരിഞ്ഞു മുറിക്കുന്നു[[slicing-and-dicing-our-data]]
+
+Pandas-ന് സമാനമായി, `Dataset`, `DatasetDict` ഒബ്‌ജക്റ്റുകളുടെ ഉള്ളടക്കം കൈകാര്യം ചെയ്യാൻ 🤗 Datasets നിരവധി ഫംഗ്‌ഷനുകൾ നൽകുന്നു. `Dataset.map()` മെത്തേഡ് [അധ്യായം 3](/course/chapter3)-ൽ നമ്മൾ ഇതിനകം കണ്ടിട്ടുണ്ട്; നമുക്ക് ലഭ്യമായ മറ്റു ചില ഫംഗ്‌ഷനുകൾ ഈ ഭാഗത്തിൽ നമ്മൾ പരിശോധിക്കും.
+
+ഈ ഉദാഹരണത്തിനായി നമ്മൾ [Drug Review Dataset](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29) ഉപയോഗിക്കും; [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/ml/index.php)-യിൽ ഹോസ്‌റ്റ് ചെയ്തിരിക്കുന്ന ഈ ഡേറ്റാസെറ്റിൽ വിവിധ മരുന്നുകളെക്കുറിച്ചുള്ള രോഗികളുടെ റിവ്യൂകളും, ചികിത്സിക്കുന്ന രോഗാവസ്ഥയും (condition), രോഗിയുടെ സംതൃപ്തി സൂചിപ്പിക്കുന്ന 10-സ്‌റ്റാർ റേറ്റിംഗും അടങ്ങിയിരിക്കുന്നു.
+
+ആദ്യം നമുക്ക് ഡേറ്റ ഡൗൺലോഡ് ചെയ്ത് എക്‌സ്‌ട്രാക്റ്റ് ചെയ്യണം; `wget`, `unzip` കമാൻഡുകൾ ഉപയോഗിച്ച് ഇത് ചെയ്യാം:
+
+```py
+!wget "https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip"
+!unzip drugsCom_raw.zip
+```
+
+സെപ്പറേറ്ററായി കോമകൾക്ക് പകരം ടാബുകൾ ഉപയോഗിക്കുന്ന CSV-യുടെ ഒരു വകഭേദം മാത്രമാണ് TSV എന്നതിനാൽ, `csv` ലോഡിംഗ് സ്‌ക്രിപ്‌റ്റ് ഉപയോഗിച്ചും `load_dataset()` ഫംഗ്‌ഷനിൽ `delimiter` ആർഗ്യുമെന്റ് വ്യക്തമാക്കിയും താഴെ കാണിച്ചിരിക്കുന്നതുപോലെ നമുക്ക് ഈ ഫയലുകൾ ലോഡ് ചെയ്യാം:
+
+```py
+from datasets import load_dataset
+
+data_files = {"train": "drugsComTrain_raw.tsv", "test": "drugsComTest_raw.tsv"}
+# \t is the tab character in Python
+drug_dataset = load_dataset("csv", data_files=data_files, delimiter="\t")
+```
+
+ഏതു തരത്തിലുള്ള ഡേറ്റാ അനാലിസിസ് ചെയ്യുമ്പോഴും, നിങ്ങൾ പ്രവർത്തിക്കുന്ന ഡേറ്റയുടെ സ്വഭാവം വേഗത്തിൽ മനസ്സിലാക്കാൻ ഒരു ചെറിയ ക്രമരഹിതമായ (random) സാമ്പിൾ എടുത്തു നോക്കുന്നത് ഒരു നല്ല ശീലമാണ്. 🤗 Datasets-ൽ, `Dataset.shuffle()`, `Dataset.select()` ഫംഗ്‌ഷനുകൾ ഒന്നിനു പിറകെ ഒന്നായി ചേർത്തുകൊണ്ട് (chaining) ഒരു ക്രമരഹിത സാമ്പിൾ നമുക്ക് ഉണ്ടാക്കാം:
+
+```py
+drug_sample = drug_dataset["train"].shuffle(seed=42).select(range(1000))
+# Peek at the first few examples
+drug_sample[:3]
+```
+
+```python out
+{'Unnamed: 0': [87571, 178045, 80482],
+ 'drugName': ['Naproxen', 'Duloxetine', 'Mobic'],
+ 'condition': ['Gout, Acute', 'ibromyalgia', 'Inflammatory Conditions'],
+ 'review': ['"like the previous person mention, I&#039;m a strong believer of aleve, it works faster for my gout than the prescription meds I take. No more going to the doctor for refills.....Aleve works!"',
+  '"I have taken Cymbalta for about a year and a half for fibromyalgia pain. It is great\r\nas a pain reducer and an anti-depressant, however, the side effects outweighed \r\nany benefit I got from it. I had trouble with restlessness, being tired constantly,\r\ndizziness, dry mouth, numbness and tingling in my feet, and horrible sweating. I am\r\nbeing weaned off of it now. Went from 60 mg to 30mg and now to 15 mg. I will be\r\noff completely in about a week. The fibro pain is coming back, but I would rather deal with it than the side effects."',
+  '"I have been taking Mobic for over a year with no side effects other than an elevated blood pressure.  I had severe knee and ankle pain which completely went away after taking Mobic.  I attempted to stop the medication however pain returned after a few days."'],
+ 'rating': [9.0, 3.0, 10.0],
+ 'date': ['September 2, 2015', 'November 7, 2011', 'June 5, 2013'],
+ 'usefulCount': [36, 13, 128]}
+```
+
+പുനരുത്പാദനക്ഷമതയ്ക്കായി (reproducibility) `Dataset.shuffle()`-ൽ സീഡ് (seed) ഒരു നിശ്ചിത മൂല്യത്തിൽ നമ്മൾ ഉറപ്പിച്ചിട്ടുണ്ട് എന്നത് ശ്രദ്ധിക്കുക. `Dataset.select()` ഇൻഡെക്‌സുകളുടെ ഒരു ഇറ്ററബിൾ (iterable) ആണ് പ്രതീക്ഷിക്കുന്നത്; അതിനാൽ ഷഫിൾ ചെയ്ത ഡേറ്റാസെറ്റിലെ ആദ്യത്തെ 1,000 ഉദാഹരണങ്ങൾ എടുക്കാൻ നമ്മൾ `range(1000)` നൽകി. ഈ സാമ്പിളിൽ നിന്നുതന്നെ നമ്മുടെ ഡേറ്റാസെറ്റിലെ ചില വൈചിത്ര്യങ്ങൾ (quirks) നമുക്ക് കാണാം:
+
+* `Unnamed: 0` കോളം ഓരോ രോഗിയുടെയും അജ്ഞാതമാക്കിയ (anonymized) ഒരു ID പോലെ തോന്നിക്കുന്നു.
+* `condition` കോളത്തിൽ വലിയക്ഷരങ്ങളും (uppercase) ചെറിയക്ഷരങ്ങളും (lowercase) കലർന്ന ലേബലുകൾ ഉണ്ട്.
+* റിവ്യൂകൾ വ്യത്യസ്ത നീളമുള്ളവയാണ്; അവയിൽ Python ലൈൻ സെപ്പറേറ്ററുകളും (`\r\n`) `&\#039;` പോലുള്ള HTML ക്യാരക്റ്റർ കോഡുകളും കലർന്നിരിക്കുന്നു.
+
+ഈ ഓരോ പ്രശ്‌നവും പരിഹരിക്കാൻ 🤗 Datasets എങ്ങനെ ഉപയോഗിക്കാമെന്ന് നോക്കാം. `Unnamed: 0` കോളം രോഗിയുടെ ID ആണെന്ന അനുമാനം (hypothesis) പരീക്ഷിക്കാൻ, ഓരോ സ്‌പ്ലിറ്റിലെയും ID-കളുടെ എണ്ണം വരികളുടെ (rows) എണ്ണത്തിന് തുല്യമാണോ എന്ന് `Dataset.unique()` ഫംഗ്‌ഷൻ ഉപയോഗിച്ച് നമുക്ക് പരിശോധിക്കാം:
+
+```py
+for split in drug_dataset.keys():
+    assert len(drug_dataset[split]) == len(drug_dataset[split].unique("Unnamed: 0"))
+```
+
+ഇത് നമ്മുടെ അനുമാനം ശരിവയ്ക്കുന്നതായി തോന്നുന്നു; അതിനാൽ `Unnamed: 0` കോളത്തിന് കുറച്ചുകൂടി അർത്ഥവ്യക്തതയുള്ള ഒരു പേര് നൽകി ഡേറ്റാസെറ്റ് ഒന്ന് വൃത്തിയാക്കാം. `DatasetDict.rename_column()` ഫംഗ്‌ഷൻ ഉപയോഗിച്ച് രണ്ട് സ്‌പ്ലിറ്റുകളിലെയും കോളത്തിന്റെ പേര് ഒറ്റയടിക്ക് മാറ്റാം:
+
+```py
+drug_dataset = drug_dataset.rename_column(
+    original_column_name="Unnamed: 0", new_column_name="patient_id"
+)
+drug_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 161297
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 53766
+    })
+})
+```
+
+> [!TIP]
+> ✏️ **സ്വയം പരീക്ഷിക്കുക!** ട്രെയിനിംഗ്, ടെസ്‌റ്റ് സെറ്റുകളിലെ വ്യത്യസ്ത (unique) മരുന്നുകളുടെയും രോഗാവസ്ഥകളുടെയും എണ്ണം കണ്ടെത്താൻ `Dataset.unique()` ഫംഗ്‌ഷൻ ഉപയോഗിക്കുക.
+
+അടുത്തതായി, `Dataset.map()` ഉപയോഗിച്ച് എല്ലാ `condition` ലേബലുകളും നോർമലൈസ് ചെയ്യാം. [അധ്യായം 3](/course/chapter3)-ൽ ടോക്കണൈസേഷന് നമ്മൾ ചെയ്തതുപോലെ, `drug_dataset`-ലെ ഓരോ സ്‌പ്ലിറ്റിന്റെയും എല്ലാ വരികളിലും പ്രയോഗിക്കാവുന്ന ഒരു ലളിതമായ ഫംഗ്‌ഷൻ നമുക്ക് നിർവചിക്കാം:
+
+```py
+def lowercase_condition(example):
+    return {"condition": example["condition"].lower()}
+
+
+drug_dataset.map(lowercase_condition)
+```
+
+```python out
+AttributeError: 'NoneType' object has no attribute 'lower'
+```
+
+അയ്യോ, നമ്മുടെ map ഫംഗ്‌ഷനിൽ ഒരു പ്രശ്‌നം വന്നിരിക്കുന്നു! `condition` കോളത്തിലെ ചില എൻട്രികൾ `None` ആണെന്നും, അവ സ്‌ട്രിംഗുകളല്ലാത്തതിനാൽ ചെറിയക്ഷരമാക്കാൻ കഴിയില്ലെന്നും എററിൽ നിന്ന് നമുക്ക് അനുമാനിക്കാം. `Dataset.filter()` ഉപയോഗിച്ച് ഈ വരികൾ ഒഴിവാക്കാം; ഇത് `Dataset.map()`-ന് സമാനമായ രീതിയിൽ പ്രവർത്തിക്കുകയും, ഡേറ്റാസെറ്റിലെ ഒരൊറ്റ ഉദാഹരണം സ്വീകരിക്കുന്ന ഒരു ഫംഗ്‌ഷൻ പ്രതീക്ഷിക്കുകയും ചെയ്യുന്നു. ഇതുപോലുള്ള ഒരു ഫംഗ്‌ഷൻ വ്യക്തമായി എഴുതി:
+
+```py
+def filter_nones(x):
+    return x["condition"] is not None
+```
+
+എന്നിട്ട് `drug_dataset.filter(filter_nones)` റൺ ചെയ്യുന്നതിനു പകരം, ഒരു _ലാംഡ ഫംഗ്‌ഷൻ_ (lambda function) ഉപയോഗിച്ച് ഒറ്റ വരിയിൽ നമുക്ക് ഇത് ചെയ്യാം. Python-ൽ, പേര് വ്യക്തമായി നൽകാതെ നിർവചിക്കാവുന്ന ചെറിയ ഫംഗ്‌ഷനുകളാണ് ലാംഡ ഫംഗ്‌ഷനുകൾ. അവയുടെ പൊതുവായ രൂപം ഇതാണ്:
+
+```
+lambda <arguments> : <expression>
+```
+
+ഇവിടെ `lambda` എന്നത് Python-ന്റെ പ്രത്യേക [കീവേഡുകളിൽ](https://docs.python.org/3/reference/lexical_analysis.html#keywords) ഒന്നാണ്; `<arguments>` എന്നത് ഫംഗ്‌ഷന്റെ ഇൻപുട്ടുകൾ നിർവചിക്കുന്ന, കോമ ഉപയോഗിച്ച് വേർതിരിച്ച മൂല്യങ്ങളുടെ ഒരു ലിസ്‌റ്റ്/സെറ്റ് ആണ്; `<expression>` എന്നത് നിങ്ങൾ എക്‌സിക്യൂട്ട് ചെയ്യാൻ ആഗ്രഹിക്കുന്ന പ്രവർത്തനങ്ങളെ സൂചിപ്പിക്കുന്നു. ഉദാഹരണത്തിന്, ഒരു സംഖ്യയുടെ വർഗ്ഗം (square) കണക്കാക്കുന്ന ഒരു ലളിതമായ ലാംഡ ഫംഗ്‌ഷൻ താഴെ കാണിച്ചിരിക്കുന്നതുപോലെ നമുക്ക് നിർവചിക്കാം:
+
+```
+lambda x : x * x
+```
+
+ഈ ഫംഗ്‌ഷൻ ഒരു ഇൻപുട്ടിൽ പ്രയോഗിക്കാൻ, ഫംഗ്‌ഷനെയും ഇൻപുട്ടിനെയും ബ്രാക്കറ്റുകളിൽ (parentheses) പൊതിയണം:
+
+```py
+(lambda x: x * x)(3)
+```
+
+```python out
+9
+```
+
+അതുപോലെ, ആർഗ്യുമെന്റുകൾ കോമ ഉപയോഗിച്ച് വേർതിരിച്ചുകൊണ്ട് ഒന്നിലധികം ആർഗ്യുമെന്റുകളുള്ള ലാംഡ ഫംഗ്‌ഷനുകളും നമുക്ക് നിർവചിക്കാം. ഉദാഹരണത്തിന്, ഒരു ത്രികോണത്തിന്റെ വിസ്‌തീർണ്ണം ഇങ്ങനെ കണക്കാക്കാം:
+
+```py
+(lambda base, height: 0.5 * base * height)(4, 8)
+```
+
+```python out
+16.0
+```
+
+ചെറിയ, ഒറ്റത്തവണ ഉപയോഗിക്കാനുള്ള ഫംഗ്‌ഷനുകൾ നിർവചിക്കാൻ ലാംഡ ഫംഗ്‌ഷനുകൾ സൗകര്യപ്രദമാണ് (ഇവയെക്കുറിച്ച് കൂടുതൽ അറിയാൻ, Andre Burgaud എഴുതിയ മികച്ച [Real Python ട്യൂട്ടോറിയൽ](https://realpython.com/python-lambda/) വായിക്കാൻ ഞങ്ങൾ ശുപാർശ ചെയ്യുന്നു). 🤗 Datasets-ന്റെ പശ്ചാത്തലത്തിൽ, ലളിതമായ map, filter ഓപ്പറേഷനുകൾ നിർവചിക്കാൻ ലാംഡ ഫംഗ്‌ഷനുകൾ നമുക്ക് ഉപയോഗിക്കാം; അതിനാൽ നമ്മുടെ ഡേറ്റാസെറ്റിലെ `None` എൻട്രികൾ ഒഴിവാക്കാൻ ഈ തന്ത്രം ഉപയോഗിക്കാം:
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["condition"] is not None)
+```
+
+`None` എൻട്രികൾ നീക്കം ചെയ്തതോടെ, നമ്മുടെ `condition` കോളം നോർമലൈസ് ചെയ്യാം:
+
+```py
+drug_dataset = drug_dataset.map(lowercase_condition)
+# Check that lowercasing worked
+drug_dataset["train"]["condition"][:3]
+```
+
+```python out
+['left ventricular dysfunction', 'adhd', 'birth control']
+```
+
+ഇത് പ്രവർത്തിക്കുന്നു! ലേബലുകൾ വൃത്തിയാക്കിക്കഴിഞ്ഞ സ്ഥിതിക്ക്, ഇനി റിവ്യൂകൾ തന്നെ വൃത്തിയാക്കുന്നത് എങ്ങനെയെന്ന് നോക്കാം.
+
+## പുതിയ കോളങ്ങൾ ഉണ്ടാക്കുന്നു[[creating-new-columns]]
+
+ഉപഭോക്തൃ റിവ്യൂകൾ കൈകാര്യം ചെയ്യുമ്പോഴെല്ലാം, ഓരോ റിവ്യൂവിലെയും വാക്കുകളുടെ എണ്ണം പരിശോധിക്കുന്നത് ഒരു നല്ല ശീലമാണ്. ഒരു റിവ്യൂ "Great!" പോലുള്ള ഒരൊറ്റ വാക്കാകാം, അല്ലെങ്കിൽ ആയിരക്കണക്കിന് വാക്കുകളുള്ള ഒരു നീണ്ട ഉപന്യാസമാകാം; ഉപയോഗസന്ദർഭം (use case) അനുസരിച്ച് ഈ രണ്ട് അതിരുകളെയും നിങ്ങൾ വ്യത്യസ്തമായി കൈകാര്യം ചെയ്യേണ്ടി വരും. ഓരോ റിവ്യൂവിലെയും വാക്കുകളുടെ എണ്ണം കണക്കാക്കാൻ, ഓരോ ടെക്‌സ്‌റ്റും വൈറ്റ്‌സ്‌പേസ് (whitespace) അടിസ്ഥാനമാക്കി വിഭജിക്കുന്ന ഒരു ഏകദേശ രീതി (heuristic) നമ്മൾ ഉപയോഗിക്കും.
+
+ഓരോ റിവ്യൂവിലെയും വാക്കുകളുടെ എണ്ണം കണക്കാക്കുന്ന ഒരു ലളിതമായ ഫംഗ്‌ഷൻ നിർവചിക്കാം:
+
+```py
+def compute_review_length(example):
+    return {"review_length": len(example["review"].split())}
+```
+
+നമ്മുടെ `lowercase_condition()` ഫംഗ്‌ഷനിൽ നിന്ന് വ്യത്യസ്തമായി, `compute_review_length()` റിട്ടേൺ ചെയ്യുന്ന ഡിക്‌ഷണറിയുടെ കീ (key) ഡേറ്റാസെറ്റിലെ കോളങ്ങളുടെ പേരുകളിലൊന്നുമായി പൊരുത്തപ്പെടുന്നില്ല. ഈ സാഹചര്യത്തിൽ, `compute_review_length()` `Dataset.map()`-ന് നൽകുമ്പോൾ, അത് ഡേറ്റാസെറ്റിലെ എല്ലാ വരികളിലും പ്രയോഗിക്കപ്പെട്ട് `review_length` എന്ന ഒരു പുതിയ കോളം ഉണ്ടാക്കും:
+
+```py
+drug_dataset = drug_dataset.map(compute_review_length)
+# Inspect the first training example
+drug_dataset["train"][0]
+```
+
+```python out
+{'patient_id': 206461,
+ 'drugName': 'Valsartan',
+ 'condition': 'left ventricular dysfunction',
+ 'review': '"It has no side effect, I take it in combination of Bystolic 5 Mg and Fish Oil"',
+ 'rating': 9.0,
+ 'date': 'May 20, 2012',
+ 'usefulCount': 27,
+ 'review_length': 17}
+```
+
+പ്രതീക്ഷിച്ചതുപോലെ, നമ്മുടെ ട്രെയിനിംഗ് സെറ്റിൽ ഒരു `review_length` കോളം ചേർക്കപ്പെട്ടതായി കാണാം. അതിരുകളിലുള്ള മൂല്യങ്ങൾ (extreme values) എങ്ങനെയുണ്ടെന്ന് കാണാൻ `Dataset.sort()` ഉപയോഗിച്ച് ഈ പുതിയ കോളം നമുക്ക് സോർട്ട് ചെയ്യാം:
+
+```py
+drug_dataset["train"].sort("review_length")[:3]
+```
+
+```python out
+{'patient_id': [103488, 23627, 20558],
+ 'drugName': ['Loestrin 21 1 / 20', 'Chlorzoxazone', 'Nucynta'],
+ 'condition': ['birth control', 'muscle spasm', 'pain'],
+ 'review': ['"Excellent."', '"useless"', '"ok"'],
+ 'rating': [10.0, 1.0, 6.0],
+ 'date': ['November 4, 2008', 'March 24, 2017', 'August 20, 2016'],
+ 'usefulCount': [5, 2, 10],
+ 'review_length': [1, 1, 1]}
+```
+
+നമ്മൾ സംശയിച്ചതുപോലെ, ചില റിവ്യൂകളിൽ ഒരൊറ്റ വാക്ക് മാത്രമേയുള്ളൂ; സെന്റിമെന്റ് അനാലിസിസിന് ഇത് കുഴപ്പമില്ലായിരിക്കാമെങ്കിലും, രോഗാവസ്ഥ പ്രവചിക്കാനാണ് നമ്മുടെ ലക്ഷ്യമെങ്കിൽ ഇവയിൽ നിന്ന് കാര്യമായ വിവരങ്ങളൊന്നും ലഭിക്കില്ല.
+
+> [!TIP]
+> 🙋 ഒരു ഡേറ്റാസെറ്റിൽ പുതിയ കോളങ്ങൾ ചേർക്കാനുള്ള മറ്റൊരു മാർഗ്ഗം `Dataset.add_column()` ഫംഗ്‌ഷനാണ്. കോളം ഒരു Python ലിസ്‌റ്റായോ NumPy അറേയായോ നൽകാൻ ഇത് നിങ്ങളെ അനുവദിക്കുന്നു; നിങ്ങളുടെ അനാലിസിസിന് `Dataset.map()` അത്ര അനുയോജ്യമല്ലാത്ത സാഹചര്യങ്ങളിൽ ഇത് സൗകര്യപ്രദമാകും.
+
+30-ൽ താഴെ വാക്കുകളുള്ള റിവ്യൂകൾ നീക്കം ചെയ്യാൻ `Dataset.filter()` ഫംഗ്‌ഷൻ ഉപയോഗിക്കാം. `condition` കോളത്തിൽ നമ്മൾ ചെയ്തതിന് സമാനമായി, റിവ്യൂകളുടെ നീളം ഈ പരിധിക്ക് (threshold) മുകളിലായിരിക്കണം എന്ന് നിബന്ധന വെച്ചുകൊണ്ട് വളരെ ചെറിയ റിവ്യൂകൾ നമുക്ക് ഫിൽട്ടർ ചെയ്ത് ഒഴിവാക്കാം:
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["review_length"] > 30)
+print(drug_dataset.num_rows)
+```
+
+```python out
+{'train': 138514, 'test': 46108}
+```
+
+നിങ്ങൾക്ക് കാണാവുന്നതുപോലെ, ഇത് നമ്മുടെ യഥാർത്ഥ ട്രെയിനിംഗ്, ടെസ്‌റ്റ് സെറ്റുകളിലെ ഏകദേശം 15% റിവ്യൂകൾ നീക്കം ചെയ്തിരിക്കുന്നു.
+
+> [!TIP]
+> ✏️ **സ്വയം പരീക്ഷിക്കുക!** ഏറ്റവും കൂടുതൽ വാക്കുകളുള്ള റിവ്യൂകൾ പരിശോധിക്കാൻ `Dataset.sort()` ഫംഗ്‌ഷൻ ഉപയോഗിക്കുക. റിവ്യൂകളെ നീളമനുസരിച്ച് അവരോഹണ ക്രമത്തിൽ (descending order) സോർട്ട് ചെയ്യാൻ ഏത് ആർഗ്യുമെന്റാണ് ഉപയോഗിക്കേണ്ടതെന്ന് അറിയാൻ [ഡോക്യുമെന്റേഷൻ](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.sort) നോക്കുക.
+
+നമുക്ക് അവസാനമായി കൈകാര്യം ചെയ്യേണ്ടത് നമ്മുടെ റിവ്യൂകളിലെ HTML ക്യാരക്റ്റർ കോഡുകളുടെ സാന്നിധ്യമാണ്. ഈ ക്യാരക്റ്ററുകൾ അൺഎസ്‌കേപ്പ് (unescape) ചെയ്യാൻ Python-ന്റെ `html` മൊഡ്യൂൾ നമുക്ക് ഉപയോഗിക്കാം, ഇങ്ങനെ:
+
+```py
+import html
+
+text = "I&#039;m a transformer called BERT"
+html.unescape(text)
+```
+
+```python out
+"I'm a transformer called BERT"
+```
+
+നമ്മുടെ കോർപ്പസിലെ എല്ലാ HTML ക്യാരക്റ്ററുകളും അൺഎസ്‌കേപ്പ് ചെയ്യാൻ `Dataset.map()` ഉപയോഗിക്കാം:
+
+```python
+drug_dataset = drug_dataset.map(lambda x: {"review": html.unescape(x["review"])})
+```
+
+നിങ്ങൾക്ക് കാണാവുന്നതുപോലെ, ഡേറ്റ പ്രോസസ്സ് ചെയ്യാൻ `Dataset.map()` മെത്തേഡ് വളരെ ഉപകാരപ്രദമാണ് -- അതിന് ചെയ്യാൻ കഴിയുന്ന കാര്യങ്ങളുടെ ഉപരിതലം പോലും നമ്മൾ ഇതുവരെ തൊട്ടിട്ടില്ല!
+
+## `map()` മെത്തേഡിന്റെ സൂപ്പർപവറുകൾ[[the-map-methods-superpowers]]
+
+`Dataset.map()` മെത്തേഡിന് ഒരു `batched` ആർഗ്യുമെന്റ് ഉണ്ട്; ഇത് `True` ആയി സെറ്റ് ചെയ്താൽ, ഉദാഹരണങ്ങളുടെ ഒരു ബാച്ച് ഒരുമിച്ച് map ഫംഗ്‌ഷനിലേക്ക് അയയ്ക്കും (ബാച്ച് സൈസ് ക്രമീകരിക്കാവുന്നതാണ്, എന്നാൽ ഡിഫോൾട്ട് 1,000 ആണ്). ഉദാഹരണത്തിന്, എല്ലാ HTML-ഉം അൺഎസ്‌കേപ്പ് ചെയ്ത മുൻപത്തെ map ഫംഗ്‌ഷൻ റൺ ചെയ്യാൻ കുറച്ച് സമയമെടുത്തു (എടുത്ത സമയം പ്രോഗ്രസ് ബാറുകളിൽ നിന്ന് നിങ്ങൾക്ക് വായിക്കാം). ഒരു ലിസ്‌റ്റ് കോംപ്രിഹെൻഷൻ (list comprehension) ഉപയോഗിച്ച് ഒരേ സമയം നിരവധി എലമെന്റുകൾ പ്രോസസ്സ് ചെയ്തുകൊണ്ട് ഇത് വേഗത്തിലാക്കാം.
+
+നിങ്ങൾ `batched=True` നൽകുമ്പോൾ, ഡേറ്റാസെറ്റിന്റെ ഫീൽഡുകളുള്ള ഒരു ഡിക്‌ഷണറിയാണ് ഫംഗ്‌ഷന് ലഭിക്കുന്നത്; എന്നാൽ ഓരോ മൂല്യവും ഇപ്പോൾ ഒരൊറ്റ മൂല്യമല്ല, _മൂല്യങ്ങളുടെ ഒരു ലിസ്‌റ്റ്_ ആണ്. `Dataset.map()`-ന്റെ റിട്ടേൺ മൂല്യവും അതേ രീതിയിലായിരിക്കണം: നമ്മുടെ ഡേറ്റാസെറ്റിൽ അപ്‌ഡേറ്റ് ചെയ്യാനോ ചേർക്കാനോ ആഗ്രഹിക്കുന്ന ഫീൽഡുകളും, മൂല്യങ്ങളുടെ ഒരു ലിസ്‌റ്റും ഉള്ള ഒരു ഡിക്‌ഷണറി. ഉദാഹരണത്തിന്, എല്ലാ HTML ക്യാരക്റ്ററുകളും അൺഎസ്‌കേപ്പ് ചെയ്യാനുള്ള മറ്റൊരു മാർഗ്ഗം ഇതാ, എന്നാൽ ഇത്തവണ `batched=True` ഉപയോഗിച്ച്:
+
+```python
+new_drug_dataset = drug_dataset.map(
+    lambda x: {"review": [html.unescape(o) for o in x["review"]]}, batched=True
+)
+```
+
+ഈ കോഡ് ഒരു നോട്ട്‌ബുക്കിലാണ് നിങ്ങൾ റൺ ചെയ്യുന്നതെങ്കിൽ, ഈ കമാൻഡ് മുൻപത്തേതിനെക്കാൾ വളരെ വേഗത്തിൽ എക്‌സിക്യൂട്ട് ചെയ്യുന്നതായി നിങ്ങൾ കാണും. നമ്മുടെ റിവ്യൂകൾ ഇതിനകം HTML-അൺഎസ്‌കേപ്പ് ചെയ്യപ്പെട്ടതുകൊണ്ടല്ല ഇത് -- മുൻ ഭാഗത്തിലെ നിർദ്ദേശം (`batched=True` ഇല്ലാതെ) നിങ്ങൾ വീണ്ടും എക്‌സിക്യൂട്ട് ചെയ്താൽ, അത് മുൻപത്തെ അതേ സമയമെടുക്കും. ഒരേ കോഡ് ഒരു `for` ലൂപ്പിൽ എക്‌സിക്യൂട്ട് ചെയ്യുന്നതിനെക്കാൾ ലിസ്‌റ്റ് കോംപ്രിഹെൻഷനുകൾ സാധാരണയായി വേഗതയുള്ളതാണ് എന്നതാണ് ഇതിന് കാരണം; കൂടാതെ, എലമെന്റുകൾ ഒന്നൊന്നായി എടുക്കുന്നതിനു പകരം ഒരേ സമയം ധാരാളം എലമെന്റുകൾ ആക്‌സസ് ചെയ്യുന്നതിലൂടെയും നമുക്ക് കുറച്ച് പ്രകടനനേട്ടം ലഭിക്കുന്നു.
+
+[അധ്യായം 6](/course/chapter6)-ൽ നമ്മൾ പരിചയപ്പെടാൻ പോകുന്ന, ടെക്‌സ്‌റ്റുകളുടെ വലിയ ലിസ്‌റ്റുകൾ വേഗത്തിൽ ടോക്കണൈസ് ചെയ്യാൻ കഴിയുന്ന "ഫാസ്‌റ്റ്" ടോക്കണൈസറുകളുടെ വേഗത പൂർണ്ണമായി പ്രയോജനപ്പെടുത്താൻ `Dataset.map()` `batched=True` സഹിതം ഉപയോഗിക്കുന്നത് അത്യാവശ്യമായിരിക്കും. ഉദാഹരണത്തിന്, ഒരു ഫാസ്‌റ്റ് ടോക്കണൈസർ ഉപയോഗിച്ച് എല്ലാ മരുന്ന് റിവ്യൂകളും ടോക്കണൈസ് ചെയ്യാൻ, ഇതുപോലുള്ള ഒരു ഫംഗ്‌ഷൻ നമുക്ക് ഉപയോഗിക്കാം:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+
+
+def tokenize_function(examples):
+    return tokenizer(examples["review"], truncation=True)
+```
+
+[അധ്യായം 3](/course/chapter3)-ൽ നിങ്ങൾ കണ്ടതുപോലെ, ഒന്നോ അതിലധികമോ ഉദാഹരണങ്ങൾ ടോക്കണൈസറിന് നൽകാം; അതിനാൽ ഈ ഫംഗ്‌ഷൻ `batched=True` ഉപയോഗിച്ചും അല്ലാതെയും നമുക്ക് ഉപയോഗിക്കാം. വ്യത്യസ്ത ഓപ്‌ഷനുകളുടെ പ്രകടനം താരതമ്യം ചെയ്യാൻ ഈ അവസരം ഉപയോഗപ്പെടുത്താം. ഒരു നോട്ട്‌ബുക്കിൽ, അളക്കാൻ ആഗ്രഹിക്കുന്ന കോഡ് വരിയുടെ മുന്നിൽ `%time` ചേർത്തുകൊണ്ട് ഒറ്റവരി നിർദ്ദേശത്തിന്റെ സമയം നിങ്ങൾക്ക് അളക്കാം:
+
+```python no-format
+%time tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
+```
+
+സെല്ലിന്റെ തുടക്കത്തിൽ `%%time` ചേർത്തുകൊണ്ട് ഒരു സെൽ മുഴുവന്റെയും സമയവും നിങ്ങൾക്ക് അളക്കാം. നമ്മൾ ഇത് എക്‌സിക്യൂട്ട് ചെയ്ത ഹാർഡ്‌വെയറിൽ, ഈ നിർദ്ദേശത്തിന് 10.8s ആണ് കാണിച്ചത് ("Wall time" എന്നതിന് ശേഷം എഴുതിയിരിക്കുന്ന സംഖ്യയാണിത്).
+
+> [!TIP]
+> ✏️ **സ്വയം പരീക്ഷിക്കുക!** ഇതേ നിർദ്ദേശം `batched=True` ഉപയോഗിച്ചും അല്ലാതെയും എക്‌സിക്യൂട്ട് ചെയ്യുക; പിന്നീട് ഒരു സ്ലോ ടോക്കണൈസർ ഉപയോഗിച്ചും (`AutoTokenizer.from_pretrained()` മെത്തേഡിൽ `use_fast=False` ചേർക്കുക) പരീക്ഷിക്കുക; അങ്ങനെ നിങ്ങളുടെ ഹാർഡ്‌വെയറിൽ എന്ത് സംഖ്യകളാണ് ലഭിക്കുന്നതെന്ന് നിങ്ങൾക്ക് കാണാം.
+
+ബാച്ചിംഗ് ഉപയോഗിച്ചും അല്ലാതെയും, ഒരു ഫാസ്‌റ്റ് ടോക്കണൈസറും ഒരു സ്ലോ ടോക്കണൈസറും ഉപയോഗിച്ച് നമുക്ക് ലഭിച്ച ഫലങ്ങൾ ഇതാ:
+
+ഓപ്‌ഷനുകൾ         | ഫാസ്‌റ്റ് ടോക്കണൈസർ | സ്ലോ ടോക്കണൈസർ
+:--------------:|:--------------:|:-------------:
+`batched=True`  | 10.8s          | 4min41s
+`batched=False` | 59.2s          | 5min3s
+
+അതായത്, `batched=True` ഓപ്‌ഷനോടെ ഒരു ഫാസ്‌റ്റ് ടോക്കണൈസർ ഉപയോഗിക്കുന്നത്, ബാച്ചിംഗ് ഇല്ലാതെ അതിന്റെ സ്ലോ പതിപ്പ് ഉപയോഗിക്കുന്നതിനെക്കാൾ 30 മടങ്ങ് വേഗതയുള്ളതാണ് -- ഇത് ശരിക്കും അതിശയകരമാണ്! `AutoTokenizer` ഉപയോഗിക്കുമ്പോൾ ഫാസ്‌റ്റ് ടോക്കണൈസറുകൾ ഡിഫോൾട്ടായിരിക്കുന്നതിന്റെ (അവയെ "ഫാസ്‌റ്റ്" എന്ന് വിളിക്കുന്നതിന്റെയും) പ്രധാന കാരണം അതാണ്. തിരശ്ശീലയ്ക്ക് പിന്നിൽ ടോക്കണൈസേഷൻ കോഡ് Rust-ൽ എക്‌സിക്യൂട്ട് ചെയ്യുന്നതുകൊണ്ടാണ് അവയ്ക്ക് ഇത്രയും വേഗത കൈവരിക്കാൻ കഴിയുന്നത്; കോഡ് എക്‌സിക്യൂഷൻ പാരലലൈസ് ചെയ്യുന്നത് എളുപ്പമാക്കുന്ന ഒരു ഭാഷയാണ് Rust.
+
+ബാച്ചിംഗിലൂടെ ഫാസ്‌റ്റ് ടോക്കണൈസർ കൈവരിക്കുന്ന ഏകദേശം 6 മടങ്ങ് വേഗതയ്ക്കുള്ള കാരണവും പാരലലൈസേഷൻ (parallelization) തന്നെയാണ്: ഒരൊറ്റ ടോക്കണൈസേഷൻ ഓപ്പറേഷൻ പാരലലൈസ് ചെയ്യാൻ കഴിയില്ല, എന്നാൽ ഒരേ സമയം ധാരാളം ടെക്‌സ്‌റ്റുകൾ ടോക്കണൈസ് ചെയ്യണമെങ്കിൽ, എക്‌സിക്യൂഷൻ നിരവധി പ്രോസസ്സുകളിലേക്ക് വിഭജിക്കാം; ഓരോ പ്രോസസ്സും അതിന്റേതായ ടെക്‌സ്‌റ്റുകളുടെ ഉത്തരവാദിത്തം ഏറ്റെടുക്കും.
+
+`Dataset.map()`-ന് അതിന്റേതായ ചില പാരലലൈസേഷൻ കഴിവുകളും ഉണ്ട്. അവയ്ക്ക് Rust-ന്റെ പിന്തുണയില്ലാത്തതിനാൽ, ഒരു സ്ലോ ടോക്കണൈസറിനെ ഒരു ഫാസ്‌റ്റ് ടോക്കണൈസറിനൊപ്പം എത്തിക്കാൻ അവയ്ക്ക് കഴിയില്ല; എന്നിരുന്നാലും അവ സഹായകമാകും (പ്രത്യേകിച്ച്, ഫാസ്‌റ്റ് പതിപ്പില്ലാത്ത ഒരു ടോക്കണൈസറാണ് നിങ്ങൾ ഉപയോഗിക്കുന്നതെങ്കിൽ). മൾട്ടിപ്രോസസ്സിംഗ് പ്രവർത്തനക്ഷമമാക്കാൻ, `Dataset.map()` വിളിക്കുമ്പോൾ `num_proc` ആർഗ്യുമെന്റ് ഉപയോഗിച്ച് ഉപയോഗിക്കേണ്ട പ്രോസസ്സുകളുടെ എണ്ണം വ്യക്തമാക്കുക:
+
+```py
+slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False)
+
+
+def slow_tokenize_function(examples):
+    return slow_tokenizer(examples["review"], truncation=True)
+
+
+tokenized_dataset = drug_dataset.map(slow_tokenize_function, batched=True, num_proc=8)
+```
+
+ഉപയോഗിക്കേണ്ട പ്രോസസ്സുകളുടെ ഏറ്റവും അനുയോജ്യമായ എണ്ണം നിർണ്ണയിക്കാൻ സമയം അളന്നുകൊണ്ട് നിങ്ങൾക്ക് കുറച്ച് പരീക്ഷണങ്ങൾ നടത്താം; നമ്മുടെ കാര്യത്തിൽ 8 ആണ് ഏറ്റവും മികച്ച വേഗതനേട്ടം നൽകിയതായി തോന്നിയത്. മൾട്ടിപ്രോസസ്സിംഗ് ഉപയോഗിച്ചും അല്ലാതെയും നമുക്ക് ലഭിച്ച സംഖ്യകൾ ഇതാ:
+
+ഓപ്‌ഷനുകൾ         | ഫാസ്‌റ്റ് ടോക്കണൈസർ | സ്ലോ ടോക്കണൈസർ
+:--------------:|:--------------:|:-------------:
+`batched=True`  | 10.8s          | 4min41s
+`batched=False` | 59.2s          | 5min3s
+`batched=True`, `num_proc=8`  | 6.52s          | 41.3s
+`batched=False`, `num_proc=8` | 9.49s          | 45.2s
+
+സ്ലോ ടോക്കണൈസറിന് ഇവ കുറച്ചുകൂടി ന്യായമായ ഫലങ്ങളാണ്, എന്നാൽ ഫാസ്‌റ്റ് ടോക്കണൈസറിന്റെ പ്രകടനവും ഗണ്യമായി മെച്ചപ്പെട്ടു. എന്നിരുന്നാലും, ഇത് എപ്പോഴും അങ്ങനെയായിരിക്കില്ല എന്നത് ശ്രദ്ധിക്കുക -- 8 അല്ലാത്ത `num_proc` മൂല്യങ്ങൾക്ക്, ആ ഓപ്‌ഷൻ ഇല്ലാതെ `batched=True` ഉപയോഗിക്കുന്നതാണ് വേഗതയേറിയത് എന്ന് ഞങ്ങളുടെ പരീക്ഷണങ്ങൾ കാണിച്ചു. പൊതുവേ, `batched=True` ഉപയോഗിക്കുന്ന ഫാസ്‌റ്റ് ടോക്കണൈസറുകൾക്ക് Python മൾട്ടിപ്രോസസ്സിംഗ് ഉപയോഗിക്കാൻ ഞങ്ങൾ ശുപാർശ ചെയ്യുന്നില്ല.
+
+> [!TIP]
+> നിങ്ങൾ ഉപയോഗിക്കുന്ന ഫംഗ്‌ഷൻ ഇതിനകം സ്വന്തമായി ഏതെങ്കിലും തരത്തിലുള്ള മൾട്ടിപ്രോസസ്സിംഗ് ചെയ്യുന്നില്ലെങ്കിൽ, പ്രോസസ്സിംഗ് വേഗത്തിലാക്കാൻ `num_proc` ഉപയോഗിക്കുന്നത് സാധാരണയായി ഒരു മികച്ച ആശയമാണ്.
+
+ഈ പ്രവർത്തനക്ഷമതയെല്ലാം ഒരൊറ്റ മെത്തേഡിൽ ഒതുക്കിയിരിക്കുന്നത് തന്നെ അതിശയകരമാണ്, പക്ഷേ ഇനിയും ഉണ്ട്! `Dataset.map()`-ഉം `batched=True`-ഉം ഉപയോഗിച്ച് നിങ്ങളുടെ ഡേറ്റാസെറ്റിലെ എലമെന്റുകളുടെ എണ്ണം മാറ്റാൻ നിങ്ങൾക്ക് കഴിയും. ഒരു ഉദാഹരണത്തിൽ നിന്ന് നിരവധി ട്രെയിനിംഗ് ഫീച്ചറുകൾ ഉണ്ടാക്കേണ്ട പല സാഹചര്യങ്ങളിലും ഇത് വളരെ ഉപകാരപ്രദമാണ്; [അധ്യായം 7](/course/chapter7)-ൽ നമ്മൾ ഏറ്റെടുക്കുന്ന പല NLP ടാസ്‌ക്കുകളുടെയും പ്രീപ്രോസസ്സിംഗിന്റെ ഭാഗമായി നമുക്ക് ഇത് ചെയ്യേണ്ടി വരും.
+
+> [!TIP]
+> 💡 മെഷീൻ ലേണിംഗിൽ, മോഡലിന് നമ്മൾ നൽകുന്ന _ഫീച്ചറുകളുടെ_ (features) കൂട്ടത്തെയാണ് സാധാരണയായി ഒരു _ഉദാഹരണം_ (example) എന്ന് നിർവചിക്കുന്നത്. ചില സന്ദർഭങ്ങളിൽ, ഈ ഫീച്ചറുകൾ ഒരു `Dataset`-ലെ കോളങ്ങളുടെ കൂട്ടമായിരിക്കും; എന്നാൽ മറ്റു ചില സന്ദർഭങ്ങളിൽ (ഇവിടെയും, ചോദ്യോത്തരത്തിലും (question answering) പോലെ), ഒരൊറ്റ ഉദാഹരണത്തിൽ നിന്ന് ഒന്നിലധികം ഫീച്ചറുകൾ വേർതിരിച്ചെടുക്കാം, അവ ഒരൊറ്റ കോളത്തിൽ ഉൾപ്പെടുന്നവയുമാകാം.
+
+ഇത് എങ്ങനെ പ്രവർത്തിക്കുന്നു എന്ന് നോക്കാം! ഇവിടെ നമ്മൾ നമ്മുടെ ഉദാഹരണങ്ങൾ ടോക്കണൈസ് ചെയ്ത് പരമാവധി 128 നീളത്തിലേക്ക് ട്രങ്കേറ്റ് (truncate) ചെയ്യും; എന്നാൽ ടെക്‌സ്‌റ്റുകളുടെ ആദ്യത്തെ ഭാഗം (chunk) മാത്രമല്ല, *എല്ലാ* ഭാഗങ്ങളും റിട്ടേൺ ചെയ്യാൻ ടോക്കണൈസറിനോട് നമ്മൾ ആവശ്യപ്പെടും. `return_overflowing_tokens=True` ഉപയോഗിച്ച് ഇത് ചെയ്യാം:
+
+```py
+def tokenize_and_split(examples):
+    return tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+```
+
+മുഴുവൻ ഡേറ്റാസെറ്റിലും `Dataset.map()` ഉപയോഗിക്കുന്നതിന് മുമ്പ്, ഒരു ഉദാഹരണത്തിൽ ഇത് പരീക്ഷിക്കാം:
+
+```py
+result = tokenize_and_split(drug_dataset["train"][0])
+[len(inp) for inp in result["input_ids"]]
+```
+
+```python out
+[128, 49]
+```
+
+അതായത്, നമ്മൾ വ്യക്തമാക്കിയ പരമാവധി ടോക്കണുകളുടെ എണ്ണത്തിലും കൂടുതലായി ടോക്കണൈസ് ചെയ്യപ്പെട്ടതിനാൽ, ട്രെയിനിംഗ് സെറ്റിലെ നമ്മുടെ ആദ്യ ഉദാഹരണം രണ്ട് ഫീച്ചറുകളായി മാറി: ആദ്യത്തേതിന് 128 നീളവും രണ്ടാമത്തേതിന് 49 നീളവും. ഇനി ഡേറ്റാസെറ്റിലെ എല്ലാ എലമെന്റുകൾക്കും ഇത് ചെയ്യാം!
+
+```py
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+```
+
+```python out
+ArrowInvalid: Column 1 named condition expected length 1463 but got length 1000
+```
+
+അയ്യോ! അത് പ്രവർത്തിച്ചില്ല! എന്തുകൊണ്ട്? എറർ മെസ്സേജ് നോക്കിയാൽ നമുക്ക് ഒരു സൂചന ലഭിക്കും: കോളങ്ങളിലൊന്നിന്റെ നീളത്തിൽ ഒരു പൊരുത്തക്കേടുണ്ട്; ഒന്നിന് 1,463 നീളവും മറ്റേതിന് 1,000 നീളവുമാണ്. `Dataset.map()`-ന്റെ [ഡോക്യുമെന്റേഷൻ](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.map) നിങ്ങൾ നോക്കിയിട്ടുണ്ടെങ്കിൽ, നമ്മൾ map ചെയ്യുന്ന ഫംഗ്‌ഷന് നൽകുന്ന സാമ്പിളുകളുടെ എണ്ണമാണ് അത് എന്ന് നിങ്ങൾ ഓർക്കുന്നുണ്ടാകാം; ഇവിടെ ആ 1,000 ഉദാഹരണങ്ങൾ 1,463 പുതിയ ഫീച്ചറുകൾ നൽകി, അതിന്റെ ഫലമായി ഒരു ഷേപ്പ് എറർ (shape error) ഉണ്ടായി.
+
+വ്യത്യസ്ത വലുപ്പങ്ങളുള്ള രണ്ട് വ്യത്യസ്ത ഡേറ്റാസെറ്റുകൾ കൂട്ടിക്കലർത്താൻ നമ്മൾ ശ്രമിക്കുന്നു എന്നതാണ് പ്രശ്‌നം: `drug_dataset` കോളങ്ങളിൽ ഒരു നിശ്ചിത എണ്ണം ഉദാഹരണങ്ങളുണ്ടാകും (നമ്മുടെ എററിലെ 1,000), എന്നാൽ നമ്മൾ നിർമ്മിക്കുന്ന `tokenized_dataset`-ൽ അതിലും കൂടുതലുണ്ടാകും (എറർ മെസ്സേജിലെ 1,463; `return_overflowing_tokens=True` ഉപയോഗിച്ച് നീണ്ട റിവ്യൂകളെ ഒന്നിലധികം ഉദാഹരണങ്ങളായി ടോക്കണൈസ് ചെയ്യുന്നതിനാലാണ് ഇത് 1,000-ത്തിലും കൂടുതലാകുന്നത്). ഒരു `Dataset`-ന് ഇത് പ്രവർത്തിക്കില്ല; അതിനാൽ ഒന്നുകിൽ പഴയ ഡേറ്റാസെറ്റിൽ നിന്ന് കോളങ്ങൾ നീക്കം ചെയ്യുകയോ, അല്ലെങ്കിൽ പുതിയ ഡേറ്റാസെറ്റിലെ അതേ വലുപ്പത്തിലേക്ക് അവയെ മാറ്റുകയോ ചെയ്യണം. ആദ്യത്തേത് `remove_columns` ആർഗ്യുമെന്റ് ഉപയോഗിച്ച് നമുക്ക് ചെയ്യാം:
+
+```py
+tokenized_dataset = drug_dataset.map(
+    tokenize_and_split, batched=True, remove_columns=drug_dataset["train"].column_names
+)
+```
+
+ഇപ്പോൾ ഇത് എററില്ലാതെ പ്രവർത്തിക്കുന്നു. നീളങ്ങൾ താരതമ്യം ചെയ്തുകൊണ്ട്, യഥാർത്ഥ ഡേറ്റാസെറ്റിനെക്കാൾ വളരെയധികം എലമെന്റുകൾ നമ്മുടെ പുതിയ ഡേറ്റാസെറ്റിൽ ഉണ്ടെന്ന് നമുക്ക് പരിശോധിക്കാം:
+
+```py
+len(tokenized_dataset["train"]), len(drug_dataset["train"])
+```
+
+```python out
+(206772, 138514)
+```
+
+പഴയ കോളങ്ങളെ പുതിയവയുടെ അതേ വലുപ്പത്തിലാക്കിക്കൊണ്ടും നീളത്തിലെ പൊരുത്തക്കേടിന്റെ പ്രശ്‌നം പരിഹരിക്കാമെന്ന് നമ്മൾ സൂചിപ്പിച്ചിരുന്നു. ഇതിനായി, `return_overflowing_tokens=True` സെറ്റ് ചെയ്യുമ്പോൾ ടോക്കണൈസർ റിട്ടേൺ ചെയ്യുന്ന `overflow_to_sample_mapping` ഫീൽഡ് നമുക്ക് ആവശ്യമാണ്. ഒരു പുതിയ ഫീച്ചർ ഇൻഡെക്‌സിൽ നിന്ന്, അത് ഉത്ഭവിച്ച സാമ്പിളിന്റെ ഇൻഡെക്‌സിലേക്കുള്ള ഒരു മാപ്പിംഗ് ഇത് നമുക്ക് നൽകുന്നു. ഇത് ഉപയോഗിച്ച്, ഓരോ ഉദാഹരണവും എത്ര പുതിയ ഫീച്ചറുകൾ ഉണ്ടാക്കുന്നുവോ അത്രയും തവണ അതിന്റെ മൂല്യങ്ങൾ ആവർത്തിച്ചുകൊണ്ട്, നമ്മുടെ യഥാർത്ഥ ഡേറ്റാസെറ്റിലെ ഓരോ കീയെയും ശരിയായ വലുപ്പമുള്ള മൂല്യങ്ങളുടെ ഒരു ലിസ്‌റ്റുമായി ബന്ധിപ്പിക്കാം:
+
+```py
+def tokenize_and_split(examples):
+    result = tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+    # Extract mapping between new and old indices
+    sample_map = result.pop("overflow_to_sample_mapping")
+    for key, values in examples.items():
+        result[key] = [values[i] for i in sample_map]
+    return result
+```
+
+പഴയ കോളങ്ങൾ നീക്കം ചെയ്യേണ്ട ആവശ്യമില്ലാതെ തന്നെ ഇത് `Dataset.map()`-നൊപ്പം പ്രവർത്തിക്കുന്നതായി നമുക്ക് കാണാം:
+
+```py
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+tokenized_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
+        num_rows: 206772
+    })
+    test: Dataset({
+        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
+        num_rows: 68876
+    })
+})
+```
+
+മുൻപത്തെ അതേ എണ്ണം ട്രെയിനിംഗ് ഫീച്ചറുകളാണ് നമുക്ക് ലഭിക്കുന്നത്, എന്നാൽ ഇവിടെ എല്ലാ പഴയ ഫീൽഡുകളും നമ്മൾ നിലനിർത്തിയിട്ടുണ്ട്. നിങ്ങളുടെ മോഡൽ പ്രയോഗിച്ചതിനു ശേഷമുള്ള എന്തെങ്കിലും പോസ്‌റ്റ്-പ്രോസസ്സിംഗിന് അവ ആവശ്യമുണ്ടെങ്കിൽ, ഈ രീതി ഉപയോഗിക്കുന്നത് നിങ്ങൾക്ക് പരിഗണിക്കാം.
+
+ഒരു ഡേറ്റാസെറ്റ് വിവിധ രീതികളിൽ പ്രീപ്രോസസ്സ് ചെയ്യാൻ 🤗 Datasets എങ്ങനെ ഉപയോഗിക്കാമെന്ന് നിങ്ങൾ ഇപ്പോൾ കണ്ടു. നിങ്ങളുടെ മോഡൽ ട്രെയിനിംഗ് ആവശ്യങ്ങളിൽ മിക്കതും 🤗 Datasets-ന്റെ പ്രോസസ്സിംഗ് ഫംഗ്‌ഷനുകൾ നിറവേറ്റുമെങ്കിലും,
+`DataFrame.groupby()` പോലുള്ള കൂടുതൽ ശക്തമായ ഫീച്ചറുകളോ വിഷ്വലൈസേഷനുള്ള ഉയർന്ന തലത്തിലുള്ള API-കളോ ആക്‌സസ് ചെയ്യാൻ Pandas-ലേക്ക് മാറേണ്ടി വരുന്ന സന്ദർഭങ്ങൾ ഉണ്ടാകാം. ഭാഗ്യവശാൽ, Pandas, NumPy, PyTorch, TensorFlow, JAX തുടങ്ങിയ ലൈബ്രറികളുമായി പരസ്പരം പ്രവർത്തിക്കാൻ (interoperable) കഴിയുന്ന രീതിയിലാണ് 🤗 Datasets രൂപകൽപ്പന ചെയ്തിരിക്കുന്നത്. ഇത് എങ്ങനെ പ്രവർത്തിക്കുന്നു എന്ന് നോക്കാം.
+
+## `Dataset`-കളിൽ നിന്ന് `DataFrame`-കളിലേക്കും തിരിച്ചും[[from-datasets-to-dataframes-and-back]]
+
+<Youtube id="tfcY1067A5Q"/>
+
+വിവിധ മൂന്നാം കക്ഷി (third-party) ലൈബ്രറികൾക്കിടയിലുള്ള പരിവർത്തനം സാധ്യമാക്കാൻ, 🤗 Datasets ഒരു `Dataset.set_format()` ഫംഗ്‌ഷൻ നൽകുന്നു. ഈ ഫംഗ്‌ഷൻ ഡേറ്റാസെറ്റിന്റെ _ഔട്ട്‌പുട്ട് ഫോർമാറ്റ്_ മാത്രമേ മാറ്റുന്നുള്ളൂ; അതിനാൽ അടിസ്ഥാനപരമായ _ഡേറ്റാ ഫോർമാറ്റിനെ_ (അത് Apache Arrow ആണ്) ബാധിക്കാതെ മറ്റൊരു ഫോർമാറ്റിലേക്ക് നിങ്ങൾക്ക് എളുപ്പത്തിൽ മാറാം. ഫോർമാറ്റിംഗ് അതേ സ്ഥാനത്ത് തന്നെ (in place) നടക്കുന്നു. ഇത് കാണിക്കാൻ, നമ്മുടെ ഡേറ്റാസെറ്റ് Pandas-ലേക്ക് മാറ്റാം:
+
+```py
+drug_dataset.set_format("pandas")
+```
+
+ഇപ്പോൾ ഡേറ്റാസെറ്റിലെ എലമെന്റുകൾ ആക്‌സസ് ചെയ്യുമ്പോൾ ഒരു ഡിക്‌ഷണറിക്ക് പകരം ഒരു `pandas.DataFrame` ആണ് നമുക്ക് ലഭിക്കുന്നത്:
+
+```py
+drug_dataset["train"][:3]
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>patient_id</th>
+      <th>drugName</th>
+      <th>condition</th>
+      <th>review</th>
+      <th>rating</th>
+      <th>date</th>
+      <th>usefulCount</th>
+      <th>review_length</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>95260</td>
+      <td>Guanfacine</td>
+      <td>adhd</td>
+      <td>"My son is halfway through his fourth week of Intuniv..."</td>
+      <td>8.0</td>
+      <td>April 27, 2010</td>
+      <td>192</td>
+      <td>141</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>92703</td>
+      <td>Lybrel</td>
+      <td>birth control</td>
+      <td>"I used to take another oral contraceptive, which had 21 pill cycle, and was very happy- very light periods, max 5 days, no other side effects..."</td>
+      <td>5.0</td>
+      <td>December 14, 2009</td>
+      <td>17</td>
+      <td>134</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>138000</td>
+      <td>Ortho Evra</td>
+      <td>birth control</td>
+      <td>"This is my first time using any form of birth control..."</td>
+      <td>8.0</td>
+      <td>November 3, 2015</td>
+      <td>10</td>
+      <td>89</td>
+    </tr>
+  </tbody>
+</table>
+
+`drug_dataset["train"]`-ലെ എല്ലാ എലമെന്റുകളും തിരഞ്ഞെടുത്തുകൊണ്ട് മുഴുവൻ ട്രെയിനിംഗ് സെറ്റിനുമായി ഒരു `pandas.DataFrame` ഉണ്ടാക്കാം:
+
+```py
+train_df = drug_dataset["train"][:]
+```
+
+> [!TIP]
+> 🚨 അകമേ, `Dataset.set_format()` ഡേറ്റാസെറ്റിന്റെ `__getitem__()` ഡണ്ടർ (dunder) മെത്തേഡിന്റെ റിട്ടേൺ ഫോർമാറ്റാണ് മാറ്റുന്നത്. അതായത്, `"pandas"` ഫോർമാറ്റിലുള്ള ഒരു `Dataset`-ൽ നിന്ന് `train_df` പോലുള്ള ഒരു പുതിയ ഒബ്‌ജക്റ്റ് ഉണ്ടാക്കണമെങ്കിൽ, ഒരു `pandas.DataFrame` ലഭിക്കാൻ മുഴുവൻ ഡേറ്റാസെറ്റും സ്ലൈസ് ചെയ്യണം. ഔട്ട്‌പുട്ട് ഫോർമാറ്റ് എന്തായാലും `drug_dataset["train"]`-ന്റെ ടൈപ്പ് `Dataset` തന്നെയാണെന്ന് നിങ്ങൾക്ക് സ്വയം പരിശോധിച്ച് ഉറപ്പാക്കാം.
+
+
+ഇവിടെ നിന്ന് നമുക്ക് ആവശ്യമുള്ള എല്ലാ Pandas പ്രവർത്തനക്ഷമതയും ഉപയോഗിക്കാം. ഉദാഹരണത്തിന്, `condition` എൻട്രികൾക്കിടയിലുള്ള ക്ലാസ് വിതരണം (class distribution) കണക്കാക്കാൻ നമുക്ക് മനോഹരമായ ചെയിനിംഗ് ചെയ്യാം:
+
+```py
+frequencies = (
+    train_df["condition"]
+    .value_counts()
+    .to_frame()
+    .reset_index()
+    .rename(columns={"index": "condition", "count": "frequency"})
+)
+frequencies.head()
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>condition</th>
+      <th>frequency</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>birth control</td>
+      <td>27655</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>depression</td>
+      <td>8023</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>acne</td>
+      <td>5209</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>anxiety</td>
+      <td>4991</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>pain</td>
+      <td>4744</td>
+    </tr>
+  </tbody>
+</table>
+
+
+നമ്മുടെ Pandas അനാലിസിസ് പൂർത്തിയായിക്കഴിഞ്ഞാൽ, `Dataset.from_pandas()` ഫംഗ്‌ഷൻ ഉപയോഗിച്ച് താഴെ കാണിച്ചിരിക്കുന്നതുപോലെ ഒരു പുതിയ `Dataset` ഒബ്‌ജക്റ്റ് എപ്പോഴും നമുക്ക് ഉണ്ടാക്കാം:
+
+
+```py
+from datasets import Dataset
+
+freq_dataset = Dataset.from_pandas(frequencies)
+freq_dataset
+```
+
+```python out
+Dataset({
+    features: ['condition', 'frequency'],
+    num_rows: 819
+})
+```
+
+> [!TIP]
+> ✏️ **സ്വയം പരീക്ഷിക്കുക!** ഓരോ മരുന്നിന്റെയും ശരാശരി റേറ്റിംഗ് കണക്കാക്കി ഫലം ഒരു പുതിയ `Dataset`-ൽ സൂക്ഷിക്കുക.
+
+🤗 Datasets-ൽ ലഭ്യമായ വിവിധ പ്രീപ്രോസസ്സിംഗ് രീതികളിലൂടെയുള്ള നമ്മുടെ യാത്ര ഇവിടെ അവസാനിക്കുന്നു. ഈ ഭാഗം പൂർത്തിയാക്കാൻ, ഒരു ക്ലാസിഫയർ ട്രെയിൻ ചെയ്യുന്നതിനായി ഡേറ്റാസെറ്റ് തയ്യാറാക്കാൻ ഒരു വാലിഡേഷൻ സെറ്റ് ഉണ്ടാക്കാം. അതിനു മുമ്പ്, `drug_dataset`-ന്റെ ഔട്ട്‌പുട്ട് ഫോർമാറ്റ് `"pandas"`-ൽ നിന്ന് `"arrow"`-ലേക്ക് നമ്മൾ റീസെറ്റ് ചെയ്യും:
+
+```python
+drug_dataset.reset_format()
+```
+
+## ഒരു വാലിഡേഷൻ സെറ്റ് ഉണ്ടാക്കുന്നു[[creating-a-validation-set]]
+
+ഇവാല്യുവേഷനായി ഉപയോഗിക്കാവുന്ന ഒരു ടെസ്‌റ്റ് സെറ്റ് നമുക്കുണ്ടെങ്കിലും, ടെസ്‌റ്റ് സെറ്റ് തൊടാതെ വെച്ചിട്ട്, ഡെവലപ്‌മെന്റ് സമയത്ത് ഒരു പ്രത്യേക വാലിഡേഷൻ സെറ്റ് ഉണ്ടാക്കുന്നത് ഒരു നല്ല ശീലമാണ്. വാലിഡേഷൻ സെറ്റിലെ നിങ്ങളുടെ മോഡലുകളുടെ പ്രകടനത്തിൽ നിങ്ങൾ സംതൃപ്തരായിക്കഴിഞ്ഞാൽ, ടെസ്‌റ്റ് സെറ്റിൽ ഒരു അവസാന പരിശോധന (sanity check) നടത്താം. ടെസ്‌റ്റ് സെറ്റിലേക്ക് ഓവർഫിറ്റ് ചെയ്ത്, യഥാർത്ഥ ലോകത്തിലെ ഡേറ്റയിൽ പരാജയപ്പെടുന്ന ഒരു മോഡൽ ഡിപ്ലോയ് ചെയ്യാനുള്ള സാധ്യത കുറയ്ക്കാൻ ഈ പ്രക്രിയ സഹായിക്കുന്നു.
+
+`scikit-learn`-ലെ പ്രശസ്‌തമായ പ്രവർത്തനക്ഷമതയെ അടിസ്ഥാനമാക്കിയുള്ള ഒരു `Dataset.train_test_split()` ഫംഗ്‌ഷൻ 🤗 Datasets നൽകുന്നു. നമ്മുടെ ട്രെയിനിംഗ് സെറ്റിനെ `train`, `validation` സ്‌പ്ലിറ്റുകളായി വിഭജിക്കാൻ ഇത് ഉപയോഗിക്കാം (പുനരുത്പാദനക്ഷമതയ്ക്കായി നമ്മൾ `seed` ആർഗ്യുമെന്റ് സെറ്റ് ചെയ്യുന്നു):
+
+```py
+drug_dataset_clean = drug_dataset["train"].train_test_split(train_size=0.8, seed=42)
+# Rename the default "test" split to "validation"
+drug_dataset_clean["validation"] = drug_dataset_clean.pop("test")
+# Add the "test" set to our `DatasetDict`
+drug_dataset_clean["test"] = drug_dataset["test"]
+drug_dataset_clean
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 110811
+    })
+    validation: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 27703
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 46108
+    })
+})
+```
+
+കൊള്ളാം, ചില മോഡലുകൾ ട്രെയിൻ ചെയ്യാൻ തയ്യാറായ ഒരു ഡേറ്റാസെറ്റ് നമ്മൾ ഇപ്പോൾ തയ്യാറാക്കിയിരിക്കുന്നു! ഡേറ്റാസെറ്റുകൾ Hugging Face Hub-ലേക്ക് എങ്ങനെ അപ്‌ലോഡ് ചെയ്യാമെന്ന് [ഭാഗം 5](/course/chapter5/5)-ൽ ഞങ്ങൾ നിങ്ങൾക്ക് കാണിച്ചുതരും; എന്നാൽ ഇപ്പോൾ, ഡേറ്റാസെറ്റുകൾ നിങ്ങളുടെ ലോക്കൽ മെഷീനിൽ സേവ് ചെയ്യാനുള്ള ചില മാർഗ്ഗങ്ങൾ നോക്കിക്കൊണ്ട് നമ്മുടെ അനാലിസിസ് പൂർത്തിയാക്കാം.
+
+## ഒരു ഡേറ്റാസെറ്റ് സേവ് ചെയ്യുന്നു[[saving-a-dataset]]
+
+<Youtube id="blF9uxYcKHo"/>
+
+ഡൗൺലോഡ് ചെയ്യുന്ന ഓരോ ഡേറ്റാസെറ്റും അതിൽ നടത്തുന്ന ഓപ്പറേഷനുകളും 🤗 Datasets കാഷ് (cache) ചെയ്യുമെങ്കിലും, ഒരു ഡേറ്റാസെറ്റ് ഡിസ്‌കിലേക്ക് സേവ് ചെയ്യേണ്ടി വരുന്ന സന്ദർഭങ്ങൾ ഉണ്ടാകാം (ഉദാ., കാഷ് ഡിലീറ്റ് ആയിപ്പോകുന്ന സാഹചര്യത്തിൽ). താഴെയുള്ള പട്ടികയിൽ കാണിച്ചിരിക്കുന്നതുപോലെ, നിങ്ങളുടെ ഡേറ്റാസെറ്റ് വ്യത്യസ്ത ഫോർമാറ്റുകളിൽ സേവ് ചെയ്യാൻ 🤗 Datasets മൂന്ന് പ്രധാന ഫംഗ്‌ഷനുകൾ നൽകുന്നു:
+
+| ഡേറ്റാ ഫോർമാറ്റ് |        ഫംഗ്‌ഷൻ        |
+| :---------: | :--------------------: |
+|    Arrow    | `Dataset.save_to_disk()` |
+|     CSV     |    `Dataset.to_csv()`    |
+|    JSON     |   `Dataset.to_json()`    |
+
+ഉദാഹരണത്തിന്, നമ്മുടെ വൃത്തിയാക്കിയ ഡേറ്റാസെറ്റ് Arrow ഫോർമാറ്റിൽ സേവ് ചെയ്യാം:
+
+```py
+drug_dataset_clean.save_to_disk("drug-reviews")
+```
+
+ഇത് താഴെപ്പറയുന്ന ഘടനയുള്ള ഒരു ഡയറക്ടറി ഉണ്ടാക്കും:
+
+```
+drug-reviews/
+├── dataset_dict.json
+├── test
+│   ├── dataset.arrow
+│   ├── dataset_info.json
+│   └── state.json
+├── train
+│   ├── dataset.arrow
+│   ├── dataset_info.json
+│   ├── indices.arrow
+│   └── state.json
+└── validation
+    ├── dataset.arrow
+    ├── dataset_info.json
+    ├── indices.arrow
+    └── state.json
+```
+
+ഇവിടെ ഓരോ സ്‌പ്ലിറ്റിനും അതിന്റേതായ *dataset.arrow* ടേബിളും, *dataset_info.json*, *state.json* എന്നിവയിൽ ചില മെറ്റാഡേറ്റയും ഉണ്ടെന്ന് നമുക്ക് കാണാം. വലിയ ഡേറ്റാസെറ്റുകൾ പ്രോസസ്സ് ചെയ്യുകയും കൈമാറുകയും ചെയ്യുന്ന ഉയർന്ന പ്രകടനശേഷിയുള്ള ആപ്ലിക്കേഷനുകൾ നിർമ്മിക്കാൻ ഒപ്‌റ്റിമൈസ് ചെയ്ത, കോളങ്ങളും വരികളുമുള്ള ഒരു മികച്ച ടേബിളായി Arrow ഫോർമാറ്റിനെ നിങ്ങൾക്ക് കണക്കാക്കാം.
+
+ഡേറ്റാസെറ്റ് സേവ് ചെയ്തുകഴിഞ്ഞാൽ, `load_from_disk()` ഫംഗ്‌ഷൻ ഉപയോഗിച്ച് താഴെ കാണിച്ചിരിക്കുന്നതുപോലെ അത് ലോഡ് ചെയ്യാം:
+
+```py
+from datasets import load_from_disk
+
+drug_dataset_reloaded = load_from_disk("drug-reviews")
+drug_dataset_reloaded
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 110811
+    })
+    validation: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 27703
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 46108
+    })
+})
+```
+
+CSV, JSON ഫോർമാറ്റുകളിൽ, ഓരോ സ്‌പ്ലിറ്റും ഒരു പ്രത്യേക ഫയലായി സൂക്ഷിക്കണം. `DatasetDict` ഒബ്‌ജക്റ്റിലെ കീകളിലൂടെയും മൂല്യങ്ങളിലൂടെയും ഇറ്ററേറ്റ് ചെയ്യുന്നതാണ് ഇതിനുള്ള ഒരു മാർഗ്ഗം:
+
+```py
+for split, dataset in drug_dataset_clean.items():
+    dataset.to_json(f"drug-reviews-{split}.jsonl")
+```
+
+ഇത് ഓരോ സ്‌പ്ലിറ്റും [JSON Lines ഫോർമാറ്റിൽ](https://jsonlines.org) സേവ് ചെയ്യുന്നു; ഇവിടെ ഡേറ്റാസെറ്റിലെ ഓരോ വരിയും JSON-ന്റെ ഒരൊറ്റ വരിയായി സൂക്ഷിക്കപ്പെടുന്നു. ആദ്യത്തെ ഉദാഹരണം എങ്ങനെയുണ്ടെന്ന് ഇതാ:
+
+```py
+!head -n 1 drug-reviews-train.jsonl
+```
+
+```python out
+{"patient_id":141780,"drugName":"Escitalopram","condition":"depression","review":"\"I seemed to experience the regular side effects of LEXAPRO, insomnia, low sex drive, sleepiness during the day. I am taking it at night because my doctor said if it made me tired to take it at night. I assumed it would and started out taking it at night. Strange dreams, some pleasant. I was diagnosed with fibromyalgia. Seems to be helping with the pain. Have had anxiety and depression in my family, and have tried quite a few other medications that haven't worked. Only have been on it for two weeks but feel more positive in my mind, want to accomplish more in my life. Hopefully the side effects will dwindle away, worth it to stick with it from hearing others responses. Great medication.\"","rating":9.0,"date":"May 29, 2011","usefulCount":10,"review_length":125}
+```
+
+തുടർന്ന് [ഭാഗം 2](/course/chapter5/2)-ലെ രീതികൾ ഉപയോഗിച്ച് താഴെ കാണിച്ചിരിക്കുന്നതുപോലെ JSON ഫയലുകൾ നമുക്ക് ലോഡ് ചെയ്യാം:
+
+```py
+data_files = {
+    "train": "drug-reviews-train.jsonl",
+    "validation": "drug-reviews-validation.jsonl",
+    "test": "drug-reviews-test.jsonl",
+}
+drug_dataset_reloaded = load_dataset("json", data_files=data_files)
+```
+
+🤗 Datasets ഉപയോഗിച്ചുള്ള ഡേറ്റാ റാംഗ്ലിംഗിലേക്കുള്ള (data wrangling) നമ്മുടെ യാത്ര ഇവിടെ അവസാനിക്കുന്നു! ഒരു മോഡൽ ട്രെയിൻ ചെയ്യാനുള്ള വൃത്തിയാക്കിയ ഒരു ഡേറ്റാസെറ്റ് ഇപ്പോൾ നമ്മുടെ കൈയിലുള്ളതിനാൽ, നിങ്ങൾക്ക് പരീക്ഷിച്ചു നോക്കാവുന്ന ചില ആശയങ്ങൾ ഇതാ:
+
+1. മരുന്ന് റിവ്യൂവിനെ അടിസ്ഥാനമാക്കി രോഗിയുടെ രോഗാവസ്ഥ പ്രവചിക്കാൻ കഴിയുന്ന ഒരു ക്ലാസിഫയർ ട്രെയിൻ ചെയ്യാൻ [അധ്യായം 3](/course/chapter3)-ലെ രീതികൾ ഉപയോഗിക്കുക.
+2. റിവ്യൂകളുടെ സംഗ്രഹങ്ങൾ ഉണ്ടാക്കാൻ [അധ്യായം 1](/course/chapter1)-ലെ `summarization` പൈപ്പ്‌ലൈൻ ഉപയോഗിക്കുക.
+
+അടുത്തതായി, നിങ്ങളുടെ ലാപ്‌ടോപ്പ് തകരാതെ തന്നെ വലിയ ഡേറ്റാസെറ്റുകളുമായി പ്രവർത്തിക്കാൻ 🤗 Datasets നിങ്ങളെ എങ്ങനെ സഹായിക്കുന്നു എന്ന് നോക്കാം!

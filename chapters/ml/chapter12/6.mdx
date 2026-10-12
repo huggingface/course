@@ -1,0 +1,367 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/HuggingFace%20Course-Gemma3_(1B)-GRPO.ipynb"},
+]} />
+
+# പ്രായോഗിക അഭ്യാസം: Unsloth ഉപയോഗിച്ച് GRPO
+
+ഈ അഭ്യാസത്തിൽ, ഒരു മോഡലിന്റെ റീസണിംഗ് ശേഷികൾ മെച്ചപ്പെടുത്താൻ, Unsloth ഉപയോഗിച്ച് GRPO (Group Relative Policy Optimization) വഴി നിങ്ങൾ ഒരു മോഡൽ ഫൈൻ-ട്യൂൺ ചെയ്യും. [അധ്യായം 3](/course/chapter3/3)-ൽ നമ്മൾ GRPO-യെക്കുറിച്ച് പഠിച്ചിരുന്നു.
+
+LLM ഫൈൻ-ട്യൂണിംഗ് വേഗത്തിലാക്കുന്ന ഒരു ലൈബ്രറിയാണ് Unsloth; കുറഞ്ഞ കമ്പ്യൂട്ടേഷണൽ വിഭവങ്ങൾ ഉപയോഗിച്ച് കൂടുതൽ വേഗത്തിൽ മോഡലുകൾ ട്രെയിൻ ചെയ്യാൻ ഇത് സാധ്യമാക്കുന്നു. Unsloth TRL-മായി ചേർന്ന് പ്രവർത്തിക്കുന്നു, അതിനാൽ മുൻ വിഭാഗങ്ങളിൽ പഠിച്ചതിന്റെ അടിസ്ഥാനത്തിൽ മുന്നോട്ടു പോയി, Unsloth-ന്റെ പ്രത്യേകതകൾക്ക് അനുസരിച്ച് അത് നമ്മൾ ക്രമീകരിക്കും.
+
+> [!TIP]
+> ഈ അഭ്യാസം സൗജന്യ Google Colab T4 GPU-വിൽ റൺ ചെയ്യാം. ഏറ്റവും നല്ല അനുഭവത്തിനായി, മുകളിൽ ലിങ്ക് ചെയ്തിരിക്കുന്ന നോട്ട്‌ബുക്ക് പിന്തുടർന്ന് സ്വയം പരീക്ഷിച്ചു നോക്കുക.
+
+## ഡിപ്പൻഡൻസികൾ ഇൻസ്‌റ്റാൾ ചെയ്യുക
+
+ആദ്യം, ആവശ്യമായ ലൈബ്രറികൾ ഇൻസ്‌റ്റാൾ ചെയ്യാം. വേഗത്തിലുള്ള ഫൈൻ-ട്യൂണിംഗിനായി Unsloth-ഉം വേഗത്തിലുള്ള ഇൻഫറൻസിനായി vLLM-ഉം നമുക്ക് ആവശ്യമാണ്.
+
+```bash
+pip install unsloth vllm
+pip install --upgrade pillow
+```
+
+## Unsloth സജ്ജമാക്കൽ
+
+transformers-നെ Unsloth ഒപ്റ്റിമൈസേഷനുകളുമായി സംയോജിപ്പിക്കുന്ന ഒരു ക്ലാസ് (`FastLanguageModel`) Unsloth നൽകുന്നു. അത് ഇംപോർട്ട് ചെയ്യാം:
+
+```python
+from unsloth import FastLanguageModel
+```
+
+ഇപ്പോൾ, Google-ന്റെ Gemma 3 1B Instruct മോഡൽ ലോഡ് ചെയ്ത് ഫൈൻ-ട്യൂണിംഗിനായി കോൺഫിഗർ ചെയ്യാം:
+
+```python
+from unsloth import FastLanguageModel
+import torch
+
+max_seq_length = 1024  # Can increase for longer reasoning traces
+lora_rank = 32  # Larger rank = smarter, but slower
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="google/gemma-3-1b-it",
+    max_seq_length=max_seq_length,
+    load_in_4bit=True,  # False for LoRA 16bit
+    fast_inference=True,  # Enable vLLM fast inference
+    max_lora_rank=lora_rank,
+    gpu_memory_utilization=0.6,  # Reduce if out of memory
+)
+
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=lora_rank,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],  # Remove QKVO if out of memory
+    lora_alpha=lora_rank,
+    use_gradient_checkpointing="unsloth",  # Enable long context finetuning
+    random_state=3407,
+)
+```
+
+മെമ്മറി ലാഭിക്കാൻ ഈ കോഡ് മോഡലിനെ 4-ബിറ്റ് ക്വാണ്ടൈസേഷനിൽ ലോഡ് ചെയ്യുകയും കാര്യക്ഷമമായ ഫൈൻ-ട്യൂണിംഗിനായി LoRA (Low-Rank Adaptation) പ്രയോഗിക്കുകയും ചെയ്യുന്നു. മോഡലിന്റെ ഏതൊക്കെ ലെയറുകൾ ഫൈൻ-ട്യൂൺ ചെയ്യണം എന്ന് `target_modules` പാരാമീറ്റർ വ്യക്തമാക്കുന്നു, കൂടാതെ `use_gradient_checkpointing` കൂടുതൽ നീണ്ട കോൺടെക്‌സ്‌റ്റുകളോടെ ട്രെയിനിംഗ് സാധ്യമാക്കുന്നു.
+
+> [!TIP]
+> ഈ അധ്യായത്തിൽ LoRA-യുടെ വിശദാംശങ്ങൾ നമ്മൾ പരിശോധിക്കുന്നില്ല, എന്നാൽ [അധ്യായം 11](/course/chapter11/3)-ൽ നിങ്ങൾക്ക് കൂടുതൽ പഠിക്കാം.
+
+## ഡേറ്റ തയ്യാറാക്കൽ
+
+ഈ അഭ്യാസത്തിനായി, സ്‌കൂൾ തലത്തിലുള്ള ഗണിത പ്രശ്നങ്ങൾ ഉൾക്കൊള്ളുന്ന GSM8K ഡേറ്റാസെറ്റ് നമ്മൾ ഉപയോഗിക്കും. ഉത്തരം നൽകുന്നതിന് മുമ്പ് തന്റെ റീസണിംഗ് കാണിക്കാൻ മോഡലിനെ പ്രോത്സാഹിപ്പിക്കുന്ന വിധത്തിൽ നമ്മൾ ഡേറ്റ ഫോർമാറ്റ് ചെയ്യും.
+
+ആദ്യം, പ്രോംപ്‌റ്റുകളുടെയും ഉത്തരങ്ങളുടെയും ഫോർമാറ്റ് നിർവചിക്കാം:
+
+```python
+# Define the system prompt that instructs the model to use a specific format
+SYSTEM_PROMPT = """
+Respond in the following format:
+<reasoning>
+...
+</reasoning>
+<answer>
+...
+</answer>
+"""
+
+XML_COT_FORMAT = """\
+<reasoning>
+{reasoning}
+</reasoning>
+<answer>
+{answer}
+</answer>
+"""
+```
+
+ഇപ്പോൾ, ഡേറ്റാസെറ്റ് തയ്യാറാക്കാം:
+
+```python
+import re
+from datasets import load_dataset, Dataset
+
+
+# Helper functions to extract answers from different formats
+def extract_xml_answer(text: str) -> str:
+    answer = text.split("<answer>")[-1]
+    answer = answer.split("</answer>")[0]
+    return answer.strip()
+
+
+def extract_hash_answer(text: str) -> str | None:
+    if "####" not in text:
+        return None
+    return text.split("####")[1].strip()
+
+
+# Function to prepare the GSM8K dataset
+def get_gsm8k_questions(split="train") -> Dataset:
+    data = load_dataset("openai/gsm8k", "main")[split]
+    data = data.map(
+        lambda x: {
+            "prompt": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": x["question"]},
+            ],
+            "answer": extract_hash_answer(x["answer"]),
+        }
+    )
+    return data
+
+
+dataset = get_gsm8k_questions()
+```
+
+ഡേറ്റാസെറ്റിൽ നിന്ന് ഉത്തരം എക്‌സ്‌ട്രാക്റ്റ് ചെയ്ത് അതിനെ ഒരു സ്ട്രിംഗായി ഫോർമാറ്റ് ചെയ്താണ് ഡേറ്റാസെറ്റ് തയ്യാറാക്കുന്നത്.
+
+## റിവാർഡ് ഫംഗ്‌ഷനുകൾ നിർവചിക്കൽ
+
+[മുൻപത്തെ ഒരു പേജിൽ](/course/chapter13/4) ചർച്ച ചെയ്തതുപോലെ, ദൈർഘ്യം, ഫോർമാറ്റിംഗ് പോലുള്ള പരിശോധിക്കാവുന്ന മാനദണ്ഡങ്ങളെ അടിസ്ഥാനമാക്കി മോഡലിന്റെ പഠനത്തെ നയിക്കാൻ GRPO-യ്ക്ക് റിവാർഡ് ഫംഗ്‌ഷനുകൾ ഉപയോഗിക്കാം.
+
+ഈ അഭ്യാസത്തിൽ, നല്ല റീസണിംഗിന്റെ വ്യത്യസ്ത വശങ്ങളെ പ്രോത്സാഹിപ്പിക്കുന്ന പല റിവാർഡ് ഫംഗ്‌ഷനുകളും നമ്മൾ നിർവചിക്കും. ഉദാഹരണത്തിന്, ഒരു പൂർണ്ണസംഖ്യ (integer) ഉത്തരം നൽകുന്നതിനും കർശനമായ ഫോർമാറ്റ് പിന്തുടരുന്നതിനും നമ്മൾ മോഡലിന് റിവാർഡ് നൽകും.
+
+```python
+# Reward function that checks if the answer is correct
+def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+    responses = [completion[0]["content"] for completion in completions]
+    q = prompts[0][-1]["content"]
+    extracted_responses = [extract_xml_answer(r) for r in responses]
+    print(
+        "-" * 20,
+        f"Question:\n{q}",
+        f"\nAnswer:\n{answer[0]}",
+        f"\nResponse:\n{responses[0]}",
+        f"\nExtracted:\n{extracted_responses[0]}",
+    )
+    return [2.0 if r == a else 0.0 for r, a in zip(extracted_responses, answer)]
+
+
+# Reward function that checks if the answer is an integer
+def int_reward_func(completions, **kwargs) -> list[float]:
+    responses = [completion[0]["content"] for completion in completions]
+    extracted_responses = [extract_xml_answer(r) for r in responses]
+    return [0.5 if r.isdigit() else 0.0 for r in extracted_responses]
+
+
+# Reward function that checks if the completion follows the strict format
+def strict_format_reward_func(completions, **kwargs) -> list[float]:
+    pattern = r"^<reasoning>\n.*?\n</reasoning>\n<answer>\n.*?\n</answer>\n$"
+    responses = [completion[0]["content"] for completion in completions]
+    matches = [re.match(pattern, r) for r in responses]
+    return [0.5 if match else 0.0 for match in matches]
+
+
+# Reward function that checks if the completion follows a more relaxed format
+def soft_format_reward_func(completions, **kwargs) -> list[float]:
+    pattern = r"<reasoning>.*?</reasoning>\s*<answer>.*?</answer>"
+    responses = [completion[0]["content"] for completion in completions]
+    matches = [re.match(pattern, r) for r in responses]
+    return [0.5 if match else 0.0 for match in matches]
+
+
+# Reward function that counts XML tags and penalizes extra content
+def count_xml(text) -> float:
+    count = 0.0
+    if text.count("<reasoning>\n") == 1:
+        count += 0.125
+    if text.count("\n</reasoning>\n") == 1:
+        count += 0.125
+    if text.count("\n<answer>\n") == 1:
+        count += 0.125
+        count -= len(text.split("\n</answer>\n")[-1]) * 0.001
+    if text.count("\n</answer>") == 1:
+        count += 0.125
+        count -= (len(text.split("\n</answer>")[-1]) - 1) * 0.001
+    return count
+
+
+def xmlcount_reward_func(completions, **kwargs) -> list[float]:
+    contents = [completion[0]["content"] for completion in completions]
+    return [count_xml(c) for c in contents]
+```
+
+ഈ റിവാർഡ് ഫംഗ്‌ഷനുകൾ വ്യത്യസ്ത ഉദ്ദേശ്യങ്ങൾ നിറവേറ്റുന്നു:
+
+| റിവാർഡ് ഫംഗ്‌ഷൻ | ഉദ്ദേശ്യം |
+|-----------------|---------|
+| `correctness_reward_func` | മോഡലിന്റെ ഉത്തരം ശരിയായ ഉത്തരവുമായി പൊരുത്തപ്പെടുമ്പോൾ മോഡലിന് റിവാർഡ് നൽകുന്നു |
+| `int_reward_func` | ഒരു സംഖ്യാ ഉത്തരം നൽകുന്നതിന് മോഡലിന് റിവാർഡ് നൽകുന്നു |
+| `strict_format_reward_func` ഉം `soft_format_reward_func` ഉം | നിർദ്ദിഷ്ട ഫോർമാറ്റ് പിന്തുടരുന്നതിന് മോഡലിന് റിവാർഡ് നൽകുന്നു |
+| `xmlcount_reward_func` | ശരിയായ XML ടാഗ് ഉപയോഗത്തിന് റിവാർഡ് നൽകുകയും ക്ലോസിംഗ് ടാഗുകൾക്ക് ശേഷമുള്ള അധിക ഉള്ളടക്കത്തിന് പെനാൽറ്റി നൽകുകയും ചെയ്യുന്നു |
+
+## GRPO ഉപയോഗിച്ചുള്ള ട്രെയിനിംഗ്
+
+ഇപ്പോൾ നമ്മുടെ മോഡൽ, ടോക്കണൈസർ, റിവാർഡ് ഫംഗ്‌ഷനുകൾ എന്നിവ ഉപയോഗിച്ച് GRPO ട്രെയിനർ സജ്ജമാക്കാം. ഈ ഭാഗം [മുൻ അഭ്യാസത്തിലെ](/course/chapter12/5) അതേ സമീപനം പിന്തുടരുന്നു.
+
+```python
+from trl import GRPOConfig, GRPOTrainer
+
+max_prompt_length = 256
+
+training_args = GRPOConfig(
+    learning_rate=5e-6,
+    adam_beta1=0.9,
+    adam_beta2=0.99,
+    weight_decay=0.1,
+    warmup_ratio=0.1,
+    lr_scheduler_type="cosine",
+    optim="paged_adamw_8bit",
+    logging_steps=1,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=1,  # Increase to 4 for smoother training
+    num_generations=6,  # Decrease if out of memory
+    max_prompt_length=max_prompt_length,
+    max_completion_length=max_seq_length - max_prompt_length,
+    # num_train_epochs = 1, # Set to 1 for a full training run
+    max_steps=250,
+    save_steps=250,
+    max_grad_norm=0.1,
+    report_to="none",  # Can use Weights & Biases
+    output_dir="outputs",
+)
+
+trainer = GRPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    reward_funcs=[
+        xmlcount_reward_func,
+        soft_format_reward_func,
+        strict_format_reward_func,
+        int_reward_func,
+        correctness_reward_func,
+    ],
+    args=training_args,
+    train_dataset=dataset,
+)
+```
+
+`GRPOConfig` ട്രെയിനിംഗിനായി വിവിധ ഹൈപ്പർപാരാമീറ്ററുകൾ സജ്ജമാക്കുന്നു:
+- `use_vllm`: vLLM ഉപയോഗിച്ച് വേഗത്തിലുള്ള ഇൻഫറൻസ് എനേബിൾ ചെയ്യുന്നു
+- `learning_rate`: മോഡൽ എത്ര വേഗത്തിൽ പഠിക്കുന്നു എന്ന് നിയന്ത്രിക്കുന്നു
+- `num_generations`: ഓരോ പ്രോംപ്‌റ്റിനും ജനറേറ്റ് ചെയ്യേണ്ട കംപ്ലീഷനുകളുടെ എണ്ണം
+- `max_steps`: നടത്തേണ്ട ട്രെയിനിംഗ് ഘട്ടങ്ങളുടെ ആകെ എണ്ണം
+
+ഇപ്പോൾ ട്രെയിനിംഗ് ആരംഭിക്കാം:
+
+```python
+trainer.train()
+```
+
+> [!WARNING]
+> ട്രെയിനിംഗിന് കുറച്ച് സമയമെടുത്തേക്കാം. റിവാർഡുകൾ ഉടൻ വർദ്ധിക്കുന്നത് നിങ്ങൾ കണ്ടേക്കില്ല - മെച്ചപ്പെടുത്തലുകൾ കണ്ടുതുടങ്ങാൻ 150-200 ഘട്ടങ്ങൾ വരെ എടുക്കാം. ക്ഷമയോടെ കാത്തിരിക്കുക!
+
+## മോഡൽ പരീക്ഷിക്കൽ
+
+ട്രെയിനിംഗിന് ശേഷം, നമ്മുടെ മോഡൽ എങ്ങനെ പ്രവർത്തിക്കുന്നു എന്ന് കാണാൻ അത് പരീക്ഷിക്കാം. ആദ്യം, LoRA വെയ്‌റ്റുകൾ സേവ് ചെയ്യും:
+
+```python
+model.save_lora("grpo_saved_lora")
+```
+
+ഇപ്പോൾ, ഒരു പുതിയ ചോദ്യം ഉപയോഗിച്ച് മോഡൽ പരീക്ഷിക്കാം:
+
+```python
+from vllm import SamplingParams
+
+text = tokenizer.apply_chat_template(
+    [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": "Calculate pi."},
+    ],
+    tokenize=False,
+    add_generation_prompt=True,
+)
+
+sampling_params = SamplingParams(
+    temperature=0.8,
+    top_p=0.95,
+    max_tokens=1024,
+)
+output = (
+    model.fast_generate(
+        text,
+        sampling_params=sampling_params,
+        lora_request=model.load_lora("grpo_saved_lora"),
+    )[0]
+    .outputs[0]
+    .text
+)
+
+print(output)
+```
+
+ഉത്തരം നൽകുന്നതിന് മുമ്പ് തന്റെ റീസണിംഗ് കാണിച്ചുകൊണ്ട്, മോഡൽ ഇപ്പോൾ നിർദ്ദിഷ്ട ഫോർമാറ്റ് പിന്തുടരുന്നത് നിങ്ങൾക്ക് കാണാൻ കഴിയണം.
+
+## മോഡൽ സേവ് ചെയ്യൽ
+
+ഫൈൻ-ട്യൂൺ ചെയ്ത മോഡൽ സേവ് ചെയ്യാൻ Unsloth പല ഓപ്‌ഷനുകളും നൽകുന്നു, എന്നാൽ ഏറ്റവും സാധാരണമായതിലാണ് നമ്മൾ ശ്രദ്ധ കേന്ദ്രീകരിക്കുന്നത്.
+
+```python
+# Save to 16-bit precision
+model.save_pretrained_merged("model", tokenizer, save_method="merged_16bit")
+```
+
+## Hugging Face Hub-ലേക്ക് പുഷ് ചെയ്യൽ
+
+`push_to_hub_merged` മെത്തേഡ് ഉപയോഗിച്ച് നമ്മൾ മോഡൽ Hugging Face Hub-ലേക്ക് പുഷ് ചെയ്യും. ഒന്നിലധികം ക്വാണ്ടൈസേഷൻ ഫോർമാറ്റുകളിൽ മോഡൽ പുഷ് ചെയ്യാൻ ഈ മെത്തേഡ് നമ്മെ അനുവദിക്കുന്നു.
+```python
+# Push to Hugging Face Hub (requires a token)
+model.push_to_hub_merged(
+    "your-username/model-name", tokenizer, save_method="merged_16bit", token="your-token"
+)
+```
+
+llama.cpp-യിൽ ഉപയോഗിക്കാനായി GGUF ഫോർമാറ്റിൽ സേവ് ചെയ്യുന്നതിനും Unsloth പിന്തുണ നൽകുന്നു:
+
+```python
+model.push_to_hub_gguf(
+    "your-username/model-name",
+    tokenizer,
+    quantization_method=["q4_k_m", "q8_0", "q5_k_m"],
+    token="your-token",
+)
+```
+
+GGUF ഫയലുകൾ llama.cpp-യിലോ Jan, Open WebUI പോലുള്ള UI-അധിഷ്ഠിത സിസ്‌റ്റങ്ങളിലോ ഉപയോഗിക്കാം.
+
+## ഉപസംഹാരം
+
+ഈ അഭ്യാസത്തിൽ, താഴെ പറയുന്നവ എങ്ങനെ ചെയ്യാമെന്ന് നിങ്ങൾ പഠിച്ചു:
+1. വേഗത്തിലുള്ള ഫൈൻ-ട്യൂണിംഗിനായി Unsloth സജ്ജമാക്കുക
+2. GRPO ട്രെയിനിംഗിനായി ഡേറ്റ തയ്യാറാക്കുക
+3. മോഡലിന്റെ പഠനത്തെ നയിക്കാൻ കസ്‌റ്റം റിവാർഡ് ഫംഗ്‌ഷനുകൾ നിർവചിക്കുക
+4. GRPO ഉപയോഗിച്ച് ഒരു മോഡൽ ട്രെയിൻ ചെയ്യുക
+5. ഫൈൻ-ട്യൂൺ ചെയ്ത മോഡൽ പരീക്ഷിക്കുക
+6. വിവിധ ഫോർമാറ്റുകളിൽ മോഡൽ സേവ് ചെയ്യുക
+
+ലാംഗ്വേജ് മോഡലുകളെ നിർദ്ദിഷ്ട പെരുമാറ്റങ്ങളുമായി അലൈൻ ചെയ്യാനുള്ള ശക്തമായ ഒരു സങ്കേതമാണ് GRPO, കൂടാതെ പരിമിതമായ ഹാർഡ്‌വെയറിൽ പോലും Unsloth അതിനെ പ്രാപ്യമാക്കുന്നു. ഒന്നിലധികം റിവാർഡ് ഫംഗ്‌ഷനുകൾ സംയോജിപ്പിച്ച്, ഒരു നിർദ്ദിഷ്ട ഫോർമാറ്റ് പിന്തുടരാൻ മോഡലിനെ നയിക്കുന്നതോടൊപ്പം അതിന്റെ റീസണിംഗ് ശേഷികളും നിങ്ങൾക്ക് മെച്ചപ്പെടുത്താം.
+
+കൂടുതൽ വിവരങ്ങൾക്കും വിഭവങ്ങൾക്കും, ഇവ പരിശോധിക്കുക:
+- [Unsloth ഡോക്യുമെന്റേഷൻ](https://docs.unsloth.ai/)
+- [Unsloth Discord](https://discord.gg/unsloth)
+- [Unsloth GitHub](https://github.com/unslothai/unsloth)

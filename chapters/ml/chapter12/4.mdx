@@ -1,0 +1,233 @@
+# TRL-ൽ GRPO ഇംപ്ലിമെന്റ് ചെയ്യൽ
+
+ഈ പേജിൽ, Transformer Reinforcement Learning (TRL) ലൈബ്രറി ഉപയോഗിച്ച് Group Relative Policy Optimization (GRPO) എങ്ങനെ ഇംപ്ലിമെന്റ് ചെയ്യാം എന്ന് നമ്മൾ പഠിക്കും. കുറഞ്ഞ കോഡ് ഉപയോഗിച്ചുള്ള പ്രായോഗിക ഇംപ്ലിമെന്റേഷനിലാണ് നമ്മൾ ശ്രദ്ധ കേന്ദ്രീകരിക്കുന്നത്.
+
+ഔദ്യോഗിക TRL ഡോക്യുമെന്റേഷനിൽ നിന്നുള്ള കോഡ് സ്‌നിപ്പെറ്റുകളുടെ സഹായത്തോടെ, TRL-ന്റെ GRPOTrainer-ൽ ഉൾക്കൊള്ളിച്ചിരിക്കുന്ന GRPO-യുടെ അടിസ്ഥാന ആശയങ്ങൾ നമ്മൾ പര്യവേക്ഷണം ചെയ്യും.
+
+> [!TIP]
+> ഈ അധ്യായം TRL തുടക്കക്കാരെ ലക്ഷ്യമിട്ടുള്ളതാണ്. TRL-മായി നിങ്ങൾക്ക് ഇതിനകം പരിചയമുണ്ടെങ്കിൽ, GRPO-യുടെ [Open R1 ഇംപ്ലിമെന്റേഷൻ](https://github.com/huggingface/open-r1/blob/main/src/open_r1/grpo.py) കൂടി പരിശോധിക്കാൻ നിങ്ങൾ ആഗ്രഹിച്ചേക്കാം.
+
+ആദ്യം, GRPO അൽഗോരിതത്തിന്റെ ചില പ്രധാന ആശയങ്ങൾ ഓർമ്മിക്കാം:
+
+- ഗ്രൂപ്പ് രൂപീകരണം: ഓരോ പ്രോംപ്‌റ്റിനും മോഡൽ ഒന്നിലധികം കംപ്ലീഷനുകൾ ജനറേറ്റ് ചെയ്യുന്നു.
+- മുൻഗണനാ പഠനം: കംപ്ലീഷനുകളുടെ ഗ്രൂപ്പുകളെ താരതമ്യം ചെയ്യുന്ന ഒരു റിവാർഡ് ഫംഗ്‌ഷനിൽ നിന്ന് മോഡൽ പഠിക്കുന്നു.
+- ട്രെയിനിംഗ് കോൺഫിഗറേഷൻ: ട്രെയിനിംഗ് പ്രക്രിയ നിയന്ത്രിക്കാൻ മോഡൽ ഒരു കോൺഫിഗറേഷൻ ഉപയോഗിക്കുന്നു.
+
+GRPO ഇംപ്ലിമെന്റ് ചെയ്യാൻ നമ്മൾ എന്തൊക്കെ ചെയ്യണം?
+
+- പ്രോംപ്‌റ്റുകളുടെ ഒരു ഡേറ്റാസെറ്റ് നിർവചിക്കുക.
+- കംപ്ലീഷനുകളുടെ ഒരു ലിസ്‌റ്റ് സ്വീകരിച്ച് റിവാർഡുകളുടെ ഒരു ലിസ്‌റ്റ് തിരികെ നൽകുന്ന ഒരു റിവാർഡ് ഫംഗ്‌ഷൻ നിർവചിക്കുക.
+- ഒരു GRPOConfig ഉപയോഗിച്ച് ട്രെയിനിംഗ് പ്രക്രിയ കോൺഫിഗർ ചെയ്യുക.
+- GRPOTrainer ഉപയോഗിച്ച് മോഡൽ ട്രെയിൻ ചെയ്യുക.
+
+GRPO ട്രെയിനിംഗ് ആരംഭിക്കാനുള്ള ഒരു ചെറിയ ഉദാഹരണം ഇതാ:
+
+```python
+from trl import GRPOTrainer, GRPOConfig
+from datasets import load_dataset
+
+# 1. Load your dataset
+dataset = load_dataset("your_dataset", split="train")
+
+
+# 2. Define a simple reward function
+def reward_func(completions, **kwargs):
+    """Example: Reward longer completions"""
+    return [float(len(completion)) for completion in completions]
+
+
+# 3. Configure training
+training_args = GRPOConfig(
+    output_dir="output",
+    num_train_epochs=3,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=2,
+    logging_steps=10,
+)
+
+# 4. Initialize and train
+trainer = GRPOTrainer(
+    model="your_model",  # e.g. "Qwen/Qwen2-0.5B-Instruct"
+    args=training_args,
+    train_dataset=dataset,
+    reward_funcs=reward_func,
+)
+trainer.train()
+```
+
+## പ്രധാന ഘടകങ്ങൾ
+
+### 1. ഡേറ്റാസെറ്റ് ഫോർമാറ്റ്
+
+മോഡൽ പ്രതികരിക്കേണ്ട പ്രോംപ്‌റ്റുകൾ നിങ്ങളുടെ ഡേറ്റാസെറ്റിൽ ഉണ്ടായിരിക്കണം. GRPO ട്രെയിനർ ഓരോ പ്രോംപ്‌റ്റിനും ഒന്നിലധികം കംപ്ലീഷനുകൾ ജനറേറ്റ് ചെയ്യുകയും അവയെ താരതമ്യം ചെയ്യാൻ റിവാർഡ് ഫംഗ്‌ഷൻ ഉപയോഗിക്കുകയും ചെയ്യും.
+
+### 2. റിവാർഡ് ഫംഗ്‌ഷൻ
+
+റിവാർഡ് ഫംഗ്‌ഷൻ നിർണായകമാണ് - മോഡൽ എങ്ങനെ പഠിക്കുന്നു എന്ന് അത് നിർണ്ണയിക്കുന്നു. രണ്ട് പ്രായോഗിക ഉദാഹരണങ്ങൾ ഇതാ:
+
+```python
+# Example 1: Reward based on completion length
+def reward_length(completions, **kwargs):
+    return [float(len(completion)) for completion in completions]
+
+
+# Example 2: Reward based on matching a pattern
+import re
+
+
+def reward_format(completions, **kwargs):
+    pattern = r"^<think>.*?</think><answer>.*?</answer>$"
+    return [1.0 if re.match(pattern, c) else 0.0 for c in completions]
+```
+
+### 3. ട്രെയിനിംഗ് കോൺഫിഗറേഷൻ
+
+`GRPOConfig`-ൽ പരിഗണിക്കേണ്ട പ്രധാന പാരാമീറ്ററുകൾ:
+
+```python
+training_args = GRPOConfig(
+    # Essential parameters
+    output_dir="output",
+    num_train_epochs=3,
+    num_generation=4,  # Number of completions to generate for each prompt
+    per_device_train_batch_size=4,  # We want to get all generations in one device batch
+    # Optional but useful
+    gradient_accumulation_steps=2,
+    learning_rate=1e-5,
+    logging_steps=10,
+    # GRPO specific (optional)
+    use_vllm=True,  # Speed up generation
+)
+```
+
+`num_generation` എന്ന പാരാമീറ്റർ GRPO-യ്ക്ക് പ്രത്യേകിച്ചും പ്രധാനമാണ്, കാരണം അത് ഗ്രൂപ്പ് വലുപ്പം നിർവചിക്കുന്നു - ഓരോ പ്രോംപ്‌റ്റിനും മോഡൽ എത്ര വ്യത്യസ്ത കംപ്ലീഷനുകൾ ജനറേറ്റ് ചെയ്യും എന്നത്. മറ്റ് RL രീതികളിൽ നിന്ന് GRPO-യെ വേർതിരിക്കുന്ന ഒരു പ്രധാന ഘടകമാണിത്:
+
+- വളരെ ചെറുത് (ഉദാ. 2-3): അർത്ഥവത്തായ താരതമ്യങ്ങൾക്ക് ആവശ്യമായ വൈവിധ്യം നൽകിയേക്കില്ല
+- ശുപാർശ ചെയ്യുന്നത് (4-16): വൈവിധ്യവും കമ്പ്യൂട്ടേഷണൽ കാര്യക്ഷമതയും തമ്മിൽ നല്ല സന്തുലനം നൽകുന്നു
+- വലിയ മൂല്യങ്ങൾ: പഠനം മെച്ചപ്പെടുത്തിയേക്കാം, എന്നാൽ കമ്പ്യൂട്ടേഷണൽ ചെലവ് കാര്യമായി വർദ്ധിപ്പിക്കുന്നു
+
+നിങ്ങളുടെ കമ്പ്യൂട്ടേഷണൽ വിഭവങ്ങളും ടാസ്‌കിന്റെ സങ്കീർണ്ണതയും അടിസ്ഥാനമാക്കിയാണ് ഗ്രൂപ്പ് വലുപ്പം തിരഞ്ഞെടുക്കേണ്ടത്. ലളിതമായ ടാസ്‌കുകൾക്ക് ചെറിയ ഗ്രൂപ്പുകൾ (4-8) മതിയാകും, അതേസമയം കൂടുതൽ സങ്കീർണ്ണമായ റീസണിംഗ് ടാസ്‌കുകൾക്ക് വലിയ ഗ്രൂപ്പുകൾ (8-16) പ്രയോജനപ്പെട്ടേക്കാം.
+
+## വിജയത്തിനുള്ള നുറുങ്ങുകൾ
+
+1. **മെമ്മറി മാനേജ്‌മെന്റ്**: നിങ്ങളുടെ GPU മെമ്മറി അനുസരിച്ച് `per_device_train_batch_size`, `gradient_accumulation_steps` എന്നിവ ക്രമീകരിക്കുക.
+2. **വേഗത**: നിങ്ങളുടെ മോഡലിന് പിന്തുണയുണ്ടെങ്കിൽ, വേഗത്തിലുള്ള ജനറേഷനായി `use_vllm=True` എനേബിൾ ചെയ്യുക.
+3. **നിരീക്ഷണം**: ട്രെയിനിംഗ് സമയത്ത് ലോഗ് ചെയ്യുന്ന മെട്രിക്കുകൾ ശ്രദ്ധിക്കുക:
+   - `reward`: കംപ്ലീഷനുകളിലുടനീളമുള്ള ശരാശരി റിവാർഡ്
+   - `reward_std`: റിവാർഡ് ഗ്രൂപ്പുകൾക്കുള്ളിലെ സ്റ്റാൻഡേർഡ് ഡീവിയേഷൻ
+   - `kl`: റഫറൻസ് മോഡലിൽ നിന്നുള്ള KL ഡൈവർജൻസ്
+
+## റിവാർഡ് ഫംഗ്‌ഷൻ ഡിസൈൻ
+
+നിങ്ങളുടെ സ്വന്തം GRPO ഇംപ്ലിമെന്റേഷനിൽ പ്രയോജനപ്പെടുത്താവുന്ന, റിവാർഡ് ഫംഗ്‌ഷൻ ഡിസൈനിനുള്ള ഫലപ്രദമായ പല സമീപനങ്ങളും DeepSeek R1 പേപ്പർ കാണിച്ചുതരുന്നു:
+
+### 1. ദൈർഘ്യം അടിസ്ഥാനമാക്കിയുള്ള റിവാർഡുകൾ
+
+ഇംപ്ലിമെന്റ് ചെയ്യാൻ ഏറ്റവും എളുപ്പമുള്ള റിവാർഡുകളിൽ ഒന്നാണ് ദൈർഘ്യം അടിസ്ഥാനമാക്കിയുള്ള റിവാർഡ്. കൂടുതൽ ദൈർഘ്യമുള്ള കംപ്ലീഷനുകൾക്ക് നിങ്ങൾക്ക് റിവാർഡ് നൽകാം:
+
+```python
+def reward_len(completions, **kwargs):
+    ideal_length = 20
+    return [-abs(ideal_length - len(completion)) for completion in completions]
+```
+
+ഈ റിവാർഡ് ഫംഗ്‌ഷൻ വളരെ ചെറുതോ വളരെ നീണ്ടതോ ആയ കംപ്ലീഷനുകൾക്ക് പെനാൽറ്റി നൽകുന്നു; 20 ടോക്കണുകൾ എന്ന അനുയോജ്യമായ ദൈർഘ്യത്തോട് അടുത്ത കംപ്ലീഷനുകൾ ജനറേറ്റ് ചെയ്യാൻ മോഡലിനെ പ്രോത്സാഹിപ്പിക്കുന്നു.
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_length.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+## 2. പരിശോധിക്കാവുന്ന ടാസ്‌കുകൾക്കുള്ള റൂൾ-അധിഷ്ഠിത റിവാർഡുകൾ
+
+വസ്തുനിഷ്ഠമായി ശരിയായ ഉത്തരങ്ങളുള്ള ടാസ്‌കുകൾക്ക് (ഗണിതം അല്ലെങ്കിൽ കോഡിംഗ് പോലുള്ളവ), റൂൾ-അധിഷ്ഠിത റിവാർഡ് ഫംഗ്‌ഷനുകൾ നിങ്ങൾക്ക് ഇംപ്ലിമെന്റ് ചെയ്യാം:
+
+```python
+def problem_reward(completions, answers, **kwargs):
+    """Reward function for math problems with verifiable answers
+    completions: list of completions to evaluate
+    answers: list of answers to the problems from the dataset
+    """
+
+    rewards = []
+    for completion, correct_answer in zip(completions, answers):
+        # Extract the answer from the completion
+        try:
+            # This is a simplified example - you'd need proper parsing
+            answer = extract_final_answer(completion)
+            # Binary reward: 1 for correct, 0 for incorrect
+            reward = 1.0 if answer == correct_answer else 0.0
+            rewards.append(reward)
+        except:
+            # If we can't parse an answer, give a low reward
+            rewards.append(0.0)
+
+    return rewards
+```
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_math.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+## 3. ഫോർമാറ്റ് അടിസ്ഥാനമാക്കിയുള്ള റിവാർഡുകൾ
+
+ശരിയായ ഫോർമാറ്റിംഗിനും നിങ്ങൾക്ക് റിവാർഡ് നൽകാം; DeepSeek R1 ട്രെയിനിംഗിൽ ഇത് പ്രധാനമായിരുന്നു:
+
+```python
+def format_reward(completions, **kwargs):
+    """Reward completions that follow the desired format"""
+    # Example: Check if the completion follows a think-then-answer format
+    pattern = r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
+
+    rewards = []
+    for completion in completions:
+        match = re.search(pattern, completion, re.DOTALL)
+        if match:
+            # Check if there's substantial content in both sections
+            think_content = match.group(1).strip()
+            answer_content = match.group(2).strip()
+
+            if len(think_content) > 20 and len(answer_content) > 0:
+                rewards.append(1.0)
+            else:
+                rewards.append(
+                    0.5
+                )  # Partial reward for correct format but limited content
+        else:
+            rewards.append(0.0)  # No reward for incorrect format
+
+    return rewards
+```
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_format.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+
+
+ശരിതെറ്റ്, ഫോർമാറ്റിംഗ്, സംയോജിത സിഗ്നലുകൾ എന്നിവയിൽ ശ്രദ്ധ കേന്ദ്രീകരിച്ച്, DeepSeek R1 ട്രെയിനിംഗ് പ്രക്രിയയിൽ നിന്ന് പ്രചോദനം ഉൾക്കൊണ്ട റിവാർഡ് ഫംഗ്‌ഷനുകൾ എങ്ങനെ ഇംപ്ലിമെന്റ് ചെയ്യാം എന്ന് ഈ ഉദാഹരണങ്ങൾ കാണിക്കുന്നു.
+
+
+## അത്രയേ ഉള്ളൂ!
+
+അടുത്ത വിഭാഗത്തിൽ, TRL-ൽ GRPO ഇംപ്ലിമെന്റ് ചെയ്യാനുള്ള ഒരു അഭ്യാസം നിങ്ങൾ പിന്തുടരും.
