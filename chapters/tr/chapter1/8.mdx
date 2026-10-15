@@ -1,0 +1,263 @@
+# LLM'lerle çıkarım: Metin üretmeye derinlemesine bakış[[inference-with-llms]]
+
+<CourseFloatingBanner
+    chapter={1}
+    classNames="absolute z-10 right-0 top-0"
+/>
+
+<Youtube id="Xp2w1_LKZN4" />
+
+Şimdiye kadar Transformer mimarisini metin sınıflandırma ya da özetleme gibi bir dizi ayrık görevle ilişkili olarak inceledik. Ancak büyük dil modelleri en çok metin üretmek için kullanılır; bu bölümde de bunu inceleyeceğiz.
+
+Bu sayfada LLM çıkarımının ardındaki temel kavramları ele alacak; bu modellerin nasıl metin ürettiğini ve çıkarım sürecinde rol oynayan temel bileşenleri kapsamlı bir şekilde anlatacağız.
+
+## Temelleri anlamak
+
+İşe temellerden başlayalım. Çıkarım, eğitilmiş bir LLM'i kullanarak verilen bir girdi isteminden (prompt) insan yazısına benzer metin üretme sürecidir. Dil modelleri, eğitimden edindikleri bilgiyi kullanarak yanıtlarını her seferinde bir sözcük olacak şekilde oluşturur. Model, bir dizideki sonraki token'ı tahmin edip üretmek için milyarlarca parametreden öğrenilmiş olasılıklardan yararlanır. LLM'lerin tutarlı ve bağlama uygun metin üretebilmesini sağlayan da bu sıralı üretimdir.
+
+## Dikkatin rolü
+
+LLM'lere bağlamı anlama ve tutarlı yanıtlar üretme yeteneğini kazandıran şey dikkat mekanizmasıdır. Sonraki sözcüğü tahmin ederken bir cümledeki her sözcük eşit ağırlık taşımaz. Örneğin *"Fransa'nın başkenti ..."* cümlesinde, ardından "Paris" gelmesi gerektiğini belirlemek için "Fransa" ve "başkent" sözcükleri kritik önemdedir. İlgili bilgiye odaklanabilme yeteneğine dikkat diyoruz.
+
+<img src="https://huggingface.co/datasets/agents-course/course-images/resolve/main/en/unit1/AttentionSceneFinal.gif" alt="Dikkati gösteren görsel gif" width="60%">
+
+Sonraki token'ı tahmin etmek için en ilgili sözcükleri belirleme süreci son derece etkili olduğunu kanıtladı. LLM'leri eğitmenin temel ilkesi (sonraki token'ı tahmin etmek) BERT ve GPT-2'den bu yana genel olarak aynı kalsa da sinir ağlarını ölçeklendirmede ve dikkat mekanizmasını giderek daha uzun dizilerde, giderek daha düşük maliyetle çalıştırmada önemli ilerlemeler kaydedildi.
+
+> [!TIP]
+> Kısacası, LLM'lerin hem tutarlı hem de bağlamın farkında metin üretebilmesinin anahtarı dikkat mekanizmasıdır. Modern LLM'leri önceki nesil dil modellerinden ayıran da budur.
+
+### Bağlam uzunluğu ve dikkat süresi
+
+Dikkati anladığımıza göre, bir LLM'in gerçekte ne kadar bağlamı işleyebildiğine bakalım. Bu da bizi bağlam uzunluğuna, yani modelin "dikkat süresine" getiriyor.
+
+Bağlam uzunluğu, LLM'in tek seferde işleyebildiği en fazla token (sözcük ya da sözcük parçası) sayısıdır. Bunu modelin çalışma belleğinin boyutu olarak düşünebilirsiniz.
+
+Bu yetenekleri birkaç pratik etken sınırlar:
+- Modelin mimarisi ve boyutu
+- Kullanılabilir hesaplama kaynakları
+- Girdinin ve istenen çıktının karmaşıklığı
+
+İdeal bir dünyada modele sınırsız bağlam verebilirdik; ama donanım kısıtları ve hesaplama maliyetleri bunu pratik olmaktan çıkarır. Bu yüzden farklı modeller, yetenekle verimlilik arasında denge kurmak için farklı bağlam uzunluklarıyla tasarlanır.
+
+> [!TIP]
+> Bağlam uzunluğu, modelin bir yanıt üretirken tek seferde dikkate alabileceği en fazla token sayısıdır.
+
+### İstem yazma sanatı
+
+LLM'lere bilgi verirken girdimizi, LLM'in üretimini istenen çıktıya doğru yönlendirecek şekilde yapılandırırız. Buna _istem yazma_ (prompting) denir.
+
+LLM'lerin bilgiyi nasıl işlediğini anlamak, daha iyi istemler hazırlamamıza yardımcı olur. Modelin asıl görevi her girdi token'ının önemini analiz ederek sonraki token'ı tahmin etmek olduğu için, girdi dizinizin ifade biçimi kritik önem kazanır.
+
+> [!TIP]
+> İstemi özenle tasarlamak, **LLM'in üretimini istenen çıktıya doğru yönlendirmeyi** kolaylaştırır.
+
+## İki aşamalı çıkarım süreci
+
+Temel bileşenleri anladığımıza göre, LLM'lerin gerçekte nasıl metin ürettiğine dalalım. Süreç iki ana aşamaya ayrılabilir: ön doldurma (prefill) ve kod çözme (decode). Bu aşamalar bir montaj hattı gibi birlikte çalışır ve her biri tutarlı metin üretmede kritik bir rol oynar.
+
+### Ön doldurma aşaması
+
+Ön doldurma aşaması, yemek yapmadaki hazırlık evresine benzer: Bütün malzemeler burada işlenir ve hazır hâle getirilir. Bu aşama üç temel adımdan oluşur:
+
+1. **Tokenizasyon**: Girdi metnini token'lara dönüştürmek (bunları modelin anladığı temel yapı taşları olarak düşünebilirsiniz)
+2. **Gömmeye dönüştürme**: Bu token'ları anlamlarını yakalayan sayısal temsillere dönüştürmek
+3. **İlk işleme**: Bağlamın zengin bir kavrayışını oluşturmak için bu gömmeleri modelin sinir ağlarından geçirmek
+
+Bu aşama, bütün girdi token'larını tek seferde işlemesi gerektiği için hesaplama açısından yoğundur. Bunu, yanıt yazmaya başlamadan önce bütün bir paragrafı okuyup anlamaya benzetebilirsiniz.
+
+Aşağıdaki etkileşimli deneme alanında farklı tokenizer'larla deneyler yapabilirsiniz:
+
+<iframe
+	src="https://agents-course-the-tokenizer-playground.static.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+### Kod çözme aşaması
+
+Ön doldurma aşaması girdiyi işledikten sonra kod çözme aşamasına geçeriz; asıl metin üretimi burada gerçekleşir. Model, özbağlanımlı süreç dediğimiz bir süreçle (her yeni token'ın önceki bütün token'lara bağlı olduğu bir süreç) her seferinde bir token üretir.
+
+Kod çözme aşaması, her yeni token için gerçekleşen birkaç temel adımdan oluşur:
+1. **Dikkat hesaplama**: Bağlamı anlamak için önceki bütün token'lara geri bakmak
+2. **Olasılık hesaplama**: Olası her sonraki token'ın olasılığını belirlemek
+3. **Token seçimi**: Bu olasılıklara dayanarak sonraki token'ı seçmek
+4. **Devam denetimi**: Üretime devam edilip edilmeyeceğine ya da durulacağına karar vermek
+
+Bu aşama bellek açısından yoğundur; çünkü modelin daha önce üretilen bütün token'ları ve bunların ilişkilerini takip etmesi gerekir.
+
+## Örnekleme stratejileri
+
+Modelin nasıl metin ürettiğini anladığımıza göre, bu üretim sürecini denetlemenin çeşitli yollarını inceleyelim. Bir yazarın daha yaratıcı ya da daha kesin olmayı seçebilmesi gibi, biz de modelin token seçimlerini nasıl yaptığını ayarlayabiliriz.
+
+Temel kod çözme sürecini bu Space'te SmolLM2 ile kendiniz deneyebilirsiniz (unutmayın, model bir **EOS** token'ına ulaşana kadar kod çözer; bu model için bu token **<|im_end|>**'dir):
+
+<iframe
+	src="https://agents-course-decoding-visualizer.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+### Token seçimini anlamak: Olasılıklardan token seçimlerine
+
+Model sonraki token'ı seçmek zorunda olduğunda işe, sözcük dağarcığındaki her sözcük için ham olasılıklarla (logit'ler denir) başlar. Peki bu olasılıkları nasıl gerçek seçimlere dönüştürürüz? Süreci adım adım inceleyelim:
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/1.png)  
+
+1. **Ham logit'ler**: Bunları modelin olası her sonraki sözcük hakkındaki ilk sezgileri olarak düşünün
+2. **Sıcaklık (temperature) denetimi**: Bir yaratıcılık düğmesi gibidir. Yüksek değerler (>1.0) seçimleri daha rastgele ve yaratıcı, düşük değerler (<1.0) ise daha odaklı ve belirlenimci kılar
+3. **Top-p (çekirdek) örnekleme**: Olası bütün sözcükleri dikkate almak yerine, yalnızca toplamı seçtiğimiz olasılık eşiğine (örneğin ilk %90) ulaşan en olası sözcüklere bakarız
+4. **Top-k filtreleme**: Yalnızca en olası k sonraki sözcüğü dikkate aldığımız alternatif bir yaklaşım
+
+### Tekrarı yönetmek: Çıktıyı taze tutmak
+
+LLM'lerde sık karşılaşılan sorunlardan biri kendilerini tekrar etme eğilimleridir; tıpkı sürekli aynı noktalara dönen bir konuşmacı gibi. Bunu gidermek için iki tür ceza kullanırız:
+
+1. **Varlık cezası (presence penalty)**: Daha önce görünmüş her token'a, kaç kez göründüğünden bağımsız olarak uygulanan sabit bir cezadır. Modelin aynı sözcükleri yeniden kullanmasını önlemeye yardımcı olur.
+2. **Sıklık cezası (frequency penalty)**: Bir token'ın ne sıklıkla kullanıldığına göre artan, ölçeklenen bir cezadır. Bir sözcük ne kadar çok görünürse yeniden seçilme olasılığı o kadar azalır.
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/2.png)  
+
+Bu cezalar token seçim sürecinin başında uygulanır ve diğer örnekleme stratejileri devreye girmeden önce ham olasılıkları ayarlar. Bunları, modeli yeni sözcükleri keşfetmeye teşvik eden nazik dürtmeler olarak düşünebilirsiniz.
+
+### Üretim uzunluğunu denetlemek: Sınırları belirlemek
+
+İyi bir hikâyenin uygun bir tempoya ve uzunluğa ihtiyaç duyması gibi, biz de LLM'imizin ne kadar metin üreteceğini denetlemenin yollarına ihtiyaç duyarız. Bu, pratik uygulamalar için kritik önemdedir; ister tweet uzunluğunda bir yanıt ister eksiksiz bir blog yazısı üretiyor olalım.
+
+Üretim uzunluğunu birkaç şekilde denetleyebiliriz:
+1. **Token sınırları**: En az ve en fazla token sayısını belirlemek
+2. **Durdurma dizileri (stop sequences)**: Üretimin sonunu bildiren belirli kalıplar tanımlamak
+3. **Dizi sonu algılama**: Modelin yanıtını doğal olarak bitirmesine izin vermek
+
+Örneğin tek bir paragraf üretmek istiyorsak en fazla 100 token sınırı koyabilir ve durdurma dizisi olarak "\n\n" kullanabiliriz. Bu, çıktımızın odaklı kalmasını ve amacına uygun boyutta olmasını sağlar.
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/3.png)  
+
+### Işın araması: Daha iyi tutarlılık için ileriye bakmak
+
+Şimdiye kadar ele aldığımız stratejiler kararları her seferinde bir token için verirken, ışın araması (beam search) daha bütüncül bir yaklaşım benimser. Her adımda tek bir seçime bağlanmak yerine, aynı anda birden çok olası yolu keşfeder; tıpkı birkaç hamle sonrasını düşünen bir satranç oyuncusu gibi.
+
+![image](https://huggingface.co/reasoning-course/images/resolve/main/inference/4.png)  
+
+İşleyişi şöyledir:
+1. Her adımda birden çok aday dizi (genellikle 5-10) tutulur
+2. Her aday için sonraki token'ın olasılıkları hesaplanır
+3. Diziler ile sonraki token'ların yalnızca en umut vadeden birleşimleri tutulur
+4. Bu süreç istenen uzunluğa ya da durdurma koşuluna ulaşılana kadar sürdürülür
+5. Toplam olasılığı en yüksek olan dizi seçilir
+
+Işın aramasını burada görsel olarak inceleyebilirsiniz:
+
+<iframe
+	src="https://agents-course-beam-search-visualizer.hf.space"
+	frameborder="0"
+	width="850"
+	height="450"
+></iframe>
+
+Bu yaklaşım, daha basit yöntemlere göre daha fazla hesaplama kaynağı gerektirse de çoğu zaman daha tutarlı ve dil bilgisi açısından daha doğru metinler üretir.
+
+## Pratik zorluklar ve optimizasyon
+
+LLM çıkarımı incelememizi tamamlarken, bu modelleri dağıtırken karşılaşacağınız pratik zorluklara ve performanslarını nasıl ölçüp optimize edeceğinize bakalım.
+
+### Temel performans metrikleri
+
+LLM'lerle çalışırken dört kritik metrik uygulama kararlarınızı şekillendirecektir:
+
+1. **İlk token'a kadar geçen süre (Time to First Token, TTFT)**: İlk yanıtı ne kadar hızlı alabilirsiniz? Bu, kullanıcı deneyimi için kritiktir ve esas olarak ön doldurma aşamasından etkilenir.
+2. **Çıktı token'ı başına süre (Time Per Output Token, TPOT)**: Sonraki token'ları ne kadar hızlı üretebilirsiniz? Genel üretim hızını bu belirler.
+3. **Verim (throughput)**: Aynı anda kaç isteği karşılayabilirsiniz? Bu, ölçeklemeyi ve maliyet verimliliğini etkiler.
+4. **VRAM kullanımı**: Ne kadar GPU belleğine ihtiyacınız var? Gerçek dünya uygulamalarında çoğu zaman asıl kısıt bu olur.
+
+### Bağlam uzunluğu sorunu
+
+LLM çıkarımındaki en önemli zorluklardan biri bağlam uzunluğunu etkili biçimde yönetmektir. Daha uzun bağlamlar daha fazla bilgi sağlar ama ciddi maliyetlerle gelir:
+
+- **Bellek kullanımı**: Bağlam uzunluğuyla karesel olarak artar
+- **İşleme hızı**: Bağlam uzadıkça doğrusal olarak azalır
+- **Kaynak tahsisi**: VRAM kullanımında dikkatli bir denge gerektirir
+
+[Qwen2.5-1M](https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-1M) gibi yeni modeller 1M token'lık etkileyici bağlam pencereleri sunar; ama bunun bedeli çok daha yavaş çıkarım süreleridir. Önemli olan, kendi kullanım senaryonuz için doğru dengeyi bulmaktır.
+
+
+<div style="max-width: 800px; margin: 20px auto; padding: 20px; 
+font-family: system-ui;">
+    <div style="border: 2px solid #ddd; border-radius: 8px; 
+    padding: 20px; margin-bottom: 20px;">
+        <div style="display: flex; align-items: center; 
+        margin-bottom: 15px;">
+            <div style="flex: 1; text-align: center; padding: 
+            10px; background: #f0f0f0; border-radius: 4px;">
+                Girdi metni (ham)
+            </div>
+            <div style="margin: 0 10px;">→</div>
+            <div style="flex: 1; text-align: center; padding: 
+            10px; background: #e1f5fe; border-radius: 4px;">
+                Tokenize edilmiş girdi
+            </div>
+        </div>
+        <div style="display: flex; margin-bottom: 15px;">
+            <div style="flex: 1; border: 1px solid #ccc; 
+            padding: 10px; margin: 5px; background: #e8f5e9; 
+            border-radius: 4px; text-align: center;">
+                Bağlam penceresi<br/>(örn. 4K token)
+                <div style="display: flex; margin-top: 10px;">
+                    <div style="flex: 1; background: #81c784; 
+                    margin: 2px; height: 20px; border-radius: 
+                    2px;"></div>
+                    <div style="flex: 1; background: #81c784; 
+                    margin: 2px; height: 20px; border-radius: 
+                    2px;"></div>
+                    <div style="flex: 1; background: #81c784; 
+                    margin: 2px; height: 20px; border-radius: 
+                    2px;"></div>
+                    <div style="flex: 1; background: #81c784; 
+                    margin: 2px; height: 20px; border-radius: 
+                    2px;"></div>
+                </div>
+            </div>
+        </div>
+        <div style="display: flex; justify-content: 
+        space-between; text-align: center; font-size: 0.9em; 
+        color: #666;">
+            <div style="flex: 1;">
+                <div style="border: 1px solid #ffcc80; padding: 
+                8px; margin: 5px; background: #fff3e0; 
+                border-radius: 4px;">
+                    Bellek kullanımı<br/>∝ Uzunluk²
+                </div>
+            </div>
+            <div style="flex: 1;">
+                <div style="border: 1px solid #90caf9; padding: 
+                8px; margin: 5px; background: #e3f2fd; 
+                border-radius: 4px;">
+                    İşleme süresi<br/>∝ Uzunluk
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+### KV önbelleği optimizasyonu
+
+Bu zorlukları gidermek için kullanılan en güçlü optimizasyonlardan biri KV (anahtar-değer) önbelleklemedir. Bu teknik, ara hesaplamaları saklayıp yeniden kullanarak çıkarım hızını önemli ölçüde artırır. Bu optimizasyon:
+- Tekrarlanan hesaplamaları azaltır
+- Üretim hızını artırır
+- Uzun bağlamlı üretimi pratik hâle getirir
+
+Bunun bedeli ek bellek kullanımıdır; ama performans kazanımları genellikle bu maliyetin çok üzerindedir.
+
+## Sonuç
+
+LLM çıkarımını anlamak, bu güçlü modelleri etkili biçimde dağıtmak ve optimize etmek için kritik önemdedir. Temel bileşenleri ele aldık:
+
+- Dikkatin ve bağlamın temel rolü
+- İki aşamalı çıkarım süreci
+- Üretimi denetlemek için çeşitli örnekleme stratejileri
+- Pratik zorluklar ve optimizasyonlar
+
+Bu kavramlarda ustalaşarak LLM'lerden etkili ve verimli biçimde yararlanan uygulamalar geliştirmeye daha hazır olacaksınız.
+
+LLM çıkarımı alanının hızla geliştiğini ve düzenli olarak yeni teknikler ile optimizasyonların ortaya çıktığını unutmayın. Meraklı kalın ve kendi kullanım senaryolarınız için en iyi sonucu veren yolu bulmak üzere farklı yaklaşımlarla deney yapmayı sürdürün.
