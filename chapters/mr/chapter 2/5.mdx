@@ -1,0 +1,200 @@
+<FrameworkSwitchCourse {fw} />
+
+# अनेक सिक्वेन्सेस हाताळणे[[handling-multiple-sequences]]
+
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter2/section5_pt.ipynb"},
+]} />
+
+<Youtube id="M6adb1j2jPI"/>
+
+मागील विभागात, आपण सर्वात सोप्या वापर प्रकरणाचा शोध घेतला: लहान लांबीच्या एका सिक्वेन्सवर इन्फरन्स करणे. मात्र, आधीच काही प्रश्न उद्भवतात:
+
+- आपण अनेक सिक्वेन्सेस कशा हाताळतो?
+- आपण *वेगवेगळ्या लांबीच्या* अनेक सिक्वेन्सेस कशा हाताळतो?
+- व्होकॅब्युलरी इंडेक्सेस हेच फक्त असे इनपुट्स आहेत का जे मॉडेलला व्यवस्थित काम करू देतात?
+- खूप लांब सिक्वेन्स असे काही असते का?
+
+चला या प्रश्नांमुळे कोणत्या प्रकारच्या समस्या निर्माण होतात, आणि 🤗 Transformers API वापरून आपण त्या कशा सोडवू शकतो ते पाहूया.
+
+## मॉडेल्सना इनपुट्सचा एक बॅच अपेक्षित असतो[[models-expect-a-batch-of-inputs]]
+
+मागील सरावात तुम्ही पाहिले की सिक्वेन्सेसचे रूपांतर संख्यांच्या याद्यांमध्ये कसे होते. चला या संख्यांच्या यादीला टेन्सरमध्ये रूपांतरित करू आणि मॉडेलला पाठवू:
+
+```py
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+input_ids = torch.tensor(ids)
+# This line will fail.
+model(input_ids)
+```
+
+```python out
+IndexError: Dimension out of range (expected to be in range of [-1, 0], but got 1)
+```
+
+अरे नाही! हे का अयशस्वी झाले? आपण विभाग 2 मधील पाइपलाइनचे टप्पे पाळले होते.
+
+समस्या अशी आहे की आपण मॉडेलला एक एकच सिक्वेन्स पाठवला, तर 🤗 Transformers मॉडेल्सना डीफॉल्टनुसार अनेक वाक्ये अपेक्षित असतात. इथे आपण `sequence` वर टोकनायझर लागू केला तेव्हा टोकनायझरने पडद्यामागे केलेले सर्वकाही स्वतः करण्याचा प्रयत्न केला. पण जर तुम्ही बारकाईने पाहिले, तर तुमच्या लक्षात येईल की टोकनायझरने फक्त इनपुट IDs च्या यादीचे टेन्सरमध्ये रूपांतर केले नाही, तर त्याने त्यावर एक अतिरिक्त डायमेंशन जोडले:
+
+```py
+tokenized_inputs = tokenizer(sequence, return_tensors="pt")
+print(tokenized_inputs["input_ids"])
+```
+
+```python out
+tensor([[  101,  1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172,
+          2607,  2026,  2878,  2166,  1012,   102]])
+```
+
+चला पुन्हा प्रयत्न करूया आणि एक नवीन डायमेंशन जोडूया:
+
+```py
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+checkpoint = "distilbert-base-uncased-finetuned-sst-2-english"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence = "I've been waiting for a HuggingFace course my whole life."
+
+tokens = tokenizer.tokenize(sequence)
+ids = tokenizer.convert_tokens_to_ids(tokens)
+
+input_ids = torch.tensor([ids])
+print("Input IDs:", input_ids)
+
+output = model(input_ids)
+print("Logits:", output.logits)
+```
+
+आपण इनपुट IDs तसेच परिणामी लॉजिट्स प्रिंट करतो — इथे आउटपुट आहे:
+
+```python out
+Input IDs: [[ 1045,  1005,  2310,  2042,  3403,  2005,  1037, 17662, 12172,  2607, 2026,  2878,  2166,  1012]]
+Logits: [[-2.7276,  2.8789]]
+```
+
+*बॅचिंग* म्हणजे एकाच वेळी मॉडेलद्वारे अनेक वाक्ये पाठवण्याची क्रिया. जर तुमच्याकडे फक्त एकच वाक्य असेल, तर तुम्ही फक्त एका सिक्वेन्ससह एक बॅच तयार करू शकता:
+
+```
+batched_ids = [ids, ids]
+```
+
+हा दोन समान सिक्वेन्सेसचा बॅच आहे!
+
+> [!TIP]
+> ✏️ **करून पहा!** या `batched_ids` यादीचे टेन्सरमध्ये रूपांतर करा आणि तुमच्या मॉडेलद्वारे पास करा. तुम्हाला आधीसारखेच लॉजिट्स मिळतात का ते तपासा (पण दोनदा)!
+
+बॅचिंगमुळे तुम्ही मॉडेलला अनेक वाक्ये दिली तरी ते काम करू शकते. एका सिक्वेन्ससह बॅच तयार करण्याइतकेच अनेक सिक्वेन्सेस वापरणे सोपे आहे. मात्र, इथे दुसरी एक समस्या आहे. जेव्हा तुम्ही दोन (किंवा अधिक) वाक्ये एकत्र बॅच करण्याचा प्रयत्न करता, तेव्हा त्यांची लांबी वेगवेगळी असू शकते. जर तुम्ही आधी कधी टेन्सर्ससोबत काम केले असेल, तर तुम्हाला माहीत असेल की ते आयताकृती आकाराचे असणे आवश्यक आहे, त्यामुळे तुम्ही इनपुट IDs ची यादी थेट टेन्सरमध्ये रूपांतरित करू शकणार नाही. या समस्येवर मात करण्यासाठी, आपण सहसा इनपुट्सना *पॅड* करतो.
+
+## इनपुट्सचे पॅडिंग[[padding-the-inputs]]
+
+खालील यादींची यादी टेन्सरमध्ये रूपांतरित करता येत नाही:
+
+```py no-format
+batched_ids = [
+    [200, 200, 200],
+    [200, 200]
+]
+```
+
+यावर मात करण्यासाठी, आपण आपल्या टेन्सर्सना आयताकृती आकार देण्यासाठी *पॅडिंग* वापरू. पॅडिंग हे सुनिश्चित करते की आपल्या सर्व वाक्यांची लांबी सारखी आहे, यासाठी कमी मूल्ये असलेल्या वाक्यांमध्ये *पॅडिंग टोकन* नावाचा एक विशेष शब्द जोडला जातो. उदाहरणार्थ, जर तुमच्याकडे 10 शब्द असलेली 10 वाक्ये आणि 20 शब्द असलेले 1 वाक्य असेल, तर पॅडिंग हे सुनिश्चित करेल की सर्व वाक्यांमध्ये 20 शब्द असतील. आपल्या उदाहरणात, परिणामी टेन्सर असे दिसते:
+
+```py no-format
+padding_id = 100
+
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, padding_id],
+]
+```
+
+पॅडिंग टोकन ID `tokenizer.pad_token_id` मध्ये सापडू शकते. चला त्याचा वापर करूया आणि आपली दोन वाक्ये मॉडेलद्वारे स्वतंत्रपणे आणि एकत्र बॅच करून पाठवूया:
+
+```py no-format
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+
+sequence1_ids = [[200, 200, 200]]
+sequence2_ids = [[200, 200]]
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+print(model(torch.tensor(sequence1_ids)).logits)
+print(model(torch.tensor(sequence2_ids)).logits)
+print(model(torch.tensor(batched_ids)).logits)
+```
+
+```python out
+tensor([[ 1.5694, -1.3895]], grad_fn=<AddmmBackward>)
+tensor([[ 0.5803, -0.4125]], grad_fn=<AddmmBackward>)
+tensor([[ 1.5694, -1.3895],
+        [ 1.3373, -1.2163]], grad_fn=<AddmmBackward>)
+```
+
+आपल्या बॅच केलेल्या भाकितांमधील लॉजिट्समध्ये काहीतरी चूक आहे: दुसरी ओळ दुसऱ्या वाक्याच्या लॉजिट्ससारखीच असायला हवी होती, पण आपल्याला पूर्णपणे वेगळी मूल्ये मिळाली आहेत!
+
+याचे कारण असे की ट्रान्सफॉर्मर मॉडेल्सचे मुख्य वैशिष्ट्य म्हणजे अटेंशन लेयर्स जे प्रत्येक टोकनला *कॉन्टेक्स्च्युअलाइझ* करतात. हे पॅडिंग टोकन्सचा देखील विचार करतील कारण ते सिक्वेन्सच्या सर्व टोकन्सकडे लक्ष देतात. वेगवेगळ्या लांबीची स्वतंत्र वाक्ये मॉडेलद्वारे पाठवताना किंवा त्याच वाक्यांचा पॅडिंग लावलेला बॅच पाठवताना समान निकाल मिळवण्यासाठी, आपल्याला त्या अटेंशन लेयर्सना पॅडिंग टोकन्सकडे दुर्लक्ष करण्यास सांगावे लागते. हे अटेंशन मास्क वापरून केले जाते.
+
+## अटेंशन मास्क्स[[attention-masks]]
+
+*अटेंशन मास्क्स* हे इनपुट IDs टेन्सरसारख्याच आकाराचे टेन्सर्स असतात, जे 0 आणि 1 ने भरलेले असतात: 1 हे दर्शवते की संबंधित टोकन्सकडे लक्ष द्यायला हवे, आणि 0 हे दर्शवते की संबंधित टोकन्सकडे लक्ष द्यायला नको (म्हणजेच, मॉडेलच्या अटेंशन लेयर्सने त्यांच्याकडे दुर्लक्ष करायला हवे).
+
+चला मागील उदाहरण अटेंशन मास्कसह पूर्ण करूया:
+
+```py no-format
+batched_ids = [
+    [200, 200, 200],
+    [200, 200, tokenizer.pad_token_id],
+]
+
+attention_mask = [
+    [1, 1, 1],
+    [1, 1, 0],
+]
+
+outputs = model(torch.tensor(batched_ids), attention_mask=torch.tensor(attention_mask))
+print(outputs.logits)
+```
+
+```python out
+tensor([[ 1.5694, -1.3895],
+        [ 0.5803, -0.4125]], grad_fn=<AddmmBackward>)
+```
+
+आता आपल्याला बॅचमधील दुसऱ्या वाक्यासाठी तेच लॉजिट्स मिळतात.
+
+लक्षात घ्या की दुसऱ्या सिक्वेन्सचे शेवटचे मूल्य एक पॅडिंग ID आहे, जे अटेंशन मास्कमध्ये 0 मूल्य आहे.
+
+> [!TIP]
+> ✏️ **करून पहा!** विभाग 2 मध्ये वापरलेल्या दोन वाक्यांवर ("I've been waiting for a HuggingFace course my whole life." आणि "I hate this so much!") स्वहस्ते टोकनायझेशन लागू करा. त्यांना मॉडेलद्वारे पाठवा आणि विभाग 2 मध्ये मिळालेले तेच लॉजिट्स तुम्हाला मिळतात का ते तपासा. आता पॅडिंग टोकन वापरून त्यांना एकत्र बॅच करा, नंतर योग्य अटेंशन मास्क तयार करा. मॉडेलद्वारे पाठवल्यावर तुम्हाला तेच निकाल मिळतात का ते तपासा!
+
+## लांब सिक्वेन्सेस[[longer-sequences]]
+
+ट्रान्सफॉर्मर मॉडेल्ससह, आपण मॉडेल्सना पाठवू शकणाऱ्या सिक्वेन्सेसच्या लांबीला एक मर्यादा असते. बहुतेक मॉडेल्स 512 किंवा 1024 टोकन्सपर्यंतच्या सिक्वेन्सेस हाताळतात, आणि त्याहून लांब सिक्वेन्सेस प्रक्रिया करण्यास सांगितल्यास ते क्रॅश होतील. या समस्येवर दोन उपाय आहेत:
+
+- लांब सपोर्टेड सिक्वेन्स लांबी असलेले मॉडेल वापरा.
+- तुमच्या सिक्वेन्सेसना ट्रंकेट करा.
+
+मॉडेल्सची सपोर्टेड सिक्वेन्स लांबी वेगवेगळी असते, आणि काही मॉडेल्स खूप लांब सिक्वेन्सेस हाताळण्यात विशेष असतात. [Longformer](https://huggingface.co/docs/transformers/model_doc/longformer) हे एक उदाहरण आहे, आणि दुसरे [LED](https://huggingface.co/docs/transformers/model_doc/led) आहे. जर तुम्ही खूप लांब सिक्वेन्सेसची आवश्यकता असलेल्या एखाद्या कामावर काम करत असाल, तर आम्ही तुम्हाला त्या मॉडेल्सकडे पाहण्याची शिफारस करतो.
+
+अन्यथा, आम्ही तुम्हाला `max_sequence_length` पॅरामीटर निर्दिष्ट करून तुमच्या सिक्वेन्सेसना ट्रंकेट करण्याची शिफारस करतो:
+
+```py
+sequence = sequence[:max_sequence_length]
+```
