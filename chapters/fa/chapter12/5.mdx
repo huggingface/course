@@ -1,0 +1,237 @@
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter12/grpo_finetune.ipynb"},
+]} />
+
+<div dir="rtl">
+
+# تمرین عملی: ریزتنظیم یک مدل با GRPO
+
+حالا که نظریه را دیدید، بیایید آن را عملی کنیم! در این تمرین، یک مدل را با GRPO ریزتنظیم می‌کنید.
+
+> [!TIP]
+> این تمرین را متخصص ریزتنظیم LLM، [@mlabonne](https://huggingface.co/mlabonne)، نوشته است.
+
+## نصب وابستگی‌ها
+
+ابتدا وابستگی‌های این تمرین را نصب می‌کنیم.
+
+```bash
+!pip install -qqq datasets==3.2.0 transformers==4.47.1 trl==0.14.0 peft==0.14.0 accelerate==1.2.1 bitsandbytes==0.45.2 wandb==0.19.7 --progress-bar off
+!pip install -qqq flash-attn --no-build-isolation --progress-bar off
+```
+
+حالا کتابخانه‌های لازم را وارد می‌کنیم.
+
+```python
+import torch
+from datasets import load_dataset
+from peft import LoraConfig, get_peft_model
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from trl import GRPOConfig, GRPOTrainer
+```
+
+## وارد کردن و ورود به Weights & Biases
+
+Weights & Biases ابزاری برای ثبت و پایش آزمایش‌های شماست. از آن برای ثبت فرایند ریزتنظیم خود استفاده می‌کنیم.
+
+```python
+import wandb
+
+wandb.login()
+```
+
+می‌توانید این تمرین را بدون ورود به Weights & Biases انجام دهید، اما برای پیگیری آزمایش‌ها و تفسیر نتایج، ورود به آن توصیه می‌شود.
+
+## بارگذاری مجموعه‌داده
+
+حالا مجموعه‌داده را بارگذاری می‌کنیم. در اینجا از مجموعه‌دادهٔ [`mlabonne/smoltldr`](https://huggingface.co/datasets/mlabonne/smoltldr) استفاده می‌کنیم که فهرستی از داستان‌های کوتاه را دربر دارد.
+
+```python
+dataset = load_dataset("mlabonne/smoltldr")
+print(dataset)
+```
+
+## بارگذاری مدل
+
+حالا مدل را بارگذاری می‌کنیم.
+
+در این تمرین از مدل [`SmolLM2-135M`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) استفاده می‌کنیم. 
+
+این مدل کوچکی با ۱۳۵ میلیون پارامتر است که روی سخت‌افزار محدود اجرا می‌شود. به همین دلیل برای یادگیری مناسب است، اما قدرتمندترین مدل موجود نیست. اگر به سخت‌افزار قدرتمندتری دسترسی دارید، می‌توانید مدل بزرگ‌تری مانند [`SmolLM2-1.7B`](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B) را ریزتنظیم کنید.
+
+```python
+model_id = "HuggingFaceTB/SmolLM-135M-Instruct"
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    torch_dtype="auto",
+    device_map="auto",
+    attn_implementation="flash_attention_2",
+)
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+```
+
+## بارگذاری LoRA
+
+حالا پیکربندی LoRA را بارگذاری می‌کنیم. با استفاده از LoRA تعداد پارامترهای قابل‌آموزش و درنتیجه میزان حافظهٔ لازم برای ریزتنظیم مدل را کاهش می‌دهیم.
+
+اگر با LoRA آشنا نیستید، می‌توانید در [فصل ۱۱](https://huggingface.co/learn/course/en/chapter11/3) بیشتر دربارهٔ آن بخوانید.
+
+```python
+# Load LoRA
+lora_config = LoraConfig(
+    task_type="CAUSAL_LM",
+    r=16,
+    lora_alpha=32,
+    target_modules="all-linear",
+)
+model = get_peft_model(model, lora_config)
+print(model.print_trainable_parameters())
+```
+
+```sh
+Total trainable parameters: 135M
+```
+
+## تعریف تابع پاداش
+
+همان‌طور که در بخش قبل گفتیم، GRPO می‌تواند برای بهبود مدل از هر تابع پاداشی استفاده کند. در اینجا از یک تابع پاداش ساده استفاده می‌کنیم که مدل را به تولید متنی با طول ۵۰ توکن تشویق می‌کند.
+
+```python
+# Reward function
+ideal_length = 50
+
+
+def reward_len(completions, **kwargs):
+    return [-abs(ideal_length - len(completion)) for completion in completions]
+```
+
+## تعریف آرگومان‌های آموزش
+
+حالا آرگومان‌های آموزش را تعریف می‌کنیم. با استفاده از کلاس `GRPOConfig`، آن‌ها را به سبک معمول `transformers` تعریف می‌کنیم.
+
+اگر برای نخستین بار است که آرگومان‌های آموزش را تعریف می‌کنید، برای اطلاعات بیشتر کلاس [TrainingArguments](https://huggingface.co/docs/transformers/en/main_classes/trainer#trainingarguments) یا برای مقدمه‌ای کامل [فصل ۲](https://huggingface.co/learn/course/en/chapter2/1) را ببینید.
+
+```python
+# Training arguments
+training_args = GRPOConfig(
+    output_dir="GRPO",
+    learning_rate=2e-5,
+    per_device_train_batch_size=8,
+    gradient_accumulation_steps=2,
+    max_prompt_length=512,
+    max_completion_length=96,
+    num_generations=8,
+    optim="adamw_8bit",
+    num_train_epochs=1,
+    bf16=True,
+    report_to=["wandb"],
+    remove_unused_columns=False,
+    logging_steps=1,
+)
+```
+
+حالا می‌توانیم آموزش‌دهنده را با مدل، مجموعه‌داده و آرگومان‌های آموزش مقداردهی اولیه کنیم و آموزش را شروع کنیم.
+
+```python
+# Trainer
+trainer = GRPOTrainer(
+    model=model,
+    reward_funcs=[reward_len],
+    args=training_args,
+    train_dataset=dataset["train"],
+)
+
+# Train model
+wandb.init(project="GRPO")
+trainer.train()
+```
+
+آموزش روی یک GPU از نوع A10G، که در Google Colab یا از طریق Hugging Face Spaces در دسترس است، حدود ۱ ساعت طول می‌کشد.
+
+## ارسال مدل به هاب هنگام آموزش
+
+اگر آرگومان `push_to_hub` را روی `True` بگذاریم و آرگومان `model_id` را با نام معتبری برای مدل تنظیم کنیم، مدل هنگام آموزش به Hugging Face Hub ارسال می‌شود. اگر بخواهید بلافاصله آزمایش حسی مدل را شروع کنید، این قابلیت مفید است!
+
+## تفسیر نتایج آموزش
+
+`GRPOTrainer` پاداش تابع پاداش شما، loss و مجموعه‌ای از معیارهای دیگر را ثبت می‌کند.
+
+تمرکز ما بر پاداش تابع پاداش و loss خواهد بود.
+
+همان‌طور که می‌بینید، با یادگیری مدل، پاداش تابع پاداش به ۰ نزدیک‌تر می‌شود. این نشانهٔ خوبی است که مدل در حال یادگیری تولید متن با طول درست است.
+
+![Reward from reward function](https://huggingface.co/reasoning-course/images/resolve/main/grpo/13.png)
+
+ممکن است متوجه شوید loss از صفر شروع می‌شود و سپس در طول آموزش افزایش می‌یابد؛ این موضوع شاید خلاف انتظار به نظر برسد. این رفتار در GRPO طبیعی است و مستقیماً به صورت‌بندی ریاضی الگوریتم مربوط می‌شود. loss در GRPO با واگرایی KL (سقف نسبت به خط‌مشی اولیه) متناسب است. با پیشرفت آموزش، مدل یاد می‌گیرد متنی تولید کند که بهتر با تابع پاداش مطابقت دارد و درنتیجه از خط‌مشی اولیهٔ خود بیشتر فاصله می‌گیرد. این واگرایی فزاینده در افزایش مقدار loss بازتاب می‌یابد و در واقع نشان می‌دهد مدل با موفقیت برای بهینه‌سازی تابع پاداش سازگار می‌شود.
+
+![Loss](https://huggingface.co/reasoning-course/images/resolve/main/grpo/14.png)
+
+## ذخیره و انتشار مدل
+
+بیایید مدل را با جامعه به اشتراک بگذاریم!
+
+```python
+merged_model = trainer.model.merge_and_unload()
+merged_model.push_to_hub(
+    "SmolGRPO-135M", private=False, tags=["GRPO", "Reasoning-Course"]
+)
+```
+
+## تولید متن
+
+🎉 شما با موفقیت یک مدل را با GRPO ریزتنظیم کردید! حالا با این مدل متنی تولید می‌کنیم.
+
+ابتدا یک سند بسیار طولانی تعریف می‌کنیم!
+
+```python
+prompt = """
+# A long document about the Cat
+
+The cat (Felis catus), also referred to as the domestic cat or house cat, is a small 
+domesticated carnivorous mammal. It is the only domesticated species of the family Felidae.
+Advances in archaeology and genetics have shown that the domestication of the cat occurred
+in the Near East around 7500 BC. It is commonly kept as a pet and farm cat, but also ranges
+freely as a feral cat avoiding human contact. It is valued by humans for companionship and
+its ability to kill vermin. Its retractable claws are adapted to killing small prey species
+such as mice and rats. It has a strong, flexible body, quick reflexes, and sharp teeth,
+and its night vision and sense of smell are well developed. It is a social species,
+but a solitary hunter and a crepuscular predator. Cat communication includes
+vocalizations—including meowing, purring, trilling, hissing, growling, and grunting—as
+well as body language. It can hear sounds too faint or too high in frequency for human ears,
+such as those made by small mammals. It secretes and perceives pheromones.
+"""
+
+messages = [
+    {"role": "user", "content": prompt},
+]
+```
+
+حالا می‌توانیم با مدل متن تولید کنیم.
+
+```python
+# Generate text
+from transformers import pipeline
+
+generator = pipeline("text-generation", model="SmolGRPO-135M")
+
+## Or use the model and tokenizer we defined earlier
+# generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+generate_kwargs = {
+    "max_new_tokens": 256,
+    "do_sample": True,
+    "temperature": 0.5,
+    "min_p": 0.1,
+}
+
+generated_text = generator(messages, generate_kwargs=generate_kwargs)
+
+print(generated_text)
+```
+
+# جمع‌بندی
+
+در این فصل دیدیم چگونه یک مدل را با GRPO ریزتنظیم کنیم. همچنین با نحوهٔ تفسیر نتایج آموزش و تولید متن با مدل آشنا شدیم.
+</div>

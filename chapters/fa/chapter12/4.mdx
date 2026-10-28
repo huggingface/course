@@ -1,0 +1,236 @@
+<div dir="rtl">
+
+# پیاده‌سازی GRPO در TRL
+
+در این صفحه یاد می‌گیریم چگونه با استفاده از کتابخانهٔ Transformer Reinforcement Learning (TRL)، بهینه‌سازی خط‌مشی نسبی گروهی (GRPO) را پیاده‌سازی کنیم. تمرکز ما بر پیاده‌سازی عملی با حداقل کد است.
+
+مفاهیم اصلی GRPO را همان‌گونه که در GRPOTrainer مربوط به TRL پیاده‌سازی شده‌اند بررسی می‌کنیم و برای راهنمایی از قطعه‌کدهای مستندات رسمی TRL کمک می‌گیریم.
+
+> [!TIP]
+> این فصل برای افرادی نوشته شده است که با TRL تازه آشنا شده‌اند. اگر از قبل با TRL آشنایی دارید، شاید بخواهید [پیاده‌سازی Open R1](https://github.com/huggingface/open-r1/blob/main/src/open_r1/grpo.py) از GRPO را هم ببینید.
+
+ابتدا برخی از مفاهیم مهم الگوریتم GRPO را مرور کنیم:
+
+- تشکیل گروه: مدل برای هر پرامپت چندین تکمیل تولید می‌کند.
+- یادگیری ترجیح: مدل از تابع پاداشی یاد می‌گیرد که گروه‌های تکمیل را با هم مقایسه می‌کند.
+- پیکربندی آموزش: مدل از یک پیکربندی برای کنترل فرایند آموزش استفاده می‌کند.
+
+برای پیاده‌سازی GRPO چه کارهایی لازم است؟
+
+- یک مجموعه‌داده از پرامپت‌ها تعریف کنید.
+- تابع پاداشی تعریف کنید که فهرستی از تکمیل‌ها را می‌گیرد و فهرستی از پاداش‌ها را برمی‌گرداند.
+- فرایند آموزش را با GRPOConfig پیکربندی کنید.
+- مدل را با GRPOTrainer آموزش دهید.
+
+در ادامه یک مثال حداقلی برای شروع آموزش با GRPO می‌بینید:
+
+```python
+from trl import GRPOTrainer, GRPOConfig
+from datasets import load_dataset
+
+# 1. Load your dataset
+dataset = load_dataset("your_dataset", split="train")
+
+
+# 2. Define a simple reward function
+def reward_func(completions, **kwargs):
+    """Example: Reward longer completions"""
+    return [float(len(completion)) for completion in completions]
+
+
+# 3. Configure training
+training_args = GRPOConfig(
+    output_dir="output",
+    num_train_epochs=3,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=2,
+    logging_steps=10,
+)
+
+# 4. Initialize and train
+trainer = GRPOTrainer(
+    model="your_model",  # e.g. "Qwen/Qwen2-0.5B-Instruct"
+    args=training_args,
+    train_dataset=dataset,
+    reward_funcs=reward_func,
+)
+trainer.train()
+```
+
+## مؤلفه‌های اصلی
+
+### ۱. قالب مجموعه‌داده
+
+مجموعه‌دادهٔ شما باید شامل پرامپت‌هایی باشد که مدل به آن‌ها پاسخ می‌دهد. آموزش‌دهندهٔ GRPO برای هر پرامپت چندین تکمیل تولید می‌کند و با استفاده از تابع پاداش آن‌ها را مقایسه می‌کند.
+
+### ۲. تابع پاداش
+
+تابع پاداش اهمیت زیادی دارد؛ این تابع تعیین می‌کند مدل چگونه یاد بگیرد. در ادامه دو مثال عملی می‌بینید:
+
+```python
+# Example 1: Reward based on completion length
+def reward_length(completions, **kwargs):
+    return [float(len(completion)) for completion in completions]
+
+
+# Example 2: Reward based on matching a pattern
+import re
+
+
+def reward_format(completions, **kwargs):
+    pattern = r"^<think>.*?</think><answer>.*?</answer>$"
+    return [1.0 if re.match(pattern, c) else 0.0 for c in completions]
+```
+
+### ۳. پیکربندی آموزش
+
+پارامترهای مهمی که باید در `GRPOConfig` در نظر بگیرید:
+
+```python
+training_args = GRPOConfig(
+    # Essential parameters
+    output_dir="output",
+    num_train_epochs=3,
+    num_generation=4,  # Number of completions to generate for each prompt
+    per_device_train_batch_size=4,  # We want to get all generations in one device batch
+    # Optional but useful
+    gradient_accumulation_steps=2,
+    learning_rate=1e-5,
+    logging_steps=10,
+    # GRPO specific (optional)
+    use_vllm=True,  # Speed up generation
+)
+```
+
+پارامتر `num_generation` برای GRPO اهمیت ویژه‌ای دارد، چون اندازهٔ گروه، یعنی تعداد تکمیل‌های متفاوتی را که مدل برای هر پرامپت تولید می‌کند، تعیین می‌کند. این ویژگی GRPO را از روش‌های دیگر RL متمایز می‌سازد:
+
+- خیلی کوچک (مثلاً ۲ تا ۳): ممکن است تنوع کافی برای مقایسه‌های معنادار فراهم نکند.
+- مقدار پیشنهادی (۴ تا ۱۶): تعادل خوبی بین تنوع و بهره‌وری محاسباتی ایجاد می‌کند.
+- مقادیر بزرگ‌تر: ممکن است یادگیری را بهتر کنند، اما هزینهٔ محاسباتی را به‌طور چشمگیری افزایش می‌دهند.
+
+اندازهٔ گروه را باید بر اساس منابع محاسباتی و پیچیدگی کار خود انتخاب کنید. برای کارهای ساده، گروه‌های کوچک‌تر (۴ تا ۸) ممکن است کافی باشند، درحالی‌که کارهای استدلالی پیچیده‌تر شاید از گروه‌های بزرگ‌تر (۸ تا ۱۶) سود ببرند.
+
+## نکته‌هایی برای موفقیت
+
+1. **مدیریت حافظه**: `per_device_train_batch_size` و `gradient_accumulation_steps` را بر اساس حافظهٔ GPU خود تنظیم کنید.
+2. **سرعت**: اگر مدل شما پشتیبانی می‌شود، برای تولید سریع‌تر `use_vllm=True` را فعال کنید.
+3. **پایش**: در طول آموزش، معیارهای ثبت‌شده را بررسی کنید:
+   - `reward`: میانگین پاداش در میان تکمیل‌ها
+   - `reward_std`: انحراف معیار در گروه‌های پاداش
+   - `kl`: واگرایی KL از مدل مرجع
+
+## طراحی تابع پاداش
+
+مقالهٔ DeepSeek R1 چند رویکرد مؤثر برای طراحی تابع پاداش نشان می‌دهد که می‌توانید آن‌ها را برای پیاده‌سازی GRPO خود سازگار کنید:
+
+### ۱. پاداش‌های مبتنی بر طول
+
+یکی از ساده‌ترین پاداش‌ها برای پیاده‌سازی، پاداش مبتنی بر طول است. می‌توانید به تکمیل‌های طولانی‌تر پاداش بدهید:
+
+```python
+def reward_len(completions, **kwargs):
+    ideal_length = 20
+    return [-abs(ideal_length - len(completion)) for completion in completions]
+```
+
+این تابع پاداش تکمیل‌هایی را که بیش از حد کوتاه یا بلند هستند جریمه می‌کند و مدل را تشویق می‌کند تکمیل‌هایی نزدیک به طول ایدئال ۲۰ توکن تولید کند.
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_length.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+## ۲. پاداش‌های مبتنی بر قانون برای کارهای قابل‌راستی‌آزمایی
+
+برای کارهایی با پاسخ‌های عینی و درست (مانند ریاضی یا کدنویسی)، می‌توانید توابع پاداش مبتنی بر قانون پیاده‌سازی کنید:
+
+```python
+def problem_reward(completions, answers, **kwargs):
+    """Reward function for math problems with verifiable answers
+    completions: list of completions to evaluate
+    answers: list of answers to the problems from the dataset
+    """
+
+    rewards = []
+    for completion, correct_answer in zip(completions, answers):
+        # Extract the answer from the completion
+        try:
+            # This is a simplified example - you'd need proper parsing
+            answer = extract_final_answer(completion)
+            # Binary reward: 1 for correct, 0 for incorrect
+            reward = 1.0 if answer == correct_answer else 0.0
+            rewards.append(reward)
+        except:
+            # If we can't parse an answer, give a low reward
+            rewards.append(0.0)
+
+    return rewards
+```
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_math.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+## ۳. پاداش‌های مبتنی بر قالب
+
+همچنین می‌توانید به قالب‌بندی درست پاداش بدهید؛ این موضوع در آموزش DeepSeek R1 اهمیت داشت:
+
+```python
+def format_reward(completions, **kwargs):
+    """Reward completions that follow the desired format"""
+    # Example: Check if the completion follows a think-then-answer format
+    pattern = r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
+
+    rewards = []
+    for completion in completions:
+        match = re.search(pattern, completion, re.DOTALL)
+        if match:
+            # Check if there's substantial content in both sections
+            think_content = match.group(1).strip()
+            answer_content = match.group(2).strip()
+
+            if len(think_content) > 20 and len(answer_content) > 0:
+                rewards.append(1.0)
+            else:
+                rewards.append(
+                    0.5
+                )  # Partial reward for correct format but limited content
+        else:
+            rewards.append(0.0)  # No reward for incorrect format
+
+    return rewards
+```
+
+<!-- # TODO: update links when PR is merged -->
+
+<iframe 
+    src="https://marimo.app/gh/huggingface/notebooks/main/e?entrypoint=course%2Fen%2Fchapter13%2Fgrpo_format.py&embed=true&show-chrome=false"
+    title="Marimo Notebook"
+    width="100%"
+    height="800px"
+    frameBorder="0"
+    allow="clipboard-write"
+></iframe>
+
+
+
+این مثال‌ها نشان می‌دهند چگونه می‌توانید با الهام از فرایند آموزش DeepSeek R1، توابع پاداشی با تمرکز بر درستی، قالب‌بندی و سیگنال‌های ترکیبی پیاده‌سازی کنید.
+
+
+## همین بود!
+
+در بخش بعدی، تمرینی را دنبال می‌کنید تا GRPO را در TRL پیاده‌سازی کنید.
+</div>

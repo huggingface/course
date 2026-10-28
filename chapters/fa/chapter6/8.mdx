@@ -1,0 +1,842 @@
+# ساختن یک توکِنایزر، گام‌به‌گام[[building-a-tokenizer-block-by-block]]
+
+<div dir="rtl">
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section8.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section8.ipynb"},
+]} />
+
+همان‌طور که در بخش‌های قبلی دیدیم، توکِن‌سازی چند گام دارد:
+
+<div dir="rtl">
+
+- نرمال‌سازی (هر نوع پاک‌سازی لازم متن، مانند حذف فاصله‌ها یا اَکسان‌ها، نرمال‌سازی Unicode و غیره)
+- پیش‌توکِن‌سازی (تقسیم ورودی به کلمه‌ها)
+- عبور دادن ورودی از مدل (استفاده از کلمه‌های پیش‌توکِن‌سازی‌شده برای تولید رشته‌ای از توکِن‌ها)
+- پس‌پردازش (افزودن توکِن‌های ویژه‌ی توکِنایزر، تولید ماسک توجه و شناسه‌های نوع توکِن)
+
+</div>
+
+برای یادآوری، نگاهی دوباره به فرایند کلی بیندازیم:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline.svg" alt="خط تولید توکِن‌سازی.">
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/tokenization_pipeline-dark.svg" alt="خط تولید توکِن‌سازی.">
+</div>
+
+کتابخانه‌ی 🤗 Tokenizers برای هرکدام از این گام‌ها چند گزینه فراهم می‌کند که می‌توانید آن‌ها را با هم ترکیب کنید. در این بخش می‌بینیم چگونه از صفر یک توکِنایزر بسازیم؛ برخلاف کاری که در [بخش ۲](/course/chapter6/2) انجام دادیم و توکِنایزر جدیدی را از روی توکِنایزری قدیمی تعلیم دادیم. سپس می‌توانید هر نوع توکِنایزری را که تصور می‌کنید بسازید!
+
+<Youtube id="MR8tZm5ViWU"/>
+
+به‌طور دقیق‌تر، کتابخانه حول کلاس مرکزی `Tokenizer` ساخته شده است و اجزای سازنده‌ی آن در زیرماژول‌ها گروه‌بندی شده‌اند:
+
+<div dir="rtl">
+
+- `normalizers` شامل همه‌ی انواع `Normalizer` است که می‌توانید استفاده کنید (فهرست کامل [اینجا](https://huggingface.co/docs/tokenizers/api/normalizers) است).
+- `pre_tokenizers` شامل همه‌ی انواع `PreTokenizer` است که می‌توانید استفاده کنید (فهرست کامل [اینجا](https://huggingface.co/docs/tokenizers/api/pre-tokenizers) است).
+- `models` شامل انواع مختلف `Model` است که می‌توانید استفاده کنید؛ مانند `BPE`، `WordPiece` و `Unigram` (فهرست کامل [اینجا](https://huggingface.co/docs/tokenizers/api/models) است).
+- `trainers` شامل انواع مختلف `Trainer` است که می‌توانید برای تعلیم مدل روی یک پیکره استفاده کنید (برای هر نوع مدل یک مورد؛ فهرست کامل [اینجا](https://huggingface.co/docs/tokenizers/api/trainers) است).
+- `post_processors` شامل انواع مختلف `PostProcessor` است که می‌توانید استفاده کنید (فهرست کامل [اینجا](https://huggingface.co/docs/tokenizers/api/post-processors) است).
+- `decoders` شامل انواع مختلف `Decoder` است که می‌توانید برای کدگشایی خروجی‌های توکِن‌سازی استفاده کنید (فهرست کامل [اینجا](https://huggingface.co/docs/tokenizers/components#decoders) است).
+
+</div>
+
+فهرست کامل اجزای سازنده را [اینجا](https://huggingface.co/docs/tokenizers/components) می‌بینید.
+
+## به‌دست‌آوردن پیکره[[acquiring-a-corpus]]
+
+برای تعلیم توکِنایزر جدیدمان از پیکره‌ی کوچکی از متن استفاده می‌کنیم (تا مثال‌ها سریع اجرا شوند). گام‌های به‌دست‌آوردن پیکره شبیه گام‌هایی است که در [ابتدای این فصل](/course/chapter6/2) انجام دادیم، اما این بار از دیتاست [WikiText-2](https://huggingface.co/datasets/wikitext) استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("wikitext", name="wikitext-2-raw-v1", split="train")
+
+
+def get_training_corpus():
+    for i in range(0, len(dataset), 1000):
+        yield dataset[i : i + 1000]["text"]
+```
+
+</div>
+
+تابع `get_training_corpus()` یک مولد است که دسته‌هایی شامل ۱۰۰۰ متن تولید می‌کند و از آن‌ها برای تعلیم توکِنایزر استفاده خواهیم کرد.
+
+🤗 Tokenizers را می‌توان مستقیماً روی فایل‌های متنی نیز تعلیم داد. در اینجا می‌بینیم چگونه فایلی متنی بسازیم که همه‌ی متن‌ها/ورودی‌های WikiText-2 را دربرگیرد و بتوانیم آن را به‌صورت محلی استفاده کنیم:
+
+<div dir="ltr">
+
+```python
+with open("wikitext-2.txt", "w", encoding="utf-8") as f:
+    for i in range(len(dataset)):
+        f.write(dataset[i]["text"] + "\n")
+```
+
+</div>
+
+در ادامه نشان می‌دهیم چگونه توکِنایزرهای BERT، GPT-2 و XLNet را گام‌به‌گام بسازید. این کار نمونه‌ای از هر سه الگوریتم اصلی توکِن‌سازی، یعنی WordPiece، BPE و Unigram، به ما می‌دهد. با BERT شروع کنیم!
+
+## ساختن توکِنایزر WordPiece از صفر[[building-a-wordpiece-tokenizer-from-scratch]]
+
+برای ساختن توکِنایزر با کتابخانه‌ی 🤗 Tokenizers، ابتدا یک شیء `Tokenizer` را با یک `model` نمونه‌سازی می‌کنیم، سپس ویژگی‌های `normalizer`، `pre_tokenizer`، `post_processor` و `decoder` آن را به مقادیری که می‌خواهیم تنظیم می‌کنیم.
+
+برای این مثال، یک `Tokenizer` با مدل WordPiece ایجاد می‌کنیم:
+
+<div dir="ltr">
+
+```python
+from tokenizers import (
+    decoders,
+    models,
+    normalizers,
+    pre_tokenizers,
+    processors,
+    trainers,
+    Tokenizer,
+)
+
+tokenizer = Tokenizer(models.WordPiece(unk_token="[UNK]"))
+```
+
+</div>
+
+باید `unk_token` را مشخص کنیم تا مدل بداند هنگام روبه‌رو شدن با نویسه‌هایی که قبلاً ندیده است چه چیزی برگرداند. از دیگر آرگومان‌هایی که می‌توانیم اینجا تنظیم کنیم، `vocab` مدل (قرار است مدل را تعلیم دهیم، پس نیازی به تنظیم آن نداریم) و `max_input_chars_per_word` است که حداکثر طول هر کلمه را مشخص می‌کند (کلمه‌های طولانی‌تر از مقدار داده‌شده تقسیم می‌شوند).
+
+نخستین گام توکِن‌سازی نرمال‌سازی است؛ پس با آن شروع کنیم. از آنجا که BERT به‌طور گسترده استفاده می‌شود، `BertNormalizer`ای وجود دارد که گزینه‌های کلاسیک قابل تنظیم برای BERT را در اختیار می‌گذارد: `lowercase` و `strip_accents` که خودشان گویا هستند؛ `clean_text` برای حذف همه‌ی نویسه‌های کنترلی و جایگزین کردن فاصله‌های تکراری با یک فاصله؛ و `handle_chinese_chars` که اطراف نویسه‌های چینی فاصله قرار می‌دهد. برای بازسازی توکِنایزر `bert-base-uncased` کافی است این نرمال‌ساز را تنظیم کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.normalizer = normalizers.BertNormalizer(lowercase=True)
+```
+
+</div>
+
+بااین‌حال، به‌طور کلی هنگام ساختن یک توکِنایزر جدید به نرمال‌ساز آماده و مناسبی که از قبل در کتابخانه‌ی 🤗 Tokenizers پیاده‌سازی شده باشد دسترسی ندارید؛ پس ببینیم چگونه نرمال‌ساز BERT را دستی ایجاد کنیم. کتابخانه نرمال‌سازهای `Lowercase` و `StripAccents` را فراهم می‌کند و می‌توانید با استفاده از `Sequence` چند نرمال‌ساز را ترکیب کنید:
+
+<div dir="ltr">
+
+```python
+tokenizer.normalizer = normalizers.Sequence(
+    [normalizers.NFD(), normalizers.Lowercase(), normalizers.StripAccents()]
+)
+```
+
+</div>
+
+همچنین از نرمال‌ساز Unicode `NFD` استفاده می‌کنیم، چون در غیر این صورت نرمال‌ساز `StripAccents` نویسه‌های دارای اَکسان را درست تشخیص نمی‌دهد و آن‌ها را حذف نمی‌کند.
+
+همان‌طور که قبلاً دیدیم، می‌توانیم از متد `normalize_str()` نرمال‌ساز `normalizer` برای بررسی اثر آن روی متنی مشخص استفاده کنیم:
+
+<div dir="ltr">
+
+```python
+print(tokenizer.normalizer.normalize_str("Héllò hôw are ü?"))
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+hello how are u?
+```
+
+</div>
+
+> [!TIP]
+> **برای مطالعه‌ی بیشتر** اگر دو نسخه‌ی نرمال‌سازهای قبلی را روی رشته‌ای دارای نویسه‌ی Unicode یعنی `u"\u0085"` امتحان کنید، حتماً متوجه می‌شوید که این دو نرمال‌ساز دقیقاً معادل نیستند.
+> برای اینکه نسخه‌ی دارای `normalizers.Sequence` بیش از حد پیچیده نشود، جایگزینی‌های Regex موردنیاز `BertNormalizer` را که هنگام تنظیم آرگومان `clean_text` روی `True` لازم است (و رفتار پیش‌فرض است) وارد نکرده‌ایم. اما نگران نباشید: می‌توانیم بدون استفاده از نرمال‌ساز آماده‌ی `BertNormalizer` و با افزودن دو `normalizers.Replace` به دنباله‌ی نرمال‌سازها، دقیقاً همان نرمال‌سازی را انجام دهیم.
+
+گام بعدی، پیش‌توکِن‌سازی است. در اینجا نیز `BertPreTokenizer` از پیش آماده است و می‌توانیم از آن استفاده کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+```
+
+</div>
+
+یا می‌توانیم آن را از صفر بسازیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+```
+
+</div>
+
+توجه کنید که پیش‌توکِن‌ساز `Whitespace` بر اساس فاصله و همه‌ی نویسه‌هایی که حرف، رقم یا نویسه‌ی زیرخط نیستند تقسیم می‌کند؛ بنابراین از نظر فنی متن را بر اساس فاصله و علائم نگارشی جدا می‌کند:
+
+<div dir="ltr">
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+</div>
+
+اگر فقط می‌خواهید بر اساس فاصله تقسیم کنید، باید به‌جای آن از پیش‌توکِن‌ساز `WhitespaceSplit` استفاده کنید:
+
+<div dir="ltr">
+
+```python
+pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+[("Let's", (0, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre-tokenizer.', (14, 28))]
+```
+
+</div>
+
+مانند نرمال‌سازها، می‌توانید از `Sequence` برای ترکیب چند پیش‌توکِن‌ساز استفاده کنید:
+
+<div dir="ltr">
+
+```python
+pre_tokenizer = pre_tokenizers.Sequence(
+    [pre_tokenizers.WhitespaceSplit(), pre_tokenizers.Punctuation()]
+)
+pre_tokenizer.pre_tokenize_str("Let's test my pre-tokenizer.")
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+[('Let', (0, 3)), ("'", (3, 4)), ('s', (4, 5)), ('test', (6, 10)), ('my', (11, 13)), ('pre', (14, 17)),
+ ('-', (17, 18)), ('tokenizer', (18, 27)), ('.', (27, 28))]
+```
+
+</div>
+
+گام بعدی در خط تولید توکِن‌سازی، عبور دادن ورودی‌ها از مدل است. مدل را در مرحله‌ی نمونه‌سازی مشخص کردیم، اما هنوز باید آن را تعلیم دهیم؛ این کار به `WordPieceTrainer` نیاز دارد. نکته‌ی اصلی هنگام نمونه‌سازی تعلیم‌دهنده در 🤗 Tokenizers این است که باید همه‌ی توکِن‌های ویژه‌ای را که قصد استفاده از آن‌ها را دارید به آن بدهید — وگرنه آن‌ها را به واژگان اضافه نمی‌کند، چون در پیکره‌ی تعلیم وجود ندارند:
+
+<div dir="ltr">
+
+```python
+special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
+trainer = trainers.WordPieceTrainer(vocab_size=25000, special_tokens=special_tokens)
+```
+
+</div>
+
+علاوه بر تعیین `vocab_size` و `special_tokens`، می‌توانیم `min_frequency` (تعداد دفعاتی که یک توکِن باید ظاهر شود تا در واژگان قرار بگیرد) را تنظیم کنیم یا `continuing_subword_prefix` را تغییر دهیم (اگر بخواهیم به‌جای `##` از چیز دیگری استفاده کنیم).
+
+برای تعلیم مدل با استفاده از تکرارکننده‌ای که پیش‌تر تعریف کردیم، فقط باید این دستور را اجرا کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+</div>
+
+همچنین می‌توانیم از فایل‌های متنی برای تعلیم توکِنایزر استفاده کنیم؛ شکل کار چنین است (ابتدا مدل را با یک `WordPiece` خالی دوباره مقداردهی می‌کنیم):
+
+<div dir="ltr">
+
+```python
+tokenizer.model = models.WordPiece(unk_token="[UNK]")
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+</div>
+
+در هر دو حالت، سپس می‌توانیم با فراخوانی متد `encode()` توکِنایزر را روی متنی امتحان کنیم:
+
+<div dir="ltr">
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.']
+```
+
+</div>
+
+`encoding` به‌دست‌آمده یک `Encoding` است که همه‌ی خروجی‌های لازم توکِنایزر را در ویژگی‌های مختلف خود دربرمی‌گیرد: `ids`، `type_ids`، `tokens`، `offsets`، `attention_mask`، `special_tokens_mask` و `overflowing`.
+
+آخرین گام در خط تولید توکِن‌سازی پس‌پردازش است. باید توکِن `[CLS]` را در ابتدا و توکِن `[SEP]` را در انتها اضافه کنیم (یا اگر یک جفت جمله داریم، پس از هر جمله). برای این کار از `TemplateProcessor` استفاده می‌کنیم، اما ابتدا باید شناسه‌های توکِن‌های `[CLS]` و `[SEP]` را در واژگان بدانیم:
+
+<div dir="ltr">
+
+```python
+cls_token_id = tokenizer.token_to_id("[CLS]")
+sep_token_id = tokenizer.token_to_id("[SEP]")
+print(cls_token_id, sep_token_id)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+(2, 3)
+```
+
+</div>
+
+برای نوشتن قالب `TemplateProcessor` باید مشخص کنیم با یک جمله و با یک جفت جمله چگونه رفتار شود. در هر دو حالت، توکِن‌های ویژه‌ای را که می‌خواهیم استفاده کنیم می‌نویسیم؛ جمله‌ی اول (یا تنها جمله) با `$A` نمایش داده می‌شود و جمله‌ی دوم (اگر جفتی را کدگذاری کنیم) با `$B`. برای هرکدام از این توکِن‌های ویژه و جمله‌ها، شناسه‌ی نوع توکِن متناظر را پس از دونقطه مشخص می‌کنیم.
+
+قالب کلاسیک BERT به شکل زیر تعریف می‌شود:
+
+<div dir="ltr">
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single=f"[CLS]:0 $A:0 [SEP]:0",
+    pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
+    special_tokens=[("[CLS]", cls_token_id), ("[SEP]", sep_token_id)],
+)
+```
+
+</div>
+
+توجه کنید که باید شناسه‌های توکِن‌های ویژه را نیز ارسال کنیم تا توکِنایزر بتواند آن‌ها را به‌درستی به شناسه‌هایشان تبدیل کند.
+
+پس از افزودن این مورد، مثال قبلی نتیجه‌ی زیر را خواهد داد:
+
+<div dir="ltr">
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '.', '[SEP]']
+```
+
+</div>
+
+و برای جفتی از جمله‌ها، نتیجه‌ی درست را می‌گیریم:
+
+<div dir="ltr">
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences.")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['[CLS]', 'let', "'", 's', 'test', 'this', 'tok', '##eni', '##zer', '...', '[SEP]', 'on', 'a', 'pair', 'of', 'sentences', '.', '[SEP]']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+```
+
+</div>
+
+تقریباً ساختن این توکِنایزر از صفر تمام شده است — گام آخر افزودن یک کدگشا است:
+
+<div dir="ltr">
+
+```python
+tokenizer.decoder = decoders.WordPiece(prefix="##")
+```
+
+</div>
+
+بیایید آن را روی `encoding` قبلی امتحان کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+"let's test this tokenizer... on a pair of sentences."
+```
+
+</div>
+
+عالی است! می‌توانیم توکِنایزر خود را در یک فایل JSON واحد، به شکل زیر ذخیره کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.save("tokenizer.json")
+```
+
+</div>
+
+سپس می‌توانیم آن فایل را در یک شیء `Tokenizer` با استفاده از متد `from_file()` دوباره بارگذاری کنیم:
+
+<div dir="ltr">
+
+```python
+new_tokenizer = Tokenizer.from_file("tokenizer.json")
+```
+
+</div>
+
+برای استفاده از این توکِنایزر در 🤗 Transformers، باید آن را در یک `PreTrainedTokenizerFast` بپیچیم. می‌توانیم از کلاس عمومی استفاده کنیم یا اگر توکِنایزر ما با مدلی موجود مطابقت دارد، از کلاس همان مدل (در اینجا `BertTokenizerFast`) استفاده کنیم. اگر این درس را برای ساختن توکِنایزری کاملاً جدید دنبال می‌کنید، باید گزینه‌ی اول را به کار ببرید.
+
+برای پیچیدن توکِنایزر در `PreTrainedTokenizerFast`، می‌توانیم توکِنایزری را که ساخته‌ایم به‌عنوان `tokenizer_object` یا فایل توکِنایزری را که ذخیره کرده‌ایم به‌عنوان `tokenizer_file` ارسال کنیم. نکته‌ی مهم این است که باید همه‌ی توکِن‌های ویژه را دستی تنظیم کنیم، چون این کلاس نمی‌تواند از شیء `tokenizer` بفهمد کدام توکِن، توکِن ماسک، توکِن `[CLS]` و غیره است:
+
+<div dir="ltr">
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    # tokenizer_file="tokenizer.json", # You can load from the tokenizer file, alternatively
+    unk_token="[UNK]",
+    pad_token="[PAD]",
+    cls_token="[CLS]",
+    sep_token="[SEP]",
+    mask_token="[MASK]",
+)
+```
+
+</div>
+
+اگر از کلاس توکِنایزر مشخصی (مانند `BertTokenizerFast`) استفاده می‌کنید، فقط باید توکِن‌های ویژه‌ای را مشخص کنید که با موارد پیش‌فرض متفاوت‌اند (در اینجا هیچ‌کدام):
+
+<div dir="ltr">
+
+```python
+from transformers import BertTokenizerFast
+
+wrapped_tokenizer = BertTokenizerFast(tokenizer_object=tokenizer)
+```
+
+</div>
+
+اکنون می‌توانید از این توکِنایزر مانند هر توکِنایزر 🤗 Transformers دیگری استفاده کنید. می‌توانید آن را با متد `save_pretrained()` ذخیره کنید یا با متد `push_to_hub()` آن را در هاب بارگذاری کنید.
+
+حالا که دیدیم چگونه توکِنایزر WordPiece بسازیم، همین کار را برای یک توکِنایزر BPE انجام دهیم. چون همه‌ی گام‌ها را می‌دانید، کمی سریع‌تر پیش می‌رویم و فقط تفاوت‌ها را برجسته می‌کنیم.
+
+## ساختن توکِنایزر BPE از صفر[[building-a-bpe-tokenizer-from-scratch]]
+
+حالا یک توکِنایزر GPT-2 می‌سازیم. مانند توکِنایزر BERT، کار را با مقداردهی اولیه‌ی `Tokenizer` همراه با یک مدل BPE شروع می‌کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer = Tokenizer(models.BPE())
+```
+
+</div>
+
+مانند BERT، اگر واژگانی داشتیم می‌توانستیم این مدل را با آن مقداردهی اولیه کنیم (در این حالت باید `vocab` و `merges` را ارسال می‌کردیم)، اما چون از صفر تعلیم می‌دهیم، به این کار نیاز نداریم. همچنین لازم نیست `unk_token` را مشخص کنیم، چون GPT-2 از BPE در سطح بایت استفاده می‌کند که به آن نیاز ندارد.
+
+GPT-2 از نرمال‌ساز استفاده نمی‌کند؛ پس این گام را رد می‌کنیم و مستقیماً به پیش‌توکِن‌سازی می‌رویم:
+
+<div dir="ltr">
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+```
+
+</div>
+
+گزینه‌ای که اینجا به `ByteLevel` اضافه کردیم این است که در ابتدای جمله فاصله‌ای اضافه نشود (در غیر این صورت رفتار پیش‌فرض همین است). می‌توانیم مانند قبل پیش‌توکِن‌سازی متنی نمونه را بررسی کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test pre-tokenization!")
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+[('Let', (0, 3)), ("'s", (3, 5)), ('Ġtest', (5, 10)), ('Ġpre', (10, 14)), ('-', (14, 15)),
+ ('tokenization', (15, 27)), ('!', (27, 28))]
+```
+
+</div>
+
+گام بعدی مدل است که به تعلیم نیاز دارد. برای GPT-2، تنها توکِن ویژه، توکِن پایان متن است:
+
+<div dir="ltr">
+
+```python
+trainer = trainers.BpeTrainer(vocab_size=25000, special_tokens=["<|endoftext|>"])
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+</div>
+
+مانند `WordPieceTrainer`، علاوه بر `vocab_size` و `special_tokens`، در صورت تمایل می‌توانیم `min_frequency` را مشخص کنیم؛ یا اگر پسوند پایان کلمه‌ای (مانند `</w>`) داریم، آن را با `end_of_word_suffix` تنظیم کنیم.
+
+این توکِنایزر را می‌توان روی فایل‌های متنی نیز تعلیم داد:
+
+<div dir="ltr">
+
+```python
+tokenizer.model = models.BPE()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+</div>
+
+بیایید توکِن‌سازی یک متن نمونه را بررسی کنیم:
+
+<div dir="ltr">
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['L', 'et', "'", 's', 'Ġtest', 'Ġthis', 'Ġto', 'ken', 'izer', '.']
+```
+
+</div>
+
+پس‌پردازش سطح بایت را برای توکِنایزر GPT-2 به شکل زیر اعمال می‌کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.post_processor = processors.ByteLevel(trim_offsets=False)
+```
+
+</div>
+
+گزینه‌ی `trim_offsets = False` به پس‌پردازش‌گر می‌گوید offsetهای توکِن‌هایی را که با 'Ġ' شروع می‌شوند همان‌طور نگه دارد: به این ترتیب، ابتدای offset به فاصله‌ی پیش از کلمه اشاره می‌کند، نه نخستین نویسه‌ی کلمه (چون فاصله از نظر فنی بخشی از توکِن است). بیایید نتیجه را با متن همین حالا کدگذاری‌شده بررسی کنیم؛ در این متن، `'Ġtest'` توکِنِ اندیس ۴ است:
+
+<div dir="ltr">
+
+```python
+sentence = "Let's test this tokenizer."
+encoding = tokenizer.encode(sentence)
+start, end = encoding.offsets[4]
+sentence[start:end]
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+' test'
+```
+
+</div>
+
+در پایان، یک کدگشای سطح بایت اضافه می‌کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.decoder = decoders.ByteLevel()
+```
+
+</div>
+
+و می‌توانیم دوباره بررسی کنیم که درست کار می‌کند:
+
+<div dir="ltr">
+
+```python
+tokenizer.decode(encoding.ids)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+"Let's test this tokenizer."
+```
+
+</div>
+
+عالی است! حالا که کار تمام شد، می‌توانیم مانند قبل توکِنایزر را ذخیره کنیم و اگر بخواهیم در 🤗 Transformers از آن استفاده کنیم، آن را در `PreTrainedTokenizerFast` یا `GPT2TokenizerFast` بپیچیم:
+
+<div dir="ltr">
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<|endoftext|>",
+    eos_token="<|endoftext|>",
+)
+```
+
+</div>
+
+یا:
+
+<div dir="ltr">
+
+```python
+from transformers import GPT2TokenizerFast
+
+wrapped_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer)
+```
+
+</div>
+
+در آخرین مثال، نشان می‌دهیم چگونه یک توکِنایزر Unigram را از صفر بسازیم.
+
+## ساختن توکِنایزر Unigram از صفر[[building-a-unigram-tokenizer-from-scratch]]
+
+حالا یک توکِنایزر XLNet می‌سازیم. مانند توکِنایزرهای قبلی، کار را با مقداردهی اولیه‌ی `Tokenizer` همراه با مدل Unigram شروع می‌کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer = Tokenizer(models.Unigram())
+```
+
+</div>
+
+همچنین اگر واژگانی داشتیم می‌توانستیم این مدل را با آن مقداردهی اولیه کنیم.
+
+برای نرمال‌سازی، XLNet از چند جایگزینی استفاده می‌کند (که از SentencePiece می‌آیند):
+
+<div dir="ltr">
+
+```python
+from tokenizers import Regex
+
+tokenizer.normalizer = normalizers.Sequence(
+    [
+        normalizers.Replace("``", '"'),
+        normalizers.Replace("''", '"'),
+        normalizers.NFKD(),
+        normalizers.StripAccents(),
+        normalizers.Replace(Regex(" {2,}"), " "),
+    ]
+)
+```
+
+</div>
+
+این کار <code>``</code> و <code>''</code> را با <code>"</code> و هر رشته‌ای از دو فاصله یا بیشتر را با یک فاصله جایگزین می‌کند و همچنین اَکسان‌ها را از متن‌های مورد توکِن‌سازی حذف می‌کند.
+
+پیش‌توکِن‌سازی که باید برای هر توکِنایزر SentencePiece استفاده شود `Metaspace` است:
+
+<div dir="ltr">
+
+```python
+tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
+```
+
+</div>
+
+می‌توانیم مانند قبل پیش‌توکِن‌سازی یک متن نمونه را بررسی کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.pre_tokenizer.pre_tokenize_str("Let's test the pre-tokenizer!")
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+[("▁Let's", (0, 5)), ('▁test', (5, 10)), ('▁the', (10, 14)), ('▁pre-tokenizer!', (14, 29))]
+```
+
+</div>
+
+گام بعدی مدل است که به تعلیم نیاز دارد. XLNet چند توکِن ویژه دارد:
+
+<div dir="ltr">
+
+```python
+special_tokens = ["<cls>", "<sep>", "<unk>", "<pad>", "<mask>", "<s>", "</s>"]
+trainer = trainers.UnigramTrainer(
+    vocab_size=25000, special_tokens=special_tokens, unk_token="<unk>"
+)
+tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+```
+
+</div>
+
+یکی از آرگومان‌های بسیار مهمی که نباید در `UnigramTrainer` فراموش کنیم `unk_token` است. می‌توانیم آرگومان‌های دیگری را که مخصوص الگوریتم Unigram هستند نیز ارسال کنیم؛ مانند `shrinking_factor` برای هر گام حذف توکِن‌ها (مقدار پیش‌فرض ۰٫۷۵) یا `max_piece_length` برای تعیین حداکثر طول یک توکِن مشخص (مقدار پیش‌فرض ۱۶).
+
+این توکِنایزر را می‌توان روی فایل‌های متنی نیز تعلیم داد:
+
+<div dir="ltr">
+
+```python
+tokenizer.model = models.Unigram()
+tokenizer.train(["wikitext-2.txt"], trainer=trainer)
+```
+
+</div>
+
+بیایید توکِن‌سازی یک متن نمونه را بررسی کنیم:
+
+<div dir="ltr">
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer.")
+print(encoding.tokens)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['▁Let', "'", 's', '▁test', '▁this', '▁to', 'ken', 'izer', '.']
+```
+
+</div>
+
+یکی از ویژگی‌های XLNet این است که توکِن `<cls>` را با شناسه‌ی نوع ۲ در انتهای جمله قرار می‌دهد (برای متمایز کردن آن از توکِن‌های دیگر). در نتیجه، هم‌طول‌سازی در سمت چپ انجام می‌شود. می‌توانیم همه‌ی توکِن‌های ویژه و شناسه‌های نوع توکِن را با قالبی مانند قالب BERT مدیریت کنیم، اما ابتدا باید شناسه‌های توکِن‌های `<cls>` و `<sep>` را به دست آوریم:
+
+<div dir="ltr">
+
+```python
+cls_token_id = tokenizer.token_to_id("<cls>")
+sep_token_id = tokenizer.token_to_id("<sep>")
+print(cls_token_id, sep_token_id)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+0 1
+```
+
+</div>
+
+قالب به شکل زیر است:
+
+<div dir="ltr">
+
+```python
+tokenizer.post_processor = processors.TemplateProcessing(
+    single="$A:0 <sep>:0 <cls>:2",
+    pair="$A:0 <sep>:0 $B:1 <sep>:1 <cls>:2",
+    special_tokens=[("<sep>", sep_token_id), ("<cls>", cls_token_id)],
+)
+```
+
+</div>
+
+می‌توانیم با کدگذاری یک جفت جمله درست کار کردن آن را آزمایش کنیم:
+
+<div dir="ltr">
+
+```python
+encoding = tokenizer.encode("Let's test this tokenizer...", "on a pair of sentences!")
+print(encoding.tokens)
+print(encoding.type_ids)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['▁Let', "'", 's', '▁test', '▁this', '▁to', 'ken', 'izer', '.', '.', '.', '<sep>', '▁', 'on', '▁', 'a', '▁pair',
+  '▁of', '▁sentence', 's', '!', '<sep>', '<cls>']
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]
+```
+
+</div>
+
+در پایان، یک کدگشای `Metaspace` اضافه می‌کنیم:
+
+<div dir="ltr">
+
+```python
+tokenizer.decoder = decoders.Metaspace()
+```
+
+</div>
+
+و کارمان با این توکِنایزر تمام است! می‌توانیم مانند قبل آن را ذخیره کنیم و اگر بخواهیم در 🤗 Transformers از آن استفاده کنیم، آن را در `PreTrainedTokenizerFast` یا `XLNetTokenizerFast` بپیچیم. نکته‌ای که هنگام استفاده از `PreTrainedTokenizerFast` باید در نظر داشته باشید این است که علاوه بر توکِن‌های ویژه، باید به کتابخانه‌ی 🤗 Transformers بگوییم از سمت چپ هم‌طول‌سازی کند:
+
+<div dir="ltr">
+
+```python
+from transformers import PreTrainedTokenizerFast
+
+wrapped_tokenizer = PreTrainedTokenizerFast(
+    tokenizer_object=tokenizer,
+    bos_token="<s>",
+    eos_token="</s>",
+    unk_token="<unk>",
+    pad_token="<pad>",
+    cls_token="<cls>",
+    sep_token="<sep>",
+    mask_token="<mask>",
+    padding_side="left",
+)
+```
+
+</div>
+
+یا به‌صورت جایگزین:
+
+<div dir="ltr">
+
+```python
+from transformers import XLNetTokenizerFast
+
+wrapped_tokenizer = XLNetTokenizerFast(tokenizer_object=tokenizer)
+```
+
+</div>
+
+حالا که دیدید اجزای سازنده‌ی مختلف چگونه برای ساخت توکِنایزرهای موجود استفاده می‌شوند، باید بتوانید با کتابخانه‌ی 🤗 Tokenizers هر توکِنایزری را که می‌خواهید بنویسید و از آن در 🤗 Transformers استفاده کنید.
+
+</div>

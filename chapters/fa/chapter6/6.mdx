@@ -1,0 +1,491 @@
+# توکِن‌سازی با WordPiece[[wordpiece-tokenization]]
+
+<div dir="rtl">
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section6.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section6.ipynb"},
+]} />
+
+WordPiece الگوریتم توکِن‌سازی‌ای است که گوگل برای پیش‌تعلیم BERT توسعه داد. این الگوریتم از آن زمان در چندین مدل ترنسفورمر مبتنی بر BERT، مانند DistilBERT، MobileBERT، Funnel Transformers و MPNET، دوباره استفاده شده است. WordPiece از نظر تعلیم بسیار شبیه BPE است، اما توکِن‌سازی واقعی را به‌شکل متفاوتی انجام می‌دهد.
+
+<Youtube id="qpv6ms_t_1A"/>
+
+> [!TIP]
+> 💡 این بخش WordPiece را به‌طور عمیق بررسی می‌کند و حتی پیاده‌سازی کامل آن را نشان می‌دهد. اگر فقط نمایی کلی از الگوریتم توکِن‌سازی می‌خواهید، می‌توانید مستقیماً به پایان بخش بروید.
+
+## الگوریتم تعلیم[[training-algorithm]]
+
+> [!WARNING]
+> ⚠️ گوگل پیاده‌سازی الگوریتم تعلیم WordPiece را هیچ‌گاه به‌صورت متن‌باز منتشر نکرده است؛ بنابراین آنچه در ادامه می‌آید بهترین حدس ما بر اساس منابع منتشرشده است و ممکن است صددرصد دقیق نباشد.
+
+WordPiece نیز مانند BPE با واژگانی کوچک شروع می‌کند که توکِن‌های ویژه‌ی مورد استفاده‌ی مدل و الفبای اولیه را دربرمی‌گیرد. از آنجا که این الگوریتم زیرکلمه‌ها را با افزودن یک پیشوند (مانند `##` در BERT) شناسایی می‌کند، در ابتدا هر کلمه را با افزودن آن پیشوند به همه‌ی نویسه‌های داخل کلمه تقسیم می‌کند. برای نمونه، `"word"` به شکل زیر تقسیم می‌شود:
+
+<div dir="ltr">
+
+```
+w ##o ##r ##d
+```
+
+</div>
+
+بنابراین، الفبای اولیه همه‌ی نویسه‌هایی را شامل می‌شود که در ابتدای یک کلمه ظاهر می‌شوند، و همچنین نویسه‌هایی را که درون کلمه می‌آیند و پیشوند WordPiece به آن‌ها اضافه شده است.
+
+سپس WordPiece نیز مانند BPE قواعد ادغام را یاد می‌گیرد. تفاوت اصلی در روش انتخاب جفتی است که باید ادغام شود. WordPiece به‌جای انتخاب پرتکرارترین جفت، امتیازی را برای هر جفت با استفاده از فرمول زیر محاسبه می‌کند:
+
+$$\mathrm{score} = (\mathrm{freq\_of\_pair}) / (\mathrm{freq\_of\_first\_element} \times \mathrm{freq\_of\_second\_element})$$
+
+با تقسیم بسامد جفت بر حاصل‌ضرب بسامد هر یک از اجزای آن، الگوریتم ادغام جفت‌هایی را در اولویت قرار می‌دهد که اجزای منفردشان در واژگان کم‌تکرارترند. برای نمونه، لزوماً جفت `("un", "##able")` را ادغام نمی‌کند، حتی اگر آن جفت در واژگان بسیار پرتکرار باشد، چون احتمالاً دو توکِن `"un"` و `"##able"` هرکدام در کلمه‌های دیگری هم زیاد ظاهر می‌شوند و بسامد زیادی دارند. در مقابل، جفتی مانند `("hu", "##gging")` احتمالاً سریع‌تر ادغام می‌شود (با فرض اینکه کلمه‌ی «hugging» در واژگان زیاد ظاهر شود)، چون `"hu"` و `"##gging"` احتمالاً به‌صورت جداگانه بسامد کمتری دارند.
+
+بیایید همان واژگانی را بررسی کنیم که در نمونه‌ی تعلیم BPE استفاده کردیم:
+
+<div dir="ltr">
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+</div>
+
+تقسیم‌ها در اینجا چنین خواهند بود:
+
+<div dir="ltr">
+
+```
+("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##g" "##s", 5)
+```
+
+</div>
+
+پس واژگان اولیه `["b", "h", "p", "##g", "##n", "##s", "##u"]` خواهد بود (اگر فعلاً توکِن‌های ویژه را نادیده بگیریم). پرتکرارترین جفت `("##u", "##g")` است (که ۲۰ بار وجود دارد)، اما بسامد منفرد `"##u"` بسیار زیاد است و بنابراین امتیاز آن بیشترین نیست (برابر با ۱ / ۳۶ است). همه‌ی جفت‌هایی که `"##u"` دارند در واقع همین امتیاز (۱ / ۳۶) را دارند؛ پس بهترین امتیاز به جفت `("##g", "##s")` می‌رسد — تنها جفتی که `"##u"` ندارد — و برابر با ۱ / ۲۰ است. نخستین ادغام یادگرفته‌شده نیز `("##g", "##s") -> ("##gs")` خواهد بود.
+
+توجه کنید که هنگام ادغام، `##` بین دو توکِن را حذف می‌کنیم؛ بنابراین `"##gs"` را به واژگان اضافه می‌کنیم و ادغام را در کلمه‌های پیکره اعمال می‌کنیم:
+
+<div dir="ltr">
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs"]
+Corpus: ("h" "##u" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("h" "##u" "##gs", 5)
+```
+
+</div>
+
+در این مرحله، `"##u"` در همه‌ی جفت‌های ممکن وجود دارد، پس امتیاز همه‌ی آن‌ها یکسان می‌شود. فرض کنیم در این حالت نخستین جفت ادغام شود؛ یعنی `("h", "##u") -> "hu"`. نتیجه چنین خواهد بود:
+
+<div dir="ltr">
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu"]
+Corpus: ("hu" "##g", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+</div>
+
+سپس بهترین امتیاز میان `("hu", "##g")` و `("hu", "##gs")` مشترک است (برابر با ۱/۱۵، در مقایسه با ۱/۲۱ برای همه‌ی جفت‌های دیگر)، بنابراین نخستین جفت با بیشترین امتیاز ادغام می‌شود:
+
+<div dir="ltr">
+
+```
+Vocabulary: ["b", "h", "p", "##g", "##n", "##s", "##u", "##gs", "hu", "hug"]
+Corpus: ("hug", 10), ("p" "##u" "##g", 5), ("p" "##u" "##n", 12), ("b" "##u" "##n", 4), ("hu" "##gs", 5)
+```
+
+</div>
+
+این روند را تا رسیدن به اندازه‌ی مطلوب واژگان ادامه می‌دهیم.
+
+> [!TIP]
+> ✏️ **حالا نوبت شماست!** به نظر شما قاعده‌ی ادغام بعدی چه خواهد بود؟
+
+## الگوریتم توکِن‌سازی[[tokenization-algorithm]]
+
+توکِن‌سازی در WordPiece و BPE متفاوت است، زیرا WordPiece فقط واژگان نهایی را ذخیره می‌کند، نه قواعد ادغامی را که یاد گرفته است. WordPiece از کلمه‌ای که باید توکِن‌سازی شود شروع می‌کند، طولانی‌ترین زیرکلمه‌ی موجود در واژگان را پیدا می‌کند و سپس در همان نقطه تقسیم می‌کند. برای نمونه، اگر از واژگان یادگرفته‌شده در مثال بالا استفاده کنیم، در کلمه‌ی `"hugs"` طولانی‌ترین زیرکلمه‌ای که از ابتدای کلمه شروع می‌شود و در واژگان وجود دارد `"hug"` است؛ پس در آن نقطه تقسیم می‌کنیم و به `["hug", "##s"]` می‌رسیم. سپس با `"##s"` ادامه می‌دهیم که در واژگان وجود دارد؛ بنابراین توکِن‌سازی `"hugs"` برابر `["hug", "##s"]` است.
+
+در BPE، ادغام‌های یادگرفته‌شده را به‌ترتیب اعمال می‌کردیم و این کلمه را به‌صورت `["hu", "##gs"]` توکِن‌سازی می‌کردیم؛ پس کدگذاری متفاوت است.
+
+برای نمونه‌ای دیگر، ببینیم کلمه‌ی `"bugs"` چگونه توکِن‌سازی می‌شود. `"b"` طولانی‌ترین زیرکلمه‌ای است که از ابتدای کلمه شروع می‌شود و در واژگان وجود دارد؛ پس در آن نقطه تقسیم می‌کنیم و به `["b", "##ugs"]` می‌رسیم. سپس `"##u"` طولانی‌ترین زیرکلمه‌ای است که از ابتدای `"##ugs"` شروع می‌شود و در واژگان وجود دارد؛ پس در آن نقطه تقسیم می‌کنیم و به `["b", "##u, "##gs"]` می‌رسیم. در پایان، `"##gs"` در واژگان وجود دارد؛ بنابراین این فهرست نهایی، توکِن‌سازی `"bugs"` است.
+
+وقتی توکِن‌سازی به مرحله‌ای برسد که پیدا کردن زیرکلمه‌ای در واژگان ممکن نباشد، کل کلمه به‌صورت ناشناخته توکِن‌سازی می‌شود — برای نمونه، `"mug"` به `["[UNK]"]` تبدیل می‌شود و `"bum"` نیز همین‌طور (حتی اگر بتوانیم با `"b"` و `"##u"` شروع کنیم، `"##m"` در واژگان نیست و نتیجه فقط `["[UNK]"]` خواهد بود، نه `["b", "##u", "[UNK]"]`). این تفاوت دیگری با BPE است؛ BPE فقط نویسه‌های منفردی را که در واژگان نیستند ناشناخته دسته‌بندی می‌کند.
+
+> [!TIP]
+> ✏️ **حالا نوبت شماست!** به نظر شما کلمه‌ی `"pugs"` چگونه توکِن‌سازی خواهد شد؟
+
+## پیاده‌سازی WordPiece[[implementing-wordpiece]]
+
+حالا نگاهی به پیاده‌سازی الگوریتم WordPiece بیندازیم. مانند BPE، این پیاده‌سازی صرفاً آموزشی است و نمی‌توانید از آن روی پیکره‌ای بزرگ استفاده کنید.
+
+از همان پیکره‌ی مثال BPE استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+</div>
+
+ابتدا باید پیکره را به کلمه‌ها پیش‌توکِن‌سازی کنیم. چون در حال بازسازی یک توکِنایزر WordPiece (مانند BERT) هستیم، برای پیش‌توکِن‌سازی از توکِنایزر `bert-base-cased` استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+```
+
+</div>
+
+سپس، همان‌طور که پیش‌توکِن‌سازی را انجام می‌دهیم، بسامد هر کلمه در پیکره را محاسبه می‌کنیم:
+
+<div dir="ltr">
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+defaultdict(
+    int, {'This': 3, 'is': 2, 'the': 1, 'Hugging': 1, 'Face': 1, 'Course': 1, '.': 4, 'chapter': 1, 'about': 1,
+    'tokenization': 1, 'section': 1, 'shows': 1, 'several': 1, 'tokenizer': 1, 'algorithms': 1, 'Hopefully': 1,
+    ',': 1, 'you': 1, 'will': 1, 'be': 1, 'able': 1, 'to': 1, 'understand': 1, 'how': 1, 'they': 1, 'are': 1,
+    'trained': 1, 'and': 1, 'generate': 1, 'tokens': 1})
+```
+
+</div>
+
+همان‌طور که قبلاً دیدیم، الفبا مجموعه‌ی یکتایی است که از همه‌ی حروف اول کلمه‌ها و همه‌ی حروف دیگرِ ظاهرشده در کلمه‌ها با پیشوند `##` تشکیل می‌شود:
+
+<div dir="ltr">
+
+```python
+alphabet = []
+for word in word_freqs.keys():
+    if word[0] not in alphabet:
+        alphabet.append(word[0])
+    for letter in word[1:]:
+        if f"##{letter}" not in alphabet:
+            alphabet.append(f"##{letter}")
+
+alphabet.sort()
+alphabet
+
+print(alphabet)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k', '##l', '##m', '##n', '##o', '##p', '##r', '##s',
+ '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u',
+ 'w', 'y']
+```
+
+</div>
+
+همچنین توکِن‌های ویژه‌ای را که مدل استفاده می‌کند، در ابتدای این واژگان اضافه می‌کنیم. در مورد BERT، این فهرست `["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]` است:
+
+<div dir="ltr">
+
+```python
+vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + alphabet.copy()
+```
+
+</div>
+
+در گام بعد باید هر کلمه را تقسیم کنیم و به همه‌ی حروفی که حرف اول نیستند، پیشوند `##` اضافه کنیم:
+
+<div dir="ltr">
+
+```python
+splits = {
+    word: [c if i == 0 else f"##{c}" for i, c in enumerate(word)]
+    for word in word_freqs.keys()
+}
+```
+
+</div>
+
+حالا که برای تعلیم آماده‌ایم، تابعی می‌نویسیم که امتیاز هر جفت را محاسبه کند. در هر گام تعلیم به این تابع نیاز خواهیم داشت:
+
+<div dir="ltr">
+
+```python
+def compute_pair_scores(splits):
+    letter_freqs = defaultdict(int)
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            letter_freqs[split[0]] += freq
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            letter_freqs[split[i]] += freq
+            pair_freqs[pair] += freq
+        letter_freqs[split[-1]] += freq
+
+    scores = {
+        pair: freq / (letter_freqs[pair[0]] * letter_freqs[pair[1]])
+        for pair, freq in pair_freqs.items()
+    }
+    return scores
+```
+
+</div>
+
+پس از تقسیم‌های اولیه، بخشی از این دیکشنری را بررسی کنیم:
+
+<div dir="ltr">
+
+```python
+pair_scores = compute_pair_scores(splits)
+for i, key in enumerate(pair_scores.keys()):
+    print(f"{key}: {pair_scores[key]}")
+    if i >= 5:
+        break
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+('T', '##h'): 0.125
+('##h', '##i'): 0.03409090909090909
+('##i', '##s'): 0.02727272727272727
+('i', '##s'): 0.1
+('t', '##h'): 0.03571428571428571
+('##h', '##e'): 0.011904761904761904
+```
+
+</div>
+
+حالا پیدا کردن جفتی با بهترین امتیاز فقط به یک حلقه‌ی کوتاه نیاز دارد:
+
+<div dir="ltr">
+
+```python
+best_pair = ""
+max_score = None
+for pair, score in pair_scores.items():
+    if max_score is None or max_score < score:
+        best_pair = pair
+        max_score = score
+
+print(best_pair, max_score)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+('a', '##b') 0.2
+```
+
+</div>
+
+بنابراین، نخستین ادغامی که باید یاد گرفته شود `('a', '##b') -> 'ab'` است و `'ab'` را به واژگان اضافه می‌کنیم:
+
+<div dir="ltr">
+
+```python
+vocab.append("ab")
+```
+
+</div>
+
+برای ادامه، باید این ادغام را در دیکشنری `splits` اعمال کنیم. بیایید تابع دیگری برای این کار بنویسیم:
+
+<div dir="ltr">
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                merge = a + b[2:] if b.startswith("##") else a + b
+                split = split[:i] + [merge] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+</div>
+
+و می‌توانیم نتیجه‌ی نخستین ادغام را بررسی کنیم:
+
+<div dir="ltr">
+
+```py
+splits = merge_pair("a", "##b", splits)
+splits["about"]
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['ab', '##o', '##u', '##t']
+```
+
+</div>
+
+اکنون همه‌چیز برای حلقه‌زدن تا یادگیری همه‌ی ادغام‌های موردنظر آماده است. هدف را اندازه‌ی واژگان ۷۰ در نظر می‌گیریم:
+
+<div dir="ltr">
+
+```python
+vocab_size = 70
+while len(vocab) < vocab_size:
+    scores = compute_pair_scores(splits)
+    best_pair, max_score = "", None
+    for pair, score in scores.items():
+        if max_score is None or max_score < score:
+            best_pair = pair
+            max_score = score
+    splits = merge_pair(*best_pair, splits)
+    new_token = (
+        best_pair[0] + best_pair[1][2:]
+        if best_pair[1].startswith("##")
+        else best_pair[0] + best_pair[1]
+    )
+    vocab.append(new_token)
+```
+
+</div>
+
+سپس می‌توانیم واژگان تولیدشده را بررسی کنیم:
+
+<div dir="ltr">
+
+```py
+print(vocab)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '##a', '##b', '##c', '##d', '##e', '##f', '##g', '##h', '##i', '##k',
+ '##l', '##m', '##n', '##o', '##p', '##r', '##s', '##t', '##u', '##v', '##w', '##y', '##z', ',', '.', 'C', 'F', 'H',
+ 'T', 'a', 'b', 'c', 'g', 'h', 'i', 's', 't', 'u', 'w', 'y', 'ab', '##fu', 'Fa', 'Fac', '##ct', '##ful', '##full', '##fully',
+ 'Th', 'ch', '##hm', 'cha', 'chap', 'chapt', '##thm', 'Hu', 'Hug', 'Hugg', 'sh', 'th', 'is', '##thms', '##za', '##zat',
+ '##ut']
+```
+
+</div>
+
+همان‌طور که می‌بینیم، این توکِنایزر در مقایسه با BPE، بخش‌هایی از کلمه‌ها را کمی سریع‌تر به‌عنوان توکِن یاد می‌گیرد.
+
+> [!TIP]
+> 💡 اجرای `train_new_from_iterator()` روی همان پیکره دقیقاً به همین واژگان منجر نمی‌شود. دلیلش این است که کتابخانه‌ی 🤗 Tokenizers هنگام تعلیم WordPiece را پیاده‌سازی نمی‌کند (چون از جزئیات داخلی آن کاملاً مطمئن نیستیم) و در عوض از BPE استفاده می‌کند.
+
+برای توکِن‌سازی یک متن جدید، ابتدا آن را پیش‌توکِن‌سازی و تقسیم می‌کنیم و سپس الگوریتم توکِن‌سازی را روی هر کلمه اعمال می‌کنیم. یعنی بزرگ‌ترین زیرکلمه‌ای را که از ابتدای نخستین کلمه شروع می‌شود پیدا و آن را جدا می‌کنیم، سپس این فرایند را برای بخش دوم، ادامه‌ی همان کلمه و کلمه‌های بعدی متن تکرار می‌کنیم:
+
+<div dir="ltr">
+
+```python
+def encode_word(word):
+    tokens = []
+    while len(word) > 0:
+        i = len(word)
+        while i > 0 and word[:i] not in vocab:
+            i -= 1
+        if i == 0:
+            return ["[UNK]"]
+        tokens.append(word[:i])
+        word = word[i:]
+        if len(word) > 0:
+            word = f"##{word}"
+    return tokens
+```
+
+</div>
+
+آن را روی یک کلمه‌ی موجود در واژگان و کلمه‌ای که در واژگان نیست امتحان می‌کنیم:
+
+<div dir="ltr">
+
+```python
+print(encode_word("Hugging"))
+print(encode_word("HOgging"))
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['Hugg', '##i', '##n', '##g']
+['[UNK]']
+```
+
+</div>
+
+حالا تابعی می‌نویسیم که یک متن را توکِن‌سازی کند:
+
+<div dir="ltr">
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    encoded_words = [encode_word(word) for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+```
+
+</div>
+
+می‌توانیم آن را روی هر متنی امتحان کنیم:
+
+<div dir="ltr">
+
+```python
+tokenize("This is the Hugging Face course!")
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['Th', '##i', '##s', 'is', 'th', '##e', 'Hugg', '##i', '##n', '##g', 'Fac', '##e', 'c', '##o', '##u', '##r', '##s',
+ '##e', '[UNK]']
+```
+
+</div>
+
+همین بود الگوریتم WordPiece! حالا نگاهی به Unigram بیندازیم.
+
+</div>

@@ -1,0 +1,893 @@
+<FrameworkSwitchCourse {fw} />
+
+<div dir="rtl">
+
+# آموزش یک مدل زبان علّی از ابتدا[[training-a-causal-language-model-from-scratch]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+تاکنون، ما عمدتاً از مدل‌های از پیش تعلیم‌دیده استفاده می‌کردیم و با استفاده مجدد از وزن‌های حاصل از پیش‌تعلیم، آنها را برای موارد استفاده جدید کوک کردن می‌کردیم. همانطور که در [فصل 1](/course/chapter1) دیدیم، این امر معمولاً به عنوان _یادگیری انتقال_ شناخته می‌شود و یک استراتژی بسیار موفق برای اعمال مدل‌های ترنسفورمر به اکثر موارد استفاده در دنیای واقعی است که در آن داده‌های برچسب‌گذاری شده پراکنده هستند. در این فصل، رویکرد متفاوتی را در پیش خواهیم گرفت و یک یک مدل کاملاً جدید از ابتدا. اگر داده‌های زیادی دارید و این داده‌ها با داده‌های پیش‌تعلیم مورد استفاده برای مدل‌های موجود بسیار متفاوت هستند، این رویکرد خوبی است. با این حال، پیش‌تعلیم یک مدل زبانی به منابع محاسباتی بسیار بیشتری نسبت به کوک کردن یک مدل موجود نیاز دارد. نمونه‌هایی که آموزش یک مدل جدید می‌تواند منطقی باشد شامل دیتاسِت‌هایی شامل نت‌های موسیقی، توالی‌های مولکولی و غیره می‌شود. مانند DNA یا زبان‌های برنامه‌نویسی. مورد دوم اخیراً به لطف ابزارهایی مانند TabNine و Copilot از Gitهاب، که توسط مدل Codex از OpenAI پشتیبانی می‌شود و می‌تواند توالی‌های طولانی از کد را تولید کند، مورد توجه قرار گرفته است. این وظیفه تولید متن به بهترین وجه با مدل‌های زبانی خود-رگرسیون یا علّی مانند GPT-2 انجام می‌شود.
+
+در این بخش نسخه‌ای کوچک‌شده از مدل تولید کد می‌سازیم: به‌جای تابع‌ها یا کلاس‌های کامل، روی تکمیل‌های یک‌خطی و زیرمجموعه‌ای از کد پایتون تمرکز می‌کنیم. هنگام کار با داده در پایتون مرتب با پشته‌ی علم داده‌ی پایتون، شامل کتابخانه‌های `matplotlib`، `seaborn`، `pandas` و `scikit-learn`، سروکار دارید. در این فریمورک‌ها معمولاً لازم است دستورهای مشخصی را پیدا کنید؛ پس خوب است بتوانیم از یک مدل برای تکمیل این فراخوانی‌ها استفاده کنیم.
+
+<Youtube id="Vpjb1lu0MDk"/>
+
+در [فصل ۶](/course/chapter6) ما یک توکن‌ساز کارآمد برای پردازش کد منبع پایتون ایجاد کردیم، اما آنچه هنوز به آن نیاز داریم، یک دیتاسِت در مقیاس بزرگ برای پیش‌تعلیم مدل است. در اینجا، توکن‌ساز خود را بر روی مجموعه‌ای از کد پایتون مشتق شده از مخازن Gitهاب اعمال خواهیم کرد. سپس از API `Trainer` و 🤗 Accelerate برای آموزش مدل استفاده خواهیم کرد. بیایید به آن بپردازیم!
+
+<iframe src="https://course-demos-codeparrot-ds.hf.space" frameBorder="0" height="300" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+این در واقع مدلی را نشان می‌دهد که با استفاده از کد نشان داده شده در این بخش، آموزش دیده و در هاب آپلود شده است. می‌توانید آن را [اینجا](https://huggingface.co/huggingface-course/codeparrot-ds?text=plt.imshow%28) پیدا کنید. توجه داشته باشید که از آنجایی که در تولید متن مقداری تصادفی‌سازی اتفاق می‌افتد، احتمالاً نتیجه کمی متفاوت خواهید گرفت.
+ 
+## گردآوری داده‌ها[[gathering-the-data]]
+
+کد پایتون در مخزن‌هایی مانند گیت‌هاب فراوان است و می‌توانیم با خزش در مخزن‌های پایتون دیتاسِت بسازیم. نویسندگان [کتاب ترنسفورمرها](https://learning.oreilly.com/library/view/natural-language-processing/9781098136789/) با همین روش یک GPT-2 بزرگ را پیش‌تعلیم دادند. آن‌ها با dump گیت‌هاب به‌اندازه‌ی حدود ۱۸۰ گیگابایت، شامل نزدیک به ۲۰ میلیون فایل پایتون، دیتاسِتی به نام `codeparrot` ساختند و آن را در [هاب هاگینگ‌فِیس](https://huggingface.co/datasets/transformersbook/codeparrot) به اشتراک گذاشتند.
+
+با این حال، آموزش روی کل دیتاسِت‌ها زمان‌بر و محاسباتی است و ما فقط به زیرمجموعه‌ای از دیتاسِت‌های مربوط به پشته علوم داده پایتون نیاز داریم. بنابراین، بیایید با فیلتر کردن دیتاسِت‌های `codeparrot` برای تمام فایل‌هایی که شامل هر یک از کتابخانه‌های موجود در این پشته هستند، شروع کنیم. به دلیل اندازه دیتاسِت‌ها، می‌خواهیم از دانلود آن خودداری کنیم. در عوض، از ویژگی استریمینگ برای فیلتر کردن آن درجا استفاده خواهیم کرد. برای کمک به فیلتر کردن کد برای نمونه با استفاده از کتابخانه‌هایی که قبلاً به آنها اشاره کردیم، از تابع زیر استفاده خواهیم کرد:
+
+```py
+def any_keyword_in_string(string, keywords):
+    for keyword in keywords:
+        if keyword in string:
+            return True
+    return False
+```
+
+بیایید آن را روی دو مثال آزمایش کنیم:
+
+```py
+filters = ["pandas", "sklearn", "matplotlib", "seaborn"]
+example_1 = "import numpy as np"
+example_2 = "import pandas as pd"
+
+print(
+    any_keyword_in_string(example_1, filters), any_keyword_in_string(example_2, filters)
+)
+```
+
+```python out
+False True
+```
+
+می‌توانیم از این برای ایجاد تابعی استفاده کنیم که دیتاسِت‌ها را پخش کرده و عناصر مورد نظر ما را فیلتر می‌کند:
+
+```py
+from collections import defaultdict
+from tqdm import tqdm
+from datasets import Dataset
+
+
+def filter_streaming_dataset(dataset, filters):
+    filtered_dict = defaultdict(list)
+    total = 0
+    for sample in tqdm(iter(dataset)):
+        total += 1
+        if any_keyword_in_string(sample["content"], filters):
+            for k, v in sample.items():
+                filtered_dict[k].append(v)
+    print(f"{len(filtered_dict['content'])/total:.2%} of data after filtering.")
+    return Dataset.from_dict(filtered_dict)
+```
+
+سپس می‌توانیم به سادگی این تابع را روی دیتاسِت‌های استریمینگ اعمال کنیم:
+
+```py
+# This cell will take a very long time to execute, so you should skip it and go to
+# the next one!
+from datasets import load_dataset
+
+split = "train"  # "valid"
+filters = ["pandas", "sklearn", "matplotlib", "seaborn"]
+
+data = load_dataset(f"transformersbook/codeparrot-{split}", split=split, streaming=True)
+filtered_data = filter_streaming_dataset(data, filters)
+```
+
+```python out
+3.26% of data after filtering.
+```
+
+این کار حدود ۳٪ از دیتاسِت اصلی را باقی می‌گذارد که همچنان بسیار بزرگ است؛ دیتاسِت نهایی ۶ گیگابایت حجم و ۶۰۰٬۰۰۰ اسکریپت پایتون دارد!
+
+فیلتر کردن کل دیتاسِت‌ها بسته به دستگاه و پهنای باند شما می‌تواند ۲ تا ۳ ساعت طول بکشد. اگر نمی‌خواهید خودتان این فرآیند طولانی را طی کنید، ما دیتاسِت‌های فیلتر شده را در هاب برای دانلود شما ارائه می‌دهیم:
+
+```py
+from datasets import load_dataset, DatasetDict
+
+ds_train = load_dataset("huggingface-course/codeparrot-ds-train", split="train")
+ds_valid = load_dataset("huggingface-course/codeparrot-ds-valid", split="validation")
+
+raw_datasets = DatasetDict(
+    {
+        "train": ds_train,  # .shuffle().select(range(50000)),
+        "valid": ds_valid,  # .shuffle().select(range(500))
+    }
+)
+
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['repo_name', 'path', 'copies', 'size', 'content', 'license'],
+        num_rows: 606720
+    })
+    valid: Dataset({
+        features: ['repo_name', 'path', 'copies', 'size', 'content', 'license'],
+        num_rows: 3322
+    })
+})
+```
+
+> [!TIP]
+> پیش‌تعلیم مدل زبانی مدتی طول خواهد کشید. پیشنهاد می‌کنیم ابتدا حلقه آموزشی را روی نمونه‌ای از داده‌ها با از حالت کامنت خارج کردن دو خط جزئی بالا اجرا کنید و مطمئن شوید که آموزش با موفقیت تکمیل شده و مدل‌ها ذخیره شده‌اند. هیچ چیز ناامیدکننده‌تر از این نیست که اجرای آموزش در آخرین مرحله به دلیل فراموش کردن ایجاد پوشه یا وجود یک اشتباه تایپی در انتهای حلقه آموزشی با شکست مواجه شود!
+
+بیایید به یک مثال از دیتاسِت‌ها نگاه کنیم. ما فقط ۲۰۰ کاراکتر اول هر فیلد را نشان می‌دهیم:
+
+```py
+for key in raw_datasets["train"][0]:
+    print(f"{key.upper()}: {raw_datasets['train'][0][key][:200]}")
+```
+
+```python out
+'REPO_NAME: kmike/scikit-learn'
+'PATH: sklearn/utils/__init__.py'
+'COPIES: 3'
+'SIZE: 10094'
+'''CONTENT: """
+The :mod:`sklearn.utils` module includes various utilites.
+"""
+
+from collections import Sequence
+
+import numpy as np
+from scipy.sparse import issparse
+import warnings
+
+from .murmurhash import murm
+LICENSE: bsd-3-clause'''
+```
+
+می‌توانیم ببینیم که فیلد `content` شامل کدی است که می‌خواهیم مدل ما روی آن آموزش ببیند. اکنون که یک دیتاسِت داریم، باید متون را طوری آماده کنیم که در قالبی مناسب برای پیش‌تعلیم باشند.
+
+## آماده‌سازی دیتاسِت[[preparing-the-dataset]]
+
+<Youtube id="ma1TrR7gE7I"/>
+
+گام اول توکِن‌سازی داده‌هاست تا بتوانیم از آن‌ها برای تعلیم استفاده کنیم. چون هدف ما تکمیل فراخوانی‌های کوتاه تابع است، اندازه‌ی زمینه را نسبتاً کوچک می‌گیریم؛ در نتیجه مدل سریع‌تر تعلیم می‌بیند و حافظه‌ی کم‌تری مصرف می‌کند. اگر کاربرد شما به زمینه‌ی بیشتری نیاز دارد، مثلاً برای نوشتن آزمون واحد بر اساس فایل تعریف تابع، این عدد را افزایش دهید و در نظر داشته باشید که مصرف حافظه‌ی GPU بیشتر می‌شود. فعلاً اندازه‌ی زمینه را ۱۲۸ توکِن تعیین می‌کنیم، در برابر ۱۰۲۴ یا ۲۰۴۸ توکِنی که GPT-2 و GPT-3 به‌ترتیب استفاده می‌کنند.
+
+بیشتر اسناد حاوی بیش از ۱۲۸ توکن هستند، بنابراین کوتاه کردن ورودی‌ها به حداکثر طول، بخش بزرگی از دیتاسِت‌های ما را حذف می‌کند. در عوض، ما از گزینه `return_overflowing_tokens` برای توکنیزه کردن کل ورودی و تقسیم آن به چندین تکه استفاده خواهیم کرد، همانطور که در [فصل ۶](/course/chapter6/4) انجام دادیم. ما همچنین از گزینه `return_length` برای بازگرداندن خودکار طول هر تکه ایجاد شده استفاده خواهیم کرد. اغلب آخرین تکه کوچکتر خواهد بود. از اندازه متن بیشتر است، و ما از شر این قطعات خلاص خواهیم شد تا از مشکلات padding جلوگیری کنیم؛ ما واقعاً به آنها نیازی نداریم زیرا به هر حال داده‌های زیادی داریم.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts.svg" alt="Chunking a large texts in several pieces."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/chunking_texts-dark.svg" alt="Chunking a large texts in several pieces."/>
+</div>
+
+بیایید با بررسی دو مثال اول، دقیقاً ببینیم که این چگونه کار می‌کند:
+
+```py
+from transformers import AutoTokenizer
+
+context_length = 128
+tokenizer = AutoTokenizer.from_pretrained("huggingface-course/code-search-net-tokenizer")
+
+outputs = tokenizer(
+    raw_datasets["train"][:2]["content"],
+    truncation=True,
+    max_length=context_length,
+    return_overflowing_tokens=True,
+    return_length=True,
+)
+
+print(f"Input IDs length: {len(outputs['input_ids'])}")
+print(f"Input chunk lengths: {(outputs['length'])}")
+print(f"Chunk mapping: {outputs['overflow_to_sample_mapping']}")
+```
+
+```python out
+Input IDs length: 34
+Input chunk lengths: [128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 117, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 41]
+Chunk mapping: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+می‌توانیم ببینیم که در مجموع ۳۴ بخش از این دو مثال به دست آمده است. با نگاهی به طول تکه‌ها، می‌توانیم ببینیم که تکه‌های انتهای هر دو سند کمتر از ۱۲۸ توکن دارند (به ترتیب ۱۱۷ و ۴۱). اینها تنها بخش کوچکی از کل تکه‌هایی هستند که داریم، بنابراین می‌توانیم با خیال راحت آنها را دور بیندازیم. با فیلد `overflow_to_sample_mapping`، می‌توانیم بازسازی کنیم که کدام تکه‌ها متعلق به کدام نمونه‌های ورودی بوده‌اند.
+
+با این عملیات، ما از یک ویژگی مفید تابع `Dataset.map()` در دیتاسِت‌ها استفاده می‌کنیم، به این معنی که نیازی به نگاشت‌های یک به یک ندارد؛ همان‌طور که در [بخش ۳](/course/chapter7/3) دیدیم، می‌توانیم دسته‌هایی با عناصر بیشتر یا کمتر از دستهٔ ورودی ایجاد کنیم. این هنگام انجام عملیاتی مانند افزایش داده یا فیلتر کردن داده که تعداد عناصر را تغییر می‌دهد، مفید است. در مورد ما، هنگام توکِن‌سازی هر عنصر به تکه‌هایی با اندازهٔ زمینهٔ مشخص‌شده، از هر سند نمونه‌های زیادی ایجاد می‌کنیم. فقط باید ستون‌های موجود را حذف کنیم، چون اندازهٔ آن‌ها با خروجی سازگار نیست. اگر بخواهیم آن‌ها را نگه داریم، می‌توانیم به‌طور مناسب تکرارشان کنیم و آن‌ها را در فراخوانی `Dataset.map()` برگردانیم:
+
+```py
+def tokenize(element):
+    outputs = tokenizer(
+        element["content"],
+        truncation=True,
+        max_length=context_length,
+        return_overflowing_tokens=True,
+        return_length=True,
+    )
+    input_batch = []
+    for length, input_ids in zip(outputs["length"], outputs["input_ids"]):
+        if length == context_length:
+            input_batch.append(input_ids)
+    return {"input_ids": input_batch}
+
+
+tokenized_datasets = raw_datasets.map(
+    tokenize, batched=True, remove_columns=raw_datasets["train"].column_names
+)
+tokenized_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['input_ids'],
+        num_rows: 16702061
+    })
+    valid: Dataset({
+        features: ['input_ids'],
+        num_rows: 93164
+    })
+})
+```
+
+اکنون ۱۶.۷ میلیون نمونه با ۱۲۸ توکن برای هر کدام داریم که در مجموع معادل حدود ۲.۱ میلیارد توکن می‌شود. برای مرجع، مدل‌های GPT-3 و Codex شرکت OpenAI به ترتیب روی ۳۰۰ و ۱۰۰ میلیارد توکن آموزش دیده‌اند، که در آن‌ها مدل‌های Codex از نقاط بررسی GPT-3 مقداردهی اولیه می‌شوند. هدف ما در این بخش رقابت با این مدل‌ها که می‌توانند متون طولانی و منسجم تولید کنند، نیست، بلکه ایجاد یک نسخه کوچک‌تر است. ارائه یک تابع تکمیل خودکار سریع برای دانشمندان داده.
+
+حالا که دیتاسِت را آماده کرده‌ایم، بیایید مدل را راه‌اندازی کنیم!
+
+> [!TIP]
+> ✏️ **امتحانش کنید!** خلاص شدن از شر تمام تکه‌هایی که کوچکتر از اندازه متن هستند، در اینجا مسئله بزرگی نبود زیرا ما از پنجره‌های متن کوچک استفاده می‌کنیم. با افزایش اندازه متن (یا اگر مجموعه‌ای از اسناد کوتاه دارید)، کسری از تکه‌هایی که دور انداخته می‌شوند نیز افزایش می‌یابد. یک روش کارآمدتر برای آماده‌سازی داده‌ها، اتصال تمام نمونه‌های توکن‌شده در یک دسته با یک توکن `eos_token_id` در بین آنها است و سپس تکه‌بندی را روی توالی‌های به‌هم‌پیوسته انجام می‌دهیم. به‌عنوان تمرین، تابع `tokenize()` را طوری تغییر دهید که از این روش استفاده کند. توجه کنید که باید `truncation=False` را تنظیم کنید و آرگومان‌های دیگر را از `tokenizer` حذف کنید تا توالی کامل شناسه‌های `token` را به دست آورید.
+
+
+## مقداردهی اولیه یک مدل جدید[[initializing-a-new-model]]
+
+گام اول مقداردهی اولیه‌ی تازه‌ی یک مدل GPT-2 است. همان تنظیمات مدل GPT-2 کوچک را به کار می‌بریم؛ پس تنظیمات از پیش تعلیم‌دیده را بارگذاری می‌کنیم، مطمئن می‌شویم اندازه‌ی توکِن‌ساز با اندازه‌ی واژگان مدل برابر است و شناسه‌های توکِن `bos` و `eos` (آغاز و پایان توالی) را می‌فرستیم:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, GPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+```
+
+با این پیکربندی، می‌توانیم یک مدل جدید بارگذاری کنیم. توجه داشته باشید که این اولین باری است که از تابع `from_pretrained()` استفاده نمی‌کنیم، زیرا در واقع خودمان در حال مقداردهی اولیه یک مدل هستیم:
+
+```py
+model = GPT2LMHeadModel(config)
+model_size = sum(t.numel() for t in model.parameters())
+print(f"GPT-2 size: {model_size/1000**2:.1f}M parameters")
+```
+
+```python out
+GPT-2 size: 124.2M parameters
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFGPT2LMHeadModel, AutoConfig
+
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    vocab_size=len(tokenizer),
+    n_ctx=context_length,
+    bos_token_id=tokenizer.bos_token_id,
+    eos_token_id=tokenizer.eos_token_id,
+)
+```
+
+با این پیکربندی، می‌توانیم یک مدل جدید بارگذاری کنیم. توجه داشته باشید که این اولین باری است که از تابع `from_pretrained()` استفاده نمی‌کنیم، زیرا در واقع خودمان در حال مقداردهی اولیه یک مدل هستیم:
+
+```py
+model = TFGPT2LMHeadModel(config)
+model(model.dummy_inputs)  # Builds the model
+model.summary()
+```
+
+```python out
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #   
+=================================================================
+transformer (TFGPT2MainLayer multiple                  124242432 
+=================================================================
+Total params: 124,242,432
+Trainable params: 124,242,432
+Non-trainable params: 0
+_________________________________________________________________
+```
+
+{/if}
+
+مدل ما ۱۲۴ میلیون پارامتر دارد که باید آن‌ها را تنظیم کنیم. قبل از شروع آموزش، باید یک گردآورندهٔ داده راه‌اندازی کنیم که وظیفهٔ ایجاد دسته‌ها را بر عهده داشته باشد. می‌توانیم از گردآورندهٔ `DataCollatorForLanguageModeling` استفاده کنیم که به‌طور خاص برای مدل‌سازی زبان طراحی شده است (همان‌طور که از نامش پیداست). این گردآورنده علاوه بر انباشت و پُر کردن دسته‌ها، وظیفهٔ ایجاد برچسب‌های مدل زبان را نیز بر عهده دارد — در مدل‌سازی زبان علّی، ورودی‌ها خودشان به‌عنوان برچسب‌ها استفاده می‌شوند (فقط یک عنصر جابه‌جا شده‌اند) و این گردآورندهٔ داده آن‌ها را هنگام آموزش درجا ایجاد می‌کند؛ بنابراین نیازی نیست `input_ids` را کپی کنیم.
+
+توجه داشته باشید که `DataCollatorForLanguageModeling` از هر دو مدل‌سازی زبان نقاب‌دار (MLM) و مدل‌سازی زبان سببی (CLM) پشتیبانی می‌کند. به طور پیش‌فرض، داده‌ها را برای MLM آماده می‌کند، اما می‌توانیم با تنظیم آرگومان `mlm=False` به CLM تغییر دهیم:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForLanguageModeling
+
+tokenizer.pad_token = tokenizer.eos_token
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False, return_tensors="tf")
+```
+
+{/if}
+
+بیایید نگاهی به یک مثال بیندازیم:
+
+```py
+out = data_collator([tokenized_datasets["train"][i] for i in range(5)])
+for key in out:
+    print(f"{key} shape: {out[key].shape}")
+```
+
+{#if fw === 'pt'}
+
+```python out
+input_ids shape: torch.Size([5, 128])
+attention_mask shape: torch.Size([5, 128])
+labels shape: torch.Size([5, 128])
+```
+
+{:else}
+
+```python out
+input_ids shape: (5, 128)
+attention_mask shape: (5, 128)
+labels shape: (5, 128)
+```
+
+{/if}
+
+می‌توانیم ببینیم که مثال‌ها روی هم انباشته شده‌اند و همه تانسورها شکل یکسانی دارند.
+
+{#if fw === 'tf'}
+
+اکنون می‌توانیم با استفاده از گردآورنده‌ی داده‌ای که در بالا ایجاد کردیم، از متد `prepare_tf_dataset()` برای تبدیل دیتاسِت‌های خود به دیتاسِت‌های TensorFlow استفاده کنیم:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["train"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=32,
+)
+tf_eval_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["valid"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=32,
+)
+```
+
+{/if}
+
+> [!WARNING]
+> ⚠️ تغییر ورودی‌ها و برچسب‌ها برای ترازبندی آنها درون مدل اتفاق می‌افتد، بنابراین گردآورنده داده‌ها فقط ورودی‌ها را برای ایجاد برچسب‌ها کپی می‌کند.
+
+
+حالا همه چیز برای آموزش مدلمان آماده است -- کار زیادی لازم نبود! قبل از شروع آموزش، باید وارد هاگینگ‌فِیس شویم. اگر با یک دفترچه یادداشت کار می‌کنید، می‌توانید این کار را با تابع کاربردی زیر انجام دهید:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+این یک ویجت نمایش می‌دهد که می‌توانید اطلاعات ورود به سیستم هاگینگ‌فِیس خود را در آن وارد کنید.
+
+اگر با نوت‌بوک کار نمی‌کنید، کافیست خط زیر را در ترمینال خود تایپ کنید:
+
+```bash
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+فقط تنظیم آرگومان‌های تعلیم و اجرای `Trainer` باقی مانده است. از زمان‌بندی کسینوسی نرخ یادگیری با مقداری warmup و اندازه‌ی مؤثر بتچ ۲۵۶ (`per_device_train_batch_size` * `gradient_accumulation_steps`) استفاده می‌کنیم. انباشت گرادیان زمانی به کار می‌رود که یک بتچ در حافظه جا نشود و گرادیان را در چند گذر رو به جلو و پس‌رو به‌تدریج می‌سازد. هنگام ساخت حلقه‌ی تعلیم با 🤗 Accelerate این کار را می‌بینیم.
+
+```py
+from transformers import Trainer, TrainingArguments
+
+args = TrainingArguments(
+    output_dir="codeparrot-ds",
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=32,
+    evaluation_strategy="steps",
+    eval_steps=5_000,
+    logging_steps=5_000,
+    gradient_accumulation_steps=8,
+    num_train_epochs=1,
+    weight_decay=0.1,
+    warmup_steps=1_000,
+    lr_scheduler_type="cosine",
+    learning_rate=5e-4,
+    save_steps=5_000,
+    fp16=True,
+    push_to_hub=True,
+)
+
+trainer = Trainer(
+    model=model,
+    tokenizer=tokenizer,
+    args=args,
+    data_collator=data_collator,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["valid"],
+)
+```
+
+حالا می‌توانیم `Trainer` را اجرا کنیم و منتظر بمانیم تا آموزش تمام شود. بسته به اینکه آن را روی کل مجموعه آموزش یا زیرمجموعه‌ای از آن اجرا کنید، این کار به ترتیب ۲۰ یا ۲ ساعت طول خواهد کشید، پس چند قهوه و یک کتاب خوب برای خواندن بردارید!
+
+```py
+trainer.train()
+```
+
+پس از اتمام آموزش، می‌توانیم مدل و توکن‌ساز را به هاب ارسال کنیم:
+
+```py
+trainer.push_to_hub()
+```
+
+{:else}
+
+تنها کاری که باقی مانده پیکربندی ابرپارامترهای آموزشی و فراخوانی `compile()` و `fit()` است. ما از یک برنامه نرخ یادگیری با کمی آماده‌سازی برای بهبود پایداری آموزش استفاده خواهیم کرد:
+
+```py
+from transformers import create_optimizer
+import tensorflow as tf
+
+num_train_steps = len(tf_train_dataset)
+optimizer, schedule = create_optimizer(
+    init_lr=5e-5,
+    num_warmup_steps=1_000,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+
+# Train in mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+حالا می‌توانیم `model.fit()` را فراخوانی کنیم و منتظر بمانیم تا آموزش تمام شود. بسته به اینکه آن را روی کل مجموعه آموزش یا زیرمجموعه‌ای از آن اجرا کنید، به ترتیب ۲۰ یا ۲ ساعت طول خواهد کشید، پس چند قهوه و یک کتاب خوب برای خواندن بردارید! پس از اتمام آموزش، می‌توانیم مدل و توکنایزر را به هاب منتقل کنیم:
+
+```py
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(output_dir="codeparrot-ds", tokenizer=tokenizer)
+
+model.fit(tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback])
+```
+
+{/if}
+
+> نکته
+> ✏️ **امتحانش کنید!** فقط حدود ۳۰ خط کد علاوه بر `TrainingArguments` طول کشید تا از متون خام به آموزش GPT-2 برسیم. آن را با دیتاسِت خودتان امتحان کنید و ببینید آیا می‌توانید به نتایج خوبی برسید!
+
+> [!TIP]
+> {#if fw === 'pt'}
+>
+> 💡 اگر به دستگاهی با چندین پردازنده‌ی گرافیکی (GPU) دسترسی دارید، کد را روی آن اجرا کنید. `Trainer` به‌طور خودکار چند دستگاه را مدیریت می‌کند و این کار می‌تواند سرعت تعلیم را بسیار افزایش دهد.
+>
+> {:else}
+>
+> 💡 اگر به دستگاهی با چندین پردازنده‌ی گرافیکی (GPU) دسترسی دارید، می‌توانید از زمینه‌ی `MirroredStrategy` برای افزایش چشمگیر سرعت آموزش استفاده کنید. باید یک شیء `tf.distribute.MirroredStrategy` بسازید و مطمئن شوید که هر دو روش `to_tf_dataset()` و `prepare_tf_dataset()`، همچنین ساخت مدل و فراخوانی `fit()`، در زمینه‌ی `scope()` آن اجرا می‌شوند. مستندات این موضوع را [اینجا](https://www.tensorflow.org/guide/distributed_training#use_tfdistributestrategy_with_keras_modelfit) ببینید.
+>
+> {/if}
+
+## تولید کد با pipeline[[code-generation-with-a-pipeline]]
+
+حالا زمان آزمون واقعی است: ببینیم مدل تعلیم‌دیده چقدر خوب کار می‌کند! در گزارش‌ها می‌بینیم هزینه پیوسته کم شده است؛ برای آزمایش مدل، عملکرد آن را روی چند پرامپت بررسی می‌کنیم. مدل را در یک `pipeline` تولید متن قرار می‌دهیم و اگر GPU موجود باشد برای تولید سریع روی آن می‌گذاریم:
+
+{#if fw === 'pt'}
+
+```py
+import torch
+from transformers import pipeline
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+pipe = pipeline(
+    "text-generation", model="huggingface-course/codeparrot-ds", device=device
+)
+```
+
+{:else}
+
+```py
+from transformers import pipeline
+
+course_model = TFGPT2LMHeadModel.from_pretrained("huggingface-course/codeparrot-ds")
+course_tokenizer = AutoTokenizer.from_pretrained("huggingface-course/codeparrot-ds")
+pipe = pipeline(
+    "text-generation", model=course_model, tokenizer=course_tokenizer, device=0
+)
+```
+
+{/if}
+
+بیایید با کار ساده‌ی ایجاد یک نمودار پراکندگی شروع کنیم:
+
+```py
+txt = """\
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create scatter plot with x, y
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create scatter plot with x, y
+plt.scatter(x, y)
+
+# create scatter
+```
+
+نتیجه درست به نظر می‌رسد. آیا این روش برای عملیات `pandas` نیز کار می‌کند؟ بیایید ببینیم آیا می‌توانیم یک `DataFrame` را از دو آرایه ایجاد کنیم:
+
+```py
+txt = """\
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create dataframe from x and y
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# create some data
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# create dataframe from x and y
+df = pd.DataFrame({'x': x, 'y': y})
+df.insert(0,'x', x)
+for
+```
+
+عالیه، جواب درست همینه -- هرچند دوباره ستون `x` رو اضافه می‌کنه. از اونجایی که تعداد توکن‌های تولید شده محدود هست، حلقه `for` بعدی حذف می‌شه. بیایید ببینیم می‌تونیم یه کار پیچیده‌تر انجام بدیم و از مدل بخوایم که توی استفاده از عملیات `groupby` بهمون کمک کنه:
+
+```py
+txt = """\
+# dataframe with profession, income and name
+df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
+
+# calculate the mean income per profession
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# dataframe with profession, income and name
+df = pd.DataFrame({'profession': x, 'income':y, 'name': z})
+
+# calculate the mean income per profession
+profession = df.groupby(['profession']).mean()
+
+# compute the
+```
+
+بد نیست؛ همین روش درست انجام دادن کار است. در پایان ببینیم آیا می‌توانیم از آن برای `scikit-learn` نیز استفاده و یک مدل جنگل تصادفی راه‌اندازی کنیم:
+
+```py
+txt = """
+# import random forest regressor from scikit-learn
+from sklearn.ensemble import RandomForestRegressor
+
+# fit random forest model with 300 estimators on X, y:
+"""
+print(pipe(txt, num_return_sequences=1)[0]["generated_text"])
+```
+
+```python out
+# import random forest regressor from scikit-learn
+from sklearn.ensemble import RandomForestRegressor
+
+# fit random forest model with 300 estimators on X, y:
+rf = RandomForestRegressor(n_estimators=300, random_state=random_state, max_depth=3)
+rf.fit(X, y)
+rf
+```
+
+{#if fw === 'tf'}
+
+با نگاه به این چند نمونه به نظر می‌رسد مدل بخشی از نحو پشته‌ی علم داده‌ی پایتون را آموخته است. البته پیش از استقرار در دنیای واقعی باید مدل را دقیق‌تر ارزیابی کنیم، اما همین نمونه‌ی اولیه هم چشمگیر است.
+
+{:else}
+
+با نگاهی به این چند مثال، به نظر می‌رسد که مدل برخی از نحوهای پشتهٔ علم دادهٔ پایتون را یاد گرفته است (البته، قبل از استقرار مدل در دنیای واقعی، باید آن را به‌طور کامل‌تری ارزیابی کنیم). با این حال، گاهی اوقات برای دستیابی به عملکرد لازم برای یک مورد استفادهٔ خاص، نیاز به سفارشی‌سازی بیشتر آموزش مدل است. به‌عنوان مثال، اگر بخواهیم اندازهٔ دسته را به‌صورت پویا به‌روزرسانی کنیم یا حلقهٔ آموزشی شرطی‌ای داشته باشیم که نمونه‌های نامناسب را در لحظه رد کند چه؟ یکی از گزینه‌ها زیرکلاس‌سازی `Trainer` و افزودن تغییرات لازم است، اما گاهی نوشتن حلقهٔ آموزش از ابتدا ساده‌تر است. اینجاست که 🤗 Accelerate وارد می‌شود.
+
+{/if}
+
+{#if fw === 'pt'}
+
+## آموزش با 🤗 Accelerate[[training-with-accelerate]]
+
+ما نحوه آموزش یک مدل با `Trainer` را دیده‌ایم که می‌تواند امکان سفارشی‌سازی را فراهم کند. با این حال، گاهی اوقات می‌خواهیم کنترل کاملی بر حلقه آموزش داشته باشیم یا تغییرات عجیب و غریبی ایجاد کنیم. در این مورد 🤗 Accelerate انتخاب بسیار خوبی است و در این بخش مراحل استفاده از آن برای آموزش مدل خود را بررسی خواهیم کرد. برای جالب‌تر کردن چیزها، یک تغییر نیز به حلقه آموزش اضافه خواهیم کرد.
+
+<Youtube id="Hm8_PgVTFuc"/>
+
+از آنجایی که ما عمدتاً به تکمیل خودکار معقول برای کتابخانه‌های علم داده علاقه‌مند هستیم، منطقی است که به نمونه‌های آموزشی‌ای که بیشتر از این کتابخانه‌ها استفاده می‌کنند، وزن بیشتری بدهیم. ما می‌توانیم این مثال‌ها را با استفاده از کلمات کلیدی مانند `plt`، `pd`، `sk`، `fit` و `predict` به‌راحتی شناسایی کنیم؛ این‌ها رایج‌ترین نام‌های واردشونده برای `matplotlib.pyplot`، `pandas` و `sklearn` و نیز الگوی fit/predict مربوط به `sklearn` هستند. اگر هرکدام از این‌ها به‌صورت یک توکن واحد نمایش داده شوند، می‌توانیم به‌سادگی بررسی کنیم که در دنبالهٔ ورودی وجود دارند یا نه. توکن‌ها ممکن است پیشوند فاصله داشته باشند، بنابراین نسخه‌های دارای این پیشوند را نیز در واژگان توکن‌ساز بررسی می‌کنیم. برای اطمینان از عملکرد، یک توکن آزمایشی اضافه می‌کنیم که باید به چند توکن تقسیم شود:
+
+```py
+keytoken_ids = []
+for keyword in [
+    "plt",
+    "pd",
+    "sk",
+    "fit",
+    "predict",
+    " plt",
+    " pd",
+    " sk",
+    " fit",
+    " predict",
+    "testtest",
+]:
+    ids = tokenizer([keyword]).input_ids[0]
+    if len(ids) == 1:
+        keytoken_ids.append(ids[0])
+    else:
+        print(f"Keyword has not single token: {keyword}")
+```
+
+```python out
+'Keyword has not single token: testtest'
+```
+
+عالی است، درست کار می‌کند! حالا تابع هزینه‌ی سفارشی‌ای می‌نویسیم که توالی ورودی، لوجیت‌ها و توکِن‌های کلیدی انتخاب‌شده را می‌گیرد. ابتدا باید لوجیت‌ها و ورودی‌ها را هم‌تراز کنیم: توالی ورودی که یک خانه به راست منتقل شده برچسب‌ها را می‌سازد، چون توکِن بعدی برچسب توکِن فعلی است. برچسب‌ها را از توکِن دوم ورودی آغاز می‌کنیم، چون مدل برای نخستین توکِن پیش‌بینی نمی‌کند. سپس آخرین لوجیت را حذف می‌کنیم، چون برای توکِنی که پس از پایان توالی ورودی قرار دارد برچسبی نداریم. با این کار هزینه‌ی هر نمونه و تعداد تکرار کلمات کلیدی در هر نمونه را به دست می‌آوریم و در پایان میانگین وزنی همه‌ی نمونه‌ها را محاسبه می‌کنیم؛ برای نمونه‌هایی که کلیدواژه ندارند وزن ۱ در نظر می‌گیریم:
+
+```py
+from torch.nn import CrossEntropyLoss
+import torch
+
+
+def keytoken_weighted_loss(inputs, logits, keytoken_ids, alpha=1.0):
+    # Shift so that tokens < n predict n
+    shift_labels = inputs[..., 1:].contiguous()
+    shift_logits = logits[..., :-1, :].contiguous()
+    # Calculate per-token loss
+    loss_fct = CrossEntropyLoss(reduce=False)
+    loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+    # Resize and average loss per sample
+    loss_per_sample = loss.view(shift_logits.size(0), shift_logits.size(1)).mean(axis=1)
+    # Calculate and scale weighting
+    weights = torch.stack([(inputs == kt).float() for kt in keytoken_ids]).sum(
+        axis=[0, 2]
+    )
+    weights = alpha * (1.0 + weights)
+    # Calculate weighted average
+    weighted_loss = (loss_per_sample * weights).mean()
+    return weighted_loss
+```
+
+قبل از اینکه بتوانیم آموزش با این تابع زیان جدید و فوق‌العاده را شروع کنیم، باید چند نکته را آماده کنیم:
+
+- ما به dataloader ها نیاز داریم تا داده‌ها را به صورت دسته‌ای بارگذاری کنند.
+- ما باید پارامترهای کاهش وزن را تنظیم کنیم.
+- هر از گاهی می‌خواهیم ارزیابی کنیم، بنابراین منطقی است که کد ارزیابی را در یک تابع قرار دهیم.
+
+با دیتالودرها شروع کنیم. فقط باید قالب دیتاسِت را روی `"torch"` بگذاریم و سپس آن را با اندازه‌ی بتچ مناسب به `DataLoader` پایتورچ بدهیم:
+
+```py
+from torch.utils.data.dataloader import DataLoader
+
+tokenized_datasets.set_format("torch")
+train_dataloader = DataLoader(tokenized_datasets["train"], batch_size=32, shuffle=True)
+eval_dataloader = DataLoader(tokenized_datasets["valid"], batch_size=32)
+```
+
+در مرحله بعد، پارامترها را گروه‌بندی می‌کنیم تا بهینه‌ساز بداند کدام یک از آنها کاهش وزن اضافی دریافت خواهند کرد. معمولاً همه عبارات وزنی بایاس و LayerNorm از این امر مستثنی هستند؛ در اینجا نحوه انجام این کار آمده است:
+
+```py
+weight_decay = 0.1
+
+
+def get_grouped_params(model, no_decay=["bias", "LayerNorm.weight"]):
+    params_with_wd, params_without_wd = [], []
+    for n, p in model.named_parameters():
+        if any(nd in n for nd in no_decay):
+            params_without_wd.append(p)
+        else:
+            params_with_wd.append(p)
+    return [
+        {"params": params_with_wd, "weight_decay": weight_decay},
+        {"params": params_without_wd, "weight_decay": 0.0},
+    ]
+```
+
+چون می‌خواهیم هنگام تعلیم مدل را مرتب روی مجموعه‌ی اعتبارسنجی ارزیابی کنیم، تابعی برای آن می‌نویسیم. این تابع فقط دیتالودر ارزیابی را پیمایش و همه‌ی هزینه‌ها را میان فرایندها جمع می‌کند:
+
+```py
+def evaluate():
+    model.eval()
+    losses = []
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(batch["input_ids"], labels=batch["input_ids"])
+
+        losses.append(accelerator.gather(outputs.loss))
+    loss = torch.mean(torch.cat(losses))
+    try:
+        perplexity = torch.exp(loss)
+    except OverflowError:
+        perplexity = float("inf")
+    return loss.item(), perplexity.item()
+```
+
+با تابع `evaluate()` می‌توانیم هزینه و [پریپلکسیتی](/course/chapter7/3) را در فاصله‌های منظم گزارش کنیم. سپس مدل را دوباره تعریف می‌کنیم تا مطمئن شویم تعلیم را دوباره از ابتدا آغاز می‌کنیم:
+
+```py
+model = GPT2LMHeadModel(config)
+```
+
+سپس می‌توانیم بهینه‌ساز خود را با استفاده از تابع قبل برای تقسیم پارامترها برای کاهش وزن تعریف کنیم:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(get_grouped_params(model), lr=5e-4)
+```
+
+حالا بیایید مدل، بهینه‌ساز و بارگذارهای داده را آماده کنیم تا بتوانیم آموزش را شروع کنیم:
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator(fp16=True)
+
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+> [!TIP]
+> 🚨 اگر روی یک TPU آموزش می‌بینید، باید تمام کدی که از سلول بالا شروع می‌شود را به یک تابع آموزشی اختصاصی منتقل کنید. برای جزئیات بیشتر به [فصل ۳](/course/chapter3) مراجعه کنید.
+
+حالا که `train_dataloader` خود را به `accelerator.prepare()` ارسال کرده‌ایم، می‌توانیم از طول آن برای محاسبه تعداد مراحل آموزش استفاده کنیم. به یاد داشته باشید که همیشه باید این کار را پس از آماده‌سازی dataloader انجام دهیم، زیرا این روش طول آن را تغییر می‌دهد. ما از یک زمانبندی خطی کلاسیک از نرخ یادگیری تا ۰ استفاده می‌کنیم:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 1
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    name="linear",
+    optimizer=optimizer,
+    num_warmup_steps=1_000,
+    num_training_steps=num_training_steps,
+)
+```
+
+در نهایت، برای ارسال مدل به هاب، باید یک شیء `Repository` در یک پوشه کاری ایجاد کنیم. ابتدا اگر هنوز وارد سیستم نشده‌اید، وارد هاگینگ‌فِیس هاب شوید. نام مخزن را از روی شناسه مدلی که می‌خواهیم به مدل خود بدهیم، تعیین می‌کنیم (می‌توانید `repo_name` را با نام دلخواه خود جایگزین کنید؛ فقط باید نام کاربری شما را در خود داشته باشد، که همان کاری است که تابع `get_full_repo_name()` انجام می‌دهد):
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "codeparrot-ds-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/codeparrot-ds-accelerate'
+```
+
+سپس می‌توانیم آن مخزن را در یک پوشه محلی کپی کنیم. اگر از قبل وجود داشته باشد، این پوشه محلی باید یک کپی موجود از مخزنی باشد که با آن کار می‌کنیم:
+
+```py
+output_dir = "codeparrot-ds-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+حالا با فراخوانی متد `repo.push_to_hub()` هر چیزی را که در `output_dir` ذخیره کنیم بارگذاری می‌کنیم. این کار به بارگذاری مدل‌های میانی در پایان هر دوره کمک می‌کند.
+
+پیش از تعلیم، آزمونی سریع اجرا کنیم تا ببینیم تابع ارزیابی درست کار می‌کند:
+
+```py
+evaluate()
+```
+
+```python out
+(10.934126853942871, 56057.14453125)
+```
+
+اینها مقادیر بسیار بالایی برای زیان و سرگشتگی هستند، اما این تعجب‌آور نیست زیرا ما هنوز مدل را آموزش نداده‌ایم. با این کار، همه چیز را برای نوشتن بخش اصلی اسکریپت آموزشی آماده کرده‌ایم: حلقه آموزشی. در حلقه آموزشی، ما روی بارگذار داده تکرار می‌کنیم و دسته‌ها را به مدل منتقل می‌کنیم. با استفاده از لوجیت‌ها، می‌توانیم تابع زیان سفارشی خود را ارزیابی کنیم. ما زیان را با تعداد تجمع گرادیان مقیاس‌بندی می‌کنیم. مراحل را طوری تنظیم می‌کنیم که هنگام تجمیع مراحل بیشتر، تلفات بزرگتری ایجاد نشود. قبل از بهینه‌سازی، گرادیان‌ها را نیز برای همگرایی بهتر برش می‌دهیم. در نهایت، هر چند مرحله، مدل را روی مجموعه ارزیابی با تابع جدید `evaluate()` خود ارزیابی می‌کنیم:
+
+```py
+from tqdm.notebook import tqdm
+
+gradient_accumulation_steps = 8
+eval_steps = 5_000
+
+model.train()
+completed_steps = 0
+for epoch in range(num_train_epochs):
+    for step, batch in tqdm(
+        enumerate(train_dataloader, start=1), total=num_training_steps
+    ):
+        logits = model(batch["input_ids"]).logits
+        loss = keytoken_weighted_loss(batch["input_ids"], logits, keytoken_ids)
+        if step % 100 == 0:
+            accelerator.print(
+                {
+                    "samples": step * samples_per_step,
+                    "steps": completed_steps,
+                    "loss/train": loss.item() * gradient_accumulation_steps,
+                }
+            )
+        loss = loss / gradient_accumulation_steps
+        accelerator.backward(loss)
+        if step % gradient_accumulation_steps == 0:
+            accelerator.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+            completed_steps += 1
+        if (step % (eval_steps * gradient_accumulation_steps)) == 0:
+            eval_loss, perplexity = evaluate()
+            accelerator.print({"loss/eval": eval_loss, "perplexity": perplexity})
+            model.train()
+            accelerator.wait_for_everyone()
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+            if accelerator.is_main_process:
+                tokenizer.save_pretrained(output_dir)
+                repo.push_to_hub(
+                    commit_message=f"Training in progress step {step}", blocking=False
+                )
+```
+
+و تمام -- شما اکنون حلقه آموزشی سفارشی خود را برای مدل‌های زبان سببی مانند GPT-2 دارید که می‌توانید آن را بیشتر با نیازهای خود سفارشی کنید.
+
+> [!TIP]
+> ✏️ **امتحانش کنید!** یا تابع زیان سفارشی خودتان را متناسب با مورد استفاده‌تان ایجاد کنید، یا یک مرحله سفارشی دیگر به حلقه آموزش اضافه کنید.
+
+> نکته
+> ✏️ **امتحانش کنید!** هنگام اجرای آزمایش‌های آموزشی طولانی، ایده خوبی است که معیارهای مهم را با استفاده از ابزارهایی مانند TensorBoard یا Weights & Biases ثبت کنید. ثبت صحیح داده‌ها را به حلقه آموزشی اضافه کنید تا همیشه بتوانید روند آموزش را بررسی کنید.
+
+{/if}
+</div>

@@ -1,0 +1,618 @@
+<div dir="rtl">
+
+# یک حلقه‌ی تعلیم کامل[[a-full-training]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+]} />
+
+<Youtube id="Dh9CL8fyG80"/>
+
+حالا می‌بینیم چگونه بدون استفاده از کلاس `Trainer` و با پیاده‌سازی یک حلقه‌ی تعلیم از صفر، با به‌کارگیری بهترین روش‌های امروزی پایتورچ، به همان نتایجی برسیم که در بخش قبل به دست آوردیم. دوباره فرض می‌کنیم پردازش داده‌ها را در بخش ۲ انجام داده‌اید. در اینجا خلاصه‌ی کوتاهی از همه‌ی چیزهایی که نیاز خواهید داشت ارائه می‌کنیم:
+
+> [!TIP]
+> 🏗️ **تعلیم از صفر**: این بخش بر محتوای قبلی بنا شده است. برای راهنمایی جامع درباره‌ی حلقه‌های تعلیم پایتورچ و بهترین روش‌ها، [مستندات تعلیم 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/training#train-in-native-pytorch) و [کتاب آشپزی تعلیم سفارشی](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu#model) را ببینید.
+
+<div dir="ltr">
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+</div>
+
+### آماده‌سازی برای تعلیم[[prepare-for-training]]
+
+پیش از آنکه حلقه‌ی تعلیم را واقعاً بنویسیم، باید چند شیء را تعریف کنیم. اولین موارد، دیتالودرهایی هستند که برای پیمایش بتچ‌ها از آن‌ها استفاده می‌کنیم. اما پیش از تعریف دیتالودرها، باید کمی پس‌پردازش روی `tokenized_datasets` انجام دهیم تا برخی کارهایی را که `Trainer` به‌صورت خودکار انجام می‌داد، مدیریت کنیم. به‌طور مشخص، باید:
+
+<div dir="rtl">
+
+- ستون‌های مربوط به مقادیری را که مدل انتظار ندارد حذف کنیم (مانند ستون‌های `sentence1` و `sentence2`).
+- نام ستون `label` را به `labels` تغییر دهیم (چون مدل انتظار دارد نام آرگومان `labels` باشد).
+- قالب دیتاست‌ها را طوری تنظیم کنیم که به‌جای لیست، تِنسورهای پایتورچ برگردانند.
+
+</div>
+
+`tokenized_datasets` برای هرکدام از این مراحل یک روش دارد:
+
+<div dir="ltr">
+
+```py
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+tokenized_datasets["train"].column_names
+```
+
+</div>
+
+سپس می‌توانیم بررسی کنیم که نتیجه فقط شامل ستون‌هایی است که مدل ما می‌پذیرد:
+
+<div dir="ltr">
+
+```python
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+</div>
+
+حالا که این کار انجام شده است، می‌توانیم دیتالودرهای خود را به‌سادگی تعریف کنیم:
+
+<div dir="ltr">
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+</div>
+
+برای آنکه سریع بررسی کنیم پردازش داده‌ها اشتباهی ندارد، می‌توانیم یک بتچ را این‌گونه بررسی کنیم:
+
+<div dir="ltr">
+
+```py
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python out
+{'attention_mask': torch.Size([8, 65]),
+ 'input_ids': torch.Size([8, 65]),
+ 'labels': torch.Size([8]),
+ 'token_type_ids': torch.Size([8, 65])}
+```
+
+</div>
+
+توجه کنید شکل‌های واقعی احتمالاً برای شما کمی متفاوت خواهند بود، چون برای دیتالودر تعلیم `shuffle=True` تعیین کرده‌ایم و داخل بتچ، ورودی‌ها را تا بیشترین طول هم‌طول‌سازی می‌کنیم.
+
+حالا که پردازش داده‌ها کاملاً تمام شده است (هدف رضایت‌بخش اما دست‌نیافتنی برای هر متخصص یادگیری ماشین)، به سراغ مدل برویم. آن را دقیقاً مانند بخش قبل نمونه‌سازی می‌کنیم:
+
+<div dir="ltr">
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+</div>
+
+برای آنکه مطمئن شویم همه‌چیز هنگام تعلیم به‌خوبی پیش می‌رود، بتچ خود را به این مدل می‌دهیم:
+
+<div dir="ltr">
+
+```py
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+</div>
+
+همه‌ی مدل‌های 🤗 Transformers وقتی `labels` ارائه شوند، مقدار هزینه را برمی‌گردانند و همچنین لوجیت‌ها را دریافت می‌کنیم (برای هر ورودی در بتچ ما دو لوجیت، یعنی یک تِنسور با اندازه‌ی ۸ در ۲).
+
+تقریباً آماده‌ی نوشتن حلقه‌ی تعلیم هستیم! فقط دو چیز کم داریم: یک بهینه‌ساز و یک زمان‌بند نرخ یادگیری. چون تلاش می‌کنیم کاری را که `Trainer` انجام می‌داد به‌صورت دستی تکرار کنیم، از همان مقدارهای پیش‌فرض استفاده خواهیم کرد. بهینه‌سازی که `Trainer` استفاده می‌کند `AdamW` است؛ این بهینه‌ساز همان Adam است، اما برای منظم‌سازی کاهش وزن تفاوتی دارد (به مقاله‌ی [«منظم‌سازی کاهش وزن جداشده»](https://arxiv.org/abs/1711.05101) نوشته‌ی Ilya Loshchilov و Frank Hutter مراجعه کنید):
+
+<div dir="ltr">
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+</div>
+
+> [!TIP]
+> 💡 **نکات بهینه‌سازی مدرن**: برای عملکرد حتی بهتر، می‌توانید این موارد را امتحان کنید:
+> - **AdamW با کاهش وزن**: `AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)`
+> - **Adam هشت‌بیتی**: برای بهینه‌سازی کارآمد از نظر حافظه از `bitsandbytes` استفاده کنید
+> - **نرخ‌های یادگیری متفاوت**: نرخ‌های یادگیری کمتر (از ۱e-۵ تا ۳e-۵) اغلب برای مدل‌های بزرگ بهتر عمل می‌کنند
+>
+> 🚀 **منابع بهینه‌سازی**: در [راهنمای بهینه‌سازی 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/performance#optimizer) درباره‌ی بهینه‌سازها و راهبردهای تعلیم بیشتر بیاموزید.
+
+در نهایت، زمان‌بند نرخ یادگیری که به‌صورت پیش‌فرض استفاده می‌شود، فقط یک کاهش خطی از بیشترین مقدار (۵e-۵) تا صفر است. برای تعریف درست آن، باید تعداد گام‌های تعلیم را بدانیم؛ این تعداد برابر است با تعداد دوره‌هایی که می‌خواهیم اجرا کنیم ضربدر تعداد بتچ‌های تعلیم (که همان طول دیتالودر تعلیم ماست). `Trainer` به‌صورت پیش‌فرض از سه دوره استفاده می‌کند، بنابراین ما نیز همین کار را انجام می‌دهیم:
+
+<div dir="ltr">
+
+```py
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python out
+1377
+```
+
+</div>
+
+### حلقه‌ی تعلیم[[the-training-loop]]
+
+یک نکته‌ی آخر: اگر به GPU دسترسی داشته باشیم، می‌خواهیم از آن استفاده کنیم (تعلیم روی CPU ممکن است به‌جای چند دقیقه، چند ساعت طول بکشد). برای این کار، یک `device` تعریف می‌کنیم که مدل و بتچ‌هایمان را روی آن قرار می‌دهیم:
+
+<div dir="ltr">
+
+```py
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+device
+```
+
+```python out
+device(type='cuda')
+```
+
+</div>
+
+حالا آماده‌ی تعلیم هستیم! برای آنکه بدانیم تعلیم چه زمانی تمام می‌شود، با استفاده از کتابخانه‌ی `tqdm` روی تعداد گام‌های تعلیم یک نوار پیشرفت اضافه می‌کنیم:
+
+<div dir="ltr">
+
+```py
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+</div>
+
+> [!TIP]
+> 💡 **بهینه‌سازی‌های مدرن تعلیم**: برای کارآمدتر کردن حلقه‌ی تعلیم، این موارد را در نظر بگیرید:
+>
+> - **بُرش گرادیان**: پیش از `optimizer.step()`، عبارت `torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)` را اضافه کنید
+> - **دقت ترکیبی**: برای تعلیم سریع‌تر از `torch.cuda.amp.autocast()` و `GradScaler` استفاده کنید
+> - **انباشت گرادیان**: گرادیان‌ها را روی چند بتچ انباشته کنید تا بتچ‌های بزرگ‌تر را شبیه‌سازی کنید
+> - **نقطه‌های تعلیم**: برای ادامه‌ی تعلیم پس از وقفه، به‌صورت دوره‌ای نقطه‌های تعلیم مدل را ذخیره کنید
+>
+> 🔧 **راهنمای پیاده‌سازی**: برای نمونه‌های دقیق این بهینه‌سازی‌ها، [راهنمای تعلیم کارآمد 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_one) و [مجموعه‌ی بهینه‌سازها](https://huggingface.co/docs/transformers/main/en/optimizers) را ببینید.
+
+می‌بینید که هسته‌ی حلقه‌ی تعلیم بسیار شبیه حلقه‌ی مقدمه است. ما هیچ گزارشی درخواست نکردیم، بنابراین این حلقه‌ی تعلیم چیزی درباره‌ی عملکرد مدل به ما نمی‌گوید. باید یک حلقه‌ی ارزیابی نیز به آن اضافه کنیم.
+
+### حلقه‌ی ارزیابی[[the-evaluation-loop]]
+
+همان‌طور که قبلاً انجام دادیم، از معیاری استفاده می‌کنیم که کتابخانه‌ی 🤗 Evaluate ارائه می‌دهد. روش `metric.compute()` را قبلاً دیده‌ایم، اما معیارها می‌توانند با روش `add_batch()` هنگام پیمایش حلقه‌ی پیش‌بینی، بتچ‌ها را برای ما جمع کنند. پس از جمع‌آوری همه‌ی بتچ‌ها، می‌توانیم با `metric.compute()` نتیجه‌ی نهایی را دریافت کنیم. در اینجا نحوه‌ی پیاده‌سازی همه‌ی این موارد در یک حلقه‌ی ارزیابی را می‌بینید:
+
+> [!TIP]
+> 📊 **بهترین روش‌های ارزیابی**: برای راهبردها و معیارهای ارزیابی پیشرفته‌تر، [مستندات 🤗 Evaluate](https://huggingface.co/docs/evaluate/) و [کتاب آشپزی جامع ارزیابی](https://github.com/huggingface/evaluation-guidebook) را بررسی کنید.
+
+<div dir="ltr">
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+</div>
+
+دوباره، نتایج شما به‌دلیل تصادفی بودن مقداردهی اولیه‌ی سَر مدل و درهم‌ریختن ترتیب داده‌ها، کمی متفاوت خواهد بود، اما باید در همان محدوده باشد.
+
+> [!TIP]
+> ✏️ **امتحان کنید!** حلقه‌ی تعلیم قبلی را تغییر دهید تا مدل خود را روی دیتاست SST-2 کوک کنید.
+
+### حلقه‌ی تعلیم خود را با 🤗 Accelerate تقویت کنید[[supercharge-your-training-loop-with-accelerate]]
+
+<Youtube id="s7dy8QRgjJ0" />
+
+حلقه‌ی تعلیمی که پیش‌تر تعریف کردیم، روی یک CPU یا GPU به‌خوبی کار می‌کند. اما با استفاده از کتابخانه‌ی [🤗 Accelerate](https://github.com/huggingface/accelerate)، تنها با چند تغییر می‌توانیم تعلیم توزیع‌شده روی چند GPU یا TPU را فعال کنیم. 🤗 Accelerate پیچیدگی تعلیم توزیع‌شده، دقت ترکیبی و قرار دادن روی دستگاه را به‌صورت خودکار مدیریت می‌کند. از نقطه‌ی ایجاد دیتالودرهای تعلیم و اعتبارسنجی شروع کنیم؛ در اینجا حلقه‌ی تعلیم دستی ما چنین است:
+
+> [!TIP]
+> ⚡ **بررسی عمیق Accelerate**: در [مستندات 🤗 Accelerate](https://huggingface.co/docs/accelerate/) درباره‌ی تعلیم توزیع‌شده، دقت ترکیبی و بهینه‌سازی سخت‌افزار بیشتر بیاموزید و نمونه‌های عملی را در [مستندات ترنسفورمرها](https://huggingface.co/docs/transformers/main/en/accelerate) بررسی کنید.
+
+<div dir="ltr">
+
+```py
+from accelerate import Accelerator
+from torch.optim import AdamW
+from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+</div>
+
+اولین خطی که باید اضافه کنیم، خط import است. خط دوم یک شیء `Accelerator` نمونه‌سازی می‌کند که محیط را بررسی کرده و راه‌اندازی مناسب توزیع‌شده را انجام می‌دهد. 🤗 Accelerate قرار دادن روی دستگاه را برای شما مدیریت می‌کند؛ بنابراین می‌توانید خط‌هایی را که مدل را روی دستگاه قرار می‌دهند حذف کنید (یا اگر ترجیح می‌دهید، آن‌ها را تغییر دهید تا به‌جای `device` از `accelerator.device` استفاده کنند).
+
+بخش اصلی کار در خطی انجام می‌شود که دیتالودرها، مدل و بهینه‌ساز را به `accelerator.prepare()` می‌فرستد. این تابع آن شیءها را در محفظه‌ی مناسب قرار می‌دهد تا تعلیم توزیع‌شده‌ی شما همان‌طور که باید کار کند. تغییرات باقی‌مانده شامل حذف خطی است که بتچ را روی `device` قرار می‌دهد (اگر می‌خواهید آن را نگه دارید، فقط می‌توانید تغییرش دهید تا از `accelerator.device` استفاده کند) و جایگزین کردن `loss.backward()` با `accelerator.backward(loss)`.
+
+> [!TIP]
+> ⚠️ برای بهره‌مندی از افزایش سرعت ارائه‌شده توسط Cloud TPUها، پیشنهاد می‌کنیم نمونه‌ها را با استفاده از آرگومان‌های `padding="max_length"` و `max_length` توکِنایزر، تا طولی ثابت هم‌طول‌سازی کنید.
+
+اگر می‌خواهید این کد را کپی و اجرا کنید، در اینجا حلقه‌ی تعلیم کامل با 🤗 Accelerate آمده است:
+
+<div dir="ltr">
+
+```py
+from accelerate import Accelerator
+from torch.optim import AdamW
+from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+</div>
+
+قرار دادن این کد در یک اسکریپت `train.py` باعث می‌شود اسکریپت روی هر نوع راه‌اندازی توزیع‌شده‌ای قابل اجرا باشد. برای امتحان کردن آن در راه‌اندازی توزیع‌شده‌ی خود، این دستور را اجرا کنید:
+
+<div dir="ltr">
+
+```bash
+accelerate config
+```
+
+</div>
+
+این دستور از شما می‌خواهد به چند پرسش پاسخ دهید و پاسخ‌هایتان را در فایل پیکربندی‌ای ذخیره می‌کند که این دستور از آن استفاده خواهد کرد:
+
+<div dir="ltr">
+
+```
+accelerate launch train.py
+```
+
+</div>
+
+این دستور تعلیم توزیع‌شده را اجرا می‌کند.
+
+اگر می‌خواهید این کار را در یک نوت‌بوک امتحان کنید (برای نمونه، برای آزمودن TPUها در کولَب)، کافی است کد را داخل یک `training_function()` قرار دهید و یک سلول آخر با این محتوا اجرا کنید:
+
+<div dir="ltr">
+
+```python
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+</div>
+
+نمونه‌های بیشتری را می‌توانید در [مخزن 🤗 Accelerate](https://github.com/huggingface/accelerate/tree/main/examples) پیدا کنید.
+
+> [!TIP]
+> 🌐 **تعلیم توزیع‌شده**: برای پوشش جامع تعلیم چند GPU و چند گره، [راهنمای تعلیم توزیع‌شده‌ی 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_many) و [کتاب آشپزی مقیاس‌بندی تعلیم](https://huggingface.co/docs/transformers/main/en/accelerate) را ببینید.
+
+### گام‌های بعدی و بهترین روش‌ها[[next-steps-and-best-practices]]
+
+حالا که پیاده‌سازی تعلیم از صفر را یاد گرفته‌اید، در اینجا چند ملاحظه‌ی دیگر برای استفاده در محیط تولید آمده است:
+
+**ارزیابی مدل**: همیشه مدل خود را با چندین معیار، نه فقط دقت، ارزیابی کنید. برای ارزیابی جامع از کتابخانه‌ی 🤗 Evaluate استفاده کنید.
+
+**تنظیم ابرپارامترها**: برای بهینه‌سازی نظام‌مند ابرپارامترها، استفاده از کتابخانه‌هایی مانند Optuna یا Ray Tune را در نظر بگیرید.
+
+**پایش مدل**: معیارهای تعلیم، منحنی‌های یادگیری و عملکرد اعتبارسنجی را در سراسر فرایند تعلیم دنبال کنید.
+
+**اشتراک‌گذاری مدل**: پس از تعلیم، مدل خود را در هاب هاگینگ‌فِیس به اشتراک بگذارید تا برای جامعه کاربران در دسترس باشد.
+
+**کارایی**: برای مدل‌های بزرگ، تکنیک‌هایی مانند نقطه‌گذاری گرادیان، کوک کارآمد از نظر پارامتر (LoRA، AdaLoRA) یا روش‌های کوانتیزه‌سازی را در نظر بگیرید.
+
+این بررسی عمیق ما درباره‌ی کوک کردن با حلقه‌های تعلیم سفارشی به پایان می‌رسد. مهارت‌هایی که در اینجا آموختید، زمانی که به کنترل کامل بر فرایند تعلیم نیاز دارید یا می‌خواهید منطق تعلیم سفارشی‌ای فراتر از آنچه API `Trainer` ارائه می‌دهد پیاده‌سازی کنید، بسیار به کارتان خواهند آمد.
+
+## آزمون بخش[[section-quiz]]
+
+درک خود را از حلقه‌های تعلیم سفارشی و تکنیک‌های پیشرفته‌ی تعلیم بیازمایید:
+
+### ۱. تفاوت اصلی بهینه‌سازهای Adam و AdamW چیست؟
+
+<Question
+	choices={[
+		{
+			text: "AdamW از زمان‌بندی نرخ یادگیری متفاوتی استفاده می‌کند.",
+			explain: "زمان‌بندی نرخ یادگیری از انتخاب بهینه‌ساز جداست."
+		},
+		{
+			text: "AdamW شامل منظم‌سازی کاهش وزن جداشده است.",
+			explain: "درست است! AdamW کاهش وزن را از به‌روزرسانی پارامترها بر اساس گرادیان جدا می‌کند و به منظم‌سازی بهتر می‌انجامد.",
+            correct: true
+		},
+		{
+			text: "AdamW فقط با مدل‌های ترنسفورمر کار می‌کند.",
+			explain: "AdamW را می‌توان با هر معماری مدلی، نه فقط ترنسفورمرها، استفاده کرد."
+		},
+        {
+			text: "AdamW به حافظه‌ی کمتری از Adam نیاز دارد.",
+			explain: "هر دو بهینه‌ساز نیازمندی‌های حافظه‌ی مشابهی دارند."
+		}
+	]}
+/>
+
+### ۲. در یک حلقه‌ی تعلیم، ترتیب درست عملیات چیست؟
+
+<Question
+	choices={[
+		{
+			text: "عبور رو به جلو → عبور رو به عقب → گام بهینه‌ساز → صفر کردن گرادیان‌ها",
+			explain: "نزدیک بود، اما باید پیش از عبور رو به جلوی بعدی گرادیان‌ها را صفر کنید تا گرادیان‌های قبلی انباشته نشوند."
+		},
+		{
+			text: "عبور رو به جلو → عبور رو به عقب → گام بهینه‌ساز → گام زمان‌بند → صفر کردن گرادیان‌ها",
+			explain: "درست است! ترتیب درست این است: محاسبه‌ی هزینه، محاسبه‌ی گرادیان‌ها، به‌روزرسانی پارامترها، به‌روزرسانی نرخ یادگیری، سپس پاک کردن گرادیان‌ها.",
+            correct: true
+		},
+		{
+			text: "صفر کردن گرادیان‌ها → عبور رو به جلو → گام بهینه‌ساز → عبور رو به عقب",
+			explain: "عبور رو به عقب باید پس از عبور رو به جلو انجام شود تا گرادیان‌ها از هزینه محاسبه شوند."
+		},
+        {
+			text: "عبور رو به جلو → صفر کردن گرادیان‌ها → عبور رو به عقب → گام بهینه‌ساز",
+			explain: "صفر کردن گرادیان‌ها پیش از عبور رو به عقب، گرادیان‌هایی را که به‌تازگی محاسبه کرده‌اید از بین می‌برد."
+		}
+	]}
+/>
+
+### ۳. کتابخانه‌ی 🤗 Accelerate در درجه‌ی اول به چه چیزی کمک می‌کند؟
+
+<Question
+	choices={[
+		{
+			text: "با بهینه‌سازی عبور رو به جلو، تعلیم مدل‌هایتان را سریع‌تر می‌کند.",
+			explain: "Accelerate معماری مدل را بهینه نمی‌کند."
+		},
+		{
+			text: "به‌صورت خودکار بهترین ابرپارامترها را انتخاب می‌کند.",
+			explain: "Accelerate بهینه‌سازی ابرپارامترها را انجام نمی‌دهد."
+		},
+		{
+			text: "با حداقل تغییرات کد، تعلیم توزیع‌شده روی چندین GPU/TPU را ممکن می‌کند.",
+			explain: "درست است! Accelerate پیچیدگی تعلیم توزیع‌شده را مدیریت می‌کند و اجازه می‌دهد کد شما به‌صورت یکپارچه روی یک یا چند دستگاه اجرا شود.",
+            correct: true
+		},
+        {
+			text: "مدل‌ها را به فریمورک‌های مختلفی مانند TensorFlow تبدیل می‌کند.",
+			explain: "Accelerate در چارچوب پایتورچ کار می‌کند و بین فریمورک‌ها تبدیل انجام نمی‌دهد."
+		}
+	]}
+/>
+
+### ۴. چرا در حلقه‌ی تعلیم بتچ‌ها را به دستگاه منتقل می‌کنیم؟
+
+<Question
+	choices={[
+		{
+			text: "برای آنکه تعلیم سریع‌تر شود.",
+			explain: "اگرچه این کار می‌تواند بر سرعت اثر بگذارد، دلیل اصلی سازگاری است."
+		},
+		{
+			text: "چون مدل و داده‌ها برای محاسبه باید روی یک دستگاه یکسان (CPU/GPU) باشند.",
+			explain: "درست است! پایتورچ لازم می‌داند تِنسورها برای انجام عملیات روی یک دستگاه یکسان باشند.",
+            correct: true
+		},
+		{
+			text: "برای صرفه‌جویی در حافظه.",
+			explain: "انتقال به دستگاه ذاتاً باعث صرفه‌جویی در حافظه نمی‌شود."
+		},
+        {
+			text: "DataLoader به آن نیاز دارد.",
+			explain: "DataLoader دستگاه مشخصی را برای قرارگیری داده‌ها الزام نمی‌کند."
+		}
+	]}
+/>
+
+### ۵. `model.eval()` پیش از ارزیابی چه کاری انجام می‌دهد؟
+
+<Question
+	choices={[
+		{
+			text: "پارامترهای مدل را ثابت می‌کند تا نتوان آن‌ها را به‌روزرسانی کرد.",
+			explain: "`model.eval()` پارامترها را ثابت نمی‌کند؛ این کار با تنظیم `requires_grad=False` انجام می‌شود."
+		},
+		{
+			text: "رفتار لایه‌هایی مانند dropout و batch normalization را برای استنتاج تغییر می‌دهد.",
+			explain: "درست است! حالت `eval()` dropout را غیرفعال می‌کند و به‌جای محاسبه‌ی آمار batch فعلی، برای batch normalization از آمار انباشته استفاده می‌کند.",
+            correct: true
+		},
+		{
+			text: "محاسبه‌ی گرادیان را برای معیارهای ارزیابی فعال می‌کند.",
+			explain: "در واقع، هنگام ارزیابی معمولاً از `torch.no_grad()` استفاده می‌کنیم تا محاسبه‌ی گرادیان غیرفعال شود."
+		},
+        {
+			text: "معیارهای ارزیابی را به‌صورت خودکار محاسبه می‌کند.",
+			explain: "`model.eval()` فقط رفتار لایه‌ها را تغییر می‌دهد؛ هنوز باید محاسبه‌ی معیار را جداگانه پیاده‌سازی کنید."
+		}
+	]}
+/>
+
+### ۶. هدف `torch.no_grad()` هنگام ارزیابی چیست؟
+
+<Question
+	choices={[
+		{
+			text: "جلوگیری از پیش‌بینی کردن مدل.",
+			explain: "`torch.no_grad()` مانع پیش‌بینی نمی‌شود، بلکه فقط محاسبه‌ی گرادیان را غیرفعال می‌کند."
+		},
+		{
+			text: "با غیرفعال کردن ردیابی گرادیان، حافظه را ذخیره و محاسبه را سریع‌تر می‌کند.",
+			explain: "درست است! چون هنگام ارزیابی به گرادیان‌ها نیاز نداریم، غیرفعال کردن آن‌ها در حافظه و محاسبات صرفه‌جویی می‌کند.",
+            correct: true
+		},
+		{
+			text: "حالت ارزیابی مدل را فعال می‌کند.",
+			explain: "حالت ارزیابی با `model.eval()` فعال می‌شود، نه با `torch.no_grad()`."
+		},
+        {
+			text: "نتایج یکسان در اجراهای مختلف را تضمین می‌کند.",
+			explain: "قابلیت تکرارپذیری با تعیین seedهای تصادفی مدیریت می‌شود، نه با `torch.no_grad()`."
+		}
+	]}
+/>
+
+### ۷. هنگام استفاده از 🤗 Accelerate در حلقه‌ی تعلیم چه چیزی تغییر می‌کند؟
+
+<Question
+	choices={[
+		{
+			text: "باید کل حلقه‌ی تعلیم را از صفر بازنویسی کنید.",
+			explain: "Accelerate به تغییرات حداقلی در کد موجود پایتورچ نیاز دارد."
+		},
+		{
+			text: "اشیای اصلی را با `accelerator.prepare()` دربرمی‌گیرید و به‌جای `loss.backward()` از `accelerator.backward()` استفاده می‌کنید.",
+			explain: "درست است! این‌ها تغییرات اصلی هستند: اشیای خود را آماده کنید و برای تعلیم توزیع‌شده‌ی درست از `accelerator.backward()` استفاده کنید.",
+            correct: true
+		},
+		{
+			text: "باید تعداد GPUها را در کد خود مشخص کنید.",
+			explain: "Accelerate سخت‌افزار موجود را به‌صورت خودکار شناسایی می‌کند."
+		},
+        {
+			text: "باید از بهینه‌ساز و زمان‌بند متفاوتی استفاده کنید.",
+			explain: "با Accelerate می‌توانید از همان بهینه‌سازها و زمان‌بندها استفاده کنید."
+		}
+	]}
+/>
+
+> [!TIP]
+> 💡 **نکات کلیدی:**
+> - حلقه‌های تعلیم دستی کنترل کاملی به شما می‌دهند، اما باید ترتیب درست را بدانید: عبور رو به جلو → عبور رو به عقب → گام بهینه‌ساز → گام زمان‌بند → صفر کردن گرادیان‌ها
+> - AdamW با کاهش وزن، بهینه‌ساز پیشنهادی برای مدل‌های ترنسفورمر است
+> - برای رفتار درست و کارایی بهتر، هنگام ارزیابی همیشه از `model.eval()` و `torch.no_grad()` استفاده کنید
+> - 🤗 Accelerate تعلیم توزیع‌شده را با حداقل تغییرات کد در دسترس قرار می‌دهد
+> - مدیریت دستگاه (انتقال تِنسورها به GPU/CPU) برای عملیات پایتورچ ضروری است
+> - تکنیک‌های مدرن مانند دقت ترکیبی، انباشت گرادیان و بُرش گرادیان می‌توانند کارایی تعلیم را به‌طور چشمگیری بهبود دهند
+
+</div>

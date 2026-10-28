@@ -1,0 +1,491 @@
+# توکِن‌سازی با Unigram[[unigram-tokenization]]
+
+<div dir="rtl">
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section7.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section7.ipynb"},
+]} />
+
+الگوریتم Unigram همراه با [SentencePiece](https://huggingface.co/papers/1808.06226) استفاده می‌شود؛ SentencePiece الگوریتم توکِن‌سازی‌ای است که مدل‌هایی مانند AlBERT، T5، mBART، Big Bird و XLNet از آن استفاده می‌کنند.
+
+SentencePiece به این واقعیت می‌پردازد که همه‌ی زبان‌ها برای جدا کردن کلمه‌ها از فاصله استفاده نمی‌کنند. در عوض، SentencePiece ورودی را جریانی خام در نظر می‌گیرد که فاصله نیز در مجموعه‌ی نویسه‌های قابل استفاده‌ی آن قرار دارد. سپس می‌تواند با استفاده از الگوریتم Unigram، واژگان مناسب را بسازد.
+
+<Youtube id="TGZfZVuF9Yc"/>
+
+> [!TIP]
+> 💡 این بخش Unigram را به‌طور عمیق بررسی می‌کند و حتی پیاده‌سازی کامل آن را نشان می‌دهد. اگر فقط نمایی کلی از الگوریتم توکِن‌سازی می‌خواهید، می‌توانید مستقیماً به پایان بخش بروید.
+
+## الگوریتم تعلیم[[training-algorithm]]
+
+در مقایسه با BPE و WordPiece، Unigram در جهت مخالف عمل می‌کند: با واژگانی بزرگ شروع می‌کند و توکِن‌ها را از آن حذف می‌کند تا به اندازه‌ی مطلوب واژگان برسد. برای ساخت این واژگان پایه گزینه‌های مختلفی داریم: برای نمونه، می‌توانیم رایج‌ترین زیررشته‌ها را در کلمه‌های پیش‌توکِن‌سازی‌شده برداریم یا BPE را روی پیکره‌ی اولیه با اندازه‌ی واژگان بزرگ اجرا کنیم.
+
+الگوریتم Unigram در هر گام تعلیم، با توجه به واژگان فعلی، هزینه‌ای را روی پیکره محاسبه می‌کند. سپس برای هر علامت در واژگان، محاسبه می‌کند که اگر آن علامت حذف شود، هزینه‌ی کلی چقدر افزایش می‌یابد و علامت‌هایی را پیدا می‌کند که کمترین افزایش را ایجاد می‌کنند. این علامت‌ها اثر کمتری بر هزینه‌ی کلی پیکره دارند؛ بنابراین به‌نوعی «کمتر لازم» هستند و بهترین گزینه‌ها برای حذف به‌شمار می‌روند.
+
+این عملیات بسیار پرهزینه است؛ بنابراین فقط یک علامتِ مرتبط با کمترین افزایش هزینه را حذف نمی‌کنیم، بلکه \\(p\\) درصد از علامت‌های دارای کمترین افزایش هزینه را حذف می‌کنیم (که \\(p\\) در اینجا یک اَبَرشاخص قابل‌کنترل است و معمولاً ۱۰ یا ۲۰ در نظر گرفته می‌شود). این فرایند تا رسیدن واژگان به اندازه‌ی مطلوب تکرار می‌شود.
+
+توجه کنید که نویسه‌های پایه را هرگز حذف نمی‌کنیم تا مطمئن شویم هر کلمه‌ای قابل توکِن‌سازی است.
+
+حالا موضوع هنوز کمی مبهم است: بخش اصلی الگوریتم محاسبه‌ی هزینه‌ای روی پیکره و بررسی تغییر آن هنگام حذف برخی توکِن‌ها از واژگان است، اما هنوز روش انجام این کار را توضیح نداده‌ایم. این گام به الگوریتم توکِن‌سازی مدل Unigram وابسته است؛ پس در ادامه به سراغ آن می‌رویم.
+
+از همان پیکره‌ی مثال‌های قبلی استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+</div>
+
+و برای این مثال، همه‌ی زیررشته‌های strict را در واژگان اولیه قرار می‌دهیم:
+
+<div dir="ltr">
+
+```
+["h", "u", "g", "hu", "ug", "p", "pu", "n", "un", "b", "bu", "s", "hug", "gs", "ugs"]
+```
+
+</div>
+
+## الگوریتم توکِن‌سازی[[tokenization-algorithm]]
+
+مدل Unigram نوعی مدل زبانی است که هر توکِن را مستقل از توکِن‌های پیش از آن در نظر می‌گیرد. این ساده‌ترین شکل مدل زبانی است؛ به این معنا که احتمال توکِن X با توجه به زمینه‌ی قبلی، فقط همان احتمال توکِن X است. بنابراین، اگر از مدل زبانی Unigram برای تولید متن استفاده کنیم، همیشه پرتکرارترین توکِن را پیش‌بینی می‌کنیم.
+
+احتمال یک توکِن مشخص برابر است با بسامد آن (تعداد دفعاتی که آن را پیدا می‌کنیم) در پیکره‌ی اصلی، تقسیم بر مجموع بسامد همه‌ی توکِن‌ها در واژگان (تا مطمئن شویم مجموع احتمال‌ها برابر ۱ است). برای نمونه، `"ug"` در `"hug"`، `"pug"` و `"hugs"` وجود دارد؛ بنابراین بسامد آن در پیکره‌ی ما ۲۰ است.
+
+بسامد همه‌ی زیرکلمه‌های ممکن در واژگان به شکل زیر است:
+
+<div dir="ltr">
+
+```
+("h", 15) ("u", 36) ("g", 20) ("hu", 15) ("ug", 20) ("p", 17) ("pu", 17) ("n", 16)
+("un", 16) ("b", 4) ("bu", 4) ("s", 5) ("hug", 15) ("gs", 5) ("ugs", 5)
+```
+
+</div>
+
+پس مجموع همه‌ی بسامدها ۲۱۰ است و احتمال زیرکلمه‌ی `"ug"` برابر ۲۰/۲۱۰ خواهد بود.
+
+> [!TIP]
+> ✏️ **حالا نوبت شماست!** کدی بنویسید که بسامدهای بالا را محاسبه کند و درستی نتایج نمایش‌داده‌شده و همچنین مجموع کل را بررسی کنید.
+
+برای توکِن‌سازی یک کلمه‌ی مشخص، همه‌ی تقسیم‌بندی‌های ممکن آن به توکِن‌ها را بررسی می‌کنیم و احتمال هرکدام را بر اساس مدل Unigram محاسبه می‌کنیم. از آنجا که همه‌ی توکِن‌ها مستقل در نظر گرفته می‌شوند، این احتمال فقط حاصل‌ضرب احتمال هر توکِن است. برای نمونه، احتمال توکِن‌سازی `["p", "u", "g"]` برای `"pug"` برابر است با:
+
+$$P([``p", ``u", ``g"]) = P(``p") \times P(``u") \times P(``g") = \frac{5}{210} \times \frac{36}{210} \times \frac{20}{210} = 0.000389$$
+
+در مقایسه، احتمال توکِن‌سازی `["pu", "g"]` برابر است با:
+
+$$P([``pu", ``g"]) = P(``pu") \times P(``g") = \frac{5}{210} \times \frac{20}{210} = 0.0022676$$
+
+بنابراین، تقسیم‌بندی‌هایی که کمترین تعداد توکِن ممکن را دارند بیشترین احتمال را خواهند داشت (چون تقسیم بر ۲۱۰ برای هر توکِن تکرار می‌شود)؛ این همان چیزی است که به‌طور شهودی می‌خواهیم: تقسیم کردن یک کلمه به کمترین تعداد ممکن توکِن.
+
+پس توکِن‌سازی یک کلمه با مدل Unigram، تقسیم‌بندی‌ای است که بیشترین احتمال را دارد. در مثال `"pug"`، احتمال هر تقسیم‌بندی ممکن چنین خواهد بود:
+
+<div dir="ltr">
+
+```
+["p", "u", "g"] : 0.000389
+["p", "ug"] : 0.0022676
+["pu", "g"] : 0.0022676
+```
+
+</div>
+
+بنابراین، `"pug"` به‌صورت `["p", "ug"]` یا `["pu", "g"]` توکِن‌سازی می‌شود؛ بسته به اینکه کدام‌یک از این تقسیم‌بندی‌ها زودتر دیده شود (توجه کنید که در پیکره‌ای بزرگ‌تر، موارد برابری مانند این به‌ندرت رخ می‌دهند).
+
+در این حالت، پیدا کردن همه‌ی تقسیم‌بندی‌های ممکن و محاسبه‌ی احتمال آن‌ها آسان بود، اما در حالت کلی کار کمی دشوارتر می‌شود. الگوریتم کلاسیکی برای این کار وجود دارد که *الگوریتم Viterbi* نامیده می‌شود. اساس کار این است که برای شناسایی تقسیم‌بندی‌های ممکن یک کلمه، گرافی بسازیم و بگوییم اگر زیررشته‌ی بین نویسه‌ی _a_ تا نویسه‌ی _b_ در واژگان باشد، شاخه‌ای از _a_ به _b_ وجود دارد و احتمال آن زیررشته را به آن شاخه نسبت دهیم.
+
+برای پیدا کردن مسیری در این گراف که الگوریتم Viterbi بهترین امتیاز را به آن می‌دهد، الگوریتم برای هر موقعیت در کلمه، تقسیم‌بندی با بهترین امتیازی را مشخص می‌کند که در آن موقعیت پایان می‌یابد. چون از ابتدا به انتها حرکت می‌کنیم، این بهترین امتیاز را می‌توان با پیمایش همه‌ی زیررشته‌هایی که در موقعیت فعلی تمام می‌شوند و استفاده از بهترین امتیاز توکِن‌سازی از موقعیتی که این زیررشته از آن شروع می‌شود پیدا کرد. سپس فقط باید مسیر طی‌شده تا رسیدن به انتها را بازسازی کنیم.
+
+بیایید با استفاده از واژگان و کلمه‌ی `"unhug"` مثالی را بررسی کنیم. برای هر موقعیت، زیرکلمه‌هایی که بهترین امتیاز را برای پایان یافتن در آن موقعیت دارند عبارت‌اند از:
+
+<div dir="ltr">
+
+```
+Character 0 (u): "u" (score 0.171429)
+Character 1 (n): "un" (score 0.076191)
+Character 2 (h): "un" "h" (score 0.005442)
+Character 3 (u): "un" "hu" (score 0.005442)
+Character 4 (g): "un" "hug" (score 0.005442)
+```
+
+</div>
+
+بنابراین، `"unhug"` به‌صورت `["un", "hug"]` توکِن‌سازی می‌شود.
+
+> [!TIP]
+> ✏️ **حالا نوبت شماست!** توکِن‌سازی کلمه‌ی `"huggun"` و امتیاز آن را تعیین کنید.
+
+## بازگشت به تعلیم[[back-to-training]]
+
+اکنون که نحوه‌ی توکِن‌سازی را دیدیم، می‌توانیم کمی عمیق‌تر وارد هزینه‌ی استفاده‌شده هنگام تعلیم شویم. در هر مرحله، این هزینه با توکِن‌سازی هر کلمه در پیکره و استفاده از واژگان فعلی و مدل Unigram تعیین‌شده بر اساس بسامد هر توکِن در پیکره (همان‌طور که پیش‌تر دیدیم) محاسبه می‌شود.
+
+هر کلمه در پیکره امتیازی دارد و هزینه برابر با لگاریتم منفی احتمال آن امتیازهاست — یعنی مجموع `-log(P(word))` برای همه‌ی کلمه‌های پیکره.
+
+به نمونه‌ی خودمان با پیکره‌ی زیر برگردیم:
+
+<div dir="ltr">
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+</div>
+
+توکِن‌سازی هر کلمه همراه با امتیاز متناظر آن چنین است:
+
+<div dir="ltr">
+
+```
+"hug": ["hug"] (score 0.071428)
+"pug": ["pu", "g"] (score 0.007710)
+"pun": ["pu", "n"] (score 0.006168)
+"bun": ["bu", "n"] (score 0.001451)
+"hugs": ["hug", "s"] (score 0.001701)
+```
+
+</div>
+
+پس هزینه برابر است با:
+
+<div dir="ltr">
+
+```
+10 * (-log(0.071428)) + 5 * (-log(0.007710)) + 12 * (-log(0.006168)) + 4 * (-log(0.001451)) + 5 * (-log(0.001701)) = 169.8
+```
+
+</div>
+
+اکنون باید محاسبه کنیم حذف هر توکِن چه اثری بر هزینه می‌گذارد. این کار نسبتاً خسته‌کننده است؛ پس در اینجا فقط آن را برای دو توکِن انجام می‌دهیم و بررسی کامل را به زمانی موکول می‌کنیم که کد به کمکمان بیاید. در این مورد (بسیار) خاص، برای همه‌ی کلمه‌ها دو توکِن‌سازی معادل داشتیم: همان‌طور که پیش‌تر دیدیم، برای نمونه `"pug"` را می‌شد با همان امتیاز به‌صورت `["p", "ug"]` نیز توکِن‌سازی کرد. بنابراین حذف توکِن `"pu"` از واژگان دقیقاً همان هزینه را ایجاد می‌کند.
+
+از سوی دیگر، حذف `"hug"` هزینه را بدتر می‌کند، زیرا توکِن‌سازی `"hug"` و `"hugs"` به شکل زیر درمی‌آید:
+
+<div dir="ltr">
+
+```
+"hug": ["hu", "g"] (score 0.006802)
+"hugs": ["hu", "gs"] (score 0.001701)
+```
+
+</div>
+
+این تغییرها باعث می‌شوند هزینه به اندازه‌ی زیر افزایش یابد:
+
+<div dir="ltr">
+
+```
+- 10 * (-log(0.071428)) + 10 * (-log(0.006802)) = 23.5
+```
+
+</div>
+
+بنابراین، احتمالاً توکِن `"pu"` از واژگان حذف می‌شود، اما `"hug"` حذف نخواهد شد.
+
+## پیاده‌سازی Unigram[[implementing-unigram]]
+
+حالا هرآنچه را تا اینجا دیدیم در قالب کد پیاده‌سازی کنیم. مانند BPE و WordPiece، این پیاده‌سازی الگوریتم Unigram کارآمد نیست (حتی برعکس)؛ اما باید کمک کند آن را کمی بهتر درک کنید.
+
+برای نمونه از همان پیکره‌ی قبلی استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+</div>
+
+این بار `xlnet-base-cased` را به‌عنوان مدل استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("xlnet-base-cased")
+```
+
+</div>
+
+مانند BPE و WordPiece، با شمردن تعداد دفعات تکرار هر کلمه در پیکره شروع می‌کنیم:
+
+<div dir="ltr">
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+word_freqs
+```
+
+</div>
+
+سپس باید واژگان را به چیزی بزرگ‌تر از اندازه‌ی نهایی موردنظر مقداردهی اولیه کنیم. باید همه‌ی نویسه‌های پایه را دربر بگیریم (وگرنه نمی‌توانیم هر کلمه‌ای را توکِن‌سازی کنیم)، اما برای زیررشته‌های بزرگ‌تر فقط رایج‌ترین‌ها را نگه می‌داریم؛ پس آن‌ها را بر اساس بسامد مرتب می‌کنیم:
+
+<div dir="ltr">
+
+```python
+char_freqs = defaultdict(int)
+subwords_freqs = defaultdict(int)
+for word, freq in word_freqs.items():
+    for i in range(len(word)):
+        char_freqs[word[i]] += freq
+        # Loop through the subwords of length at least 2
+        for j in range(i + 2, len(word) + 1):
+            subwords_freqs[word[i:j]] += freq
+
+# Sort subwords by frequency
+sorted_subwords = sorted(subwords_freqs.items(), key=lambda x: x[1], reverse=True)
+sorted_subwords[:10]
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+[('▁t', 7), ('is', 5), ('er', 5), ('▁a', 5), ('▁to', 4), ('to', 4), ('en', 4), ('▁T', 3), ('▁Th', 3), ('▁Thi', 3)]
+```
+
+</div>
+
+نویسه‌ها را با بهترین زیرکلمه‌ها گروه‌بندی می‌کنیم تا به واژگان اولیه‌ای با اندازه‌ی ۳۰۰ برسیم:
+
+<div dir="ltr">
+
+```python
+token_freqs = list(char_freqs.items()) + sorted_subwords[: 300 - len(char_freqs)]
+token_freqs = {token: freq for token, freq in token_freqs}
+```
+
+</div>
+
+> [!TIP]
+> 💡 SentencePiece برای ساخت واژگان اولیه از الگوریتم کارآمدتری به نام Enhanced Suffix Array (ESA) استفاده می‌کند.
+
+در گام بعد مجموع همه‌ی بسامدها را محاسبه می‌کنیم تا بسامدها را به احتمال تبدیل کنیم. برای مدل خود لگاریتم احتمال‌ها را ذخیره می‌کنیم، چون جمع کردن لگاریتم‌ها از ضرب عددهای کوچک از نظر عددی پایدارتر است و محاسبه‌ی هزینه‌ی مدل را ساده می‌کند:
+
+<div dir="ltr">
+
+```python
+from math import log
+
+total_sum = sum([freq for token, freq in token_freqs.items()])
+model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+</div>
+
+حالا تابع اصلی، تابعی است که با استفاده از الگوریتم Viterbi کلمه‌ها را توکِن‌سازی می‌کند. همان‌طور که قبلاً دیدیم، این الگوریتم بهترین تقسیم‌بندی هر زیررشته‌ی کلمه را محاسبه می‌کند و ما آن را در متغیری به نام `best_segmentations` ذخیره خواهیم کرد. برای هر موقعیت در کلمه (از ۰ تا طول کل آن) یک دیکشنری با دو کلید ذخیره می‌کنیم: اندیس شروع آخرین توکِن در بهترین تقسیم‌بندی و امتیاز بهترین تقسیم‌بندی. با اندیس شروع آخرین توکِن می‌توانیم پس از کامل شدن فهرست، تقسیم‌بندی کامل را بازیابی کنیم.
+
+پر کردن فهرست فقط با دو حلقه انجام می‌شود: حلقه‌ی اصلی همه‌ی موقعیت‌های شروع را طی می‌کند و حلقه‌ی دوم همه‌ی زیررشته‌هایی را که از آن موقعیت شروع می‌شوند امتحان می‌کند. اگر زیررشته در واژگان باشد، تقسیم‌بندی جدیدی از کلمه تا آن موقعیت پایان داریم که آن را با مقدار موجود در `best_segmentations` مقایسه می‌کنیم.
+
+وقتی حلقه‌ی اصلی تمام شد، از انتها شروع می‌کنیم و از یک موقعیت شروع به موقعیت شروع بعدی می‌پریم و در حین حرکت توکِن‌ها را ثبت می‌کنیم تا به ابتدای کلمه برسیم:
+
+<div dir="ltr">
+
+```python
+def encode_word(word, model):
+    best_segmentations = [{"start": 0, "score": 1}] + [
+        {"start": None, "score": None} for _ in range(len(word))
+    ]
+    for start_idx in range(len(word)):
+        # This should be properly filled by the previous steps of the loop
+        best_score_at_start = best_segmentations[start_idx]["score"]
+        for end_idx in range(start_idx + 1, len(word) + 1):
+            token = word[start_idx:end_idx]
+            if token in model and best_score_at_start is not None:
+                score = model[token] + best_score_at_start
+                # If we have found a better segmentation ending at end_idx, we update
+                if (
+                    best_segmentations[end_idx]["score"] is None
+                    or best_segmentations[end_idx]["score"] > score
+                ):
+                    best_segmentations[end_idx] = {"start": start_idx, "score": score}
+
+    segmentation = best_segmentations[-1]
+    if segmentation["score"] is None:
+        # We did not find a tokenization of the word -> unknown
+        return ["<unk>"], None
+
+    score = segmentation["score"]
+    start = segmentation["start"]
+    end = len(word)
+    tokens = []
+    while start != 0:
+        tokens.insert(0, word[start:end])
+        next_start = best_segmentations[start]["start"]
+        end = start
+        start = next_start
+    tokens.insert(0, word[start:end])
+    return tokens, score
+```
+
+</div>
+
+اکنون می‌توانیم مدل اولیه‌ی خود را روی چند کلمه امتحان کنیم:
+
+<div dir="ltr">
+
+```python
+print(encode_word("Hopefully", model))
+print(encode_word("This", model))
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+(['H', 'o', 'p', 'e', 'f', 'u', 'll', 'y'], 41.5157494601402)
+(['This'], 6.288267030694535)
+```
+
+</div>
+
+حالا محاسبه‌ی هزینه‌ی مدل روی پیکره آسان است!
+
+<div dir="ltr">
+
+```python
+def compute_loss(model):
+    loss = 0
+    for word, freq in word_freqs.items():
+        _, word_loss = encode_word(word, model)
+        loss += freq * word_loss
+    return loss
+```
+
+</div>
+
+می‌توانیم عملکرد آن را روی مدل فعلی بررسی کنیم:
+
+<div dir="ltr">
+
+```python
+compute_loss(model)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+413.10377642940875
+```
+
+</div>
+
+محاسبه‌ی امتیاز هر توکِن نیز دشوار نیست؛ کافی است هزینه‌ی مدل‌هایی را محاسبه کنیم که با حذف هر توکِن به دست می‌آیند:
+
+<div dir="ltr">
+
+```python
+import copy
+
+
+def compute_scores(model):
+    scores = {}
+    model_loss = compute_loss(model)
+    for token, score in model.items():
+        # We always keep tokens of length 1
+        if len(token) == 1:
+            continue
+        model_without_token = copy.deepcopy(model)
+        _ = model_without_token.pop(token)
+        scores[token] = compute_loss(model_without_token) - model_loss
+    return scores
+```
+
+</div>
+
+می‌توانیم آن را روی توکِنی مشخص امتحان کنیم:
+
+<div dir="ltr">
+
+```python
+scores = compute_scores(model)
+print(scores["ll"])
+print(scores["his"])
+```
+
+</div>
+
+از آنجا که `"ll"` در توکِن‌سازی `"Hopefully"` استفاده می‌شود و حذف آن احتمالاً باعث می‌شود به‌جای آن دو بار از توکِن `"l"` استفاده کنیم، انتظار داریم هزینه‌ای مثبت داشته باشد. `"his"` فقط درون کلمه‌ی `"This"` استفاده می‌شود که خودش به‌صورت یک توکِن توکِن‌سازی شده است؛ بنابراین انتظار داریم هزینه‌ی آن صفر باشد. نتایج چنین‌اند:
+
+<div dir="ltr">
+
+```python out
+6.376412403623874
+0.0
+```
+
+</div>
+
+> [!TIP]
+> 💡 این روش بسیار ناکارآمد است؛ بنابراین SentencePiece از تقریبی برای هزینه‌ی مدل بدون توکِن X استفاده می‌کند: به‌جای شروع از صفر، توکِن X را فقط با تقسیم‌بندی آن در واژگان باقی‌مانده جایگزین می‌کند. به این ترتیب، همه‌ی امتیازها هم‌زمان با هزینه‌ی مدل و یک‌باره محاسبه می‌شوند.
+
+با آماده بودن همه‌ی این موارد، تنها کار باقی‌مانده افزودن توکِن‌های ویژه‌ی مورد استفاده‌ی مدل به واژگان و سپس تکرار فرایند است تا به‌اندازه‌ی کافی توکِن از واژگان حذف و به اندازه‌ی مطلوب برسیم:
+
+<div dir="ltr">
+
+```python
+percent_to_remove = 0.1
+while len(model) > 100:
+    scores = compute_scores(model)
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+    # Remove percent_to_remove tokens with the lowest scores.
+    for i in range(int(len(model) * percent_to_remove)):
+        _ = token_freqs.pop(sorted_scores[i][0])
+
+    total_sum = sum([freq for token, freq in token_freqs.items()])
+    model = {token: -log(freq / total_sum) for token, freq in token_freqs.items()}
+```
+
+</div>
+
+برای توکِن‌سازی متن، کافی است پیش‌توکِن‌سازی را انجام دهیم و سپس از تابع `encode_word()` استفاده کنیم:
+
+<div dir="ltr">
+
+```python
+def tokenize(text, model):
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in words_with_offsets]
+    encoded_words = [encode_word(word, model)[0] for word in pre_tokenized_text]
+    return sum(encoded_words, [])
+
+
+tokenize("This is the Hugging Face course.", model)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['▁This', '▁is', '▁the', '▁Hugging', '▁Face', '▁', 'c', 'ou', 'r', 's', 'e', '.']
+```
+
+</div>
+
+> [!TIP]
+> توکِنایزر XLNet از SentencePiece استفاده می‌کند؛ به همین دلیل نویسه‌ی `"_"` در آن وجود دارد. برای کدگشایی با SentencePiece، همه‌ی توکِن‌ها را به هم بچسبانید و `"_"` را با فاصله جایگزین کنید.
+
+همین بود Unigram! امیدوارم حالا در همه‌ی موضوعات مربوط به توکِنایزر احساس کنید متخصص شده‌اید. در بخش بعد، وارد اجزای سازنده‌ی کتابخانه‌ی 🤗 Tokenizers می‌شویم و نشان می‌دهیم چگونه می‌توانید با استفاده از آن‌ها توکِنایزر خودتان را بسازید.
+
+</div>

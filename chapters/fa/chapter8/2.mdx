@@ -1,0 +1,357 @@
+# وقتی خطا می‌گیرید چه باید کرد[[what-to-do-when-you-get-an-error]]
+<div dir="rtl">
+
+<CourseFloatingBanner chapter={8}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter8/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter8/section2.ipynb"},
+]} />
+
+در این بخش، به برخی از خطاهای رایجی که ممکن است هنگام تلاش برای تولید پیش‌بینی‌ها از مدل ترنسفورمر تازه تنظیم‌شده‌تان رخ دهد، نگاهی خواهیم انداخت. این شما را برای [بخش ۴](/course/chapter8/section4) آماده می‌کند، جایی که نحوه اشکال‌زدایی خود مرحله آموزش را بررسی خواهیم کرد.
+
+<Youtube id="DQ-CpJn6Rc4"/>
+
+برای این بخش یک [مخزن مدل نمونه](https://huggingface.co/lewtun/distilbert-base-uncased-finetuned-squad-d5716d28) آماده کرده‌ایم. اگر می‌خواهید کد این فصل را اجرا کنید، ابتدا باید مدل را در حساب خود در [هاب هاگینگ‌فیس](https://huggingface.co) کپی کنید. برای این کار، ابتدا با اجرای یکی از دستورهای زیر در یک دفترچه‌ی Jupyter وارد شوید:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+یا دستور زیر را در ترمینال مورد علاقه‌تان اجرا کنید:
+
+```bash
+huggingface-cli login
+```
+
+این دستور از شما می‌خواهد نام کاربری و گذرواژه‌تان را وارد کنید و یک توکن را در مسیر *~/.cache/huggingface/* ذخیره می‌کند. پس از ورود، می‌توانید مخزن نمونه را با تابع زیر کپی کنید:
+
+```python
+from distutils.dir_util import copy_tree
+from huggingface_hub import Repository, snapshot_download, create_repo, get_full_repo_name
+
+
+def copy_repository_template():
+    # Clone the repo and extract the local path
+    template_repo_id = "lewtun/distilbert-base-uncased-finetuned-squad-d5716d28"
+    commit_hash = "be3eaffc28669d7932492681cd5f3e8905e358b4"
+    template_repo_dir = snapshot_download(template_repo_id, revision=commit_hash)
+    # Create an empty repo on the Hub
+    model_name = template_repo_id.split("/")[1]
+    create_repo(model_name, exist_ok=True)
+    # Clone the empty repo
+    new_repo_id = get_full_repo_name(model_name)
+    new_repo_dir = model_name
+    repo = Repository(local_dir=new_repo_dir, clone_from=new_repo_id)
+    # Copy files
+    copy_tree(template_repo_dir, new_repo_dir)
+    # Push to Hub
+    repo.push_to_hub()
+```
+
+حالا با فراخوانی `copy_repository_template()`، یک کپی از مخزن نمونه در حساب شما ساخته می‌شود.
+
+## اشکال‌زدایی خط لوله از 🤗 ترنسفورمرها[[debugging-the-pipeline-from-transformers]]
+
+برای شروع سفرمان به دنیای شگفت‌انگیز اشکال‌زدایی مدل‌های ترنسفورمر، این سناریو را در نظر بگیرید: با همکاری یکی از همکارانتان روی پروژه‌ای برای پاسخ‌گویی به پرسش‌ها کار می‌کنید تا مشتریان یک وب‌سایت تجارت الکترونیک بتوانند درباره‌ی محصولات پاسخ پیدا کنند. همکارتان پیامی شبیه این می‌فرستد:
+
+> سلام! همین الان با استفاده از روش‌های [فصل ۷](/course/chapter7/7) دوره‌ی هاگینگ‌فیس آزمایشی انجام دادم و روی SQuAD به نتایج خیلی خوبی رسیدم! فکر می‌کنم بتوانیم از این مدل به‌عنوان نقطه‌ی شروع پروژه‌مان استفاده کنیم. شناسه‌ی مدل در هاب این است: "lewtun/distillbert-base-uncased-finetuned-squad-d5716d28". با خیال راحت آن را آزمایش کن :)
+
+و اولین چیزی که به ذهنتان می‌رسد این است که مدل را با استفاده از `pipeline` در 🤗 ترنسفورمرها بارگذاری کنید:
+
+```python
+from transformers import pipeline
+
+model_checkpoint = get_full_repo_name("distillbert-base-uncased-finetuned-squad-d5716d28")
+reader = pipeline("question-answering", model=model_checkpoint)
+```
+
+```python out
+"""
+OSError: Can't load config for 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28'. Make sure that:
+
+- 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+اوه نه، به نظر می‌رسد مشکلی پیش آمده است! اگر تازه برنامه‌نویسی را شروع کرده باشید، این نوع خطاها ممکن است ابتدا کمی رمزآلود به نظر برسند (اصلاً `OSError` چیست؟!). خطایی که اینجا می‌بینید فقط آخرین بخش گزارش خطای بسیار بزرگ‌تری به نام _ردیابی پایتون_ (یا stack trace) است. برای نمونه، اگر این کد را در Google Colab اجرا کنید، باید چیزی شبیه تصویر زیر ببینید:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/traceback.png" alt="A Python traceback." width="100%"/>
+</div>
+
+اطلاعات زیادی در این گزارش‌ها وجود دارد، پس بیایید بخش‌های مهم را با هم مرور کنیم. نخست توجه کنید که tracebackها باید _از پایین به بالا_ خوانده شوند. اگر به خواندن متن انگلیسی از بالا به پایین عادت دارید، این موضوع شاید عجیب باشد؛ اما علتش این است که traceback توالی فراخوانی تابع‌هایی را نشان می‌دهد که `pipeline` هنگام دانلود مدل و توکن‌ساز انجام می‌دهد. (برای جزئیات بیشتر درباره‌ی نحوه‌ی کار `pipeline` در پشت صحنه، [فصل ۲](/course/chapter2) را ببینید.)
+
+> نکته
+> 🚨 کادر آبیِ اطراف «6 frames» را در traceback مربوط به Google Colab می‌بینید؟ این قابلیت ویژه‌ی Colab، traceback را به «فریم‌ها» فشرده می‌کند. اگر نمی‌توانید منبع خطا را پیدا کنید، با کلیک روی آن دو فلش، traceback کامل را باز کنید.
+
+این بدان معناست که آخرین خط traceback آخرین پیام خطا را نشان می‌دهد و نام استثنایی که رخ داده است را ارائه می‌دهد. در این حالت، نوع استثنا `OSError` است که نشان دهنده یک خطای مرتبط با سیستم است. اگر پیام خطای همراه را بخوانیم، می‌توانیم ببینیم که به نظر می‌رسد مشکلی در فایل *config.json* مدل وجود دارد و دو پیشنهاد برای رفع آن به ما ارائه می‌شود:
+
+```python out
+"""
+Make sure that:
+
+- 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distillbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+> [!TIP]
+> 💡 اگر با پیام خطایی روبه‌رو شدید که فهمش دشوار است، پیام را در نوار جست‌وجوی Google یا [Stack Overflow](https://stackoverflow.com/) کپی و جای‌گذاری کنید (بله، واقعاً همین کار را انجام دهید!). احتمال زیادی دارد که شما نخستین فردی نباشید که با این خطا روبه‌رو شده است و این روش می‌تواند راه‌حل‌هایی را که دیگران در جامعه منتشر کرده‌اند نشان دهد. برای نمونه، جست‌وجوی `OSError: Can't load config for` در Stack Overflow چند [نتیجه](https://stackoverflow.com/search?q=OSError%3A+Can%27t+load+config+for+) دارد که می‌توانند نقطه‌ی شروعی برای حل مشکل باشند.
+
+پیشنهاد نخست این است که بررسی کنیم شناسه‌ی مدل واقعاً درست است یا نه؛ بنابراین اولین کار، کپی‌کردن شناسه و جای‌گذاری آن در نوار جست‌وجوی هاب است:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/wrong-model-id.png" alt="The wrong model name." width="100%"/>
+</div>
+
+هوم، واقعاً به نظر می‌رسد مدل همکارمان در هاب وجود ندارد... آها، نام مدل اشتباه تایپ شده است! DistilBERT در نامش فقط یک «l» دارد؛ پس بیایید آن را اصلاح کنیم و به‌جای آن «lewtun/distilbert-base-uncased-finetuned-squad-d5716d28» را جست‌وجو کنیم:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/true-model-id.png" alt="The right model name." width="100%"/>
+</div>
+
+خوب، این جست‌وجو نتیجه داد. حالا بیایید دوباره مدل را با شناسه‌ی صحیح دانلود کنیم:
+
+```python
+model_checkpoint = get_full_repo_name("distilbert-base-uncased-finetuned-squad-d5716d28")
+reader = pipeline("question-answering", model=model_checkpoint)
+```
+
+```python out
+"""
+OSError: Can't load config for 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28'. Make sure that:
+
+- 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28' is a correct model identifier listed on 'https://huggingface.co/models'
+
+- or 'lewtun/distilbert-base-uncased-finetuned-squad-d5716d28' is the correct path to a directory containing a config.json file
+"""
+```
+
+ای وای، باز هم نتیجه نگرفتیم—به زندگی روزمره‌ی مهندس یادگیری ماشین خوش آمدید! حالا که شناسه‌ی مدل را اصلاح کرده‌ایم، مشکل باید در خود مخزن باشد. یک راه سریع برای دسترسی به محتوای مخزن در 🤗 هاب، استفاده از تابع `list_repo_files()` در کتابخانه‌ی `huggingface_hub` است:
+
+```python
+from huggingface_hub import list_repo_files
+
+list_repo_files(repo_id=model_checkpoint)
+```
+
+```python out
+['.gitattributes', 'README.md', 'pytorch_model.bin', 'special_tokens_map.json', 'tokenizer_config.json', 'training_args.bin', 'vocab.txt']
+```
+
+جالب است—به نظر می‌رسد فایل *config.json* در مخزن وجود ندارد! عجیب نیست که `pipeline` نتوانست مدل را بارگذاری کند؛ همکارمان احتمالاً پس از کوک‌کردن مدل، فراموش کرده این فایل را در هاب بارگذاری کند. در این حالت، رفع مشکل نسبتاً ساده به نظر می‌رسد: می‌توانیم از او بخواهیم فایل را اضافه کند یا، چون از شناسه‌ی مدل می‌دانیم مدل ازپیش‌تعلیم‌دیده‌ی استفاده‌شده [`distilbert-base-uncased`](https://huggingface.co/distilbert-base-uncased) بوده است، پیکربندی این مدل را دانلود کنیم و برای بررسی نتیجه، آن را در مخزن خودمان بارگذاری کنیم. بیایید این کار را انجام دهیم. با استفاده از روش‌هایی که در [فصل ۲](/course/chapter2) آموختیم، می‌توانیم پیکربندی مدل را با کلاس `AutoConfig` دانلود کنیم:
+
+```python
+from transformers import AutoConfig
+
+pretrained_checkpoint = "distilbert-base-uncased"
+config = AutoConfig.from_pretrained(pretrained_checkpoint)
+```
+
+> [!WARNING]
+> 🚨 روشی که در اینجا به کار می‌بریم بی‌نقص نیست، چون ممکن است همکارمان پیش از کوک‌کردن مدل، پیکربندی `distilbert-base-uncased` را تغییر داده باشد. در دنیای واقعی ابتدا باید با او هماهنگ کنیم، اما برای این بخش فرض می‌کنیم از پیکربندی پیش‌فرض استفاده کرده است.
+
+سپس می‌توانیم این پیکربندی را با تابع `push_to_hub()` به مخزن مدل خودمان ارسال کنیم:
+
+```python
+config.push_to_hub(model_checkpoint, commit_message="Add config.json")
+```
+
+حالا می‌توانیم با بارگذاری مدل از آخرین commit در شاخه‌ی `main` بررسی کنیم که این کار موفق بوده است:
+
+```python
+reader = pipeline("question-answering", model=model_checkpoint, revision="main")
+
+context = r"""
+Extractive Question Answering is the task of extracting an answer from a text
+given a question. An example of a question answering dataset is the SQuAD
+dataset, which is entirely based on that task. If you would like to fine-tune a
+model on a SQuAD task, you may leverage the
+examples/pytorch/question-answering/run_squad.py script.
+
+🤗 Transformers is interoperable with the PyTorch, TensorFlow, and JAX
+frameworks, so you can use your favourite tools for a wide variety of tasks!
+"""
+
+question = "What is extractive question answering?"
+reader(question=question, context=context)
+```
+
+```python out
+{'score': 0.38669535517692566,
+ 'start': 34,
+ 'end': 95,
+ 'answer': 'the task of extracting an answer from a text given a question'}
+```
+
+هورا، کار کرد! بیایید آنچه را یاد گرفتید مرور کنیم:
+
+- پیام‌های خطای پایتون _traceback_ نام دارند و از پایین به بالا خوانده می‌شوند. آخرین خط پیام خطا معمولاً اطلاعات لازم برای پیدا کردن منبع مشکل را در اختیار شما می‌گذارد.
+- اگر آخرین خط اطلاعات کافی نداشت، در traceback به سمت بالا حرکت کنید و ببینید آیا می‌توانید محل وقوع خطا در کد منبع را پیدا کنید.
+- اگر هیچ‌یک از پیام‌های خطا به اشکال‌زدایی کمک نکردند، برای یافتن راه‌حل مشکلی مشابه، در اینترنت جست‌وجو کنید.
+- کتابخانه‌ی `huggingface_hub`
+// 🤗 هاب؟
+مجموعه‌ای از ابزارها را ارائه می‌دهد که می‌توانید برای تعامل با مخازن هاب و اشکال‌زدایی آن‌ها استفاده کنید.
+
+حالا که می‌دانید چگونه یک خط لوله را اشکال‌زدایی کنید، بیایید نمونه‌ی دشوارتری را در گذر رو به جلوی خود مدل بررسی کنیم.
+
+## اشکال‌زدایی گذر رو به جلوی مدل شما[[debugging-the-forward-pass-of-your-model]]
+
+اگرچه `pipeline` برای بیشتر کاربردهایی که به تولید سریع پیش‌بینی نیاز دارند عالی است، گاهی لازم است به لاجیت‌های مدل دسترسی پیدا کنید (مثلاً اگر پردازش پسینی سفارشی دارید که می‌خواهید اعمال کنید). برای دیدن اینکه در این حالت چه چیزهایی ممکن است اشتباه پیش برود، ابتدا مدل و توکن‌ساز را از `pipeline` دریافت می‌کنیم:
+
+```python
+tokenizer = reader.tokenizer
+model = reader.model
+```
+
+اکنون به یک پرسش نیاز داریم؛ بیایید ببینیم چارچوب‌های مورد علاقه‌مان پشتیبانی می‌شوند یا نه:
+
+```python
+question = "Which frameworks can I use?"
+```
+
+همان‌طور که در [فصل ۷](/course/chapter7) دیدیم، گام‌های معمولی که باید برداریم شامل توکن‌سازی ورودی‌ها، استخراج لاجیت‌های شروع و پایان توکن‌ها و سپس رمزگشایی بازه‌ی پاسخ است:
+
+```python
+import torch
+
+inputs = tokenizer(question, context, add_special_tokens=True)
+input_ids = inputs["input_ids"][0]
+outputs = model(**inputs)
+answer_start_scores = outputs.start_logits
+answer_end_scores = outputs.end_logits
+# Get the most likely beginning of answer with the argmax of the score
+answer_start = torch.argmax(answer_start_scores)
+# Get the most likely end of answer with the argmax of the score
+answer_end = torch.argmax(answer_end_scores) + 1
+answer = tokenizer.convert_tokens_to_string(
+    tokenizer.convert_ids_to_tokens(input_ids[answer_start:answer_end])
+)
+print(f"Question: {question}")
+print(f"Answer: {answer}")
+```
+
+```python out
+"""
+---------------------------------------------------------------------------
+AttributeError                            Traceback (most recent call last)
+/var/folders/28/k4cy5q7s2hs92xq7_h89_vgm0000gn/T/ipykernel_75743/2725838073.py in <module>
+      1 inputs = tokenizer(question, text, add_special_tokens=True)
+      2 input_ids = inputs["input_ids"]
+----> 3 outputs = model(**inputs)
+      4 answer_start_scores = outputs.start_logits
+      5 answer_end_scores = outputs.end_logits
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/torch/nn/modules/module.py in _call_impl(self, *input, **kwargs)
+   1049         if not (self._backward_hooks or self._forward_hooks or self._forward_pre_hooks or _global_backward_hooks
+   1050                 or _global_forward_hooks or _global_forward_pre_hooks):
+-> 1051             return forward_call(*input, **kwargs)
+   1052         # Do not call functions when jit is used
+   1053         full_backward_hooks, non_full_backward_hooks = [], []
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, start_positions, end_positions, output_attentions, output_hidden_states, return_dict)
+    723         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    724
+--> 725         distilbert_output = self.distilbert(
+    726             input_ids=input_ids,
+    727             attention_mask=attention_mask,
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/torch/nn/modules/module.py in _call_impl(self, *input, **kwargs)
+   1049         if not (self._backward_hooks or self._forward_hooks or self._forward_pre_hooks or _global_backward_hooks
+   1050                 or _global_forward_hooks or _global_forward_pre_hooks):
+-> 1051             return forward_call(*input, **kwargs)
+   1052         # Do not call functions when jit is used
+   1053         full_backward_hooks, non_full_backward_hooks = [], []
+
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, output_attentions, output_hidden_states, return_dict)
+    471             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+    472         elif input_ids is not None:
+--> 473             input_shape = input_ids.size()
+    474         elif inputs_embeds is not None:
+    475             input_shape = inputs_embeds.size()[:-1]
+
+AttributeError: 'list' object has no attribute 'size'
+"""
+```
+
+ای وای، به نظر می‌رسد در کدمان اشکالی وجود دارد! اما از کمی اشکال‌زدایی نمی‌ترسیم. می‌توانید از اشکال‌زدای پایتون در یک دفترچه استفاده کنید:
+
+<Youtube id="rSPyvPw0p9k"/>
+
+یا در یک ترمینال:
+
+<Youtube id="5PkZ4rbHL6c"/>
+
+خواندن پیام خطا به ما می‌گوید که شیء `list` ویژگی `size` ندارد و فلش `-->` به خطی اشاره می‌کند که مشکل در آن رخ داده است: `model(**inputs)`. می‌توانید با اشکال‌زدای پایتون به‌صورت تعاملی خطا را بررسی کنید، اما فعلاً فقط بخشی از `inputs` را چاپ می‌کنیم تا ببینیم چه چیزی در اختیار داریم:
+
+```python
+inputs["input_ids"][:5]
+```
+
+```python out
+[101, 2029, 7705, 2015, 2064]
+```
+
+این دقیقاً شبیه یک `list` معمولی پایتون به نظر می‌رسد، اما بیایید نوع آن را دوباره بررسی کنیم:
+
+```python
+type(inputs["input_ids"])
+```
+
+```python out
+list
+```
+
+بله، قطعاً یک `list` پایتون است. پس چه چیزی اشتباه پیش رفت؟ از [فصل ۲](/course/chapter2) به یاد داریم که کلاس‌های `AutoModelForXxx` در 🤗 ترنسفورمرها با _تنسورها_ (در PyTorch یا TensorFlow) کار می‌کنند و یک عملیات رایج، استخراج ابعاد تنسور با استفاده از `Tensor.size()` در مثلاً PyTorch است. بیایید دوباره traceback را نگاه کنیم تا ببینیم کدام خط استثنا را ایجاد کرده است:
+
+```
+~/miniconda3/envs/huggingface/lib/python3.8/site-packages/transformers/models/distilbert/modeling_distilbert.py in forward(self, input_ids, attention_mask, head_mask, inputs_embeds, output_attentions, output_hidden_states, return_dict)
+    471             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+    472         elif input_ids is not None:
+--> 473             input_shape = input_ids.size()
+    474         elif inputs_embeds is not None:
+    475             input_shape = inputs_embeds.size()[:-1]
+
+AttributeError: 'list' object has no attribute 'size'
+```
+
+به نظر می‌رسد کدمان تلاش کرده `input_ids.size()` را فراخوانی کند، اما این کار برای یک `list` پایتون که فقط یک محفظه است، ممکن نیست. چگونه می‌توانیم این مشکل را حل کنیم؟ جست‌وجوی پیام خطا در Stack Overflow چند [نتیجه](https://stackoverflow.com/search?q=AttributeError%3A+%27list%27+object+has+no+attribute+%27size%27&s=c15ec54c-63cb-481d-a749-408920073e8f) مرتبط نشان می‌دهد. با کلیک روی اولین نتیجه، پرسشی مشابه پرسش ما و پاسخ آن را در تصویر زیر می‌بینیم:
+
+<div class="flex justify-center">
+<img src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter8/stack-overflow.png" alt="An answer from Stack Overflow." width="100%"/>
+</div>
+
+در پاسخ پیشنهاد شده است که `return_tensors='pt'` را به توکن‌ساز اضافه کنیم؛ بیایید ببینیم برای ما هم کار می‌کند یا نه:
+
+```python out
+inputs = tokenizer(question, context, add_special_tokens=True, return_tensors="pt")
+input_ids = inputs["input_ids"][0]
+outputs = model(**inputs)
+answer_start_scores = outputs.start_logits
+answer_end_scores = outputs.end_logits
+# Get the most likely beginning of answer with the argmax of the score
+answer_start = torch.argmax(answer_start_scores)
+# Get the most likely end of answer with the argmax of the score
+answer_end = torch.argmax(answer_end_scores) + 1
+answer = tokenizer.convert_tokens_to_string(
+    tokenizer.convert_ids_to_tokens(input_ids[answer_start:answer_end])
+)
+print(f"Question: {question}")
+print(f"Answer: {answer}")
+```
+
+```python out
+"""
+Question: Which frameworks can I use?
+Answer: pytorch, tensorflow, and jax
+"""
+```
+
+عالی، کار کرد! این نمونه‌ی خوبی از مفیدبودن Stack Overflow است: با پیدا کردن مشکلی مشابه، توانستیم از تجربه‌ی جامعه استفاده کنیم. بااین‌حال، جست‌وجو همیشه نتیجه‌ی مرتبطی ندارد؛ در چنین شرایطی چه می‌توان کرد؟ خوشبختانه جامعه‌ی خوش‌برخوردی از توسعه‌دهندگان در [انجمن‌های هاگینگ‌فیس](https://discuss.huggingface.co/) وجود دارد که می‌تواند کمک کند. در بخش بعدی بررسی می‌کنیم چگونه پرسش‌های خوبی در انجمن مطرح کنیم که احتمال پاسخ‌گرفتنشان زیاد باشد.
+</div>

@@ -1,0 +1,963 @@
+<FrameworkSwitchCourse {fw} />
+
+<div dir="rtl">
+
+# دسته‌بندی توکِن[[token-classification]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section2_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section2_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section2_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section2_tf.ipynb"},
+]} />
+
+{/if}
+
+اولین کاربردی که بررسی می‌کنیم دسته‌بندی توکِن است. این وظیفه‌ی عمومی هر مسئله‌ای را دربرمی‌گیرد که بتوان آن را به‌شکل «اختصاص دادن یک برچسب به هر توکِن در جمله» صورت‌بندی کرد، مانند:
+
+<div dir="rtl">
+
+- **تشخیص موجودیت نام‌دار (NER)**: موجودیت‌هایی مانند افراد، مکان‌ها یا سازمان‌ها را در جمله پیدا کنید. می‌توان این کار را با اختصاص یک کلاس به هر موجودیت و یک کلاس برای «بدون موجودیت» به هر توکِن صورت‌بندی کرد.
+- **برچسب‌گذاری نقش دستوری (POS)**: هر کلمه‌ی جمله را با نقش دستوری مناسب، مانند اسم، فعل یا صفت، علامت‌گذاری کنید.
+- **قطعه‌بندی (Chunking)**: توکِن‌هایی را پیدا کنید که به یک موجودیت تعلق دارند. می‌توان به توکِن‌های آغاز قطعه برچسب `B-`، به توکِن‌های داخل قطعه برچسب `I-` و به توکِن‌های بیرون از هر قطعه برچسب `O` داد.
+
+<Youtube id="wVHdVlPScxA"/>
+
+البته انواع دیگری از مسئله‌های دسته‌بندی توکِن هم وجود دارد؛ این‌ها فقط چند نمونه‌ی نماینده‌اند. در این بخش، مدلی (BERT) را روی مسئله‌ی NER کوک می‌کنیم تا بتواند پیش‌بینی‌هایی مانند این انجام دهد:
+
+<iframe src="https://course-demos-bert-finetuned-ner.hf.space" frameBorder="0" height="350" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+<a class="flex justify-center" href="/huggingface-course/bert-finetuned-ner">
+<img class="block dark:hidden lg:w-3/5" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/model-eval-bert-finetuned-ner.png" alt="One-hot encoded labels for question answering."/>
+<img class="hidden dark:block lg:w-3/5" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/model-eval-bert-finetuned-ner-dark.png" alt="One-hot encoded labels for question answering."/>
+</a>
+
+مدلی را که تعلیم می‌دهیم و روی هاب بارگذاری می‌کنیم، همراه با بررسی دوباره‌ی پیش‌بینی‌هایش، [اینجا](https://huggingface.co/huggingface-course/bert-finetuned-ner?text=My+name+is+Sylvain+and+I+work+at+Hugging+Face+in+Brooklyn) پیدا می‌کنید.
+
+## آماده‌سازی داده‌ها[[preparing-the-data]]
+
+در قدم اول به دیتاسِتی مناسب برای دسته‌بندی توکِن نیاز داریم. در این بخش از [دیتاسِت CoNLL-2003](https://huggingface.co/datasets/conll2003) استفاده می‌کنیم که شامل خبرهای رویترز است.
+
+> [!TIP]
+> 💡 تا وقتی دیتاسِت شما از متن‌هایی تشکیل شده باشد که به کلمه‌ها و برچسب‌های متناظرشان تقسیم شده‌اند، می‌توانید روش‌های پردازش داده‌ی اینجا را برای دیتاسِت خودتان به کار ببرید. اگر نیاز به یادآوری بارگذاری داده‌ی سفارشی در یک `Dataset` دارید، به [فصل ۵](/course/chapter5) برگردید.
+
+### دیتاسِت CoNLL-2003[[the-conll-2003-dataset]]
+
+برای بارگذاری دیتاسِت CoNLL-2003، از متد `load_dataset()` در کتابخانه‌ی 🤗 Datasets استفاده می‌کنیم:
+
+```py
+from datasets import load_dataset
+
+raw_datasets = load_dataset("conll2003")
+```
+
+این کار دیتاسِت را دانلود و در کش ذخیره می‌کند؛ همان‌طور که در [فصل ۳](/course/chapter3) برای دیتاسِت GLUE MRPC دیدیم. بررسی این شیء ستون‌های موجود و تقسیم داده‌ها به مجموعه‌های تعلیم، اعتبارسنجی و آزمون را نشان می‌دهد:
+
+```py
+raw_datasets
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['chunk_tags', 'id', 'ner_tags', 'pos_tags', 'tokens'],
+        num_rows: 14041
+    })
+    validation: Dataset({
+        features: ['chunk_tags', 'id', 'ner_tags', 'pos_tags', 'tokens'],
+        num_rows: 3250
+    })
+    test: Dataset({
+        features: ['chunk_tags', 'id', 'ner_tags', 'pos_tags', 'tokens'],
+        num_rows: 3453
+    })
+})
+```
+
+به‌طور مشخص می‌بینیم دیتاسِت برای سه وظیفه‌ی گفته‌شده، یعنی NER، POS و قطعه‌بندی، برچسب دارد. تفاوت مهم با دیتاسِت‌های دیگر این است که متن‌های ورودی به‌صورت جمله یا سند ارائه نشده‌اند، بلکه فهرستی از کلمات‌اند؛ ورودی‌ها از پیش به کلمه‌ها تقسیم شده‌اند و هنوز باید برای توکِن‌سازی زیرکلمه از توکِن‌ساز عبور کنند.
+
+بیایید نخستین عنصر مجموعه‌ی تعلیم را ببینیم:
+
+```py
+raw_datasets["train"][0]["tokens"]
+```
+
+```python out
+['EU', 'rejects', 'German', 'call', 'to', 'boycott', 'British', 'lamb', '.']
+```
+
+چون می‌خواهیم تشخیص موجودیت نام‌دار انجام دهیم، برچسب‌های NER را بررسی می‌کنیم:
+
+```py
+raw_datasets["train"][0]["ner_tags"]
+```
+
+```python out
+[3, 0, 7, 0, 0, 0, 7, 0, 0]
+```
+
+این‌ها برچسب‌هایی عددی و آماده‌ی تعلیم‌اند، اما لزوماً برای بررسی داده مفید نیستند. مانند دسته‌بندی متن، با نگاه کردن به ویژگی `features` دیتاسِت می‌توانیم تناظر میان این اعداد و نام برچسب‌ها را ببینیم:
+
+```py
+ner_feature = raw_datasets["train"].features["ner_tags"]
+ner_feature
+```
+
+```python out
+Sequence(feature=ClassLabel(num_classes=9, names=['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC'], names_file=None, id=None), length=-1, id=None)
+```
+
+پس این ستون عناصری دارد که دنباله‌ای از `ClassLabel`ها هستند. نوع عناصر دنباله در ویژگی `feature` مربوط به `ner_feature` قرار دارد و با نگاه کردن به ویژگی `names` همان `feature` می‌توانیم فهرست نام‌ها را بگیریم:
+
+```py
+label_names = ner_feature.feature.names
+label_names
+```
+
+```python out
+['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
+```
+
+این برچسب‌ها را هنگام بررسی خط تولید `token-classification` در [فصل ۶](/course/chapter6/3) دیدیم، اما برای یادآوری کوتاه:
+
+- `O` یعنی کلمه با هیچ موجودیتی متناظر نیست.
+- `B-PER`/`I-PER` یعنی کلمه به‌ترتیب با آغاز یک موجودیت شخص متناظر است یا درون آن قرار دارد.
+- `B-ORG`/`I-ORG` یعنی کلمه به‌ترتیب با آغاز یک موجودیت سازمان متناظر است یا درون آن قرار دارد.
+- `B-LOC`/`I-LOC` یعنی کلمه به‌ترتیب با آغاز یک موجودیت مکان متناظر است یا درون آن قرار دارد.
+- `B-MISC`/`I-MISC` یعنی کلمه به‌ترتیب با آغاز یک موجودیت متفرقه متناظر است یا درون آن قرار دارد.
+
+</div>
+
+حالا با رمزگشایی برچسب‌هایی که پیش‌تر دیدیم به این نتیجه می‌رسیم:
+
+```python
+words = raw_datasets["train"][0]["tokens"]
+labels = raw_datasets["train"][0]["ner_tags"]
+line1 = ""
+line2 = ""
+for word, label in zip(words, labels):
+    full_label = label_names[label]
+    max_length = max(len(word), len(full_label))
+    line1 += word + " " * (max_length - len(word) + 1)
+    line2 += full_label + " " * (max_length - len(full_label) + 1)
+
+print(line1)
+print(line2)
+```
+
+```python out
+'EU    rejects German call to boycott British lamb .'
+'B-ORG O       B-MISC O    O  O       B-MISC  O    O'
+```
+
+برای نمونه‌ای که برچسب‌های `B-` و `I-` را با هم دارد، همین کد برای عنصر شماره‌ی ۴ مجموعه‌ی تعلیم چنین خروجی‌ای می‌دهد:
+
+```python out
+'Germany \'s representative to the European Union \'s veterinary committee Werner Zwingmann said on Wednesday consumers should buy sheepmeat from countries other than Britain until the scientific advice was clearer .'
+'B-LOC   O  O              O  O   B-ORG    I-ORG O  O          O         B-PER  I-PER     O    O  O         O         O      O   O         O    O         O     O    B-LOC   O     O   O          O      O   O       O'
+```
+
+همان‌طور که می‌بینیم، موجودیت‌هایی که دو کلمه را دربرمی‌گیرند، مانند «European Union» و «Werner Zwingmann»، برای کلمه‌ی اول برچسب `B-` و برای کلمه‌ی دوم برچسب `I-` می‌گیرند.
+
+> [!TIP]
+> ✏️ **نوبت شماست!** همان دو جمله را با برچسب‌های POS یا قطعه‌بندی چاپ کنید.
+
+### پردازش داده‌ها[[processing-the-data]]
+
+<Youtube id="iY2AZYdZAr0"/>
+
+طبق معمول، پیش از آنکه مدل بتواند متن‌ها را درک کند، باید آن‌ها را به شناسه‌های توکِن تبدیل کنیم. همان‌طور که در [فصل ۶](/course/chapter6/) دیدیم، تفاوت مهم وظایف دسته‌بندی توکِن این است که ورودی‌ها از قبل توکِن‌سازی شده‌اند. خوشبختانه API توکِن‌ساز به‌راحتی از این وضعیت پشتیبانی می‌کند؛ فقط باید با یک پرچم ویژه به `tokenizer` هشدار دهیم.
+
+برای شروع، شیء `tokenizer` را می‌سازیم. همان‌طور که گفتیم، از یک مدل از پیش تعلیم‌دیده‌ی BERT استفاده می‌کنیم، پس ابتدا توکِن‌ساز مربوط را دانلود و در کش ذخیره می‌کنیم:
+
+```python
+from transformers import AutoTokenizer
+
+model_checkpoint = "bert-base-cased"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+می‌توانید `model_checkpoint` را با هر مدل دیگری از [هاب](https://huggingface.co/models) یا با پوشه‌ی محلی حاوی مدل و توکِن‌ساز از پیش تعلیم‌دیده جایگزین کنید. تنها محدودیت این است که توکِن‌ساز باید بر کتابخانه‌ی 🤗 Tokenizers متکی باشد تا نسخه‌ی سریع آن موجود باشد. معماری‌های دارای نسخه‌ی سریع در [این جدول بزرگ](https://huggingface.co/transformers/#supported-frameworks) آمده‌اند؛ برای اطمینان نیز ویژگی `is_fast` شیء `tokenizer` را بررسی کنید:
+
+```py
+tokenizer.is_fast
+```
+
+```python out
+True
+```
+
+برای توکِن‌سازی ورودی‌ای که از قبل به کلمه تقسیم شده، می‌توانیم طبق معمول از `tokenizer` استفاده کنیم و فقط `is_split_into_words=True` را اضافه کنیم:
+
+```py
+inputs = tokenizer(raw_datasets["train"][0]["tokens"], is_split_into_words=True)
+inputs.tokens()
+```
+
+```python out
+['[CLS]', 'EU', 'rejects', 'German', 'call', 'to', 'boycott', 'British', 'la', '##mb', '.', '[SEP]']
+```
+
+توکِن‌ساز توکِن‌های ویژه‌ی مدل را اضافه کرده است (`[CLS]` در ابتدا و `[SEP]` در انتها) و بیشتر کلمات را دست‌نخورده گذاشته است. اما `lamb` به دو زیرکلمه‌ی `la` و `##mb` تبدیل شده است. در نتیجه میان ورودی‌ها و برچسب‌ها ناسازگاری ایجاد می‌شود: فهرست برچسب‌ها فقط ۹ عنصر دارد، در حالی که ورودی اکنون ۱۲ توکِن دارد. حساب کردن توکِن‌های ویژه آسان است، اما باید همه‌ی برچسب‌ها را با کلمه‌های درست هم‌تراز کنیم.
+
+چون از توکِن‌ساز سریع استفاده می‌کنیم، به قابلیت‌های ویژه‌ی 🤗 Tokenizers دسترسی داریم و می‌توانیم هر توکِن را به‌سادگی به کلمه‌ی متناظر آن نگاشت کنیم؛ همان‌طور که در [فصل ۶](/course/chapter6/3) دیدیم:
+
+```py
+inputs.word_ids()
+```
+
+```python out
+[None, 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, None]
+```
+
+با کمی کار می‌توانیم فهرست برچسب‌ها را گسترش دهیم تا با توکِن‌ها هم‌اندازه شود. توکِن‌های ویژه برچسب `-100` می‌گیرند؛ چون `-100` در تابع هزینه‌ی مورد استفاده (آنتروپی متقابل) نادیده گرفته می‌شود. سپس هر توکِن همان برچسب توکِنی را می‌گیرد که کلمه‌ی دربرگیرنده‌اش را آغاز کرده است. برای توکِن‌های داخل یک کلمه که در آغاز آن نیستند، `B-` را به `I-` تبدیل می‌کنیم.
+
+```python
+def align_labels_with_tokens(labels, word_ids):
+    new_labels = []
+    current_word = None
+    for word_id in word_ids:
+        if word_id != current_word:
+            # Start of a new word!
+            current_word = word_id
+            label = -100 if word_id is None else labels[word_id]
+            new_labels.append(label)
+        elif word_id is None:
+            # Special token
+            new_labels.append(-100)
+        else:
+            # Same word as previous token
+            label = labels[word_id]
+            # If the label is B-XXX we change it to I-XXX
+            if label % 2 == 1:
+                label += 1
+            new_labels.append(label)
+
+    return new_labels
+```
+
+بیایید آن را روی نخستین جمله امتحان کنیم:
+
+```py
+labels = raw_datasets["train"][0]["ner_tags"]
+word_ids = inputs.word_ids()
+print(labels)
+print(align_labels_with_tokens(labels, word_ids))
+```
+
+```python out
+[3, 0, 7, 0, 0, 0, 7, 0, 0]
+[-100, 3, 0, 7, 0, 0, 0, 7, 0, 0, 0, -100]
+```
+
+تابع ما برای دو توکِن ویژه در ابتدا و انتها `-100` و برای کلمه‌ای که به دو توکِن تقسیم شده، یک 0 جدید اضافه کرده است.
+
+> [!TIP]
+> ✏️ **نوبت شماست!** بعضی پژوهشگران ترجیح می‌دهند برای هر کلمه فقط یک برچسب اختصاص دهند و به زیرتوکِن‌های دیگر همان کلمه `-100` بدهند. تابع قبلی را طوری تغییر دهید که برچسب‌ها را با شناسه‌های ورودی بر اساس این قاعده هم‌تراز کند.
+
+برای پیش‌پردازش کل دیتاسِت، باید همه‌ی ورودی‌ها را توکِن‌سازی کنیم و `align_labels_with_tokens()` را روی همه‌ی برچسب‌ها اعمال کنیم. برای بهره بردن از سرعت توکِن‌ساز سریع، متن‌های زیادی را هم‌زمان توکِن‌سازی می‌کنیم؛ پس تابعی می‌نویسیم که فهرستی از نمونه‌ها را پردازش کند و از `Dataset.map()` با گزینه‌ی `batched=True` استفاده کنیم. وقتی ورودی‌ها فهرستی از متن‌ها هستند، `word_ids()` باید اندیس نمونه‌ای را بگیرد که شناسه‌های کلمه‌ی آن را می‌خواهیم؛ این را هم اضافه می‌کنیم:
+
+```py
+def tokenize_and_align_labels(examples):
+    tokenized_inputs = tokenizer(
+        examples["tokens"], truncation=True, is_split_into_words=True
+    )
+    all_labels = examples["ner_tags"]
+    new_labels = []
+    for i, labels in enumerate(all_labels):
+        word_ids = tokenized_inputs.word_ids(i)
+        new_labels.append(align_labels_with_tokens(labels, word_ids))
+
+    tokenized_inputs["labels"] = new_labels
+    return tokenized_inputs
+```
+
+توجه کنید که هنوز ورودی‌ها را هم‌طول نکرده‌ایم؛ این کار را بعداً، هنگام ساخت بتچ‌ها با یک جمع‌کننده‌ی داده انجام می‌دهیم.
+
+حالا می‌توانیم همه‌ی این پیش‌پردازش را یک‌جا روی بخش‌های دیگر دیتاسِت اعمال کنیم:
+
+```py
+tokenized_datasets = raw_datasets.map(
+    tokenize_and_align_labels,
+    batched=True,
+    remove_columns=raw_datasets["train"].column_names,
+)
+```
+
+سخت‌ترین بخش را انجام دادیم! حالا که داده پیش‌پردازش شده است، خود تعلیم تقریباً شبیه کاری خواهد بود که در [فصل ۳](/course/chapter3) انجام دادیم.
+
+{#if fw === 'pt'}
+
+## کوک کردن مدل با API Trainer[[fine-tuning-the-model-with-the-trainer-api]]
+
+کد واقعی استفاده از `Trainer` مانند قبل است؛ تنها تغییرها روش جمع کردن داده‌ها در یک بتچ و تابع محاسبه‌ی معیار هستند.
+
+{:else}
+
+## کوک کردن مدل با کِراس[[fine-tuning-the-model-with-keras]]
+
+کد واقعی استفاده از کِراس بسیار شبیه قبل است؛ تنها تغییرها روش جمع کردن داده‌ها در یک بتچ و تابع محاسبه‌ی معیار هستند.
+
+{/if}
+
+
+### جمع کردن داده‌ها[[data-collation]]
+
+نمی‌توانیم مانند [فصل ۳](/course/chapter3) فقط از DataCollatorWithPadding استفاده کنیم، چون آن فقط ورودی‌ها (شناسه‌های ورودی، ماسک توجه و شناسه‌های نوع توکِن) را هم‌طول می‌کند. اینجا باید برچسب‌ها را دقیقاً مانند ورودی‌ها هم‌طول کنیم و از `-100` استفاده کنیم تا پیش‌بینی‌های متناظر در محاسبه‌ی هزینه نادیده گرفته شوند.
+
+این کار را [`DataCollatorForTokenClassification`](https://huggingface.co/transformers/main_classes/data_collator.html#datacollatorfortokenclassification) انجام می‌دهد. این کلاس مانند `DataCollatorWithPadding`، توکِن‌ساز استفاده‌شده برای پیش‌پردازش ورودی‌ها را دریافت می‌کند:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import DataCollatorForTokenClassification
+
+data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
+```
+
+{:else}
+
+```py
+from transformers import DataCollatorForTokenClassification
+
+data_collator = DataCollatorForTokenClassification(
+    tokenizer=tokenizer, return_tensors="tf"
+)
+```
+
+{/if}
+
+برای آزمودن آن روی چند نمونه، کافی است آن را روی فهرستی از نمونه‌های مجموعه‌ی تعلیم توکِن‌سازی‌شده فراخوانی کنیم:
+
+```py
+batch = data_collator([tokenized_datasets["train"][i] for i in range(2)])
+batch["labels"]
+```
+
+```python out
+tensor([[-100,    3,    0,    7,    0,    0,    0,    7,    0,    0,    0, -100],
+        [-100,    1,    2, -100, -100, -100, -100, -100, -100, -100, -100, -100]])
+```
+
+بیایید این را با برچسب‌های عنصر اول و دوم دیتاسِت مقایسه کنیم:
+
+```py
+for i in range(2):
+    print(tokenized_datasets["train"][i]["labels"])
+```
+
+```python out
+[-100, 3, 0, 7, 0, 0, 0, 7, 0, 0, 0, -100]
+[-100, 1, 2, -100]
+```
+
+{#if fw === 'pt'}
+
+مجموعه‌ی دوم برچسب‌ها با استفاده از -100ها تا طول مجموعه‌ی اول هم‌طول شده است.
+
+{:else}
+
+جمع‌کننده‌ی داده آماده است! حالا از آن برای ساختن یک `tf.data.Dataset` با متد `to_tf_dataset()` استفاده می‌کنیم. همچنین می‌توانید با `model.prepare_tf_dataset()` همین کار را با کد کم‌تری انجام دهید؛ در بخش‌های دیگر این فصل آن را خواهید دید.
+
+```py
+tf_train_dataset = tokenized_datasets["train"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "labels", "token_type_ids"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=16,
+)
+
+tf_eval_dataset = tokenized_datasets["validation"].to_tf_dataset(
+    columns=["attention_mask", "input_ids", "labels", "token_type_ids"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=16,
+)
+```
+
+
+گام بعدی: خود مدل.
+
+{/if}
+
+{#if fw === 'tf'}
+
+### تعریف مدل[[defining-the-model]]
+
+چون با مسئله‌ی دسته‌بندی توکِن کار می‌کنیم، از کلاس `TFAutoModelForTokenClassification` استفاده می‌کنیم. نکته‌ی اصلی هنگام تعریف مدل این است که اطلاعاتی درباره‌ی تعداد برچسب‌ها به آن بدهیم. ساده‌ترین راه ارسال این تعداد با آرگومان `num_labels` است؛ اما برای داشتن ویجت استنتاجی مناسب، بهتر است تناظر درست برچسب‌ها را تنظیم کنیم.
+
+این تناظرها باید با دو دیکشنری `id2label` و `label2id` تنظیم شوند که نگاشت شناسه به برچسب و برعکس را در خود دارند:
+
+```py
+id2label = {i: label for i, label in enumerate(label_names)}
+label2id = {v: k for k, v in id2label.items()}
+```
+
+اکنون کافی است آن‌ها را به متد `TFAutoModelForTokenClassification.from_pretrained()` بدهیم تا در تنظیمات مدل قرار بگیرند و سپس به‌درستی ذخیره و روی هاب بارگذاری شوند:
+
+```py
+from transformers import TFAutoModelForTokenClassification
+
+model = TFAutoModelForTokenClassification.from_pretrained(
+    model_checkpoint,
+    id2label=id2label,
+    label2id=label2id,
+)
+```
+
+ساخت مدل هشداری می‌دهد که برخی وزن‌ها استفاده نشده‌اند (وزن‌های سر پیش‌تعلیم) و برخی وزن‌های دیگر به‌صورت تصادفی مقداردهی اولیه شده‌اند (وزن‌های سر جدید دسته‌بندی توکِن) و این مدل باید تعلیم داده شود. ابتدا دوباره بررسی کنیم مدل تعداد برچسب درست را دارد:
+
+```python
+model.config.num_labels
+```
+
+```python out
+9
+```
+
+> ⚠️ اگر مدل تعداد برچسب نادرستی داشته باشد، هنگام فراخوانی `model.fit()` با خطایی مبهم روبه‌رو می‌شوید. اشکال‌زدایی این خطا آزاردهنده است، پس این بررسی را انجام دهید تا از تعداد درست برچسب‌ها مطمئن شوید.
+
+### کوک کردن مدل[[fine-tuning-the-model]]
+
+حالا آماده‌ی تعلیم مدل هستیم! ابتدا باید وارد حساب هاگینگ‌فِیس شویم و ابرپارامترهای تعلیم را تعریف کنیم. اگر در نوت‌بوک کار می‌کنید، تابعی کمکی برای این کار وجود دارد:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+این کار ویجتی نمایش می‌دهد که می‌توانید اعتبارنامه‌های ورود به هاگینگ‌فِیس را در آن وارد کنید.
+
+اگر در نوت‌بوک کار نمی‌کنید، کافی است خط زیر را در ترمینال بنویسید:
+
+```bash
+huggingface-cli login
+```
+
+پس از ورود، همه‌چیز را برای کامپایل مدل آماده می‌کنیم. 🤗 Transformers تابع `create_optimizer()` را فراهم می‌کند که یک بهینه‌ساز `AdamW` با تنظیمات مناسب برای کاهش وزن و کاهش نرخ یادگیری می‌سازد؛ هر دو مورد عملکرد مدل را بهتر می‌کنند:
+
+```python
+from transformers import create_optimizer
+import tensorflow as tf
+
+# Train in mixed-precision float16
+# Comment this line out if you're using a GPU that will not benefit from this
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+
+# The number of training steps is the number of samples in the dataset, divided by the batch size then multiplied
+# by the total number of epochs. Note that the tf_train_dataset here is a batched tf.data.Dataset,
+# not the original Hugging Face Dataset, so its len() is already num_samples // batch_size.
+num_epochs = 3
+num_train_steps = len(tf_train_dataset) * num_epochs
+
+optimizer, schedule = create_optimizer(
+    init_lr=2e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+model.compile(optimizer=optimizer)
+```
+
+آرگومان `loss` را به `compile()` نمی‌دهیم، چون مدل‌ها می‌توانند هزینه را به‌صورت داخلی محاسبه کنند. اگر مدل را بدون هزینه کامپایل کنید و برچسب‌ها را در دیکشنری ورودی قرار دهید، مدل با همان هزینه‌ی داخلی و متناسب با وظیفه و نوع مدل تعلیم می‌بیند.
+
+سپس یک `PushToHubCallback` تعریف می‌کنیم تا مدل را هنگام تعلیم روی هاب بارگذاری کند و مدل را با آن callback برازش می‌دهیم:
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(output_dir="bert-finetuned-ner", tokenizer=tokenizer)
+
+model.fit(
+    tf_train_dataset,
+    validation_data=tf_eval_dataset,
+    callbacks=[callback],
+    epochs=num_epochs,
+)
+```
+
+با آرگومان `hub_model_id` می‌توانید نام کامل مخزن مقصد را مشخص کنید؛ برای پوش به یک سازمان به آن نیاز دارید. برای نمونه، هنگام پوش کردن مدل به سازمان [`huggingface-course`](https://huggingface.co/huggingface-course)، از شناسه‌ی `hub_model_id="huggingface-course/bert-finetuned-ner"` استفاده می‌کنیم. به‌طور پیش‌فرض مخزن در فضای نام شما و با نام دایرکتوری خروجی ساخته می‌شود.
+
+> [!TIP]
+> 💡 اگر دایرکتوری خروجی از قبل وجود داشته باشد، باید کلون محلی مخزنی باشد که می‌خواهید به آن پوش کنید؛ در غیر این صورت هنگام فراخوانی `model.fit()` خطا می‌گیرید و باید نام تازه‌ای تعیین کنید.
+
+هر بار مدل ذخیره می‌شود، در پس‌زمینه روی هاب بارگذاری می‌شود؛ بنابراین در صورت نیاز می‌توانید تعلیم را روی دستگاه دیگری ادامه دهید.
+
+اکنون می‌توانید با ویجت استنتاج در هاب مدل، مدل خود را آزمایش و با دوستانتان به اشتراک بگذارید. شما با موفقیت مدلی را برای دسته‌بندی توکِن کوک کرده‌اید — تبریک می‌گوییم! برای سنجش کیفیت، باید چند معیار را ارزیابی کنیم.
+
+{/if}
+
+
+### معیارها[[metrics]]
+
+{#if fw === 'pt'}
+
+برای اینکه `Trainer` در هر دوره یک معیار را محاسبه کند، باید تابع `compute_metrics()` را تعریف کنیم؛ این تابع آرایه‌های پیش‌بینی و برچسب را می‌گیرد و دیکشنری‌ای از نام و مقدار معیارها برمی‌گرداند.
+
+چارچوب سنتی ارزیابی پیش‌بینی‌های دسته‌بندی توکِن [seqeval](https://github.com/chakki-works/seqeval) است. برای استفاده از این معیار، ابتدا باید کتابخانه‌ی seqeval را نصب کنیم:
+
+```py
+!pip install seqeval
+```
+
+سپس مانند [فصل ۳](/course/chapter3) آن را با تابع `evaluate.load()` بارگذاری می‌کنیم:
+
+{:else}
+
+چارچوب سنتی ارزیابی پیش‌بینی‌های دسته‌بندی توکِن [seqeval](https://github.com/chakki-works/seqeval) است. برای استفاده از این معیار، ابتدا باید کتابخانه‌ی seqeval را نصب کنیم:
+
+```py
+!pip install seqeval
+```
+
+سپس مانند [فصل ۳](/course/chapter3) آن را با تابع `evaluate.load()` بارگذاری می‌کنیم:
+
+{/if}
+
+```py
+import evaluate
+
+metric = evaluate.load("seqeval")
+```
+
+این معیار مانند دقت استاندارد رفتار نمی‌کند: فهرست‌های برچسب را به‌صورت رشته، نه عدد صحیح، می‌گیرد؛ بنابراین باید پیش‌بینی‌ها و برچسب‌ها را پیش از ارسال کاملاً رمزگشایی کنیم. ابتدا برچسب‌های نخستین نمونه‌ی تعلیم را می‌گیریم:
+
+```py
+labels = raw_datasets["train"][0]["ner_tags"]
+labels = [label_names[i] for i in labels]
+labels
+```
+
+```python out
+['B-ORG', 'O', 'B-MISC', 'O', 'O', 'O', 'B-MISC', 'O', 'O']
+```
+
+سپس با تغییر مقدار اندیس ۲ برای آن‌ها پیش‌بینی‌های ساختگی می‌سازیم:
+
+```py
+predictions = labels.copy()
+predictions[2] = "O"
+metric.compute(predictions=[predictions], references=[labels])
+```
+
+معیار فهرستی از پیش‌بینی‌ها و فهرستی از برچسب‌ها می‌گیرد. خروجی چنین است:
+
+```python out
+{'MISC': {'precision': 1.0, 'recall': 0.5, 'f1': 0.67, 'number': 2},
+ 'ORG': {'precision': 1.0, 'recall': 1.0, 'f1': 1.0, 'number': 1},
+ 'overall_precision': 1.0,
+ 'overall_recall': 0.67,
+ 'overall_f1': 0.8,
+ 'overall_accuracy': 0.89}
+```
+
+{#if fw === 'pt'}
+
+برای هر موجودیت و در مجموع، دقت، بازخوانی و امتیاز F1 را می‌گیریم. برای محاسبه‌ی معیار فقط امتیاز کلی را نگه می‌داریم، اما می‌توانید `compute_metrics()` را تغییر دهید تا هر معیار دلخواه را گزارش کند.
+
+تابع `compute_metrics()` ابتدا آرگومان بیشینه را برای تبدیل لوجیت‌ها به پیش‌بینی می‌گیرد؛ سپس برچسب‌ها و پیش‌بینی‌ها را از عدد صحیح به رشته تبدیل می‌کند، مقادیر دارای برچسب `-100` را حذف می‌کند و نتیجه را به `metric.compute()` می‌دهد:
+
+```py
+import numpy as np
+
+
+def compute_metrics(eval_preds):
+    logits, labels = eval_preds
+    predictions = np.argmax(logits, axis=-1)
+
+    # Remove ignored index (special tokens) and convert to labels
+    true_labels = [[label_names[l] for l in label if l != -100] for label in labels]
+    true_predictions = [
+        [label_names[p] for (p, l) in zip(prediction, label) if l != -100]
+        for prediction, label in zip(predictions, labels)
+    ]
+    all_metrics = metric.compute(predictions=true_predictions, references=true_labels)
+    return {
+        "precision": all_metrics["overall_precision"],
+        "recall": all_metrics["overall_recall"],
+        "f1": all_metrics["overall_f1"],
+        "accuracy": all_metrics["overall_accuracy"],
+    }
+```
+
+حالا تقریباً آماده‌ی تعریف `Trainer` هستیم. فقط به مدلی نیاز داریم که آن را کوک کنیم!
+
+{:else}
+
+این خروجی اطلاعات زیادی دارد! اکنون ببینیم اگر از پیش‌بینی‌های واقعی مدل برای محاسبه‌ی امتیازهای واقعی استفاده کنیم چه می‌شود.
+
+TensorFlow نمی‌تواند پیش‌بینی‌های ما را به هم بچسباند، چون طول توالی‌ها متغیر است. پیش‌بینی‌ها را بتچ‌به‌بتچ می‌گیریم و در فهرستی بزرگ جمع می‌کنیم، توکِن‌های `-100` مربوط به ماسک یا هم‌طول‌سازی را کنار می‌گذاریم و در پایان معیارها را محاسبه می‌کنیم:
+
+```py
+import numpy as np
+
+all_predictions = []
+all_labels = []
+for batch in tf_eval_dataset:
+    logits = model.predict_on_batch(batch)["logits"]
+    labels = batch["labels"]
+    predictions = np.argmax(logits, axis=-1)
+    for prediction, label in zip(predictions, labels):
+        for predicted_idx, label_idx in zip(prediction, label):
+            if label_idx == -100:
+                continue
+            all_predictions.append(label_names[predicted_idx])
+            all_labels.append(label_names[label_idx])
+metric.compute(predictions=[all_predictions], references=[all_labels])
+```
+
+
+```python out
+{'LOC': {'precision': 0.91, 'recall': 0.92, 'f1': 0.91, 'number': 1668},
+ 'MISC': {'precision': 0.70, 'recall': 0.79, 'f1': 0.74, 'number': 702},
+ 'ORG': {'precision': 0.85, 'recall': 0.90, 'f1': 0.88, 'number': 1661},
+ 'PER': {'precision': 0.95, 'recall': 0.95, 'f1': 0.95, 'number': 1617},
+ 'overall_precision': 0.87,
+ 'overall_recall': 0.91,
+ 'overall_f1': 0.89,
+ 'overall_accuracy': 0.97}
+```
+
+مدل شما در مقایسه با مدل ما چگونه عمل کرد؟ اگر اعداد مشابهی گرفتید، تعلیم شما موفق بوده است!
+
+{/if}
+
+{#if fw === 'pt'}
+
+### تعریف مدل[[defining-the-model]]
+
+چون با مسئله‌ی دسته‌بندی توکِن کار می‌کنیم، از کلاس `AutoModelForTokenClassification` استفاده می‌کنیم. ساده‌ترین راه ارسال تعداد برچسب‌ها با آرگومان `num_labels` است؛ اما برای داشتن ویجت استنتاج مناسب، بهتر است تناظر صحیح برچسب‌ها را تنظیم کنیم.
+
+این تناظرها باید با دو دیکشنری `id2label` و `label2id` تنظیم شوند که نگاشت شناسه به برچسب و برعکس را در خود دارند:
+
+```py
+id2label = {i: label for i, label in enumerate(label_names)}
+label2id = {v: k for k, v in id2label.items()}
+```
+
+اکنون آن‌ها را به متد `AutoModelForTokenClassification.from_pretrained()` می‌دهیم تا در تنظیمات مدل قرار بگیرند و سپس ذخیره و روی هاب بارگذاری شوند:
+
+```py
+from transformers import AutoModelForTokenClassification
+
+model = AutoModelForTokenClassification.from_pretrained(
+    model_checkpoint,
+    id2label=id2label,
+    label2id=label2id,
+)
+```
+
+ساخت مدل هشداری می‌دهد که برخی وزن‌ها استفاده نشده‌اند (وزن‌های سر پیش‌تعلیم) و برخی وزن‌ها تصادفی مقداردهی اولیه شده‌اند (وزن‌های سر جدید دسته‌بندی توکِن) و مدل باید تعلیم داده شود. ابتدا تعداد برچسب‌های مدل را بررسی کنیم:
+
+```python
+model.config.num_labels
+```
+
+```python out
+9
+```
+
+> ⚠️ اگر مدل تعداد برچسب نادرستی داشته باشد، هنگام فراخوانی متد `Trainer.train()` با خطایی مبهم مانند «CUDA error: device-side assert triggered» روبه‌رو می‌شوید. این رایج‌ترین علت خطاهای گزارش‌شده است؛ پس تعداد درست برچسب‌ها را بررسی کنید.
+
+### کوک کردن مدل[[fine-tuning-the-model]]
+
+حالا آماده‌ی تعلیم مدل هستیم! پیش از تعریف `Trainer` فقط دو کار باقی مانده است: ورود به هاگینگ‌فِیس و تعریف آرگومان‌های تعلیم. اگر در نوت‌بوک کار می‌کنید، تابعی کمکی برای این کار وجود دارد:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+این کار ویجتی نمایش می‌دهد که می‌توانید اعتبارنامه‌های ورود به هاگینگ‌فِیس را در آن وارد کنید.
+
+اگر در نوت‌بوک کار نمی‌کنید، کافی است خط زیر را در ترمینال بنویسید:
+
+```bash
+huggingface-cli login
+```
+
+پس از این کار می‌توانیم `TrainingArguments` را تعریف کنیم:
+
+```python
+from transformers import TrainingArguments
+
+args = TrainingArguments(
+    "bert-finetuned-ner",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
+    push_to_hub=True,
+)
+```
+
+ابرپارامترهایی مانند نرخ یادگیری، تعداد دوره‌های تعلیم و کاهش وزن را تنظیم می‌کنیم و با تعیین `push_to_hub=True` می‌گوییم مدل در پایان هر دوره ذخیره و ارزیابی و نتایج روی هاب مدل بارگذاری شود. با `hub_model_id` می‌توانید نام مخزن مقصد را مشخص کنید؛ برای نمونه، سازمان [`huggingface-course`](https://huggingface.co/huggingface-course) را می‌توان به‌عنوان مقصد تعیین کرد و مقدار `hub_model_id="huggingface-course/bert-finetuned-ner"` را به `TrainingArguments` داد. در اینجا مخزن پیش‌فرض در فضای نام شما و با نام دایرکتوری خروجی ساخته می‌شود.
+
+> [!TIP]
+> 💡 اگر دایرکتوری خروجی از قبل وجود داشته باشد، باید کلون محلی مخزن مقصد باشد؛ در غیر این صورت هنگام تعریف `Trainer` خطا می‌گیرید و باید نام تازه‌ای انتخاب کنید.
+
+در پایان همه‌چیز را به `Trainer` می‌دهیم و تعلیم را آغاز می‌کنیم:
+
+```python
+from transformers import Trainer
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    compute_metrics=compute_metrics,
+    processing_class=tokenizer,
+)
+trainer.train()
+```
+
+هر بار مدل ذخیره می‌شود، در پس‌زمینه روی هاب بارگذاری می‌شود؛ بنابراین در صورت نیاز می‌توانید تعلیم را روی دستگاه دیگری ادامه دهید.
+
+پس از پایان تعلیم، از متد `push_to_hub()` استفاده می‌کنیم تا جدیدترین نسخه‌ی مدل روی هاب بارگذاری شود:
+
+```py
+trainer.push_to_hub(commit_message="Training complete")
+```
+
+این دستور URL کمیتی را که ایجاد کرده برمی‌گرداند تا در صورت تمایل آن را بررسی کنید:
+
+```python out
+'https://huggingface.co/sgugger/bert-finetuned-ner/commit/26ab21e5b1568f9afeccdaed2d8715f571d786ed'
+```
+
+`Trainer` همچنین یک کارت مدل با همه‌ی نتایج ارزیابی ایجاد و بارگذاری می‌کند. اکنون می‌توانید با ویجت استنتاج در هاب مدل آن را آزمایش و با دوستانتان به اشتراک بگذارید. شما با موفقیت مدلی را برای دسته‌بندی توکِن کوک کرده‌اید — تبریک می‌گوییم!
+
+اگر می‌خواهید عمیق‌تر وارد حلقه‌ی تعلیم شوید، اکنون همان کار را با 🤗 Accelerate نشان می‌دهیم.
+
+## حلقه‌ی تعلیم سفارشی[[a-custom-training-loop]]
+
+حالا حلقه‌ی کامل تعلیم را بررسی می‌کنیم تا بتوانید بخش‌های لازم را سفارشی کنید. این حلقه شبیه کاری است که در [فصل ۳](/course/chapter3/4) انجام دادیم، با چند تغییر برای ارزیابی.
+
+### آماده‌سازی همه‌چیز برای تعلیم[[preparing-everything-for-training]]
+
+ابتدا باید `DataLoader`ها را از دیتاسِت‌ها بسازیم. از `data_collator` دوباره به‌عنوان `collate_fn` استفاده می‌کنیم و مجموعه‌ی تعلیم را درهم می‌ریزیم، اما مجموعه‌ی اعتبارسنجی را نه:
+
+```py
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=8,
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], collate_fn=data_collator, batch_size=8
+)
+```
+
+سپس مدل را دوباره نمونه‌سازی می‌کنیم تا از مدل از پیش تعلیم‌دیده‌ی BERT شروع کنیم و کوک کردن قبلی را ادامه ندهیم:
+
+```py
+model = AutoModelForTokenClassification.from_pretrained(
+    model_checkpoint,
+    id2label=id2label,
+    label2id=label2id,
+)
+```
+
+از `AdamW` کلاسیک استفاده می‌کنیم که مانند `Adam` است، اما شیوه‌ی اعمال کاهش وزن در آن اصلاح شده است:
+
+```py
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+وقتی همه‌ی این اشیا آماده شدند، آن‌ها را به متد `accelerator.prepare()` می‌فرستیم:
+
+```py
+from accelerate import Accelerator
+
+accelerator = Accelerator()
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+> 🚨 اگر روی TPU تعلیم می‌دهید، باید همه‌ی کدهای سلول قبل را داخل تابع تعلیم ویژه‌ای قرار دهید. برای جزئیات بیشتر [فصل ۳](/course/chapter3) را ببینید.
+
+حالا که `train_dataloader` را به `accelerator.prepare()` فرستاده‌ایم، می‌توانیم طول آن را برای محاسبه‌ی تعداد گام‌های تعلیم به کار ببریم. از زمان‌بندی خطی کلاسیک نرخ یادگیری تا صفر استفاده می‌کنیم:
+
+```py
+from transformers import get_scheduler
+
+num_train_epochs = 3
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+برای پوش کردن مدل به هاب باید در یک پوشه‌ی کاری شیء `Repository` بسازیم. ابتدا وارد هاگینگ‌فِیس شوید و نام مخزن را از شناسه‌ی مدل تعیین کنید؛ `repo_name` را می‌توانید با انتخاب خود جایگزین کنید، فقط باید نام کاربری شما را داشته باشد:
+
+```py
+from huggingface_hub import Repository, get_full_repo_name
+
+model_name = "bert-finetuned-ner-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'sgugger/bert-finetuned-ner-accelerate'
+```
+
+سپس می‌توانیم مخزن را در پوشه‌ای محلی کلون کنیم. اگر پوشه از قبل وجود دارد، باید کلون همان مخزنی باشد که با آن کار می‌کنیم:
+
+```py
+output_dir = "bert-finetuned-ner-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+حالا با فراخوانی `repo.push_to_hub()` هر چیزی را که در `output_dir` ذخیره کنیم بارگذاری می‌کنیم. این کار به بارگذاری مدل‌های میانی در پایان هر دوره کمک می‌کند.
+
+### حلقه‌ی تعلیم[[training-loop]]
+
+اکنون آماده‌ایم حلقه‌ی کامل تعلیم را بنویسیم. برای ساده کردن ارزیابی، تابع `postprocess()` را تعریف می‌کنیم که پیش‌بینی‌ها و برچسب‌ها را به فهرست رشته‌ها تبدیل می‌کند:
+
+```py
+def postprocess(predictions, labels):
+    predictions = predictions.detach().cpu().clone().numpy()
+    labels = labels.detach().cpu().clone().numpy()
+
+    # Remove ignored index (special tokens) and convert to labels
+    true_labels = [[label_names[l] for l in label if l != -100] for label in labels]
+    true_predictions = [
+        [label_names[p] for (p, l) in zip(prediction, label) if l != -100]
+        for prediction, label in zip(predictions, labels)
+    ]
+    return true_labels, true_predictions
+```
+سپس حلقه‌ی تعلیم را می‌نویسیم. پس از تعریف نوار پیشرفت، حلقه سه بخش دارد:
+
+<div dir="rtl">
+- خود تعلیم: پیمایش روی `train_dataloader`، اجرای رو به جلوی مدل، سپس اجرای پس‌رو و گام بهینه‌ساز.
+- ارزیابی: چون فرایندها ممکن است ورودی‌ها و برچسب‌ها را به شکل‌های متفاوت هم‌طول کرده باشند، پیش از `gather()` از `accelerator.pad_across_processes()` استفاده می‌کنیم تا شکل پیش‌بینی‌ها و برچسب‌ها یکسان شود؛ سپس `metric.add_batch()` و در پایان `metric.compute()` را فراخوانی می‌کنیم.
+- ذخیره و بارگذاری: مدل و توکِن‌ساز را ذخیره می‌کنیم و `repo.push_to_hub()` را با `blocking=False` فراخوانی می‌کنیم تا پوش در پس‌زمینه انجام شود و تعلیم ادامه پیدا کند.
+
+</div>
+
+کد کامل حلقه‌ی تعلیم این است:
+
+```py
+from tqdm.auto import tqdm
+import torch
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Training
+    model.train()
+    for batch in train_dataloader:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluation
+    model.eval()
+    for batch in eval_dataloader:
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        predictions = outputs.logits.argmax(dim=-1)
+        labels = batch["labels"]
+
+        # Necessary to pad predictions and labels for being gathered
+        predictions = accelerator.pad_across_processes(predictions, dim=1, pad_index=-100)
+        labels = accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
+
+        predictions_gathered = accelerator.gather(predictions)
+        labels_gathered = accelerator.gather(labels)
+
+        true_predictions, true_labels = postprocess(predictions_gathered, labels_gathered)
+        metric.add_batch(predictions=true_predictions, references=true_labels)
+
+    results = metric.compute()
+    print(
+        f"epoch {epoch}:",
+        {
+            key: results[f"overall_{key}"]
+            for key in ["precision", "recall", "f1", "accuracy"]
+        },
+    )
+
+    # Save and upload
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+اگر نخستین بار است مدلی را می‌بینید که با 🤗 Accelerate ذخیره شده است، سه خط کدی را که با آن همراه‌اند بررسی کنیم:
+
+```py
+accelerator.wait_for_everyone()
+unwrapped_model = accelerator.unwrap_model(model)
+unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+```
+
+خط اول به همه‌ی فرایندها می‌گوید تا رسیدن همه به این مرحله صبر کنند. سپس `unwrapped_model` را می‌گیریم. `accelerator.prepare()` مدل را برای تعلیم توزیع‌شده تغییر می‌دهد و `accelerator.unwrap_model()` این تغییر را برمی‌گرداند. در پایان `save_pretrained()` را با `accelerator.save()` به‌جای `torch.save()` فراخوانی می‌کنیم.
+
+پس از این کار، باید مدلی داشته باشید که نتایجی شبیه مدل تعلیم‌دیده با Trainer تولید کند. مدل تعلیم‌داده‌شده در [huggingface-course/bert-finetuned-ner-accelerate](https://huggingface.co/huggingface-course/bert-finetuned-ner-accelerate) در دسترس است. برای آزمایش تغییرها، کد بالا را ویرایش کنید!
+
+{/if}
+
+## استفاده از مدل کوک‌شده[[using-the-fine-tuned-model]]
+
+قبلاً نشان دادیم چگونه مدل کوک‌شده روی هاب را با ویجت استنتاج به کار ببرید. برای استفاده‌ی محلی از آن در یک `pipeline`، فقط باید شناسه‌ی مدل را مشخص کنید:
+
+```py
+from transformers import pipeline
+
+# Replace this with your own checkpoint
+model_checkpoint = "huggingface-course/bert-finetuned-ner"
+token_classifier = pipeline(
+    "token-classification", model=model_checkpoint, aggregation_strategy="simple"
+)
+token_classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+```
+
+```python out
+[{'entity_group': 'PER', 'score': 0.9988506, 'word': 'Sylvain', 'start': 11, 'end': 18},
+ {'entity_group': 'ORG', 'score': 0.9647625, 'word': 'Hugging Face', 'start': 33, 'end': 45},
+ {'entity_group': 'LOC', 'score': 0.9986118, 'word': 'Brooklyn', 'start': 49, 'end': 57}]
+```
+
+عالی است! مدل ما در این خط تولید به‌اندازه‌ی مدل پیش‌فرض خوب کار می‌کند!
+</div>

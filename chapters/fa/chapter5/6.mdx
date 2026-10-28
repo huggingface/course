@@ -1,0 +1,611 @@
+<FrameworkSwitchCourse {fw} />
+
+<div dir="rtl">
+
+# جست‌وجوی معنایی با FAISS[[semantic-search-with-faiss]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+در [بخش ۵](/course/chapter5/5)، دیتاستی از issueها و commentهای مخزن 🤗 Datasets ساختیم. در این بخش از این اطلاعات استفاده می‌کنیم تا موتور جست‌وجویی بسازیم که به ما کمک کند پاسخ پرسش‌های مهم خود درباره‌ی کتابخانه را پیدا کنیم!
+
+<Youtube id="OATCgQtNX2o"/>
+
+## استفاده از embeddingها برای جست‌وجوی معنایی[[using-embeddings-for-semantic-search]]
+
+همان‌طور که در [فصل ۱](/course/chapter1) دیدیم، مدل‌های زبانی مبتنی بر ترنسفورمر هر توکِن موجود در یک بازه‌ی متنی را به‌صورت یک _بردار embedding_ نمایش می‌دهند. مشخص شده است که می‌توان embeddingهای جداگانه را برای ساختن نمایش برداریِ جمله‌ها، پاراگراف‌ها یا (در برخی موارد) سندهای کامل، «تجمیع» کرد. سپس می‌توان با محاسبه‌ی شباهت ضرب داخلی (یا معیار شباهت دیگری) بین هر embedding، از این embeddingها برای یافتن سندهای مشابه در پیکره استفاده کرد و سندهایی را برگرداند که بیشترین همپوشانی را دارند.
+
+در این بخش از embeddingها برای ساختن یک موتور جست‌وجوی معنایی استفاده می‌کنیم. این موتورهای جست‌وجو نسبت به روش‌های متداولی که بر تطبیق کلمات کلیدیِ یک پرس‌وجو با سندها تکیه دارند، چند مزیت ارائه می‌کنند.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search.svg" alt="جست‌وجوی معنایی."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search-dark.svg" alt="جست‌وجوی معنایی."/>
+</div>
+
+## بارگذاری و آماده‌سازی دیتاست[[loading-and-preparing-the-dataset]]
+
+نخستین کاری که باید انجام دهیم، دانلود دیتاست issueهای GitHub است؛ پس طبق معمول از تابع `load_dataset()` استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```py
+from datasets import load_dataset
+
+issues_dataset = load_dataset("lewtun/github-issues", split="train")
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 2855
+})
+```
+
+</div>
+
+در `load_dataset()`، split پیش‌فرض `train` را مشخص کرده‌ایم؛ بنابراین این تابع به‌جای یک `DatasetDict`، یک `Dataset` برمی‌گرداند. نخستین کار، حذف pull requestهاست، چون معمولاً به‌ندرت برای پاسخ‌گویی به پرسش‌های کاربران استفاده می‌شوند و به موتور جست‌وجوی ما نویز اضافه می‌کنند. همان‌طور که تا اینجا باید با آن آشنا شده باشید، می‌توانیم از تابع `Dataset.filter()` برای حذف این ردیف‌ها از دیتاست استفاده کنیم. در همین حین، ردیف‌هایی را که comment ندارند نیز حذف می‌کنیم، چون پاسخی برای پرسش‌های کاربران ارائه نمی‌کنند:
+
+<div dir="ltr">
+
+```py
+issues_dataset = issues_dataset.filter(
+    lambda x: (x["is_pull_request"] == False and len(x["comments"]) > 0)
+)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 771
+})
+```
+
+</div>
+
+می‌بینیم که دیتاست ما ستون‌های زیادی دارد که بیشترشان برای ساخت موتور جست‌وجو لازم نیستند. از دید جست‌وجو، آموزنده‌ترین ستون‌ها `title`، `body` و `comments` هستند، و `html_url` نیز پیوندی به issue مبدأ در اختیارمان می‌گذارد. بیایید از تابع `Dataset.remove_columns()` استفاده کنیم و بقیه‌ی ستون‌ها را حذف کنیم:
+
+<div dir="ltr">
+
+```py
+columns = issues_dataset.column_names
+columns_to_keep = ["title", "body", "html_url", "comments"]
+columns_to_remove = set(columns_to_keep).symmetric_difference(columns)
+issues_dataset = issues_dataset.remove_columns(columns_to_remove)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 771
+})
+```
+
+</div>
+
+برای ساخت embeddingها، عنوان و بدنه‌ی issue را به هر comment اضافه می‌کنیم، چون این فیلدها اغلب اطلاعات زمینه‌ای مفیدی دارند. از آنجا که ستون `comments` فعلاً فهرستی از commentهای هر issue است، باید این ستون را «باز کنیم» تا هر ردیف شامل یک تاپل `(html_url, title, body, comment)` باشد. در Pandas می‌توان این کار را با تابع [`DataFrame.explode()`](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html) انجام داد؛ این تابع برای هر عنصرِ یک ستون فهرست‌مانند، ردیف جدیدی ایجاد می‌کند و مقدار همه‌ی ستون‌های دیگر را تکرار می‌کند. برای دیدن این فرایند، ابتدا قالب Pandas `DataFrame` را انتخاب می‌کنیم:
+
+<div dir="ltr">
+
+```py
+issues_dataset.set_format("pandas")
+df = issues_dataset[:]
+```
+
+</div>
+
+اگر نخستین ردیف این `DataFrame` را بررسی کنیم، می‌بینیم چهار comment به این issue مربوط است:
+
+<div dir="ltr">
+
+```py
+df["comments"][0].tolist()
+```
+
+```python out
+['the bug code locate in ：\r\n    if data_args.task_name is not None:\r\n        # Downloading and loading a dataset from the hub.\r\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
+ 'Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com\r\n\r\nNormally, it should work if you wait a little and then retry.\r\n\r\nCould you please confirm if the problem persists?',
+ 'cannot connect，even by Web browser，please check that  there is some  problems。',
+ 'I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...']
+```
+
+</div>
+
+وقتی `df` را باز می‌کنیم، انتظار داریم برای هرکدام از این commentها یک ردیف به دست آوریم. بیایید بررسی کنیم که همین‌طور است:
+
+<div dir="ltr">
+
+```py
+comments_df = df.explode("comments", ignore_index=True)
+comments_df.head(4)
+```
+
+<table border="1" class="dataframe" style="table-layout: fixed; word-wrap:break-word; width: 100%;">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>html_url</th>
+      <th>title</th>
+      <th>comments</th>
+      <th>body</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>the bug code locate in ：\r\n    if data_args.task_name is not None...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>Hi @jinec,\r\n\r\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>cannot connect，even by Web browser，please check that  there is some  problems。</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...</td>
+      <td>Hello,\r\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+عالی است؛ می‌بینیم که ردیف‌ها تکرار شده‌اند و ستون `comments` شامل commentهای جداگانه است! حالا که کارمان با Pandas تمام شده است، می‌توانیم با بارگذاری `DataFrame` در حافظه، به‌سرعت به یک `Dataset` برگردیم:
+
+<div dir="ltr">
+
+```py
+from datasets import Dataset
+
+comments_dataset = Dataset.from_pandas(comments_df)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 2842
+})
+```
+
+</div>
+
+خوب، حالا چند هزار comment برای کار کردن داریم!
+
+> [!TIP]
+> ✏️ **امتحان کنید!** ببینید آیا می‌توانید با استفاده از `Dataset.map()` و _بدون_ کمک گرفتن از Pandas، ستون `comments` دیتاست `issues_dataset` را باز کنید. این کار کمی دشوار است؛ ممکن است بخش [«نگاشت بتچی»](https://huggingface.co/docs/datasets/about_map_batch#batch-mapping) از مستندات 🤗 Datasets برای این کار مفید باشد.
+
+حالا که در هر ردیف یک comment داریم، بیایید ستون جدیدی به نام `comment_length` بسازیم که تعداد کلمه‌های هر comment را در خود داشته باشد:
+
+<div dir="ltr">
+
+```py
+comments_dataset = comments_dataset.map(
+    lambda x: {"comment_length": len(x["comments"].split())}
+)
+```
+
+</div>
+
+می‌توانیم از این ستون جدید برای حذف commentهای کوتاه استفاده کنیم؛ این commentها معمولاً چیزهایی مانند «cc @lewtun» یا «Thanks!» هستند و برای موتور جست‌وجوی ما ارتباطی ندارند. عدد دقیقی برای این فیلتر وجود ندارد، اما شروع با حدود ۱۵ کلمه انتخاب مناسبی به نظر می‌رسد:
+
+<div dir="ltr">
+
+```py
+comments_dataset = comments_dataset.filter(lambda x: x["comment_length"] > 15)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body', 'comment_length'],
+    num_rows: 2098
+})
+```
+
+</div>
+
+حالا که دیتاست را کمی پاک‌سازی کرده‌ایم، عنوان issue، توضیح و commentها را در ستون جدیدی به نام `text` به هم متصل می‌کنیم. طبق معمول، تابع ساده‌ای می‌نویسیم که بتوانیم آن را به `Dataset.map()` بدهیم:
+
+<div dir="ltr">
+
+```py
+def concatenate_text(examples):
+    return {
+        "text": examples["title"]
+        + " \n "
+        + examples["body"]
+        + " \n "
+        + examples["comments"]
+    }
+
+
+comments_dataset = comments_dataset.map(concatenate_text)
+```
+
+</div>
+
+حالا سرانجام آماده‌ایم تا چند embedding بسازیم! بیایید نگاهی به این کار بیندازیم.
+
+## ساختن embeddingهای متن[[creating-text-embeddings]]
+
+در [فصل ۲](/course/chapter2) دیدیم که می‌توان با استفاده از کلاس `AutoModel`، embeddingهای توکِن را به دست آورد. تنها کاری که باید انجام دهیم، انتخاب یک نقطه‌ی تعلیم مناسب برای بارگذاری مدل است. خوشبختانه کتابخانه‌ای به نام `sentence-transformers` وجود دارد که به ساخت embedding اختصاص یافته است. همان‌طور که در [مستندات کتابخانه](https://www.sbert.net/examples/applications/semantic-search/README.html#symmetric-vs-asymmetric-semantic-search) توضیح داده شده است، کاربرد ما نمونه‌ای از _جست‌وجوی معنایی نامتقارن_ است؛ چون یک پرس‌وجوی کوتاه داریم و می‌خواهیم پاسخ آن را در سندی طولانی‌تر، مانند یک comment مربوط به issue، پیدا کنیم. جدول مفید [مرور مدل‌ها](https://www.sbert.net/docs/pretrained_models.html#model-overview) در مستندات نشان می‌دهد که نقطه‌ی تعلیم `multi-qa-mpnet-base-dot-v1` بهترین عملکرد را برای جست‌وجوی معنایی دارد، پس در برنامه‌ی خود از آن استفاده می‌کنیم. توکِنایزر را نیز با همین نقطه‌ی تعلیم بارگذاری خواهیم کرد:
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+from transformers import AutoTokenizer, AutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = AutoModel.from_pretrained(model_ckpt)
+```
+
+</div>
+
+برای سرعت بخشیدن به فرایند ساخت embedding، بهتر است مدل و ورودی‌ها را روی یک دستگاه GPU قرار دهیم؛ پس همین کار را انجام می‌دهیم:
+
+<div dir="ltr">
+
+```py
+import torch
+
+device = torch.device("cuda")
+model.to(device)
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+from transformers import AutoTokenizer, TFAutoModel
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = TFAutoModel.from_pretrained(model_ckpt, from_pt=True)
+```
+
+</div>
+
+توجه کنید که آرگومان `from_pt=True` را به متد `from_pretrained()` داده‌ایم. دلیلش این است که نقطه‌ی تعلیم `multi-qa-mpnet-base-dot-v1` فقط وزن‌های PyTorch را دارد؛ بنابراین تنظیم `from_pt=True` آن‌ها را به‌طور خودکار به قالب TensorFlow تبدیل می‌کند. همان‌طور که می‌بینید، جابه‌جایی بین فریم‌ورک‌ها در 🤗 Transformers بسیار ساده است!
+
+{/if}
+
+همان‌طور که پیش‌تر گفتیم، می‌خواهیم هر ورودی موجود در پیکره‌ی issueهای GitHub را به‌صورت یک بردار واحد نمایش دهیم؛ بنابراین باید embeddingهای توکِن را به شکلی «تجمیع» یا میانگین‌گیری کنیم. یک روش رایج، انجام *تجمیع CLS* روی خروجی‌های مدل است؛ در این روش فقط وضعیت پنهان نهاییِ توکِن ویژه‌ی `[CLS]` را جمع‌آوری می‌کنیم. تابع زیر این کار را برای ما انجام می‌دهد:
+
+<div dir="ltr">
+
+```py
+def cls_pooling(model_output):
+    return model_output.last_hidden_state[:, 0]
+```
+
+</div>
+
+در گام بعد، تابع کمکی‌ای می‌سازیم که فهرستی از سندها را توکِن‌سازی کند، تِنسورها را روی GPU قرار دهد، آن‌ها را به مدل بدهد و در نهایت تجمیع CLS را روی خروجی‌ها اعمال کند:
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="pt"
+    )
+    encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+برای بررسی عملکرد تابع، می‌توانیم نخستین ورودی متنی پیکره را به آن بدهیم و شکل خروجی را بررسی کنیم:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+</div>
+
+عالی است، نخستین ورودی پیکره را به برداری با ۷۶۸ بُعد تبدیل کردیم! می‌توانیم تابع `get_embeddings()` را با `Dataset.map()` روی هر ردیف پیکره اعمال کنیم؛ پس ستون جدید `embeddings` را به شکل زیر می‌سازیم:
+
+<div dir="ltr">
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).detach().cpu().numpy()[0]}
+)
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="tf"
+    )
+    encoded_input = {k: v for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+برای بررسی عملکرد تابع، می‌توانیم نخستین ورودی متنی پیکره را به آن بدهیم و شکل خروجی را بررسی کنیم:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+TensorShape([1, 768])
+```
+
+</div>
+
+عالی است، نخستین ورودی پیکره را به برداری با ۷۶۸ بُعد تبدیل کردیم! می‌توانیم تابع `get_embeddings()` را با `Dataset.map()` روی هر ردیف پیکره اعمال کنیم؛ پس ستون جدید `embeddings` را به شکل زیر می‌سازیم:
+
+<div dir="ltr">
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).numpy()[0]}
+)
+```
+
+</div>
+
+{/if}
+
+توجه کنید که embeddingها را به آرایه‌های NumPy تبدیل کرده‌ایم؛ دلیلش این است که 🤗 Datasets هنگام استفاده از FAISS برای اندیس‌گذاری آن‌ها، این قالب را لازم دارد؛ کاری که در ادامه انجام می‌دهیم.
+
+
+## استفاده از FAISS برای جست‌وجوی کارآمد بر اساس شباهت[[using-faiss-for-efficient-similarity-search]]
+
+حالا که دیتاستی از embeddingها داریم، به راهی برای جست‌وجو در آن‌ها نیاز داریم. برای این کار از ساختار داده‌ی ویژه‌ای در 🤗 Datasets به نام _اندیس FAISS_ استفاده می‌کنیم. [FAISS](https://faiss.ai/) (مخفف Facebook AI Similarity Search) کتابخانه‌ای است که الگوریتم‌های کارآمدی برای جست‌وجو و خوشه‌بندی سریع بردارهای embedding ارائه می‌کند.
+
+ایده‌ی اصلی FAISS ساختن ساختار داده‌ی ویژه‌ای به نام _اندیس_ است که امکان می‌دهد embeddingهای مشابه یک embedding ورودی را پیدا کنیم. ساختن یک اندیس FAISS در 🤗 Datasets ساده است — از تابع `Dataset.add_faiss_index()` استفاده می‌کنیم و مشخص می‌کنیم کدام ستون دیتاست را می‌خواهیم اندیس‌گذاری کنیم:
+
+<div dir="ltr">
+
+```py
+embeddings_dataset.add_faiss_index(column="embeddings")
+```
+
+</div>
+
+اکنون می‌توانیم با جست‌وجوی نزدیک‌ترین همسایه و استفاده از تابع `Dataset.get_nearest_examples()` روی این اندیس پرس‌وجو انجام دهیم. بیایید ابتدا یک پرسش را embedding کنیم:
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).cpu().detach().numpy()
+question_embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).numpy()
+question_embedding.shape
+```
+
+```python out
+(1, 768)
+```
+
+</div>
+
+{/if}
+
+درست مانند سندها، اکنون برداری با ۷۶۸ بُعد داریم که پرس‌وجو را نمایش می‌دهد. می‌توانیم آن را با کل پیکره مقایسه کنیم تا مشابه‌ترین embeddingها را پیدا کنیم:
+
+<div dir="ltr">
+
+```py
+scores, samples = embeddings_dataset.get_nearest_examples(
+    "embeddings", question_embedding, k=5
+)
+```
+
+</div>
+
+تابع `Dataset.get_nearest_examples()` تاپلی از امتیازها برمی‌گرداند که میزان همپوشانی بین پرس‌وجو و سند را رتبه‌بندی می‌کنند، و مجموعه‌ی متناظری از نمونه‌ها را نیز برمی‌گرداند (در اینجا ۵ تطبیق برتر). بیایید آن‌ها را در یک `pandas.DataFrame` جمع کنیم تا بتوانیم به‌سادگی مرتبشان کنیم:
+
+<div dir="ltr">
+
+```py
+import pandas as pd
+
+samples_df = pd.DataFrame.from_dict(samples)
+samples_df["scores"] = scores
+samples_df.sort_values("scores", ascending=False, inplace=True)
+```
+
+</div>
+
+حالا می‌توانیم روی چند ردیف اول پیمایش کنیم تا ببینیم پرس‌وجوی ما تا چه اندازه با commentهای موجود تطبیق دارد:
+
+<div dir="ltr">
+
+```py
+for _, row in samples_df.iterrows():
+    print(f"COMMENT: {row.comments}")
+    print(f"SCORE: {row.scores}")
+    print(f"TITLE: {row.title}")
+    print(f"URL: {row.html_url}")
+    print("=" * 50)
+    print()
+```
+
+```python out
+"""
+COMMENT: Requiring online connection is a deal breaker in some cases unfortunately so it'd be great if offline mode is added similar to how `transformers` loads models offline fine.
+
+@mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+SCORE: 25.505046844482422
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: The local dataset builders (csv, text , json and pandas) are now part of the `datasets` package since #1726 :)
+You can now use them offline
+\`\`\`python
+datasets = load_dataset("text", data_files=data_files)
+\`\`\`
+
+We'll do a new release soon
+SCORE: 24.555509567260742
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: I opened a PR that allows to reload modules that have already been loaded once even if there's no internet.
+
+Let me know if you know other ways that can make the offline mode experience better. I'd be happy to add them :)
+
+I already note the "freeze" modules option, to prevent local modules updates. It would be a cool feature.
+
+----------
+
+> @mandubian's second bullet point suggests that there's a workaround allowing you to use your offline (custom?) dataset with `datasets`. Could you please elaborate on how that should look like?
+
+Indeed `load_dataset` allows to load remote dataset script (squad, glue, etc.) but also you own local ones.
+For example if you have a dataset script at `./my_dataset/my_dataset.py` then you can do
+\`\`\`python
+load_dataset("./my_dataset")
+\`\`\`
+and the dataset script will generate your dataset once and for all.
+
+----------
+
+About I'm looking into having `csv`, `json`, `text`, `pandas` dataset builders already included in the `datasets` package, so that they are available offline by default, as opposed to the other datasets that require the script to be downloaded.
+cf #1724
+SCORE: 24.14896583557129
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: > here is my way to load a dataset offline, but it **requires** an online machine
+>
+> 1. (online machine)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_dataset(...)
+>
+> data.save_to_disk(/YOUR/DATASET/DIR)
+>
+> ```
+>
+> 2. copy the dir from online to the offline machine
+>
+> 3. (offline machine)
+>
+> ```
+>
+> import datasets
+>
+> data = datasets.load_from_disk(/SAVED/DATA/DIR)
+>
+> ```
+>
+>
+>
+> HTH.
+
+
+SCORE: 22.893993377685547
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: here is my way to load a dataset offline, but it **requires** an online machine
+1. (online machine)
+\`\`\`
+import datasets
+data = datasets.load_dataset(...)
+data.save_to_disk(/YOUR/DATASET/DIR)
+\`\`\`
+2. copy the dir from online to the offline machine
+3. (offline machine)
+\`\`\`
+import datasets
+data = datasets.load_from_disk(/SAVED/DATA/DIR)
+\`\`\`
+
+HTH.
+SCORE: 22.406635284423828
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+"""
+```
+
+</div>
+
+بد نیست! به نظر می‌رسد نتیجه‌ی دوم با پرس‌وجوی ما مطابقت دارد.
+
+> [!TIP]
+> ✏️ **امتحان کنید!** پرس‌وجوی خودتان را بسازید و ببینید آیا می‌توانید پاسخی را در سندهای بازیابی‌شده پیدا کنید. ممکن است برای گسترده‌تر کردن جست‌وجو لازم باشد پارامتر `k` را در `Dataset.get_nearest_examples()` افزایش دهید.
+
+</div>

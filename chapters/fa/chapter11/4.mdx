@@ -1,0 +1,167 @@
+<div dir="rtl">
+<CourseFloatingBanner chapter={2}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/main/course/en/chapter11/section4.ipynb"},
+]} />
+
+# LoRA (انطباق با رتبه پایین)
+
+کوک کردن مدل‌های زبانی بزرگ یک فرآیند فشرده منابع است. LoRA تکنیکی است که به ما امکان می دهد مدل های زبان بزرگ را با تعداد کمی پارامتر تنظیم کنیم. با افزودن و بهینه سازی ماتریس های کوچکتر به وزن توجه کار می کند و معمولاً پارامترهای قابل آموزش را تا حدود 90 درصد کاهش می دهد.
+
+## درک LoRA
+
+LoRA (تطبیق با رتبه پایین) یک تکنیک کوک کردن پارامتری کارآمد است که وزن‌های مدل از قبل آموزش دیده را منجمد می‌کند و ماتریس‌های تجزیه رتبه قابل آموزش را به لایه‌های مدل تزریق می‌کند. به جای آموزش تمام پارامترهای مدل در طول کوک کردن، LoRA به روز رسانی های وزن را از طریق تجزیه در رتبه پایین به ماتریس های کوچکتر تجزیه می کند، و به طور قابل توجهی تعداد پارامترهای قابل آموزش را کاهش می دهد و در عین حال عملکرد مدل را حفظ می کند. برای مثال، زمانی که LoRA روی GPT-3 175B اعمال شد، پارامترهای قابل آموزش را تا 10000 برابر و نیاز به حافظه GPU را تا 3 برابر در مقایسه با کوک کردن کامل کاهش داد. می توانید اطلاعات بیشتری درباره LoRA در [کاغذ LoRA](https://arxiv.org/pdf/2106.09685) بخوانید.
+
+LoRA با افزودن جفت‌های ماتریس تجزیه رتبه به لایه‌های ترنسفورمر کار می‌کند که معمولاً بر وزن‌های توجه تمرکز می‌کنند. در طول استنتاج، این وزن‌های آداپتور را می‌توان با مدل پایه ادغام کرد و در نتیجه سربار تأخیر اضافی ایجاد نشد. LoRA به ویژه برای تطبیق مدل‌های زبانی بزرگ با وظایف یا دامنه‌های خاص و در عین حال قابل مدیریت نگه داشتن نیازهای منابع مفید است.
+
+## مزایای کلیدی LoRA
+
+1. **کارایی حافظه**:
+   - فقط پارامترهای آداپتور در حافظه GPU ذخیره می شوند
+   - وزنه‌های مدل پایه منجمد می‌مانند و می‌توانند با دقت کمتری بارگیری شوند
+   - کوک کردن مدل های بزرگ را در پردازنده های گرافیکی مصرف کننده فعال می کند
+
+2. **ویژگی های آموزشی**:
+   - ادغام بومی PEFT/LoRA با حداقل تنظیمات
+   - پشتیبانی از QLoRA (Quantized LoRA) برای کارایی حافظه حتی بهتر
+
+3. **مدیریت آداپتور**:
+   - کاهش وزن آداپتور در طول ایست های بازرسی
+   - ویژگی هایی برای ادغام آداپتورها به مدل پایه
+
+## بارگیری آداپتورهای LoRA با PEFT
+
+[PEFT](https://github.com/huggingface/peft) کتابخانه ای است که یک رابط یکپارچه برای بارگیری و مدیریت روش های PEFT از جمله LoRA فراهم می کند. این به شما امکان می دهد تا به راحتی بین روش های مختلف PEFT بارگیری و جابجا شوید و آزمایش با تکنیک های مختلف کوک کردن را آسان تر می کند.
+
+آداپتورها را می توان روی یک مدل از پیش‌تعلیم دیده با `load_adapter()` بارگذاری کرد، که برای آزمایش آداپتورهای مختلف که وزن آنها ادغام نشده است مفید است. وزن آداپتور فعال را با عملکرد `set_adapter()` تنظیم کنید. برای برگرداندن مدل پایه، می توانید از unload() برای تخلیه همه ماژول های LoRA استفاده کنید. این باعث می‌شود تا جابجایی بین وزن‌های مختلف کار آسان باشد.
+
+```python
+from peft import PeftModel, PeftConfig
+
+config = PeftConfig.from_pretrained("ybelkada/opt-350m-lora")
+model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path)
+lora_model = PeftModel.from_pretrained(model, "ybelkada/opt-350m-lora")
+```
+
+![lora_load_adapter](https://github.com/huggingface/smol-course/raw/main/v1/3_parameter_efficient_finetuning/images/lora_adapter.png)
+
+## کوک کردن LLM با استفاده از `trl` و `SFTTrainer` با LoRA
+
+[SFTTrainer](https://huggingface.co/docs/trl/sft_trainer) از `trl` یکپارچه سازی با آداپتورهای LoRA را از طریق کتابخانه [PEFT](https://huggingface.co/docs/peft/en/index) فراهم می کند. این بدان معناست که ما می‌توانیم یک مدل را به همان روشی که با SFT انجام دادیم تنظیم کنیم، اما از LoRA برای کاهش تعداد پارامترهای مورد نیاز برای آموزش استفاده کنیم.
+
+ما از کلاس `LoRAConfig` از PEFT در مثال خود استفاده خواهیم کرد. راه اندازی فقط به چند مرحله پیکربندی نیاز دارد:
+
+1. پیکربندی LoRA را تعریف کنید (رتبه، آلفا، ترک تحصیل)
+2. SFTTrainer را با پیکربندی PEFT ایجاد کنید
+3. وزنه های آداپتور را آموزش دهید و ذخیره کنید
+
+## پیکربندی LoRA
+
+بیایید پیکربندی LoRA و پارامترهای کلیدی را مرور کنیم.
+
+| پارامتر | توضیحات |
+|-----------|-------------|
+| `r` (رتبه) | ابعاد ماتریس های رتبه پایین مورد استفاده برای به روز رسانی وزن. به طور معمول بین 4-32. مقادیر پایین تر فشرده سازی بیشتر اما به طور بالقوه بیان کمتری را فراهم می کند. |
+| `lora_alpha` | ضریب مقیاس برای لایه های LoRA، معمولاً روی 2 برابر مقدار رتبه تنظیم می شود. ارزش های بالاتر منجر به اثرات سازگاری قوی تر می شود. |
+| `lora_dropout` | احتمال حذف برای لایه های LoRA، معمولاً 0.05-0.1 است. مقادیر بالاتر به جلوگیری از تناسب بیش از حد در طول تمرین کمک می کند. |
+| `bias` | آموزش اصطلاحات سوگیری را کنترل می کند. گزینه‌ها «هیچ‌کدام»، «همه» یا «تنها_lora» هستند. "هیچ" برای کارایی حافظه بیشتر رایج است. |
+| `target_modules` | مشخص می‌کند که ماژول‌های LoRA روی کدام مدل اعمال شود. می تواند "تمام خطی" یا ماژول های خاصی مانند "q_proj,v_proj" باشد. ماژول‌های بیشتر سازگاری بیشتری را امکان‌پذیر می‌کنند اما میزان استفاده از حافظه را افزایش می‌دهند. |
+
+> [!TIP]
+> هنگام اجرای روش های PEFT، با مقادیر کوچک رتبه (4-8) برای LoRA شروع کنید و از دست دادن تمرین را کنترل کنید. از مجموعه‌های اعتبارسنجی برای جلوگیری از برازش بیش از حد استفاده کنید و در صورت امکان نتایج را با خطوط پایه کوک کردن مقایسه کنید. اثربخشی روش‌های مختلف می‌تواند بسته به کار متفاوت باشد، بنابراین آزمایش کلیدی است.
+
+## استفاده از TRL با PEFT
+
+روش های PEFT را می توان با TRL برای کوک کردن برای کاهش نیازهای حافظه ترکیب کرد. می‌توانیم `LoraConfig` را هنگام بارگذاری به مدل منتقل کنیم.
+
+```python
+from peft import LoraConfig
+
+# r: rank dimension for LoRA update matrices (smaller = more compression)
+rank_dimension = 6
+# lora_alpha: scaling factor for LoRA layers (higher = stronger adaptation)
+lora_alpha = 8
+# lora_dropout: dropout probability for LoRA layers (helps prevent overfitting)
+lora_dropout = 0.05
+
+peft_config = LoraConfig(
+    r=rank_dimension,  # Rank dimension - typically between 4-32
+    lora_alpha=lora_alpha,  # LoRA scaling factor - typically 2x rank
+    lora_dropout=lora_dropout,  # Dropout probability for LoRA layers
+    bias="none",  # Bias type for LoRA. the corresponding biases will be updated during training.
+    target_modules="all-linear",  # Which modules to apply LoRA to
+    task_type="CAUSAL_LM",  # Task type for model architecture
+)
+```
+
+در بالا، ما از `device_map="auto"` برای اختصاص خودکار مدل به دستگاه صحیح استفاده کردیم. همچنین می توانید با استفاده از `device_map={"": device_index}` مدل را به صورت دستی به دستگاه خاصی اختصاص دهید.
+
+همچنین باید `SFTTrainer` را با پیکربندی LoRA تعریف کنیم.
+
+```python
+# Create SFTTrainer with LoRA configuration
+trainer = SFTTrainer(
+    model=model,
+    args=args,
+    train_dataset=dataset["train"],
+    peft_config=peft_config,  # LoRA configuration
+    max_seq_length=max_seq_length,  # Maximum sequence length
+    processing_class=tokenizer,
+)
+```
+
+> [!TIP]
+> ✏️ **آن را امتحان کنید!** از مدل تنظیم شده خود در بخش قبل استفاده کنید، اما آن را با LoRA تنظیم کنید. از دیتاسِت `HuggingFaceTB/smoltalk` برای کوک کردن مدل `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` با استفاده از پیکربندی LoRA که در بالا تعریف کردیم استفاده کنید.
+
+## ادغام آداپتورهای LoRA
+
+پس از آموزش با LoRA، ممکن است بخواهید وزنه های آداپتور را به مدل پایه برای استقرار آسان تر ادغام کنید. این یک مدل واحد با وزن های ترکیبی ایجاد می کند و نیاز به بارگیری آداپتورها به طور جداگانه در طول استنتاج را از بین می برد.
+
+فرآیند ادغام نیاز به توجه به مدیریت حافظه و دقت دارد. از آنجایی که باید وزن مدل پایه و آداپتور را به طور همزمان بارگیری کنید، اطمینان حاصل کنید که حافظه GPU/CPU کافی در دسترس است. با استفاده از `device_map="auto"` در `transformers` دستگاه مناسب برای مدل بر اساس سخت افزار شما پیدا می شود.
+
+دقت ثابت (به عنوان مثال، float16) را در طول فرآیند حفظ کنید، دقت مورد استفاده در طول آموزش را مطابقت دهید و مدل ادغام شده را در قالب یکسان برای استقرار ذخیره کنید.
+
+## پیاده سازی ادغام
+
+پس از آموزش آداپتور LoRA، می توانید وزنه های آداپتور را دوباره در مدل پایه ادغام کنید. در اینجا نحوه انجام آن آمده است:
+
+```python
+import torch
+from transformers import AutoModelForCausalLM
+from peft import PeftModel
+
+# 1. Load the base model
+base_model = AutoModelForCausalLM.from_pretrained(
+    "base_model_name", torch_dtype=torch.float16, device_map="auto"
+)
+
+# 2. Load the PEFT model with adapter
+peft_model = PeftModel.from_pretrained(
+    base_model, "path/to/adapter", torch_dtype=torch.float16
+)
+
+# 3. Merge adapter weights with base model
+merged_model = peft_model.merge_and_unload()
+```
+
+اگر در مدل ذخیره شده با اختلاف اندازه مواجه شدید، مطمئن شوید که توکِنایزر را نیز ذخیره می کنید:
+
+```python
+# Save both model and tokenizer
+tokenizer = AutoTokenizer.from_pretrained("base_model_name")
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
+```
+
+> [!TIP]
+> ✏️ **آن را امتحان کنید!** وزنه های آداپتور را دوباره در مدل پایه ادغام کنید. از دیتاسِت `HuggingFaceTB/smoltalk` برای کوک کردن مدل `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` با استفاده از پیکربندی LoRA که در بالا تعریف کردیم استفاده کنید.
+
+
+# منابع
+
+- [LoRA: سازگاری با رتبه پایین مدل‌های زبانی بزرگ](https://arxiv.org/pdf/2106.09685)
+- [مستندات PEFT](https://huggingface.co/docs/peft)
+- [پست وبلاگ صورت در آغوش گرفتن در PEFT](https://huggingface.co/blog/peft)
+
+</div>

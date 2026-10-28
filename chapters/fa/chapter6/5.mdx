@@ -1,0 +1,478 @@
+# توکِن‌سازی با Byte-Pair Encoding[[byte-pair-encoding-tokenization]]
+
+<div dir="rtl">
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section5.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section5.ipynb"},
+]} />
+
+الگوریتم Byte-Pair Encoding (BPE) ابتدا برای فشرده‌سازی متن‌ها ساخته شد و بعد OpenAI هنگام تعلیم مدل GPT از آن برای توکِن‌سازی استفاده کرد. این الگوریتم در بسیاری از مدل‌های ترنسفورمر، از جمله GPT، GPT-2، RoBERTa، BART و DeBERTa، به کار می‌رود.
+
+<Youtube id="HEikzVL-lZU"/>
+
+> [!TIP]
+> 💡 این بخش BPE را به‌طور عمیق بررسی می‌کند و حتی پیاده‌سازی کامل آن را نشان می‌دهد. اگر فقط نمایی کلی از الگوریتم توکِن‌سازی می‌خواهید، می‌توانید مستقیماً به پایان بخش بروید.
+
+## الگوریتم تعلیم[[training-algorithm]]
+
+تعلیم BPE با محاسبه‌ی مجموعه‌ی یکتای کلمه‌های استفاده‌شده در پیکره آغاز می‌شود (پس از تکمیل مراحل نرمال‌سازی و پیش‌توکِن‌سازی) و سپس با برداشتن همه‌ی علامت‌هایی که برای نوشتن این کلمه‌ها به کار رفته‌اند، واژگان را می‌سازد. برای نمونه‌ای بسیار ساده، فرض کنید پیکره‌ی ما از این پنج کلمه استفاده می‌کند:
+
+<div dir="ltr">
+
+```
+"hug", "pug", "pun", "bun", "hugs"
+```
+
+</div>
+
+واژگان پایه در این حالت `["b", "g", "h", "n", "p", "s", "u"]` خواهد بود. در نمونه‌های واقعی، این واژگان دست‌کم همه‌ی نویسه‌های ASCII و احتمالاً تعدادی نویسه‌ی Unicode را نیز دربرمی‌گیرد. اگر متنی که توکِن‌سازی می‌کنید نویسه‌ای داشته باشد که در پیکره‌ی تعلیم وجود نداشته است، آن نویسه به توکِن ناشناخته تبدیل می‌شود. به همین دلیل، برای مثال، بسیاری از مدل‌های NLP در تحلیل محتواهای دارای ایموجی عملکرد بسیار ضعیفی دارند.
+
+> [!TIP]
+> توکِنایزرهای GPT-2 و RoBERTa (که شباهت زیادی به هم دارند) راه هوشمندانه‌ای برای حل این مسئله دارند: آن‌ها کلمه‌ها را به‌صورت رشته‌ای از نویسه‌های Unicode در نظر نمی‌گیرند، بلکه آن‌ها را با بایت‌ها نمایش می‌دهند. در نتیجه، اندازه‌ی واژگان پایه کوچک (۲۵۶) می‌ماند، اما هر نویسه‌ای که بتوانید تصور کنید همچنان در آن جای می‌گیرد و به توکِن ناشناخته تبدیل نمی‌شود. این روش *BPE در سطح بایت* نام دارد.
+
+پس از به‌دست‌آوردن این واژگان پایه، با یادگیری *ادغام‌ها*، توکِن‌های جدیدی اضافه می‌کنیم تا به اندازه‌ی مطلوب واژگان برسیم. ادغام‌ها قواعدی هستند که دو عنصر از واژگان موجود را در یک عنصر جدید ادغام می‌کنند. بنابراین، این ادغام‌ها در ابتدا توکِن‌های دوحرفی و با پیشرفت تعلیم، زیرکلمه‌های طولانی‌تری می‌سازند.
+
+الگوریتم BPE در هر گام تعلیم توکِنایزر، پرتکرارترین جفت توکِن‌های موجود را پیدا می‌کند (منظور از «جفت» در اینجا دو توکِن پشت‌سرهم در یک کلمه است). همان جفت پرتکرار ادغام می‌شود و این کار در گام بعدی تکرار می‌شود.
+
+به نمونه‌ی قبلی برگردیم و فرض کنیم کلمه‌ها بسامدهای زیر را داشته باشند:
+
+<div dir="ltr">
+
+```
+("hug", 10), ("pug", 5), ("pun", 12), ("bun", 4), ("hugs", 5)
+```
+
+</div>
+
+یعنی کلمه‌ی `"hug"` ده بار، `"pug"` پنج بار، `"pun"` دوازده بار، `"bun"` چهار بار و `"hugs"` پنج بار در پیکره ظاهر شده‌اند. تعلیم را با تقسیم هر کلمه به نویسه‌ها (نویسه‌هایی که واژگان اولیه‌ی ما را تشکیل می‌دهند) شروع می‌کنیم تا بتوانیم هر کلمه را به‌صورت فهرستی از توکِن‌ها ببینیم:
+
+<div dir="ltr">
+
+```
+("h" "u" "g", 10), ("p" "u" "g", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "u" "g" "s", 5)
+```
+
+</div>
+
+سپس جفت‌ها را بررسی می‌کنیم. جفت `("h", "u")` در کلمه‌های `"hug"` و `"hugs"` وجود دارد، بنابراین در مجموع ۱۵ بار در پیکره دیده می‌شود. بااین‌حال، این جفت پرتکرارترین جفت نیست؛ این عنوان به `("u", "g")` تعلق دارد که در `"hug"`، `"pug"` و `"hugs"` وجود دارد و در مجموع ۲۰ بار در واژگان دیده می‌شود.
+
+بنابراین، نخستین قاعده‌ی ادغامِ یادگرفته‌شده توسط توکِنایزر `("u", "g") -> "ug"` است؛ یعنی `"ug"` به واژگان اضافه می‌شود و این جفت باید در همه‌ی کلمه‌های پیکره ادغام شود. در پایان این مرحله، واژگان و پیکره به شکل زیر درمی‌آیند:
+
+<div dir="ltr">
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug"]
+Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "u" "n", 12), ("b" "u" "n", 4), ("h" "ug" "s", 5)
+```
+
+</div>
+
+اکنون جفت‌هایی داریم که به توکِنی طولانی‌تر از دو نویسه منجر می‌شوند؛ برای نمونه جفت `("h", "ug")` (که ۱۵ بار در پیکره وجود دارد). بااین‌حال، پرتکرارترین جفت در این مرحله `("u", "n")` است که ۱۶ بار در پیکره دیده می‌شود؛ بنابراین دومین قاعده‌ی ادغامِ یادگرفته‌شده `("u", "n") -> "un"` است. با افزودن این قاعده به واژگان و ادغام همه‌ی نمونه‌های موجود، به نتیجه‌ی زیر می‌رسیم:
+
+<div dir="ltr">
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un"]
+Corpus: ("h" "ug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("h" "ug" "s", 5)
+```
+
+</div>
+
+اکنون پرتکرارترین جفت `("h", "ug")` است؛ پس قاعده‌ی ادغام `("h", "ug") -> "hug"` را یاد می‌گیریم که نخستین توکِن سه‌حرفی ما را ایجاد می‌کند. پس از این ادغام، پیکره به شکل زیر درمی‌آید:
+
+<div dir="ltr">
+
+```
+Vocabulary: ["b", "g", "h", "n", "p", "s", "u", "ug", "un", "hug"]
+Corpus: ("hug", 10), ("p" "ug", 5), ("p" "un", 12), ("b" "un", 4), ("hug" "s", 5)
+```
+
+</div>
+
+این روند را تا رسیدن به اندازه‌ی مطلوب واژگان ادامه می‌دهیم.
+
+> [!TIP]
+> ✏️ **حالا نوبت شماست!** به نظر شما قاعده‌ی ادغام بعدی چه خواهد بود؟
+
+## الگوریتم توکِن‌سازی[[tokenization-algorithm]]
+
+توکِن‌سازی با فرایند تعلیم ارتباط نزدیکی دارد؛ به این معنا که ورودی‌های جدید با اجرای گام‌های زیر توکِن‌سازی می‌شوند:
+
+<div dir="rtl">
+
+1. نرمال‌سازی
+2. پیش‌توکِن‌سازی
+3. تقسیم کلمه‌ها به نویسه‌های منفرد
+4. اجرای قواعد ادغامی که به‌ترتیب روی این تقسیم‌ها یاد گرفته شده‌اند
+
+</div>
+
+نمونه‌ای را که هنگام تعلیم استفاده کردیم، با همان سه قاعده‌ی ادغامِ یادگرفته‌شده در نظر بگیرید:
+
+<div dir="ltr">
+
+```
+("u", "g") -> "ug"
+("u", "n") -> "un"
+("h", "ug") -> "hug"
+```
+
+</div>
+
+کلمه‌ی `"bug"` به‌صورت `["b", "ug"]` توکِن‌سازی می‌شود. اما `"mug"` به `["[UNK]", "ug"]` توکِن‌سازی خواهد شد، چون حرف `"m"` در واژگان پایه وجود نداشت. به همین ترتیب، کلمه‌ی `"thug"` به `["[UNK]", "hug"]` تبدیل می‌شود: حرف `"t"` در واژگان پایه نیست و اجرای قواعد ادغام ابتدا باعث ادغام `"u"` و `"g"` و سپس ادغام `"h"` و `"ug"` می‌شود.
+
+> [!TIP]
+> ✏️ **حالا نوبت شماست!** به نظر شما کلمه‌ی `"unhug"` چگونه توکِن‌سازی خواهد شد؟
+
+## پیاده‌سازی BPE[[implementing-bpe]]
+
+حالا نگاهی به پیاده‌سازی الگوریتم BPE بیندازیم. این نسخه بهینه‌شده‌ای نیست که بتوانید واقعاً روی پیکره‌ای بزرگ به کار ببرید؛ هدف ما فقط این است که کد را نشان دهیم تا الگوریتم را کمی بهتر درک کنید.
+
+ابتدا به یک پیکره نیاز داریم، پس پیکره‌ای ساده با چند جمله ایجاد می‌کنیم:
+
+<div dir="ltr">
+
+```python
+corpus = [
+    "This is the Hugging Face Course.",
+    "This chapter is about tokenization.",
+    "This section shows several tokenizer algorithms.",
+    "Hopefully, you will be able to understand how they are trained and generate tokens.",
+]
+```
+
+</div>
+
+در گام بعد، باید این پیکره را به کلمه‌ها پیش‌توکِن‌سازی کنیم. چون در حال بازسازی یک توکِنایزر BPE (مانند GPT-2) هستیم، برای پیش‌توکِن‌سازی از توکِنایزر `gpt2` استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+```
+
+</div>
+
+سپس، همان‌طور که پیش‌توکِن‌سازی را انجام می‌دهیم، بسامد هر کلمه در پیکره را محاسبه می‌کنیم:
+
+<div dir="ltr">
+
+```python
+from collections import defaultdict
+
+word_freqs = defaultdict(int)
+
+for text in corpus:
+    words_with_offsets = tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    new_words = [word for word, offset in words_with_offsets]
+    for word in new_words:
+        word_freqs[word] += 1
+
+print(word_freqs)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+defaultdict(int, {'This': 3, 'Ġis': 2, 'Ġthe': 1, 'ĠHugging': 1, 'ĠFace': 1, 'ĠCourse': 1, '.': 4, 'Ġchapter': 1,
+    'Ġabout': 1, 'Ġtokenization': 1, 'Ġsection': 1, 'Ġshows': 1, 'Ġseveral': 1, 'Ġtokenizer': 1, 'Ġalgorithms': 1,
+    'Hopefully': 1, ',': 1, 'Ġyou': 1, 'Ġwill': 1, 'Ġbe': 1, 'Ġable': 1, 'Ġto': 1, 'Ġunderstand': 1, 'Ġhow': 1,
+    'Ġthey': 1, 'Ġare': 1, 'Ġtrained': 1, 'Ġand': 1, 'Ġgenerate': 1, 'Ġtokens': 1})
+```
+
+</div>
+
+گام بعدی محاسبه‌ی واژگان پایه است که از همه‌ی نویسه‌های استفاده‌شده در پیکره تشکیل می‌شود:
+
+<div dir="ltr">
+
+```python
+alphabet = []
+
+for word in word_freqs.keys():
+    for letter in word:
+        if letter not in alphabet:
+            alphabet.append(letter)
+alphabet.sort()
+
+print(alphabet)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+[ ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's',
+  't', 'u', 'v', 'w', 'y', 'z', 'Ġ']
+```
+
+</div>
+
+همچنین توکِن‌های ویژه‌ای را که مدل استفاده می‌کند، در ابتدای این واژگان اضافه می‌کنیم. در مورد GPT-2، تنها توکِن ویژه `"<|endoftext|>"` است:
+
+<div dir="ltr">
+
+```python
+vocab = ["<|endoftext|>"] + alphabet.copy()
+```
+
+</div>
+
+اکنون باید هر کلمه را به نویسه‌های منفرد تقسیم کنیم تا بتوانیم تعلیم را آغاز کنیم:
+
+<div dir="ltr">
+
+```python
+splits = {word: [c for c in word] for word in word_freqs.keys()}
+```
+
+</div>
+
+حالا که برای تعلیم آماده‌ایم، تابعی می‌نویسیم که بسامد هر جفت را محاسبه کند. در هر گام تعلیم به این تابع نیاز خواهیم داشت:
+
+<div dir="ltr">
+
+```python
+def compute_pair_freqs(splits):
+    pair_freqs = defaultdict(int)
+    for word, freq in word_freqs.items():
+        split = splits[word]
+        if len(split) == 1:
+            continue
+        for i in range(len(split) - 1):
+            pair = (split[i], split[i + 1])
+            pair_freqs[pair] += freq
+    return pair_freqs
+```
+
+</div>
+
+پس از تقسیم‌های اولیه، بخشی از این دیکشنری را بررسی کنیم:
+
+<div dir="ltr">
+
+```python
+pair_freqs = compute_pair_freqs(splits)
+
+for i, key in enumerate(pair_freqs.keys()):
+    print(f"{key}: {pair_freqs[key]}")
+    if i >= 5:
+        break
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+('T', 'h'): 3
+('h', 'i'): 3
+('i', 's'): 5
+('Ġ', 'i'): 2
+('Ġ', 't'): 7
+('t', 'h'): 3
+```
+
+</div>
+
+حالا پیدا کردن پرتکرارترین جفت فقط به یک حلقه‌ی کوتاه نیاز دارد:
+
+<div dir="ltr">
+
+```python
+best_pair = ""
+max_freq = None
+
+for pair, freq in pair_freqs.items():
+    if max_freq is None or max_freq < freq:
+        best_pair = pair
+        max_freq = freq
+
+print(best_pair, max_freq)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+('Ġ', 't') 7
+```
+
+</div>
+
+بنابراین، نخستین ادغامی که باید یاد گرفته شود `('Ġ', 't') -> 'Ġt'` است و `'Ġt'` را به واژگان اضافه می‌کنیم:
+
+<div dir="ltr">
+
+```python
+merges = {("Ġ", "t"): "Ġt"}
+vocab.append("Ġt")
+```
+
+</div>
+
+برای ادامه، باید این ادغام را در دیکشنری `splits` اعمال کنیم. بیایید تابع دیگری برای این کار بنویسیم:
+
+<div dir="ltr">
+
+```python
+def merge_pair(a, b, splits):
+    for word in word_freqs:
+        split = splits[word]
+        if len(split) == 1:
+            continue
+
+        i = 0
+        while i < len(split) - 1:
+            if split[i] == a and split[i + 1] == b:
+                split = split[:i] + [a + b] + split[i + 2 :]
+            else:
+                i += 1
+        splits[word] = split
+    return splits
+```
+
+</div>
+
+و می‌توانیم نتیجه‌ی نخستین ادغام را بررسی کنیم:
+
+<div dir="ltr">
+
+```py
+splits = merge_pair("Ġ", "t", splits)
+print(splits["Ġtrained"])
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['Ġt', 'r', 'a', 'i', 'n', 'e', 'd']
+```
+
+</div>
+
+اکنون همه‌چیز برای حلقه‌زدن تا یادگیری همه‌ی ادغام‌های موردنظر آماده است. هدف را اندازه‌ی واژگان ۵۰ در نظر می‌گیریم:
+
+<div dir="ltr">
+
+```python
+vocab_size = 50
+
+while len(vocab) < vocab_size:
+    pair_freqs = compute_pair_freqs(splits)
+    best_pair = ""
+    max_freq = None
+    for pair, freq in pair_freqs.items():
+        if max_freq is None or max_freq < freq:
+            best_pair = pair
+            max_freq = freq
+    splits = merge_pair(*best_pair, splits)
+    merges[best_pair] = best_pair[0] + best_pair[1]
+    vocab.append(best_pair[0] + best_pair[1])
+```
+
+</div>
+
+در نتیجه، ۱۹ قاعده‌ی ادغام یاد گرفته‌ایم (اندازه‌ی واژگان اولیه ۳۱ بود؛ یعنی ۳۰ نویسه در الفبا به‌علاوه‌ی توکِن ویژه):
+
+<div dir="ltr">
+
+```py
+print(merges)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+{('Ġ', 't'): 'Ġt', ('i', 's'): 'is', ('e', 'r'): 'er', ('Ġ', 'a'): 'Ġa', ('Ġt', 'o'): 'Ġto', ('e', 'n'): 'en',
+ ('T', 'h'): 'Th', ('Th', 'is'): 'This', ('o', 'u'): 'ou', ('s', 'e'): 'se', ('Ġto', 'k'): 'Ġtok',
+ ('Ġtok', 'en'): 'Ġtoken', ('n', 'd'): 'nd', ('Ġ', 'is'): 'Ġis', ('Ġt', 'h'): 'Ġth', ('Ġth', 'e'): 'Ġthe',
+ ('i', 'n'): 'in', ('Ġa', 'b'): 'Ġab', ('Ġtoken', 'i'): 'Ġtokeni'}
+```
+
+</div>
+
+واژگان از توکِن ویژه، الفبای اولیه و همه‌ی نتایج ادغام‌ها تشکیل شده است:
+
+<div dir="ltr">
+
+```py
+print(vocab)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['<|endoftext|>', ',', '.', 'C', 'F', 'H', 'T', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o',
+ 'p', 'r', 's', 't', 'u', 'v', 'w', 'y', 'z', 'Ġ', 'Ġt', 'is', 'er', 'Ġa', 'Ġto', 'en', 'Th', 'This', 'ou', 'se',
+ 'Ġtok', 'Ġtoken', 'nd', 'Ġis', 'Ġth', 'Ġthe', 'in', 'Ġab', 'Ġtokeni']
+```
+
+</div>
+
+> [!TIP]
+> 💡 اجرای `train_new_from_iterator()` روی همان پیکره دقیقاً به همین واژگان منجر نمی‌شود. دلیلش این است که هنگام وجود چند گزینه برای پرتکرارترین جفت، ما نخستین جفتی را که دیده‌ایم انتخاب کردیم؛ درحالی‌که کتابخانه‌ی 🤗 Tokenizers نخستین جفت را بر اساس شناسه‌های داخلی آن انتخاب می‌کند.
+
+برای توکِن‌سازی یک متن جدید، ابتدا آن را پیش‌توکِن‌سازی و تقسیم می‌کنیم و سپس همه‌ی قواعد ادغامِ یادگرفته‌شده را اعمال می‌کنیم:
+
+<div dir="ltr">
+
+```python
+def tokenize(text):
+    pre_tokenize_result = tokenizer._tokenizer.pre_tokenizer.pre_tokenize_str(text)
+    pre_tokenized_text = [word for word, offset in pre_tokenize_result]
+    splits = [[l for l in word] for word in pre_tokenized_text]
+    for pair, merge in merges.items():
+        for idx, split in enumerate(splits):
+            i = 0
+            while i < len(split) - 1:
+                if split[i] == pair[0] and split[i + 1] == pair[1]:
+                    split = split[:i] + [merge] + split[i + 2 :]
+                else:
+                    i += 1
+            splits[idx] = split
+
+    return sum(splits, [])
+```
+
+</div>
+
+می‌توانیم این تابع را روی هر متنی که از نویسه‌های موجود در الفبا تشکیل شده است امتحان کنیم:
+
+<div dir="ltr">
+
+```py
+tokenize("This is not a token.")
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+['This', 'Ġis', 'Ġ', 'n', 'o', 't', 'Ġa', 'Ġtoken', '.']
+```
+
+</div>
+
+> [!WARNING]
+> ⚠️ اگر نویسه‌ای ناشناخته وجود داشته باشد، پیاده‌سازی ما خطا ایجاد می‌کند، چون برای مدیریت آن کاری انجام نداده‌ایم. GPT-2 در واقع توکِن ناشناخته ندارد (هنگام استفاده از BPE در سطح بایت، دریافت نویسه‌ای ناشناخته غیرممکن است)، اما اینجا ممکن است چنین چیزی رخ دهد، چون همه‌ی بایت‌های ممکن را در واژگان اولیه وارد نکرده‌ایم. این جنبه از BPE خارج از محدوده‌ی این بخش است، بنابراین جزئیات آن را بررسی نکرده‌ایم.
+
+همین بود الگوریتم BPE! در ادامه نگاهی به WordPiece خواهیم انداخت.
+
+</div>

@@ -1,0 +1,912 @@
+<div dir="rtl">
+
+# وقت برش‌زدن و قسمت‌بندی است[[time-to-slice-and-dice]]
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+]} />
+
+بیشتر اوقات، داده‌هایی که با آن‌ها برای تعلیم مدل‌ها کار می‌کنید کاملاً آماده نیستند. در این بخش، امکانات مختلفی را که 🤗 Datasets برای پاک‌سازی دیتاست‌ها ارائه می‌دهد بررسی می‌کنیم.
+
+<Youtube id="tqfSFcPMgOI"/>
+
+## برش‌زدن و قسمت‌بندی داده‌ها[[slicing-and-dicing-our-data]]
+
+🤗 Datasets، مانند Pandas، چندین تابع برای دست‌کاری محتوای اشیای `Dataset` و `DatasetDict` ارائه می‌دهد. پیش‌تر در [فصل ۳](/course/chapter3) با متد `Dataset.map()` آشنا شدیم و در این بخش برخی از توابع دیگر در اختیارمان را بررسی می‌کنیم.
+
+برای این مثال از [دیتاست بررسی دارو](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29) استفاده می‌کنیم که در [مخزن یادگیری ماشین دانشگاه کالیفرنیا، ارواین](https://archive.ics.uci.edu/ml/index.php) میزبانی می‌شود. این دیتاست شامل بررسی‌های بیماران درباره‌ی داروهای مختلف، همراه با بیماریِ تحت درمان و امتیاز رضایت بیمار از ۱ تا ۱۰ است.
+
+ابتدا باید داده‌ها را بارگیری و استخراج کنیم؛ این کار با دستورهای `wget` و `unzip` انجام می‌شود:
+
+<div dir="ltr">
+
+```py
+!wget "https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip"
+!unzip drugsCom_raw.zip
+```
+
+</div>
+
+از آنجا که TSV فقط گونه‌ای از CSV است که به‌جای ویرگول از tab به‌عنوان جداکننده استفاده می‌کند، می‌توانیم با استفاده از اسکریپت بارگذاری `csv` و مشخص کردن آرگومان `delimiter` در تابع `load_dataset()` این فایل‌ها را بارگذاری کنیم:
+
+<div dir="ltr">
+
+```py
+from datasets import load_dataset
+
+data_files = {"train": "drugsComTrain_raw.tsv", "test": "drugsComTest_raw.tsv"}
+# \t is the tab character in Python
+drug_dataset = load_dataset("csv", data_files=data_files, delimiter="\t")
+```
+
+</div>
+
+در هر نوع تحلیل داده، گرفتن یک نمونه‌ی تصادفی کوچک برای به‌دست‌آوردن درکی سریع از نوع داده‌ای که با آن کار می‌کنید، روش خوبی است. در 🤗 Datasets می‌توانیم با زنجیره کردن توابع `Dataset.shuffle()` و `Dataset.select()` یک نمونه‌ی تصادفی بسازیم:
+
+<div dir="ltr">
+
+```py
+drug_sample = drug_dataset["train"].shuffle(seed=42).select(range(1000))
+# Peek at the first few examples
+drug_sample[:3]
+```
+
+```python out
+{'Unnamed: 0': [87571, 178045, 80482],
+ 'drugName': ['Naproxen', 'Duloxetine', 'Mobic'],
+ 'condition': ['Gout, Acute', 'ibromyalgia', 'Inflammatory Conditions'],
+ 'review': ['"like the previous person mention, I&#039;m a strong believer of aleve, it works faster for my gout than the prescription meds I take. No more going to the doctor for refills.....Aleve works!"',
+  '"I have taken Cymbalta for about a year and a half for fibromyalgia pain. It is great\r\nas a pain reducer and an anti-depressant, however, the side effects outweighed \r\nany benefit I got from it. I had trouble with restlessness, being tired constantly,\r\ndizziness, dry mouth, numbness and tingling in my feet, and horrible sweating. I am\r\nbeing weaned off of it now. Went from 60 mg to 30mg and now to 15 mg. I will be\r\noff completely in about a week. The fibro pain is coming back, but I would rather deal with it than the side effects."',
+  '"I have been taking Mobic for over a year with no side effects other than an elevated blood pressure.  I had severe knee and ankle pain which completely went away after taking Mobic.  I attempted to stop the medication however pain returned after a few days."'],
+ 'rating': [9.0, 3.0, 10.0],
+ 'date': ['September 2, 2015', 'November 7, 2011', 'June 5, 2013'],
+ 'usefulCount': [36, 13, 128]}
+```
+
+</div>
+
+توجه کنید که برای بازتولیدپذیری، seed را در `Dataset.shuffle()` ثابت کرده‌ایم. `Dataset.select()` یک iterable از اندیس‌ها می‌خواهد، بنابراین `range(1000)` را برای گرفتن ۱۰۰۰ نمونه‌ی نخست از دیتاست shuffled به آن داده‌ایم. از این نمونه می‌توانیم چند ویژگی عجیب دیتاست را ببینیم:
+
+<div dir="rtl">
+
+* ستون `Unnamed: 0` به‌طور مشکوکی شبیه یک شناسه‌ی ناشناس برای هر بیمار است.
+* ستون `condition` ترکیبی از برچسب‌های حروف‌بزرگ و حروف‌کوچک دارد.
+* طول بررسی‌ها متفاوت است و علاوه بر جداکننده‌های خط پایتون (`\r\n`)، ترکیبی از کدهای نویسه‌ی HTML مانند `&\#039;` را نیز دارند.
+
+</div>
+
+بیایید ببینیم چگونه می‌توانیم با استفاده از 🤗 Datasets با هر یک از این مشکلات برخورد کنیم. برای آزمودن فرضیه‌ی شناسه‌ی بیمار درباره‌ی ستون `Unnamed: 0`، می‌توانیم از تابع `Dataset.unique()` استفاده کنیم تا ببینیم تعداد شناسه‌ها با تعداد ردیف‌ها در هر split برابر است یا نه:
+
+<div dir="ltr">
+
+```py
+for split in drug_dataset.keys():
+    assert len(drug_dataset[split]) == len(drug_dataset[split].unique("Unnamed: 0"))
+```
+
+</div>
+
+این موضوع ظاهراً فرضیه‌ی ما را تأیید می‌کند، پس بیایید با تغییر نام ستون `Unnamed: 0` به نامی قابل‌فهم‌تر، دیتاست را کمی پاک‌سازی کنیم. می‌توانیم از تابع `DatasetDict.rename_column()` استفاده کنیم تا ستون را در هر دو split یک‌جا تغییر نام دهیم:
+
+<div dir="ltr">
+
+```py
+drug_dataset = drug_dataset.rename_column(
+    original_column_name="Unnamed: 0", new_column_name="patient_id"
+)
+drug_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 161297
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 53766
+    })
+})
+```
+
+</div>
+
+> [!TIP]
+> ✏️ **امتحان کنید!** با استفاده از تابع `Dataset.unique()` تعداد داروها و conditionهای یکتای مجموعه‌های تعلیم و آزمون را پیدا کنید.
+
+حالا بیایید همه‌ی برچسب‌های `condition` را با استفاده از `Dataset.map()` نرمال کنیم. همان‌طور که در فصل ۳ برای توکِنایز کردن انجام دادیم، می‌توانیم تابع ساده‌ای تعریف کنیم که روی همه‌ی ردیف‌های هر split در `drug_dataset` اعمال شود:
+
+<div dir="ltr">
+
+```py
+def lowercase_condition(example):
+    return {"condition": example["condition"].lower()}
+
+
+drug_dataset.map(lowercase_condition)
+```
+
+```python out
+AttributeError: 'NoneType' object has no attribute 'lower'
+```
+
+</div>
+
+ای وای، تابع map ما با مشکل روبه‌رو شد! از خطا می‌توانیم بفهمیم بعضی از ورودی‌های ستون `condition` مقدار `None` دارند و چون رشته نیستند، نمی‌توان آن‌ها را به حروف کوچک تبدیل کرد. بیایید با استفاده از `Dataset.filter()` این ردیف‌ها را حذف کنیم؛ این تابع مانند `Dataset.map()` کار می‌کند و تابعی می‌خواهد که یک نمونه‌ی منفرد از دیتاست را دریافت کند. به‌جای نوشتن تابعی صریح مانند:
+
+<div dir="ltr">
+
+```py
+def filter_nones(x):
+    return x["condition"] is not None
+```
+
+</div>
+
+و سپس اجرای `drug_dataset.filter(filter_nones)`، می‌توانیم این کار را در یک خط با استفاده از _تابع lambda_ انجام دهیم. توابع lambda توابع کوچکی در پایتون هستند که می‌توانید بدون نام‌گذاری صریح تعریفشان کنید. شکل کلی آن‌ها چنین است:
+
+<div dir="ltr">
+
+```
+lambda <arguments> : <expression>
+```
+
+</div>
+
+که در آن `lambda` یکی از [کلیدواژه‌های](https://docs.python.org/3/reference/lexical_analysis.html#keywords) ویژه‌ی پایتون است، `<arguments>` فهرستی/مجموعه‌ای از مقادیر جداشده با ویرگول است که ورودی‌های تابع را تعریف می‌کند و `<expression>` عملیاتی را نشان می‌دهد که می‌خواهید انجام دهید. برای مثال، می‌توانیم یک تابع lambda ساده تعریف کنیم که عددی را به توان دو برساند:
+
+<div dir="ltr">
+
+```
+lambda x : x * x
+```
+
+</div>
+
+برای اعمال این تابع روی یک ورودی، باید خود تابع و ورودی را داخل پرانتز قرار دهیم:
+
+<div dir="ltr">
+
+```py
+(lambda x: x * x)(3)
+```
+
+```python out
+9
+```
+
+</div>
+
+به همین شکل، می‌توانیم توابع lambda را با چند آرگومان نیز تعریف کنیم؛ برای این کار آرگومان‌ها را با ویرگول جدا می‌کنیم. برای مثال، می‌توانیم مساحت یک مثلث را به شکل زیر محاسبه کنیم:
+
+<div dir="ltr">
+
+```py
+(lambda base, height: 0.5 * base * height)(4, 8)
+```
+
+```python out
+16.0
+```
+
+</div>
+
+توابع lambda زمانی مفیدند که بخواهید توابع کوچک و یک‌بارمصرف تعریف کنید (برای اطلاعات بیشتر درباره‌ی آن‌ها، مطالعه‌ی [آموزش عالی Real Python](https://realpython.com/python-lambda/) نوشته‌ی Andre Burgaud را پیشنهاد می‌کنیم). در زمینه‌ی 🤗 Datasets، می‌توانیم از توابع lambda برای تعریف عملیات ساده‌ی map و filter استفاده کنیم؛ پس از این ترفند برای حذف ورودی‌های `None` از دیتاست خود استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["condition"] is not None)
+```
+
+</div>
+
+حالا که ورودی‌های `None` حذف شده‌اند، می‌توانیم ستون `condition` را نرمال کنیم:
+
+<div dir="ltr">
+
+```py
+drug_dataset = drug_dataset.map(lowercase_condition)
+# Check that lowercasing worked
+drug_dataset["train"]["condition"][:3]
+```
+
+```python out
+['left ventricular dysfunction', 'adhd', 'birth control']
+```
+
+</div>
+
+کار می‌کند! حالا که برچسب‌ها را پاک‌سازی کرده‌ایم، بیایید به سراغ پاک‌سازی خود بررسی‌ها برویم.
+
+## ساختن ستون‌های جدید[[creating-new-columns]]
+
+هر زمان با بررسی‌های مشتریان سروکار دارید، بهتر است تعداد کلمات هر بررسی را بررسی کنید. یک بررسی ممکن است فقط یک کلمه مانند «عالی!» باشد یا مقاله‌ای کامل با هزاران کلمه؛ بسته به کاربرد، باید با این حالت‌های افراطی به شکل متفاوتی برخورد کنید. برای محاسبه‌ی تعداد کلمات هر بررسی، از یک روش تقریبی بر اساس جدا کردن هر متن با فاصله‌ی سفید استفاده می‌کنیم.
+
+بیایید تابع ساده‌ای تعریف کنیم که تعداد کلمات هر بررسی را بشمارد:
+
+<div dir="ltr">
+
+```py
+def compute_review_length(example):
+    return {"review_length": len(example["review"].split())}
+```
+
+</div>
+
+برخلاف تابع `lowercase_condition()`، تابع `compute_review_length()` دیکشنری‌ای برمی‌گرداند که کلید آن با یکی از نام‌های ستون‌های دیتاست مطابقت ندارد. در این حالت، وقتی `compute_review_length()` به `Dataset.map()` داده شود، روی همه‌ی ردیف‌های دیتاست اعمال می‌شود تا ستون جدید `review_length` ایجاد شود:
+
+<div dir="ltr">
+
+```py
+drug_dataset = drug_dataset.map(compute_review_length)
+# Inspect the first training example
+drug_dataset["train"][0]
+```
+
+```python out
+{'patient_id': 206461,
+ 'drugName': 'Valsartan',
+ 'condition': 'left ventricular dysfunction',
+ 'review': '"It has no side effect, I take it in combination of Bystolic 5 Mg and Fish Oil"',
+ 'rating': 9.0,
+ 'date': 'May 20, 2012',
+ 'usefulCount': 27,
+ 'review_length': 17}
+```
+
+</div>
+
+همان‌طور که انتظار داشتیم، می‌بینیم ستون `review_length` به مجموعه‌ی تعلیم ما اضافه شده است. می‌توانیم این ستون جدید را با `Dataset.sort()` مرتب کنیم تا مقادیر افراطی را ببینیم:
+
+<div dir="ltr">
+
+```py
+drug_dataset["train"].sort("review_length")[:3]
+```
+
+```python out
+{'patient_id': [103488, 23627, 20558],
+ 'drugName': ['Loestrin 21 1 / 20', 'Chlorzoxazone', 'Nucynta'],
+ 'condition': ['birth control', 'muscle spasm', 'pain'],
+ 'review': ['"Excellent."', '"useless"', '"ok"'],
+ 'rating': [10.0, 1.0, 6.0],
+ 'date': ['November 4, 2008', 'March 24, 2017', 'August 20, 2016'],
+ 'usefulCount': [5, 2, 10],
+ 'review_length': [1, 1, 1]}
+```
+
+</div>
+
+همان‌طور که حدس می‌زدیم، بعضی بررسی‌ها فقط یک کلمه دارند؛ این مقدار شاید برای تحلیل احساسات مناسب باشد، اما اگر بخواهیم condition را پیش‌بینی کنیم، اطلاعات کافی ارائه نمی‌کند.
+
+> [!TIP]
+> 🙋 راه دیگری برای افزودن ستون‌های جدید به دیتاست، استفاده از تابع `Dataset.add_column()` است. این تابع به شما اجازه می‌دهد ستون را به شکل یک فهرست پایتون یا آرایه‌ی NumPy بدهید و در شرایطی که `Dataset.map()` برای تحلیل شما مناسب نیست، می‌تواند مفید باشد.
+
+بیایید با استفاده از تابع `Dataset.filter()` بررسی‌هایی را که کمتر از ۳۰ کلمه دارند حذف کنیم. مانند کاری که با ستون `condition` انجام دادیم، می‌توانیم با الزام طول بیشتر از این آستانه، بررسی‌های بسیار کوتاه را فیلتر کنیم:
+
+<div dir="ltr">
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["review_length"] > 30)
+print(drug_dataset.num_rows)
+```
+
+```python out
+{'train': 138514, 'test': 46108}
+```
+
+</div>
+
+همان‌طور که می‌بینید، این کار حدود ۱۵٪ از بررسی‌های مجموعه‌های تعلیم و آزمون اولیه را حذف کرده است.
+
+> [!TIP]
+> ✏️ **امتحان کنید!** با استفاده از تابع `Dataset.sort()` بررسی‌هایی را که بیشترین تعداد کلمه را دارند بررسی کنید. برای دیدن آرگومان لازم جهت مرتب‌سازی بررسی‌ها بر اساس طول به‌صورت نزولی، [مستندات](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.sort) را ببینید.
+
+آخرین مسئله‌ای که باید حل کنیم، وجود کدهای نویسه‌ی HTML در بررسی‌هاست. می‌توانیم از ماژول `html` پایتون برای unescape کردن این نویسه‌ها استفاده کنیم:
+
+<div dir="ltr">
+
+```py
+import html
+
+text = "I&#039;m a transformer called BERT"
+html.unescape(text)
+```
+
+```python out
+"I'm a transformer called BERT"
+```
+
+</div>
+
+از `Dataset.map()` برای unescape کردن همه‌ی نویسه‌های HTML در مجموعه‌ی خود استفاده می‌کنیم:
+
+<div dir="ltr">
+
+```python
+drug_dataset = drug_dataset.map(lambda x: {"review": html.unescape(x["review"])})
+```
+
+</div>
+
+همان‌طور که می‌بینید، متد `Dataset.map()` برای پردازش داده بسیار مفید است — و هنوز حتی سطح توانایی‌های آن را لمس نکرده‌ایم!
+
+## ابرقدرت‌های متد `map()`[[the-map-methods-superpowers]]
+
+متد `Dataset.map()` آرگومانی به نام `batched` دارد که اگر روی `True` تنظیم شود، باعث می‌شود هم‌زمان یک بتچ از نمونه‌ها را به تابع map ارسال کند (اندازه‌ی بتچ قابل تنظیم است، اما مقدار پیش‌فرض آن ۱۰۰۰ است). برای نمونه، اجرای تابع map قبلی که همه‌ی HTMLها را unescape می‌کرد کمی زمان برد (زمان اجرا را می‌توانید از نوارهای پیشرفت بخوانید). با پردازش هم‌زمان چندین عنصر و استفاده از list comprehension می‌توانیم این کار را سریع‌تر کنیم.
+
+وقتی `batched=True` را مشخص می‌کنید، تابع یک دیکشنری شامل فیلدهای دیتاست دریافت می‌کند، اما مقدار هر فیلد اکنون _فهرستی از مقادیر_ است، نه فقط یک مقدار. مقدار برگشتی `Dataset.map()` نیز باید همین شکل را داشته باشد: دیکشنری‌ای با فیلدهایی که می‌خواهیم در دیتاست به‌روزرسانی یا اضافه کنیم، و یک فهرست از مقادیر. برای مثال، راه دیگری برای unescape کردن همه‌ی نویسه‌های HTML با استفاده از `batched=True` چنین است:
+
+<div dir="ltr">
+
+```python
+new_drug_dataset = drug_dataset.map(
+    lambda x: {"review": [html.unescape(o) for o in x["review"]]}, batched=True
+)
+```
+
+</div>
+
+اگر این کد را در یک نوت‌بوک اجرا کنید، می‌بینید این دستور بسیار سریع‌تر از دستور قبلی اجرا می‌شود. دلیلش این نیست که بررسی‌های ما از قبل unescape شده‌اند — اگر دستور بخش قبل را دوباره اجرا کنید (بدون `batched=True`)، همان مقدار زمان قبلی طول می‌کشد. علت این است که list comprehension معمولاً از اجرای همان کد در یک حلقه‌ی `for` سریع‌تر است و با دسترسی هم‌زمان به عناصر متعدد، به‌جای یکی‌یکی، عملکرد بیشتری نیز به دست می‌آوریم.
+
+استفاده از `Dataset.map()` با `batched=True` برای بهره‌گیری از سرعت توکِنایزرهای «سریع» که در [فصل ۶](/course/chapter6) با آن‌ها آشنا می‌شویم ضروری است؛ این توکِنایزرها می‌توانند فهرست‌های بزرگی از متن را به‌سرعت توکِنایز کنند. برای مثال، برای توکِنایز کردن همه‌ی بررسی‌های دارو با یک توکِنایزر سریع، می‌توانیم از تابعی مانند زیر استفاده کنیم:
+
+<div dir="ltr">
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+
+
+def tokenize_function(examples):
+    return tokenizer(examples["review"], truncation=True)
+```
+
+</div>
+
+همان‌طور که در [فصل ۳](/course/chapter3) دیدید، می‌توانیم یک یا چند نمونه را به توکِنایزر بدهیم؛ بنابراین می‌توانیم از این تابع با یا بدون `batched=True` استفاده کنیم. از این فرصت استفاده می‌کنیم تا عملکرد گزینه‌های مختلف را با هم مقایسه کنیم. در یک نوت‌بوک، با اضافه کردن `%time` پیش از خط کدی که می‌خواهید اندازه‌گیری کنید، می‌توانید زمان اجرای یک دستور تک‌خطی را بگیرید:
+
+<div dir="ltr">
+
+```python no-format
+%time tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
+```
+
+</div>
+
+همچنین می‌توانید با قرار دادن `%%time` در ابتدای سلول، زمان اجرای یک سلول کامل را اندازه بگیرید. روی سخت‌افزاری که ما این کد را اجرا کردیم، زمان این دستور ۱۰٫۸ ثانیه بود (عددی که بعد از «Wall time» نوشته می‌شود).
+
+> [!TIP]
+> ✏️ **امتحان کنید!** همین دستور را با و بدون `batched=True` اجرا کنید، سپس آن را با یک توکِنایزر کند امتحان کنید (در متد `AutoTokenizer.from_pretrained()` مقدار `use_fast=False` را اضافه کنید) تا ببینید روی سخت‌افزار خود چه اعدادی به دست می‌آورید.
+
+نتایجی که با و بدون batching و با توکِنایزر سریع و کند به دست آوردیم:
+
+<div dir="rtl">
+
+| گزینه‌ها | توکِنایزر سریع | توکِنایزر کند |
+| :--------------: | :-------------: | :-------------: |
+| `batched=True` | 10.8s | 4min41s |
+| `batched=False` | 59.2s | 5min3s |
+
+</div>
+
+این یعنی استفاده از یک توکِنایزر سریع با گزینه‌ی `batched=True`، ۳۰ برابر سریع‌تر از توکِنایزر کند آن هم بدون batching است — واقعاً شگفت‌انگیز است! دلیل اصلی پیش‌فرض بودن توکِنایزرهای سریع هنگام استفاده از `AutoTokenizer` (و دلیل نام‌گذاری آن‌ها با عنوان «سریع») همین است. این توکِنایزرها به این سرعت می‌رسند چون کد توکِنایز کردن در پشت صحنه با Rust اجرا می‌شود؛ زبانی که موازی‌سازی اجرای کد در آن آسان است.
+
+موازی‌سازی همچنین دلیل سرعت تقریباً ۶ برابری توکِنایزر سریع هنگام batching است: نمی‌توان یک عملیات توکِنایز کردن منفرد را موازی کرد، اما وقتی می‌خواهید متن‌های زیادی را هم‌زمان توکِنایز کنید، می‌توانید اجرا را بین چند فرایند تقسیم کنید که هر کدام مسئول متن‌های خود هستند.
+
+`Dataset.map()` نیز قابلیت‌های موازی‌سازی خودش را دارد. از آنجا که این قابلیت‌ها بر پایه‌ی Rust نیستند، اجازه نمی‌دهند توکِنایزر کند به توکِنایزر سریع برسد، اما همچنان می‌توانند مفید باشند (به‌خصوص اگر از توکِنایزری استفاده می‌کنید که نسخه‌ی سریع ندارد). برای فعال کردن چندپردازشی، از آرگومان `num_proc` استفاده کنید و تعداد فرایندها را در فراخوانی `Dataset.map()` مشخص کنید:
+
+<div dir="ltr">
+
+```py
+slow_tokenizer = AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False)
+
+
+def slow_tokenize_function(examples):
+    return slow_tokenizer(examples["review"], truncation=True)
+
+
+tokenized_dataset = drug_dataset.map(slow_tokenize_function, batched=True, num_proc=8)
+```
+
+</div>
+
+می‌توانید با اندازه‌گیری زمان، تعداد بهینه‌ی فرایندها را پیدا کنید؛ در مورد ما، ۸ فرایند بهترین افزایش سرعت را ایجاد کرد. اعدادی که با و بدون چندپردازشی به دست آوردیم:
+
+<div dir="rtl">
+
+| گزینه‌ها | توکِنایزر سریع | توکِنایزر کند |
+| :--------------: | :-------------: | :-------------: |
+| `batched=True` | 10.8s | 4min41s |
+| `batched=False` | 59.2s | 5min3s |
+| `batched=True`, `num_proc=8` | 6.52s | 41.3s |
+| `batched=False`, `num_proc=8` | 9.49s | 45.2s |
+
+</div>
+
+این نتایج برای توکِنایزر کند بسیار منطقی‌ترند، اما عملکرد توکِنایزر سریع نیز به‌طور چشمگیری بهتر شده است. بااین‌حال توجه کنید که همیشه چنین نخواهد بود — در آزمایش‌های ما، برای مقادیر `num_proc` غیر از ۸، استفاده از `batched=True` بدون این گزینه سریع‌تر بود. به‌طور کلی، استفاده از چندپردازشی پایتون را برای توکِنایزرهای سریع با `batched=True` توصیه نمی‌کنیم.
+
+> [!TIP]
+> استفاده از `num_proc` برای سریع‌تر کردن پردازش معمولاً ایده‌ی خوبی است، به شرطی که تابعی که استفاده می‌کنید خودش نوعی چندپردازشی انجام ندهد.
+
+تمام این قابلیت‌ها که در یک متد جمع شده‌اند، به‌تنهایی شگفت‌انگیزند، اما امکانات بیشتری هم وجود دارد! با `Dataset.map()` و `batched=True` می‌توانید تعداد عناصر دیتاست را تغییر دهید. این قابلیت در موقعیت‌های زیادی مفید است؛ مثلاً وقتی می‌خواهید از یک نمونه چندین ویژگی تعلیم بسازید. همچنین در پیش‌پردازش چندین وظیفه‌ی NLP که در [فصل ۷](/course/chapter7) انجام خواهیم داد، به آن نیاز داریم.
+
+> [!TIP]
+> 💡 در یادگیری ماشین، _نمونه_ معمولاً مجموعه‌ای از _ویژگی‌ها_ تعریف می‌شود که به مدل می‌دهیم. در برخی زمینه‌ها، این ویژگی‌ها همان مجموعه‌ی ستون‌های یک `Dataset` هستند، اما در زمینه‌های دیگر (مانند اینجا و پاسخ‌گویی به پرسش)، می‌توان چند ویژگی را از یک نمونه استخراج کرد که به یک ستون تعلق دارند.
+
+بیایید ببینیم این قابلیت چگونه کار می‌کند! در اینجا نمونه‌های خود را توکِنایز و آن‌ها را به حداکثر طول ۱۲۸ کوتاه می‌کنیم، اما از توکِنایزر می‌خواهیم _همه‌ی_ بخش‌های متن را برگرداند، نه فقط بخش اول را. این کار با `return_overflowing_tokens=True` انجام می‌شود:
+
+<div dir="ltr">
+
+```py
+def tokenize_and_split(examples):
+    return tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+```
+
+</div>
+
+پیش از استفاده از `Dataset.map()` روی کل دیتاست، این را روی یک نمونه آزمایش کنیم:
+
+<div dir="ltr">
+
+```py
+result = tokenize_and_split(drug_dataset["train"][0])
+[len(inp) for inp in result["input_ids"]]
+```
+
+```python out
+[128, 49]
+```
+
+</div>
+
+بنابراین نخستین نمونه‌ی مجموعه‌ی تعلیم ما به دو ویژگی تبدیل شد، چون به بیش از حداکثر تعداد توکِن‌هایی که مشخص کرده بودیم توکِنایز شد: اولی با طول ۱۲۸ و دومی با طول ۴۹. حالا این کار را برای همه‌ی عناصر دیتاست انجام دهیم!
+
+<div dir="ltr">
+
+```py
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+```
+
+```python out
+ArrowInvalid: Column 1 named condition expected length 1463 but got length 1000
+```
+
+</div>
+
+ای وای! این کار موفق نشد! چرا؟ پیام خطا سرنخی به ما می‌دهد: طول یکی از ستون‌ها با دیگری متفاوت است؛ یکی طول ۱٬۴۶۳ و دیگری طول ۱٬۰۰۰ دارد. اگر [مستندات `Dataset.map()`](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.map) را دیده باشید، شاید به یاد داشته باشید که تعداد نمونه‌هایی که به تابع می‌دهیم، همان تعداد نمونه‌هایی است که map می‌شوند؛ در اینجا آن ۱۰۰۰ نمونه، ۱٬۴۶۳ ویژگی جدید ایجاد کرده‌اند و در نتیجه خطای شکل به وجود آمده است.
+
+مشکل این است که داریم دو دیتاست با اندازه‌های متفاوت را با هم ترکیب می‌کنیم: ستون‌های `drug_dataset` تعداد مشخصی نمونه دارند (۱۰۰۰ نمونه در خطای ما)، اما `tokenized_dataset` که می‌سازیم تعداد بیشتری دارد (۱٬۴۶۳ نمونه در پیام خطا؛ این تعداد از ۱۰۰۰ بیشتر است چون با استفاده از `return_overflowing_tokens=True` بررسی‌های طولانی را به چند نمونه توکِنایزشده تبدیل می‌کنیم). این کار برای یک `Dataset` ممکن نیست، پس باید یا ستون‌های دیتاست قدیمی را حذف کنیم یا اندازه‌ی آن‌ها را با دیتاست جدید برابر کنیم. گزینه‌ی اول را می‌توان با آرگومان `remove_columns` انجام داد:
+
+<div dir="ltr">
+
+```py
+tokenized_dataset = drug_dataset.map(
+    tokenize_and_split, batched=True, remove_columns=drug_dataset["train"].column_names
+)
+```
+
+</div>
+
+حالا بدون خطا کار می‌کند. با مقایسه‌ی طول‌ها می‌توانیم بررسی کنیم که دیتاست جدیدمان عناصر بسیار بیشتری از دیتاست اصلی دارد:
+
+<div dir="ltr">
+
+```py
+len(tokenized_dataset["train"]), len(drug_dataset["train"])
+```
+
+```python out
+(206772, 138514)
+```
+
+</div>
+
+گفتیم که می‌توانیم مشکل طول‌های متفاوت را با برابر کردن اندازه‌ی ستون‌های قدیمی با ستون‌های جدید نیز حل کنیم. برای این کار به فیلد `overflow_to_sample_mapping` نیاز داریم که توکِنایزر هنگام تنظیم `return_overflowing_tokens=True` برمی‌گرداند. این فیلد نگاشتی از اندیس یک ویژگی جدید به اندیس نمونه‌ای که ویژگی از آن ساخته شده است ارائه می‌دهد. با استفاده از آن، می‌توانیم هر کلید موجود در دیتاست اصلی را به فهرستی از مقادیر با اندازه‌ی درست مرتبط کنیم؛ برای این کار مقادیر هر نمونه را به تعداد ویژگی‌های جدیدی که تولید می‌کند تکرار می‌کنیم:
+
+<div dir="ltr">
+
+```py
+def tokenize_and_split(examples):
+    result = tokenizer(
+        examples["review"],
+        truncation=True,
+        max_length=128,
+        return_overflowing_tokens=True,
+    )
+    # Extract mapping between new and old indices
+    sample_map = result.pop("overflow_to_sample_mapping")
+    for key, values in examples.items():
+        result[key] = [values[i] for i in sample_map]
+    return result
+```
+
+</div>
+
+می‌بینیم که این روش با `Dataset.map()` کار می‌کند و لازم نیست ستون‌های قدیمی را حذف کنیم:
+
+<div dir="ltr">
+
+```py
+tokenized_dataset = drug_dataset.map(tokenize_and_split, batched=True)
+tokenized_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
+        num_rows: 206772
+    })
+    test: Dataset({
+        features: ['attention_mask', 'condition', 'date', 'drugName', 'input_ids', 'patient_id', 'rating', 'review', 'review_length', 'token_type_ids', 'usefulCount'],
+        num_rows: 68876
+    })
+})
+```
+
+</div>
+
+تعداد ویژگی‌های تعلیم همان مقدار قبلی است، اما این بار همه‌ی فیلدهای قدیمی را نگه داشته‌ایم. اگر پس از اجرای مدل برای پس‌پردازش به آن‌ها نیاز دارید، شاید بخواهید از این روش استفاده کنید.
+
+اکنون دیدید که چگونه می‌توان از 🤗 Datasets برای پیش‌پردازش دیتاست به روش‌های مختلف استفاده کرد. اگرچه توابع پردازش 🤗 Datasets بیشتر نیازهای تعلیم مدل شما را پوشش می‌دهند، گاهی لازم است برای دسترسی به قابلیت‌های قدرتمندتر، مانند `DataFrame.groupby()` یا APIهای سطح‌بالای مصورسازی، به Pandas روی بیاورید. خوشبختانه 🤗 Datasets برای همکاری با کتابخانه‌هایی مانند Pandas، NumPy، PyTorch، TensorFlow و JAX طراحی شده است. بیایید ببینیم این کار چگونه انجام می‌شود.
+
+## از `Dataset`ها به `DataFrame`ها و برعکس[[from-datasets-to-dataframes-and-back]]
+
+<Youtube id="tfcY1067A5Q"/>
+
+برای فعال کردن تبدیل بین کتابخانه‌های مختلف شخص ثالث، 🤗 Datasets تابع `Dataset.set_format()` را ارائه می‌دهد. این تابع فقط _قالب خروجی_ دیتاست را تغییر می‌دهد، بنابراین می‌توانید به‌سادگی به قالب دیگری جابه‌جا شوید، بدون اینکه _قالب داده‌ی_ زیربنایی، یعنی Apache Arrow، تغییر کند. قالب‌بندی درجا انجام می‌شود. برای نمایش این موضوع، دیتاست خود را به Pandas تبدیل می‌کنیم:
+
+<div dir="ltr">
+
+```py
+drug_dataset.set_format("pandas")
+```
+
+</div>
+
+وقتی اکنون به عناصر دیتاست دسترسی پیدا می‌کنیم، به‌جای دیکشنری یک `pandas.DataFrame` دریافت می‌کنیم:
+
+<div dir="ltr">
+
+```py
+drug_dataset["train"][:3]
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>patient_id</th>
+      <th>drugName</th>
+      <th>condition</th>
+      <th>review</th>
+      <th>rating</th>
+      <th>date</th>
+      <th>usefulCount</th>
+      <th>review_length</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>95260</td>
+      <td>Guanfacine</td>
+      <td>adhd</td>
+      <td>"My son is halfway through his fourth week of Intuniv..."</td>
+      <td>8.0</td>
+      <td>April 27, 2010</td>
+      <td>192</td>
+      <td>141</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>92703</td>
+      <td>Lybrel</td>
+      <td>birth control</td>
+      <td>"I used to take another oral contraceptive, which had 21 pill cycle, and was very happy- very light periods, max 5 days, no other side effects..."</td>
+      <td>5.0</td>
+      <td>December 14, 2009</td>
+      <td>17</td>
+      <td>134</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>138000</td>
+      <td>Ortho Evra</td>
+      <td>birth control</td>
+      <td>"This is my first time using any form of birth control..."</td>
+      <td>8.0</td>
+      <td>November 3, 2015</td>
+      <td>10</td>
+      <td>89</td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+بیایید با انتخاب همه‌ی عناصر `drug_dataset["train"]` یک `pandas.DataFrame` برای کل مجموعه‌ی تعلیم بسازیم:
+
+<div dir="ltr">
+
+```py
+train_df = drug_dataset["train"][:]
+```
+
+</div>
+
+> [!TIP]
+> 🚨 در پشت صحنه، `Dataset.set_format()` قالب خروجی متد ویژه‌ی `__getitem__()` دیتاست را تغییر می‌دهد. یعنی وقتی می‌خواهیم شیء جدیدی مانند `train_df` را از یک `Dataset` با قالب `"pandas"` بسازیم، باید کل دیتاست را برش بزنیم تا یک `pandas.DataFrame` به دست آوریم. برای اطمینان می‌توانید بررسی کنید که نوع `drug_dataset["train"]` بدون توجه به قالب خروجی، `Dataset` است.
+
+از اینجا می‌توانیم از همه‌ی قابلیت‌های Pandas که می‌خواهیم استفاده کنیم. برای مثال، می‌توانیم با زنجیره‌سازی پیشرفته، توزیع کلاس را بین ورودی‌های `condition` محاسبه کنیم:
+
+<div dir="ltr">
+
+```py
+frequencies = (
+    train_df["condition"]
+    .value_counts()
+    .to_frame()
+    .reset_index()
+    .rename(columns={"index": "condition", "count": "frequency"})
+)
+frequencies.head()
+```
+
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>condition</th>
+      <th>frequency</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>birth control</td>
+      <td>27655</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>depression</td>
+      <td>8023</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>acne</td>
+      <td>5209</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>anxiety</td>
+      <td>4991</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>pain</td>
+      <td>4744</td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+پس از پایان تحلیل Pandas، همیشه می‌توانیم با استفاده از تابع `Dataset.from_pandas()` یک شیء `Dataset` جدید بسازیم:
+
+<div dir="ltr">
+
+```py
+from datasets import Dataset
+
+freq_dataset = Dataset.from_pandas(frequencies)
+freq_dataset
+```
+
+```python out
+Dataset({
+    features: ['condition', 'frequency'],
+    num_rows: 819
+})
+```
+
+</div>
+
+> [!TIP]
+> ✏️ **امتحان کنید!** میانگین امتیاز هر دارو را محاسبه و نتیجه را در یک `Dataset` جدید ذخیره کنید.
+
+این پایان گشت‌وگذار ما در تکنیک‌های مختلف پیش‌پردازش موجود در 🤗 Datasets است. برای تکمیل این بخش، بیایید یک مجموعه‌ی اعتبارسنجی بسازیم تا دیتاست را برای تعلیم یک دسته‌بند آماده کنیم. پیش از این کار، قالب خروجی `drug_dataset` را از `"pandas"` به `"arrow"` بازنشانی می‌کنیم:
+
+<div dir="ltr">
+
+```python
+drug_dataset.reset_format()
+```
+
+</div>
+
+## ساختن یک مجموعه‌ی اعتبارسنجی[[creating-a-validation-set]]
+
+اگرچه می‌توانستیم از مجموعه‌ی آزمون برای ارزیابی استفاده کنیم، بهتر است مجموعه‌ی آزمون را دست‌نخورده نگه داریم و هنگام توسعه یک مجموعه‌ی اعتبارسنجی جداگانه بسازیم. وقتی از عملکرد مدل‌های خود روی مجموعه‌ی اعتبارسنجی راضی بودید، می‌توانید یک بررسی نهایی سلامت روی مجموعه‌ی آزمون انجام دهید. این فرایند خطر بیش‌برازش روی مجموعه‌ی آزمون و استقرار مدلی را که در داده‌های دنیای واقعی شکست می‌خورد کاهش می‌دهد.
+
+🤗 Datasets تابع `Dataset.train_test_split()` را ارائه می‌دهد که بر پایه‌ی قابلیت معروف `scikit-learn` ساخته شده است. بیایید مجموعه‌ی تعلیم خود را به بخش‌های `train` و `validation` تقسیم کنیم (برای بازتولیدپذیری آرگومان `seed` را تنظیم می‌کنیم):
+
+<div dir="ltr">
+
+```py
+drug_dataset_clean = drug_dataset["train"].train_test_split(train_size=0.8, seed=42)
+# Rename the default "test" split to "validation"
+drug_dataset_clean["validation"] = drug_dataset_clean.pop("test")
+# Add the "test" set to our `DatasetDict`
+drug_dataset_clean["test"] = drug_dataset["test"]
+drug_dataset_clean
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 110811
+    })
+    validation: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 27703
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length', 'review_clean'],
+        num_rows: 46108
+    })
+})
+```
+
+</div>
+
+عالی است، اکنون دیتاستی آماده برای تعلیم چند مدل داریم! در [بخش ۵](/course/chapter5/5) نشان می‌دهیم چگونه دیتاست‌ها را در هاب هاگینگ‌فِیس بارگذاری کنید، اما فعلاً تحلیل خود را با بررسی چند روش ذخیره‌سازی دیتاست‌ها روی ماشین محلی به پایان می‌رسانیم.
+
+## ذخیره‌سازی یک دیتاست[[saving-a-dataset]]
+
+<Youtube id="blF9uxYcKHo"/>
+
+اگرچه 🤗 Datasets هر دیتاست بارگیری‌شده و عملیات انجام‌شده روی آن را cache می‌کند، گاهی لازم است دیتاستی را روی دیسک ذخیره کنید (مثلاً اگر cache حذف شود). همان‌طور که در جدول زیر می‌بینید، 🤗 Datasets سه تابع اصلی برای ذخیره‌سازی دیتاست در قالب‌های مختلف ارائه می‌دهد:
+
+<div dir="rtl">
+
+| قالب داده | تابع |
+| :---------: | :--------------------: |
+| Arrow | `Dataset.save_to_disk()` |
+| CSV | `Dataset.to_csv()` |
+| JSON | `Dataset.to_json()` |
+
+</div>
+
+برای مثال، بیایید دیتاست پاک‌سازی‌شده‌ی خود را در قالب Arrow ذخیره کنیم:
+
+<div dir="ltr">
+
+```py
+drug_dataset_clean.save_to_disk("drug-reviews")
+```
+
+</div>
+
+این کار پوشه‌ای با ساختار زیر ایجاد می‌کند:
+
+<div dir="ltr">
+
+```
+drug-reviews/
+├── dataset_dict.json
+├── test
+│   ├── dataset.arrow
+│   ├── dataset_info.json
+│   └── state.json
+├── train
+│   ├── dataset.arrow
+│   ├── dataset_info.json
+│   ├── indices.arrow
+│   └── state.json
+└── validation
+    ├── dataset.arrow
+    ├── dataset_info.json
+    ├── indices.arrow
+    └── state.json
+```
+
+</div>
+
+در این ساختار می‌بینیم که هر split جدول *dataset.arrow* مخصوص خود را دارد و بخشی از فراداده نیز در *dataset_info.json* و *state.json* ذخیره شده است. می‌توانید قالب Arrow را جدولی پیشرفته از ستون‌ها و ردیف‌ها در نظر بگیرید که برای ساخت برنامه‌های پربازده جهت پردازش و انتقال دیتاست‌های بزرگ بهینه شده است.
+
+پس از ذخیره‌ی دیتاست، می‌توانیم آن را با استفاده از تابع `load_from_disk()` به شکل زیر بارگذاری کنیم:
+
+<div dir="ltr">
+
+```py
+from datasets import load_from_disk
+
+drug_dataset_reloaded = load_from_disk("drug-reviews")
+drug_dataset_reloaded
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 110811
+    })
+    validation: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 27703
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount', 'review_length'],
+        num_rows: 46108
+    })
+})
+```
+
+</div>
+
+برای قالب‌های CSV و JSON، باید هر split را در یک فایل جداگانه ذخیره کنیم. یکی از راه‌ها، پیمایش کلیدها و مقادیر شیء `DatasetDict` است:
+
+<div dir="ltr">
+
+```py
+for split, dataset in drug_dataset_clean.items():
+    dataset.to_json(f"drug-reviews-{split}.jsonl")
+```
+
+</div>
+
+این کار هر split را در قالب [JSON Lines](https://jsonlines.org) ذخیره می‌کند؛ در این قالب هر ردیف دیتاست به‌صورت یک خط JSON ذخیره می‌شود. نمونه‌ی نخست به شکل زیر است:
+
+<div dir="ltr">
+
+```py
+!head -n 1 drug-reviews-train.jsonl
+```
+
+```python out
+{"patient_id":141780,"drugName":"Escitalopram","condition":"depression","review":"\"I seemed to experience the regular side effects of LEXAPRO, insomnia, low sex drive, sleepiness during the day. I am taking it at night because my doctor said if it made me tired to take it at night. I assumed it would and started out taking it at night. Strange dreams, some pleasant. I was diagnosed with fibromyalgia. Seems to be helping with the pain. Have had anxiety and depression in my family, and have tried quite a few other medications that haven't worked. Only have been on it for two weeks but feel more positive in my mind, want to accomplish more in my life. Hopefully the side effects will dwindle away, worth it to stick with it from hearing others responses. Great medication.\"","rating":9.0,"date":"May 29, 2011","usefulCount":10,"review_length":125}
+```
+
+</div>
+
+سپس می‌توانیم از تکنیک‌های [بخش ۲](/course/chapter5/2) برای بارگذاری فایل‌های JSON استفاده کنیم:
+
+<div dir="ltr">
+
+```py
+data_files = {
+    "train": "drug-reviews-train.jsonl",
+    "validation": "drug-reviews-validation.jsonl",
+    "test": "drug-reviews-test.jsonl",
+}
+drug_dataset_reloaded = load_dataset("json", data_files=data_files)
+```
+
+</div>
+
+و این پایان گشت‌وگذار ما در سامان‌دهی داده با 🤗 Datasets است! حالا که دیتاست پاک‌سازی‌شده‌ای برای تعلیم مدل داریم، چند ایده وجود دارد که می‌توانید امتحان کنید:
+
+<div dir="rtl">
+
+1. از تکنیک‌های [فصل ۳](/course/chapter3) برای تعلیم یک دسته‌بند استفاده کنید که بتواند بیماری بیمار را بر اساس بررسی دارو پیش‌بینی کند.
+2. از خط تولید `summarization` در [فصل ۱](/course/chapter1) برای تولید خلاصه‌ی بررسی‌ها استفاده کنید.
+
+</div>
+
+در ادامه، بررسی می‌کنیم که چگونه 🤗 Datasets به شما اجازه می‌دهد با دیتاست‌های بسیار بزرگ کار کنید، بدون اینکه RAM لپ‌تاپتان را پر کنید!
+
+</div>

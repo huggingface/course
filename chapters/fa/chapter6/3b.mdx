@@ -1,0 +1,834 @@
+<FrameworkSwitchCourse {fw} />
+
+<div dir="rtl">
+
+# توکِنایزرهای سریع در خط تولید پاسخ‌گویی به پرسش[[fast-tokenizers-in-the-qa-pipeline]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_tf.ipynb"},
+]} />
+
+{/if}
+
+حالا وارد خط تولید `question-answering` می‌شویم و می‌بینیم چگونه می‌توانیم از offsetها برای پیدا کردن پاسخ پرسش از متن زمینه استفاده کنیم؛ کاری شبیه آنچه در بخش قبل برای موجودیت‌های گروه‌بندی‌شده انجام دادیم. سپس می‌بینیم چگونه می‌توان با متن‌های زمینه‌ی بسیار طولانی که در نهایت کوتاه می‌شوند کار کرد. اگر به وظیفه‌ی پاسخ‌گویی به پرسش علاقه‌مند نیستید، می‌توانید از این بخش عبور کنید.
+
+{#if fw === 'pt'}
+
+<Youtube id="_wxyB3j3mk4"/>
+
+{:else}
+
+<Youtube id="b3u8RzBCX9Y"/>
+
+{/if}
+
+## استفاده از خط تولید `question-answering`[[using-the-question-answering-pipeline]]
+
+همان‌طور که در [فصل ۱](/course/chapter1) دیدیم، می‌توانیم از خط تولید `question-answering` به شکل زیر برای پیدا کردن پاسخ یک پرسش استفاده کنیم:
+
+<div dir="ltr">
+
+```py
+from transformers import pipeline
+
+question_answerer = pipeline("question-answering")
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch, and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+{'score': 0.97773,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+</div>
+
+برخلاف خط‌های تولید دیگر که نمی‌توانند متن‌های طولانی‌تر از حداکثر طول پذیرفته‌شده‌ی مدل را کوتاه و تقسیم کنند (و در نتیجه ممکن است اطلاعات انتهای سند را از دست بدهند)، این خط تولید می‌تواند با متن‌های زمینه‌ی بسیار طولانی کار کند و حتی اگر پاسخ در انتهای متن باشد آن را برگرداند:
+
+<div dir="ltr">
+
+```py
+long_context = """
+🤗 Transformers: State of the Art NLP
+
+🤗 Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+🤗 Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internals are exposed as consistently as possible.
+  - Model files can be used independently of the library for quick experiments.
+
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question_answerer(question=question, context=long_context)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+{'score': 0.97149,
+ 'start': 1892,
+ 'end': 1919,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+</div>
+
+بیایید ببینیم این خط تولید چگونه همه‌ی این کارها را انجام می‌دهد!
+
+## استفاده از یک مدل برای پاسخ‌گویی به پرسش[[using-a-model-for-question-answering]]
+
+مانند هر خط تولید دیگری، کار را با توکِن‌سازی ورودی شروع می‌کنیم و سپس آن را از مدل عبور می‌دهیم. نقطه‌ی تعلیم پیش‌فرض خط تولید `question-answering`، [`distilbert-base-cased-distilled-squad`](https://huggingface.co/distilbert-base-cased-distilled-squad) است (واژه‌ی «squad» در نام مدل از دیتاستی می‌آید که مدل روی آن کوک شده است؛ در [فصل ۷](/course/chapter7/7) بیشتر درباره‌ی دیتاست SQuAD صحبت می‌کنیم):
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+from transformers import AutoTokenizer, TFAutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = TFAutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="tf")
+outputs = model(**inputs)
+```
+
+</div>
+
+{/if}
+
+توجه کنید که پرسش و متن زمینه را به‌صورت یک جفت توکِن‌سازی می‌کنیم و پرسش را ابتدا قرار می‌دهیم.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens.svg" alt="نمونه‌ای از توکِن‌سازی پرسش و متن زمینه"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens-dark.svg" alt="نمونه‌ای از توکِن‌سازی پرسش و متن زمینه"/>
+</div>
+
+مدل‌های پاسخ‌گویی به پرسش کمی متفاوت از مدل‌هایی هستند که تا اینجا دیده‌ایم. با استفاده از تصویر بالا به‌عنوان مثال، مدل تعلیم دیده است تا اندیس توکِنی را که پاسخ از آن شروع می‌شود (در اینجا ۲۱) و اندیس توکِنی را که پاسخ در آن تمام می‌شود (در اینجا ۲۴) پیش‌بینی کند. به همین دلیل این مدل‌ها به‌جای یک تِنسور logit، دو تِنسور برمی‌گردانند: یکی برای logitهای متناظر با توکِن آغاز پاسخ و دیگری برای logitهای متناظر با توکِن پایان پاسخ. از آنجا که در اینجا فقط یک ورودی شامل ۶۶ توکِن داریم، نتیجه‌ی زیر را می‌گیریم:
+
+<div dir="ltr">
+
+```py
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+</div>
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```python out
+torch.Size([1, 66]) torch.Size([1, 66])
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```python out
+(1, 66) (1, 66)
+```
+
+</div>
+
+{/if}
+
+برای تبدیل این logitها به احتمال، تابع softmax را اعمال می‌کنیم — اما پیش از آن باید مطمئن شویم اندیس‌هایی را که بخشی از متن زمینه نیستند ماسک می‌کنیم. ورودی ما به شکل `[CLS] question [SEP] context [SEP]` است، پس باید توکِن‌های پرسش و همچنین توکِن `[SEP]` را ماسک کنیم. بااین‌حال توکِن `[CLS]` را نگه می‌داریم، چون برخی مدل‌ها از آن برای نشان دادن نبودن پاسخ در متن زمینه استفاده می‌کنند.
+
+از آنجا که بعداً softmax را اعمال می‌کنیم، کافی است logitهایی را که می‌خواهیم ماسک کنیم با عددی منفی و بزرگ جایگزین کنیم. در اینجا از `-10000` استفاده می‌کنیم:
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+import torch
+
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+mask = torch.tensor(mask)[None]
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+import tensorflow as tf
+
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+mask = tf.constant(mask)[None]
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+</div>
+
+{/if}
+
+حالا که logitهای متناظر با موقعیت‌هایی را که نمی‌خواهیم پیش‌بینی شوند به‌درستی ماسک کرده‌ایم، می‌توانیم softmax را اعمال کنیم:
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)[0]
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)[0]
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1)[0].numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1)[0].numpy()
+```
+
+</div>
+
+{/if}
+
+در این مرحله می‌توانستیم روی احتمال‌های آغاز و پایان argmax بگیریم — اما ممکن بود به اندیس آغازی برسیم که از اندیس پایان بزرگ‌تر باشد، پس باید چند احتیاط دیگر انجام دهیم. احتمال هر `start_index` و `end_index` ممکن را که در آن `start_index <= end_index` است محاسبه می‌کنیم، سپس تاپل `(start_index, end_index)` با بیشترین احتمال را برمی‌گزینیم.
+
+با فرض مستقل بودن رویدادهای «پاسخ از `start_index` شروع می‌شود» و «پاسخ در `end_index` تمام می‌شود»، احتمال اینکه پاسخ از `start_index` شروع شود و در `end_index` پایان یابد برابر است با:
+
+$$\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]$$
+
+بنابراین برای محاسبه‌ی همه‌ی امتیازها، کافی است همه‌ی حاصل‌ضرب‌های \(\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]\) را که در آن‌ها `start_index <= end_index` است محاسبه کنیم.
+
+ابتدا همه‌ی حاصل‌ضرب‌های ممکن را محاسبه می‌کنیم:
+
+<div dir="ltr">
+
+```py
+scores = start_probabilities[:, None] * end_probabilities[None, :]
+```
+
+</div>
+
+{#if fw === 'pt'}
+
+سپس مقدارهایی را که در آن‌ها `start_index > end_index` است با قرار دادن مقدارشان روی `0` ماسک می‌کنیم (همه‌ی احتمال‌های دیگر عددهایی مثبت‌اند). تابع `torch.triu()` بخش مثلث بالایی تِنسور دوبعدیِ داده‌شده به‌عنوان آرگومان را برمی‌گرداند، پس این ماسک‌گذاری را برای ما انجام می‌دهد:
+
+<div dir="ltr">
+
+```py
+scores = torch.triu(scores)
+```
+
+</div>
+
+{:else}
+
+سپس مقدارهایی را که در آن‌ها `start_index > end_index` است با قرار دادن مقدارشان روی `0` ماسک می‌کنیم (همه‌ی احتمال‌های دیگر عددهایی مثبت‌اند). تابع `np.triu()` بخش مثلث بالایی تِنسور دوبعدیِ داده‌شده به‌عنوان آرگومان را برمی‌گرداند، پس این ماسک‌گذاری را برای ما انجام می‌دهد:
+
+<div dir="ltr">
+
+```py
+import numpy as np
+
+scores = np.triu(scores)
+```
+
+</div>
+
+{/if}
+
+حالا فقط باید اندیس بیشینه را به دست آوریم. چون PyTorch اندیس را در تِنسور تخت‌شده برمی‌گرداند، باید از عملگرهای تقسیم صحیح `//` و باقیمانده `%` برای به دست آوردن `start_index` و `end_index` استفاده کنیم:
+
+<div dir="ltr">
+
+```py
+max_index = scores.argmax().item()
+start_index = max_index // scores.shape[1]
+end_index = max_index % scores.shape[1]
+print(scores[start_index, end_index])
+```
+
+</div>
+
+هنوز کاملاً تمام نشده‌ایم، اما دست‌کم امتیاز درست پاسخ را داریم (می‌توانید با مقایسه‌ی آن با نخستین نتیجه‌ی بخش قبلی این موضوع را بررسی کنید):
+
+<div dir="ltr">
+
+```python out
+0.97773
+```
+
+</div>
+
+> [!TIP]
+> ✏️ **امتحان کنید!** اندیس‌های آغاز و پایان پنج پاسخ محتمل‌تر را محاسبه کنید.
+
+حالا `start_index` و `end_index` پاسخ را برحسب توکِن داریم، پس فقط باید آن‌ها را به اندیس‌های نویسه‌ای در متن زمینه تبدیل کنیم. اینجاست که offsetها بسیار مفید خواهند بود. می‌توانیم آن‌ها را بگیریم و درست مانند وظیفه‌ی دسته‌بندی توکِن از آن‌ها استفاده کنیم:
+
+<div dir="ltr">
+
+```py
+inputs_with_offsets = tokenizer(question, context, return_offsets_mapping=True)
+offsets = inputs_with_offsets["offset_mapping"]
+
+start_char, _ = offsets[start_index]
+_, end_char = offsets[end_index]
+answer = context[start_char:end_char]
+```
+
+</div>
+
+حالا فقط باید همه‌چیز را قالب‌بندی کنیم تا نتیجه‌مان به دست آید:
+
+<div dir="ltr">
+
+```py
+result = {
+    "answer": answer,
+    "start": start_char,
+    "end": end_char,
+    "score": scores[start_index, end_index],
+}
+print(result)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+{'answer': 'Jax, PyTorch and TensorFlow',
+ 'start': 78,
+ 'end': 105,
+ 'score': 0.97773}
+```
+
+</div>
+
+عالی است! این همان نتیجه‌ای است که در مثال اول گرفتیم!
+
+> [!TIP]
+> ✏️ **امتحان کنید!** از بهترین امتیازهایی که پیش‌تر محاسبه کردید استفاده کنید تا پنج پاسخ محتمل‌تر را نشان دهید. برای بررسی نتایج، به خط تولید اول برگردید و هنگام فراخوانی آن، `top_k=5` را به آن بدهید.
+
+## کار با متن‌های زمینه‌ی طولانی[[handling-long-contexts]]
+
+اگر بخواهیم پرسش و متن زمینه‌ی طولانی‌ای را که پیش‌تر به‌عنوان مثال استفاده کردیم توکِن‌سازی کنیم، تعداد توکِن‌ها از حداکثر طول مورد استفاده در خط تولید `question-answering` (که ۳۸۴ است) بیشتر خواهد شد:
+
+<div dir="ltr">
+
+```py
+inputs = tokenizer(question, long_context)
+print(len(inputs["input_ids"]))
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+461
+```
+
+</div>
+
+بنابراین باید ورودی‌ها را در آن حداکثر طول کوتاه کنیم. راه‌های مختلفی برای این کار وجود دارد، اما نمی‌خواهیم پرسش را کوتاه کنیم، فقط متن زمینه را. چون متن زمینه جمله‌ی دوم است، از راهبرد کوتاه‌سازی `"only_second"` استفاده می‌کنیم. مشکل اینجاست که ممکن است پاسخ پرسش در متن زمینه‌ی کوتاه‌شده نباشد. برای مثال، در اینجا پرسشی را انتخاب کرده‌ایم که پاسخ آن نزدیک انتهای متن زمینه است و با کوتاه کردن متن، پاسخ دیگر در آن وجود ندارد:
+
+<div dir="ltr">
+
+```py
+inputs = tokenizer(question, long_context, max_length=384, truncation="only_second")
+print(tokenizer.decode(inputs["input_ids"]))
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+"""
+[CLS] Which deep learning libraries back [UNK] Transformers? [SEP] [UNK] Transformers : State of the Art NLP
+
+[UNK] Transformers provides thousands of pretrained models to perform tasks on texts such as classification, information extraction,
+question answering, summarization, translation, text generation and more in over 100 languages.
+Its aim is to make cutting-edge NLP easier to use for everyone.
+
+[UNK] Transformers provides APIs to quickly download and use those pretrained models on a given text, fine-tune them on your own datasets and
+then share them with the community on our model hub. At the same time, each python module defining an architecture is fully standalone and
+can be modified to enable quick research experiments.
+
+Why should I use transformers?
+
+1. Easy-to-use state-of-the-art models:
+  - High performance on NLU and NLG tasks.
+  - Low barrier to entry for educators and practitioners.
+  - Few user-facing abstractions with just three classes to learn.
+  - A unified API for using all our pretrained models.
+  - Lower compute costs, smaller carbon footprint:
+
+2. Researchers can share trained models instead of always retraining.
+  - Practitioners can reduce compute time and production costs.
+  - Dozens of architectures with over 10,000 pretrained models, some in more than 100 languages.
+
+3. Choose the right framework for every part of a model's lifetime:
+  - Train state-of-the-art models in 3 lines of code.
+  - Move a single model between TF2.0/PyTorch frameworks at will.
+  - Seamlessly pick the right framework for training, evaluation and production.
+
+4. Easily customize a model or an example to your needs:
+  - We provide examples for each architecture to reproduce the results published by its original authors.
+  - Model internal [SEP]
+"""
+```
+
+</div>
+
+این یعنی مدل برای پیدا کردن پاسخ درست کار دشواری خواهد داشت. برای حل این مشکل، خط تولید `question-answering` به ما اجازه می‌دهد متن زمینه را به قطعه‌های کوچک‌تر تقسیم کنیم و حداکثر طول را مشخص کنیم. برای اینکه متن زمینه را دقیقاً در نقطه‌ای نامناسب تقسیم نکنیم و امکان پیدا کردن پاسخ از بین نرود، بین قطعه‌ها مقداری هم‌پوشانی نیز قرار می‌دهد.
+
+می‌توانیم از توکِنایزر (سریع یا کند) بخواهیم این کار را برای ما انجام دهد؛ کافی است `return_overflowing_tokens=True` را اضافه کنیم و با آرگومان `stride` میزان هم‌پوشانی را مشخص کنیم. در ادامه مثالی با جمله‌ای کوتاه‌تر می‌بینید:
+
+<div dir="ltr">
+
+```py
+sentence = "This sentence is not too long but we are going to split it anyway."
+inputs = tokenizer(
+    sentence, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+'[CLS] This sentence is not [SEP]'
+'[CLS] is not too long [SEP]'
+'[CLS] too long but we [SEP]'
+'[CLS] but we are going [SEP]'
+'[CLS] are going to split [SEP]'
+'[CLS] to split it anyway [SEP]'
+'[CLS] it anyway. [SEP]'
+```
+
+</div>
+
+همان‌طور که می‌بینیم، جمله به قطعه‌هایی تقسیم شده است، به‌طوری‌که هر ورودی در `inputs["input_ids"]` حداکثر ۶ توکِن دارد (برای یکسان شدن اندازه‌ی آخرین ورودی با بقیه باید padding اضافه کنیم) و بین هر دو ورودی ۲ توکِن هم‌پوشانی وجود دارد.
+
+بیایید نتیجه‌ی توکِن‌سازی را دقیق‌تر بررسی کنیم:
+
+<div dir="ltr">
+
+```py
+print(inputs.keys())
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+dict_keys(['input_ids', 'attention_mask', 'overflow_to_sample_mapping'])
+```
+
+</div>
+
+همان‌طور که انتظار می‌رود، شناسه‌های ورودی و یک ماسک توجه دریافت می‌کنیم. کلید آخر، `overflow_to_sample_mapping`، نگاشتی است که به ما می‌گوید هرکدام از نتایج به کدام جمله مربوط‌اند — در اینجا هر ۷ نتیجه از همان (تنها) جمله‌ای می‌آیند که به توکِنایزر داده‌ایم:
+
+<div dir="ltr">
+
+```py
+print(inputs["overflow_to_sample_mapping"])
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+[0, 0, 0, 0, 0, 0, 0]
+```
+
+</div>
+
+این قابلیت زمانی مفیدتر است که چند جمله را با هم توکِن‌سازی کنیم. برای مثال، کد زیر:
+
+<div dir="ltr">
+
+```py
+sentences = [
+    "This sentence is not too long but we are going to split it anyway.",
+    "This sentence is shorter but will still get split.",
+]
+inputs = tokenizer(
+    sentences, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+print(inputs["overflow_to_sample_mapping"])
+```
+
+</div>
+
+gets us:
+
+<div dir="ltr">
+
+```python out
+[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+```
+
+</div>
+
+یعنی جمله‌ی اول مانند قبل به ۷ قطعه تقسیم شده و ۴ قطعه‌ی بعدی از جمله‌ی دوم آمده‌اند.
+
+حالا به متن زمینه‌ی طولانی خود برگردیم. همان‌طور که پیش‌تر گفتیم، خط تولید `question-answering` به‌صورت پیش‌فرض از حداکثر طول ۳۸۴ و stride برابر ۱۲۸ استفاده می‌کند که با نحوه‌ی کوک شدن مدل مطابقت دارد (می‌توانید هنگام فراخوانی خط تولید این پارامترها را با دادن آرگومان‌های `max_seq_len` و `stride` تنظیم کنید). بنابراین هنگام توکِن‌سازی نیز از همین پارامترها استفاده می‌کنیم. همچنین padding اضافه می‌کنیم (تا نمونه‌ها اندازه‌ی یکسانی داشته باشند و بتوانیم تِنسورها را بسازیم) و offsetها را نیز درخواست می‌کنیم:
+
+<div dir="ltr">
+
+```py
+inputs = tokenizer(
+    question,
+    long_context,
+    stride=128,
+    max_length=384,
+    padding="longest",
+    truncation="only_second",
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+```
+
+</div>
+
+این `inputs` شامل شناسه‌های ورودی و ماسک‌های توجه مورد انتظار مدل، و همچنین offsetها و `overflow_to_sample_mapping`ای خواهد بود که پیش‌تر درباره‌اش صحبت کردیم. چون این دو مورد پارامترهایی نیستند که مدل استفاده کند، پیش از تبدیل آن به تِنسور آن‌ها را از `inputs` بیرون می‌آوریم (و نگاشت را ذخیره نمی‌کنیم، چون اینجا مفید نیست):
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("pt")
+print(inputs["input_ids"].shape)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+torch.Size([2, 384])
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("tf")
+print(inputs["input_ids"].shape)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+(2, 384)
+```
+
+</div>
+
+{/if}
+
+متن زمینه‌ی طولانی ما به دو بخش تقسیم شد؛ یعنی پس از عبور از مدل، دو مجموعه logit آغاز و پایان خواهیم داشت:
+
+<div dir="ltr">
+
+```py
+outputs = model(**inputs)
+
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+</div>
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```python out
+torch.Size([2, 384]) torch.Size([2, 384])
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```python out
+(2, 384) (2, 384)
+```
+
+</div>
+
+{/if}
+
+مانند قبل، ابتدا توکِن‌هایی را که بخشی از متن زمینه نیستند ماسک می‌کنیم و سپس softmax را می‌گیریم. همه‌ی توکِن‌های padding را نیز ماسک می‌کنیم (همان‌طور که ماسک توجه مشخص می‌کند):
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+# Mask all the [PAD] tokens
+mask = torch.logical_or(torch.tensor(mask)[None], (inputs["attention_mask"] == 0))
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Mask everything apart from the tokens of the context
+mask = [i != 1 for i in sequence_ids]
+# Unmask the [CLS] token
+mask[0] = False
+# Mask all the [PAD] tokens
+mask = tf.math.logical_or(tf.constant(mask)[None], inputs["attention_mask"] == 0)
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+</div>
+
+{/if}
+
+سپس می‌توانیم از softmax برای تبدیل logitها به احتمال استفاده کنیم:
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1).numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1).numpy()
+```
+
+</div>
+
+{/if}
+
+گام بعدی شبیه کاری است که برای متن زمینه‌ی کوتاه انجام دادیم، اما آن را برای هر دو قطعه تکرار می‌کنیم. به همه‌ی بازه‌های ممکن پاسخ امتیاز می‌دهیم و سپس بازه‌ای را که بهترین امتیاز را دارد انتخاب می‌کنیم:
+
+{#if fw === 'pt'}
+
+<div dir="ltr">
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = torch.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+</div>
+
+{:else}
+
+<div dir="ltr">
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = np.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+</div>
+
+{/if}
+
+<div dir="ltr">
+
+```python out
+[(0, 18, 0.33867), (173, 184, 0.97149)]
+```
+
+</div>
+
+این دو نامزد متناظر با بهترین پاسخ‌هایی هستند که مدل توانسته در هر قطعه پیدا کند. مدل با اطمینان بسیار بیشتری تشخیص می‌دهد که پاسخ درست در بخش دوم قرار دارد (که نشانه‌ی خوبی است!). حالا فقط باید این دو بازه‌ی توکِنی را به بازه‌های نویسه‌ای در متن زمینه نگاشت کنیم (برای داشتن پاسخ فقط لازم است دومی را نگاشت کنیم، اما جالب است ببینیم مدل در قطعه‌ی اول چه چیزی را انتخاب کرده است).
+
+> [!TIP]
+> ✏️ **امتحان کنید!** کد بالا را طوری تغییر دهید که امتیازها و بازه‌های پنج پاسخ محتمل‌تر را (در مجموع، نه برای هر قطعه) برگرداند.
+
+`offsets`ای که پیش‌تر گرفتیم در واقع فهرستی از offsetهاست و برای هر قطعه‌ی متن یک فهرست دارد:
+
+<div dir="ltr">
+
+```py
+for candidate, offset in zip(candidates, offsets):
+    start_token, end_token, score = candidate
+    start_char, _ = offset[start_token]
+    _, end_char = offset[end_token]
+    answer = long_context[start_char:end_char]
+    result = {"answer": answer, "start": start_char, "end": end_char, "score": score}
+    print(result)
+```
+
+</div>
+
+<div dir="ltr">
+
+```python out
+{'answer': '\n🤗 Transformers: State of the Art NLP', 'start': 0, 'end': 37, 'score': 0.33867}
+{'answer': 'Jax, PyTorch and TensorFlow', 'start': 1892, 'end': 1919, 'score': 0.97149}
+```
+
+</div>
+
+اگر نتیجه‌ی اول را نادیده بگیریم، برای این متن زمینه‌ی طولانی همان نتیجه‌ی خط تولید را می‌گیریم — عالی است!
+
+> [!TIP]
+> ✏️ **امتحان کنید!** از بهترین امتیازهایی که پیش‌تر محاسبه کردید استفاده کنید تا پنج پاسخ محتمل‌تر را (برای کل متن زمینه، نه برای هر قطعه) نشان دهید. برای بررسی نتایج، به خط تولید اول برگردید و هنگام فراخوانی آن، `top_k=5` را به آن بدهید.
+
+این بررسی عمیق ما از قابلیت‌های توکِنایزر به پایان می‌رسد. در فصل بعد دوباره از همه‌ی این مطالب استفاده می‌کنیم و نشان می‌دهیم چگونه یک مدل را برای مجموعه‌ای از وظایف رایج NLP کوک کنیم.
+
+</div>

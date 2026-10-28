@@ -1,0 +1,1051 @@
+<FrameworkSwitchCourse {fw} />
+
+<div dir="rtl">
+
+# خلاصه‌سازی[[summarization]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={7}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter7/section5_tf.ipynb"},
+]} />
+
+{/if}
+
+
+در این بخش، نگاهی خواهیم داشت به اینکه چگونه می‌توان از مدل‌های ترنسفورمر برای خلاصه‌سازی اسناد طولانی استفاده کرد، کاری که به عنوان خلاصه‌سازی متن شناخته می‌شود. این یکی از چالش‌برانگیزترین وظایف NLP است زیرا به طیف وسیعی از توانایی‌ها، مانند درک متون طولانی و تولید متن منسجم که موضوعات اصلی یک سند را در بر می‌گیرد، نیاز دارد. با این حال، اگر خلاصه‌سازی متن به خوبی انجام شود، ابزاری قدرتمند است که می‌تواند سرعت را افزایش دهد. فرآیندهای مختلف کسب و کار را با کاهش بار متخصصان حوزه برای خواندن اسناد طولانی با جزئیات، بهبود می‌بخشد.
+
+<Youtube id="yHnr5Dk2zCI"/>
+
+اگرچه در حال حاضر مدل‌های مختلف و دقیقی برای خلاصه‌سازی در [هاگینگ‌فِیس هاب](https://huggingface.co/models?pipeline_tag=summarization&sort=downloads) وجود دارد، اما تقریباً همه آنها فقط برای اسناد انگلیسی مناسب هستند. بنابراین، برای اضافه کردن یک تغییر در این بخش، یک مدل دوزبانه برای انگلیسی و اسپانیایی آموزش خواهیم داد. در پایان این بخش، شما یک [مدل](https://huggingface.co/huggingface-course/mt5-small-finetuned-amazon-en-es) خواهید داشت که می‌تواند نظرات مشتریان را مانند آنچه در اینجا نشان داده شده است، خلاصه کند:
+
+<iframe src="https://course-demos-mt5-small-finetuned-amazon-en-es.hf.space" frameBorder="0" height="400" title="Gradio app" class="block dark:hidden container p-0 flex-grow space-iframe" allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; document-domain; encrypted-media; fullscreen; geolocation; gyroscope; layout-animations; legacy-image-formats; magnetometer; microphone; midi; oversized-images; payment; picture-in-picture; publickey-credentials-get; sync-xhr; usb; vr ; wake-lock; xr-spatial-tracking" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"></iframe>
+
+همانطور که خواهیم دید، این خلاصه‌ها مختصر هستند زیرا از عناوینی که مشتریان در بررسی‌های محصول خود ارائه می‌دهند، استخراج شده‌اند. بیایید با جمع‌آوری یک دیتاسِت دوزبانه مناسب برای این کار شروع کنیم.
+
+## آماده‌سازی یک پیکره چندزبانه[[preparing-a-multilingual-corpus]]
+
+ما از [Multilingual Amazon Reviews Corpus](https://huggingface.co/datasets/amazon_reviews_multi) برای ایجاد خلاصه‌ساز دوزبانه خود استفاده خواهیم کرد. این مجموعه شامل نقد و بررسی محصولات آمازون به شش زبان است و معمولاً برای ارزیابی طبقه‌بندی‌کننده‌های چندزبانه استفاده می‌شود. با این حال، از آنجایی که هر نقد با یک عنوان کوتاه همراه است، می‌توانیم از عناوین به عنوان خلاصه‌های هدف برای یادگیری مدل خود استفاده کنیم! برای شروع، بیایید زیرمجموعه‌های انگلیسی و اسپانیایی را از هاگینگ‌فِیس هاب دانلود کنیم:
+
+```python
+from datasets import load_dataset
+
+spanish_dataset = load_dataset("amazon_reviews_multi", "es")
+english_dataset = load_dataset("amazon_reviews_multi", "en")
+english_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 200000
+    })
+    validation: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 5000
+    })
+    test: Dataset({
+        features: ['review_id', 'product_id', 'reviewer_id', 'stars', 'review_body', 'review_title', 'language', 'product_category'],
+        num_rows: 5000
+    })
+})
+```
+
+همانطور که می‌بینید، برای هر زبان، ۲۰۰۰۰۰ نقد برای تقسیم‌بندی `train` و ۵۰۰۰ نقد برای هر یک از تقسیم‌بندی‌های `validation` و `test` وجود دارد. اطلاعات نقد و بررسی که ما به آنها علاقه‌مندیم در ستون‌های `review_body` و `review_title` قرار دارد. بیایید با ایجاد یک تابع ساده که با تکنیک‌هایی که در [فصل ۵](/course/chapter5) یاد گرفتیم، یک نمونه تصادفی از مجموعه آموزشی می‌گیرد، نگاهی به چند مثال بیندازیم:
+
+```python
+def show_samples(dataset, num_samples=3, seed=42):
+    sample = dataset["train"].shuffle(seed=seed).select(range(num_samples))
+    for example in sample:
+        print(f"\n'>> Title: {example['review_title']}'")
+        print(f"'>> Review: {example['review_body']}'")
+
+
+show_samples(english_dataset)
+```
+
+```python out
+'>> Title: Worked in front position, not rear'
+'>> Review: 3 stars because these are not rear brakes as stated in the item description. At least the mount adapter only worked on the front fork of the bike that I got it for.'
+
+'>> Title: meh'
+'>> Review: Does it’s job and it’s gorgeous but mine is falling apart, I had to basically put it together again with hot glue'
+
+'>> Title: Can\'t beat these for the money'
+'>> Review: Bought this for handling miscellaneous aircraft parts and hanger "stuff" that I needed to organize; it really fit the bill. The unit arrived quickly, was well packaged and arrived intact (always a good sign). There are five wall mounts-- three on the top and two on the bottom. I wanted to mount it on the wall, so all I had to do was to remove the top two layers of plastic drawers, as well as the bottom corner drawers, place it when I wanted and mark it; I then used some of the new plastic screw in wall anchors (the 50 pound variety) and it easily mounted to the wall. Some have remarked that they wanted dividers for the drawers, and that they made those. Good idea. My application was that I needed something that I can see the contents at about eye level, so I wanted the fuller-sized drawers. I also like that these are the new plastic that doesn\'t get brittle and split like my older plastic drawers did. I like the all-plastic construction. It\'s heavy duty enough to hold metal parts, but being made of plastic it\'s not as heavy as a metal frame, so you can easily mount it to the wall and still load it up with heavy stuff, or light stuff. No problem there. For the money, you can\'t beat it. Best one of these I\'ve bought to date-- and I\'ve been using some version of these for over forty years.'
+```
+
+> نکته
+> ✏️ **امتحانش کنید!** برای بررسی سایر نقدهای موجود در مجموعه، مقدار تصادفی را در دستور `Dataset.shuffle()` تغییر دهید. اگر اسپانیایی زبان هستید، به برخی از نقدهای موجود در `spanish_dataset` نگاهی بیندازید تا ببینید آیا عناوین آنها نیز خلاصه‌های معقولی به نظر می‌رسند یا خیر.
+
+این نمونه، تنوع نقدهایی را که معمولاً به‌صورت آنلاین پیدا می‌کنید، از مثبت تا منفی (و هر چیزی بین این دو!) نشان می‌دهد. اگرچه مثال با عنوان «معمولی» خیلی آموزنده نیست، اما عناوین دیگر خلاصه‌های مناسبی از خود نقدها به نظر می‌رسند. آموزش یک مدل خلاصه‌سازی روی تمام ۴۰۰۰۰۰ نقد روی یک پردازنده گرافیکی واحد، زمان بسیار زیادی می‌برد، بنابراین در عوض، ما بر تولید خلاصه برای یک نقد واحد تمرکز خواهیم کرد. دامنه محصولات. برای اینکه بفهمیم از بین چه دامنه‌هایی می‌توانیم انتخاب کنیم، بیایید `english_dataset` را به `pandas.DataFrame` تبدیل کنیم و تعداد نظرات را برای هر دسته محصول محاسبه کنیم:
+
+```python
+english_dataset.set_format("pandas")
+english_df = english_dataset["train"][:]
+# Show counts for top 20 products
+english_df["product_category"].value_counts()[:20]
+```
+
+```python out
+home                      17679
+apparel                   15951
+wireless                  15717
+other                     13418
+beauty                    12091
+drugstore                 11730
+kitchen                   10382
+toy                        8745
+sports                     8277
+automotive                 7506
+lawn_and_garden            7327
+home_improvement           7136
+pet_products               7082
+digital_ebook_purchase     6749
+pc                         6401
+electronics                6186
+office_product             5521
+shoes                      5197
+grocery                    4730
+book                       3756
+Name: product_category, dtype: int64
+```
+
+محبوب‌ترین محصولات در دیتاسِت انگلیسی مربوط به لوازم خانه، پوشاک و تجهیزات بی‌سیم هستند. برای ماندن در فضای آمازون، روی خلاصه‌سازی مرور کتاب‌ها تمرکز می‌کنیم؛ بالاخره شرکت با همین کار آغاز شد! دو دسته‌ی مناسب، `book` و `digital_ebook_purchase`، را می‌بینیم؛ پس دیتاسِت‌های هر دو زبان را فقط برای همین محصولات فیلتر می‌کنیم. همان‌طور که در [فصل ۵](/course/chapter5) دیدیم، متد `Dataset.filter()` امکان برش کارآمد دیتاسِت را می‌دهد و می‌توانیم تابع ساده‌ای برای این کار تعریف کنیم:
+
+```python
+def filter_books(example):
+    return (
+        example["product_category"] == "book"
+        or example["product_category"] == "digital_ebook_purchase"
+    )
+```
+
+حالا وقتی این تابع را روی `english_dataset` و `spanish_dataset` اعمال کنیم، نتیجه فقط شامل ردیف‌هایی خواهد بود که شامل دسته‌های کتاب هستند. قبل از اعمال فیلتر، بیایید قالب `english_dataset` را از `"pandas"` به `"arrow"` تغییر دهیم:
+
+```python
+english_dataset.reset_format()
+```
+
+سپس می‌توانیم تابع فیلتر را اعمال کنیم و به عنوان یک بررسی سلامت، نمونه‌ای از نقدها را بررسی کنیم تا ببینیم آیا واقعاً درباره کتاب‌ها هستند یا خیر:
+
+```python
+spanish_books = spanish_dataset.filter(filter_books)
+english_books = english_dataset.filter(filter_books)
+show_samples(english_books)
+```
+
+```python out
+'>> Title: I\'m dissapointed.'
+'>> Review: I guess I had higher expectations for this book from the reviews. I really thought I\'d at least like it. The plot idea was great. I loved Ash but, it just didnt go anywhere. Most of the book was about their radio show and talking to callers. I wanted the author to dig deeper so we could really get to know the characters. All we know about Grace is that she is attractive looking, Latino and is kind of a brat. I\'m dissapointed.'
+
+'>> Title: Good art, good price, poor design'
+'>> Review: I had gotten the DC Vintage calendar the past two years, but it was on backorder forever this year and I saw they had shrunk the dimensions for no good reason. This one has good art choices but the design has the fold going through the picture, so it\'s less aesthetically pleasing, especially if you want to keep a picture to hang. For the price, a good calendar'
+
+'>> Title: Helpful'
+'>> Review: Nearly all the tips useful and. I consider myself an intermediate to advanced user of OneNote. I would highly recommend.'
+```
+
+خب، می‌بینیم که نقدها صرفاً مربوط به کتاب‌ها نیستند و ممکن است به چیزهایی مانند تقویم‌ها و برنامه‌های الکترونیکی مانند OneNote اشاره داشته باشند. با این وجود، به نظر می‌رسد این دامنه برای آموزش یک مدل خلاصه‌سازی مناسب باشد. قبل از اینکه به مدل‌های مختلف مناسب برای این کار نگاه کنیم، یک مرحله آماده‌سازی داده‌ها داریم: ترکیب نقدهای انگلیسی و اسپانیایی به عنوان یک شیء واحد `DatasetDict`. 🤗 دیتاسِت‌ها یک تابع مفید `concatenate_datasets()` ارائه می‌دهد که (همانطور که از نامش پیداست) دو شیء `Dataset` را روی هم قرار می‌دهد. بنابراین، برای ایجاد دیتاسِت دوزبانه خود، روی هر تقسیم‌بندی حلقه می‌زنیم، دیتاسِت‌های مربوط به آن تقسیم‌بندی را به هم متصل می‌کنیم و نتیجه را تغییر می‌دهیم تا مطمئن شویم مدل ما به یک زبان واحد بیش‌برازش (overfit) نمی‌شود:
+
+```python
+from datasets import concatenate_datasets, DatasetDict
+
+books_dataset = DatasetDict()
+
+for split in english_books.keys():
+    books_dataset[split] = concatenate_datasets(
+        [english_books[split], spanish_books[split]]
+    )
+    books_dataset[split] = books_dataset[split].shuffle(seed=42)
+
+# Peek at a few examples
+show_samples(books_dataset)
+```
+
+```python out
+'>> Title: Easy to follow!!!!'
+'>> Review: I loved The dash diet weight loss Solution. Never hungry. I would recommend this diet. Also the menus are well rounded. Try it. Has lots of the information need thanks.'
+
+'>> Title: PARCIALMENTE DAÑADO'
+'>> Review: Me llegó el día que tocaba, junto a otros libros que pedí, pero la caja llegó en mal estado lo cual dañó las esquinas de los libros porque venían sin protección (forro).'
+
+'>> Title: no lo he podido descargar'
+'>> Review: igual que el anterior'
+```
+
+این قطعاً شبیه ترکیبی از نقدهای انگلیسی و اسپانیایی به نظر می‌رسد! حالا که یک مجموعه آموزشی داریم، یک نکته نهایی که باید بررسی کنیم، توزیع کلمات در نقدها و عناوین آنهاست. این امر به ویژه برای وظایف خلاصه‌سازی مهم است، جایی که خلاصه‌های مرجع کوتاه در داده‌ها می‌توانند مدل را به گونه‌ای منحرف کنند که فقط یک یا دو کلمه را در خلاصه‌های تولید شده نمایش دهد. نمودارهای زیر توزیع کلمات را نشان می‌دهند و می‌توانیم آن را ببینیم. عناوین به شدت به سمت ۱-۲ کلمه متمایل شده‌اند:
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/review-lengths.svg" alt="Word count distributions for the review titles and texts."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/review-lengths-dark.svg" alt="Word count distributions for the review titles and texts."/>
+</div>
+
+برای مقابله با این مشکل، مثال‌هایی با عناوین بسیار کوتاه را فیلتر می‌کنیم تا مدل ما بتواند خلاصه‌های جالب‌تری تولید کند. از آنجایی که با متون انگلیسی و اسپانیایی سروکار داریم، می‌توانیم از یک روش ابتکاری تقریبی برای تقسیم عناوین بر اساس فضای خالی استفاده کنیم و سپس از روش قابل اعتماد `Dataset.filter()` خود به شرح زیر استفاده کنیم:
+
+```python
+books_dataset = books_dataset.filter(lambda x: len(x["review_title"].split()) > 2)
+```
+
+حالا که مجموعه مقالاتمان را آماده کرده‌ایم، بیایید نگاهی به چند مدل احتمالی ترنسفورمر بیندازیم که می‌توان روی آنها تنظیمات دقیقی انجام داد!
+
+## مدل‌های خلاصه‌سازی متن[[models-for-text-summarization]]
+
+اگر در مورد آن فکر کنید، خلاصه‌سازی متن نوعی کار مشابه ترجمه ماشینی است: ما مجموعه‌ای از متن مانند یک نقد و بررسی داریم که می‌خواهیم آن را به نسخه‌ای کوتاه‌تر که ویژگی‌های برجسته ورودی را در بر می‌گیرد، "ترجمه" کنیم. بر این اساس، اکثر مدل‌های ترنسفورمر برای خلاصه‌سازی، معماری رمزگذار-رمزگشا را که برای اولین بار در [فصل 1](/course/chapter1) با آن مواجه شدیم، اتخاذ می‌کنند، اگرچه استثنائاتی مانند ... نیز وجود دارد. خانواده مدل‌های GPT که می‌توانند برای خلاصه‌سازی در تنظیمات چند مرحله‌ای نیز استفاده شوند. جدول زیر برخی از مدل‌های از پیش تعلیم‌دیده محبوب را که می‌توانند برای خلاصه‌سازی کوک کردن شوند، فهرست می‌کند.
+
+| مدل ترنسفورمر | توضیحات                                                                                                                                                                                                        | چندزبانه؟ |
+| :---------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-----------: |
+| [GPT-2](https://huggingface.co/gpt2-xl) | اگرچه به عنوان یک مدل زبانی خود-رگرسیون آموزش دیده است، می‌توانید با افزودن "TL;DR" به انتهای متن ورودی، GPT-2 را وادار به تولید خلاصه کنید. | ❌ |
+|   [PEGASUS](https://huggingface.co/google/pegasus-large)   | از یک هدف پیش‌آموزشی برای پیش‌بینی جمله‌های ماسک‌شده در متن‌های چندجمله‌ای استفاده می‌کند. این هدف پیش‌آموزشی به خلاصه‌سازی نزدیک‌تر از مدل‌سازی زبانی معمولی است و در معیارهای رایج امتیاز بالایی می‌گیرد. |      ❌       |
+| [T5](https://huggingface.co/t5-base) | یک معماری ترنسفورمر جهانی که تمام وظایف را در یک چارچوب متن به متن فرموله می‌کند؛ به عنوان مثال، قالب ورودی برای مدل جهت خلاصه کردن یک سند `summarize: ARTICLE` است. | ❌ |
+| [mT5](https://huggingface.co/google/mt5-base) | یک نسخه چندزبانه از T5، که از قبل روی دیتاسِت‌های چندزبانه Common Crawl (mC4) آموزش دیده و ۱۰۱ زبان را پوشش می‌دهد. | ✅ |
+| [BART](https://huggingface.co/facebook/bart-base) | یک معماری ترنسفورمر جدید با پشته رمزگذار و رمزگشا که برای بازسازی ورودی خراب آموزش دیده است و طرح‌های پیش‌تعلیم BERT و GPT-2 را ترکیب می‌کند. | ❌ |
+| [mBART-50](https://huggingface.co/facebook/mbart-large-50) | یک نسخه چند زبانه از BART، از پیش آموزش دیده بر روی 50 زبان. | ✅ |
+
+همانطور که از این جدول مشاهده می‌کنید، اکثر مدل‌های ترنسفورمر برای خلاصه‌سازی (و در واقع اکثر وظایف NLP) تک‌زبانه هستند. اگر وظیفه شما به زبانی با «منابع بالا» مانند انگلیسی یا آلمانی باشد، این عالی است، اما برای هزاران زبان دیگر که در سراسر جهان استفاده می‌شوند، این‌طور نیست. خوشبختانه، دسته‌ای از مدل‌های ترنسفورمر چندزبانه، مانند mT5 و mBART، وجود دارند که به کمک می‌آیند. این مدل‌ها از قبل آموزش دیده‌اند با استفاده از مدل‌سازی زبان، اما با یک تغییر: به جای آموزش روی مجموعه‌ای از یک زبان، آنها به طور مشترک روی متون بیش از ۵۰ زبان به طور همزمان آموزش می‌بینند!
+
+ما بر روی mT5 تمرکز خواهیم کرد، یک معماری جالب مبتنی بر T5 که در یک چارچوب متن به متن از پیش تعلیم داده شده است. در T5، هر وظیفه NLP بر اساس یک پیشوند اعلان مانند `summarize:` فرموله می‌شود که مدل را برای تطبیق متن تولید شده با اعلان شرطی می‌کند. همانطور که در شکل زیر نشان داده شده است، این امر T5 را بسیار متنوع می‌کند، زیرا می‌توانید بسیاری از وظایف را با یک مدل واحد حل کنید!
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/t5.svg" alt="Different tasks performed by the T5 architecture."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter7/t5-dark.svg" alt="Different tasks performed by the T5 architecture."/>
+</div>
+
+mT5 از پیشوندها استفاده نمی‌کند، اما بسیاری از تطبیق‌پذیری T5 را به اشتراک می‌گذارد و از مزیت چندزبانه بودن نیز برخوردار است. اکنون که یک مدل انتخاب کرده‌ایم، بیایید نگاهی به آماده‌سازی داده‌های خود برای آموزش بیندازیم.
+
+
+> [!TIP]
+> ✏️ **امتحانش کنید!** پس از اتمام این بخش، با کوک کردن mT5 با همان تکنیک‌ها، ببینید mBART در مقایسه با mT5 چقدر خوب عمل می‌کند. برای امتیاز بیشتر، می‌توانید T5 را فقط روی نقدهای انگلیسی تنظیم کنید. از آنجایی که T5 یک پیش‌وند خاص دارد، باید در مراحل پیش‌پردازش زیر، `summarize:` را به مثال‌های ورودی اضافه کنید.
+
+## پیش‌پردازش داده‌ها[[preprocessing-the-data]]
+
+<Youtube id="1m7BerpSq8A"/>
+
+کار بعدی توکِن‌سازی و کدگذاری مرورها و عنوان‌های آن‌هاست. طبق معمول، ابتدا توکِن‌ساز مربوط به نقطه‌ی بررسی مدل از پیش تعلیم‌دیده را بارگذاری می‌کنیم. از `mt5-small` استفاده می‌کنیم تا بتوانیم مدل را در زمانی معقول کوک کنیم:
+
+```python
+from transformers import AutoTokenizer
+
+model_checkpoint = "google/mt5-small"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+```
+
+> نکته
+> 💡 در مراحل اولیه پروژه‌های NLP خود، یک روش خوب این است که یک کلاس از مدل‌های "کوچک" را روی یک نمونه کوچک از داده‌ها آموزش دهید. این به شما امکان می‌دهد تا سریع‌تر اشکال‌زدایی کنید و به سمت یک گردش کار سرتاسری تکرار کنید. هنگامی که از نتایج مطمئن شدید، همیشه می‌توانید مدل را با تغییر ساده نقطه بررسی مدل، مقیاس‌بندی کنید!
+
+بیایید توکن‌ساز mT5 را روی یک مثال کوچک آزمایش کنیم:
+
+```python
+inputs = tokenizer("I loved reading the Hunger Games!")
+inputs
+```
+
+```python out
+{'input_ids': [336, 259, 28387, 11807, 287, 62893, 295, 12507, 1], 'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1]}
+```
+
+در اینجا می‌توانیم `input_ids` و `attention_mask` آشنا را که در اولین آزمایش‌های کوک کردن خود در [فصل 3](/course/chapter3) با آنها مواجه شدیم، ببینیم. بیایید این شناسه‌های ورودی را با تابع `convert_ids_to_tokens()` توکن‌ساز رمزگشایی کنیم تا ببینیم با چه نوع توکن‌سازی سروکار داریم:
+
+```python
+tokenizer.convert_ids_to_tokens(inputs.input_ids)
+```
+
+```python out
+['▁I', '▁', 'loved', '▁reading', '▁the', '▁Hung', 'er', '▁Games', '</s>']
+```
+
+کاراکتر یونیکد ویژه `▁` و توکن پایان توالی `</s>` نشان می‌دهند که ما با توکن‌ساز SentencePiece سروکار داریم که مبتنی بر الگوریتم قطعه‌بندی Unigram است که در [فصل 6](/course/chapter6) مورد بحث قرار گرفته است. Unigram به ویژه برای پیکره‌های چندزبانه مفید است زیرا به SentencePiece اجازه می‌دهد تا نسبت به لهجه‌ها، علائم نگارشی و این واقعیت که بسیاری از زبان‌ها، مانند ژاپنی، کاراکترهای فاصله ندارند، بی‌تفاوت باشد.
+
+برای توکنیزه کردن دیتاسِت‌هایمان، باید با یک نکتهٔ ظریف مرتبط با خلاصه‌سازی سر و کار داشته باشیم: از آنجا که برچسب‌های ما نیز متن هستند، ممکن است از حداکثر اندازهٔ متن مدل فراتر روند. این بدان معناست که باید هم بر روی نظرات و هم بر روی عناوین آن‌ها کوتاه‌سازی اعمال کنیم تا مطمئن شویم ورودی‌های بیش از حد طولانی به مدل خود ارسال نمی‌کنیم. توکنایزرها در ترنسفورمرهای 🤗 یک آرگومان `text_target` ارائه می‌دهند که به شما امکان می‌دهد برچسب‌ها را هم‌زمان با ورودی‌ها توکنیزه کنید. در اینجا مثالی از نحوهٔ پردازش ورودی‌ها و اهداف برای mT5 آورده شده است:
+
+```python
+max_input_length = 512
+max_target_length = 30
+
+
+def preprocess_function(examples):
+    model_inputs = tokenizer(
+        examples["review_body"],
+        max_length=max_input_length,
+        truncation=True,
+    )
+    labels = tokenizer(
+        examples["review_title"], max_length=max_target_length, truncation=True
+    )
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
+```
+
+بیایید این کد را بررسی کنیم تا بفهمیم چه اتفاقی می‌افتد. اولین کاری که انجام داده‌ایم، تعریف مقادیری برای `max_input_length` و `max_target_length` است که حداکثر طول نقدها و عناوین ما را تعیین می‌کنند. از آنجایی که متن نقد معمولاً بسیار بزرگتر از عنوان است، این مقادیر را بر این اساس مقیاس‌بندی کرده‌ایم.
+
+با `preprocess_function()`، توکِن‌سازی کل پیکره با تابع کاربردی `Dataset.map()` که در این دوره بسیار استفاده کرده‌ایم ساده است:
+
+```python
+tokenized_datasets = books_dataset.map(preprocess_function, batched=True)
+```
+
+اکنون که متن پیش‌پردازش شده است، بیایید نگاهی به برخی از معیارهایی که معمولاً برای خلاصه‌سازی استفاده می‌شوند، بیندازیم. همانطور که خواهیم دید، هیچ راه حل قطعی برای اندازه‌گیری کیفیت متن تولید شده توسط ماشین وجود ندارد.
+
+> نکته
+> 💡 شاید متوجه شده باشید که ما در تابع `Dataset.map()` بالا از `batched=True` استفاده کردیم. این تابع مثال‌ها را در دسته‌های ۱۰۰۰تایی (به‌صورت پیش‌فرض) کدگذاری می‌کند و به شما امکان می‌دهد از قابلیت‌های چندنخی توکنایزرهای سریع در ترنسفورمرهای 🤗 استفاده کنید. در صورت امکان، سعی کنید از `batched=True` استفاده کنید تا از پیش‌پردازش خود نهایت استفاده را ببرید!
+
+
+## معیارهای خلاصه‌سازی متن[[metrics-for-text-summarization]]
+
+<Youtube id="TMshhnrEXlg"/>
+
+در مقایسه با اکثر وظایف دیگری که در این دوره پوشش داده‌ایم، اندازه‌گیری عملکرد وظایف تولید متن مانند خلاصه‌سازی یا ترجمه به این سادگی نیست. برای مثال، با توجه به نقدی مانند «من عاشق خواندن بازی‌های گرسنگی بودم»، چندین خلاصه معتبر وجود دارد، مانند «من عاشق بازی‌های گرسنگی بودم» یا «بازی‌های گرسنگی یک اثر عالی برای خواندن است». واضح است که اعمال نوعی تطابق دقیق بین خلاصه تولید شده و این برچسب راه حل خوبی نیست -- حتی انسان‌ها هم تحت چنین معیاری عملکرد ضعیفی خواهند داشت، زیرا همه ما سبک نوشتاری خودمان را داریم.
+
+برای خلاصه‌سازی، یکی از معیارهای رایج [امتیاز ROUGE](https://en.wikipedia.org/wiki/ROUGE_(metric)) است. ایده‌ی اصلی مقایسه‌ی خلاصه‌ی تولیدشده با مجموعه‌ای از خلاصه‌های مرجع است که معمولاً انسان‌ها می‌نویسند. برای دقیق‌تر شدن، فرض کنید می‌خواهیم دو خلاصه‌ی زیر را مقایسه کنیم:
+
+```python
+generated_summary = "I absolutely loved reading the Hunger Games"
+reference_summary = "I loved reading the Hunger Games"
+```
+
+یک راه برای مقایسه آنها می‌تواند شمارش تعداد کلمات همپوشانی باشد که در این مورد ۶ خواهد بود. با این حال، این کمی خام است، بنابراین در عوض ROUGE مبتنی بر محاسبه نمرات _precision_ و _recall_ برای همپوشانی است.
+
+> نکته
+> 🙋 اگر این اولین باری است که در مورد دقت و فراخوانی می‌شنوید، نگران نباشید -- ما با هم چند مثال واضح را بررسی خواهیم کرد تا همه چیز روشن شود. این معیارها معمولاً در وظایف طبقه‌بندی با هم مواجه می‌شوند، بنابراین اگر می‌خواهید بفهمید که دقت و فراخوانی در آن زمینه چگونه تعریف می‌شوند، توصیه می‌کنیم [راهنماهای `scikit-learn`](https://scikit-learn.org/stable/auto_examples/model_selection/plot_precision_recall.html) را بررسی کنید.
+
+برای ROUGE، معیار فراخوانی، میزان خلاصه مرجعی را که توسط خلاصه تولید شده در بر گرفته شده است، اندازه‌گیری می‌کند. اگر فقط کلمات را مقایسه کنیم، فراخوانی را می‌توان طبق فرمول زیر محاسبه کرد:
+
+$$ \mathrm{Recall} = \frac{\mathrm{Number\,of\,overlapping\, words}}{\mathrm{Total\, number\, of\, words\, in\, reference\, summary}} $$
+
+برای مثال ساده‌ی بالا، این فرمول میزان یادآوری کاملی برابر با ۶/۶ = ۱ ارائه می‌دهد؛ یعنی تمام کلمات موجود در خلاصه‌ی مرجع توسط مدل تولید شده‌اند. این ممکن است عالی به نظر برسد، اما تصور کنید اگر خلاصه‌ی تولید شده‌ی ما این بود: «من واقعاً واقعاً عاشق خواندن بازی‌های گرسنگی در تمام طول شب بودم». این نیز میزان یادآوری کاملی داشت، اما مسلماً خلاصه‌ی بدتری است زیرا طولانی است. برای مقابله با این سناریوها، ما همچنین محاسبه می‌کنیم دقت، که در زمینه ROUGE میزان مرتبط بودن خلاصه تولید شده را اندازه‌گیری می‌کند:
+
+$$ \mathrm{Precision} = \frac{\mathrm{Number\,of\,overlapping\, words}}{\mathrm{Total\, number\, of\, words\, in\, generated\, summary}} $$
+
+اعمال این مورد بر خلاصه‌ی طولانی ما، دقتی برابر با ۶/۱۰ = ۰.۶ را ارائه می‌دهد که به طور قابل توجهی بدتر از دقت ۶/۷ = ۰.۸۶ است که توسط خلاصه‌ی کوتاه‌تر ما به دست آمده است. در عمل، معمولاً هم دقت و هم فراخوانی محاسبه می‌شوند و سپس امتیاز F1 (میانگین هارمونیک دقت و فراخوانی) گزارش می‌شود. ما می‌توانیم این کار را به راحتی در دیتاسِت‌های 🤗 با نصب اولیه‌ی بسته‌ی `rouge_score` انجام دهیم:
+
+```py
+!pip install rouge_score
+```
+
+و سپس بارگذاری متریک ROUGE به شرح زیر:
+
+```python
+import evaluate
+
+rouge_score = evaluate.load("rouge")
+```
+
+سپس می‌توانیم از تابع `rouge_score.compute()` برای محاسبه‌ی همزمان تمام معیارها استفاده کنیم:
+
+```python
+scores = rouge_score.compute(
+    predictions=[generated_summary], references=[reference_summary]
+)
+scores
+```
+
+```python out
+{'rouge1': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92)),
+ 'rouge2': AggregateScore(low=Score(precision=0.67, recall=0.8, fmeasure=0.73), mid=Score(precision=0.67, recall=0.8, fmeasure=0.73), high=Score(precision=0.67, recall=0.8, fmeasure=0.73)),
+ 'rougeL': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92)),
+ 'rougeLsum': AggregateScore(low=Score(precision=0.86, recall=1.0, fmeasure=0.92), mid=Score(precision=0.86, recall=1.0, fmeasure=0.92), high=Score(precision=0.86, recall=1.0, fmeasure=0.92))}
+```
+
+وای، اطلاعات زیادی در این خروجی وجود دارد -- معنی همه اینها چیست؟ اول، 🤗 Datasets در واقع فواصل اطمینان را برای دقت، فراخوانی و امتیاز F1 محاسبه می‌کند؛ اینها ویژگی‌های `low`، `mid` و `high` هستند که می‌توانید اینجا ببینید. علاوه بر این، 🤗 Datasets انواع مختلفی از امتیازات ROUGE را محاسبه می‌کند که بر اساس انواع مختلف جزئیات متن هنگام مقایسه خلاصه‌های تولید شده و مرجع هستند. نوع `rouge1` همپوشانی یونیگرام‌ها است -- این فقط یک روش فانتزی برای بیان همپوشانی کلمات است و دقیقاً همان معیاری است که در بالا در مورد آن صحبت کردیم. برای تأیید این موضوع، بیایید مقدار `mid` را از امتیازات خود استخراج کنیم:
+
+```python
+scores["rouge1"].mid
+```
+
+```python out
+Score(precision=0.86, recall=1.0, fmeasure=0.92)
+```
+
+عالی، اعداد دقت و فراخوانی با هم مطابقت دارند! حالا در مورد سایر نمرات ROUGE چطور؟ `rouge2` همپوشانی بین دو رشته (همپوشانی جفت کلمات) را اندازه‌گیری می‌کند، در حالی که `rougeL` و `rougeLsum` طولانی‌ترین توالی‌های منطبق از کلمات را با جستجوی طولانی‌ترین زیررشته‌های مشترک در خلاصه‌های تولید شده و مرجع اندازه‌گیری می‌کنند. "جمع" در `rougeLsum` به این واقعیت اشاره دارد که این معیار بر روی کل خلاصه محاسبه می‌شود، در حالی که `rougeL` به عنوان میانگین روی تک تک جملات محاسبه می‌شود.
+
+> [!TIP]
+> ✏️ **امتحانش کنید!** مثال خودتان را از یک خلاصه تولید شده و مرجع ایجاد کنید و ببینید آیا نمرات ROUGE حاصل با محاسبه دستی بر اساس فرمول‌های دقت و فراخوانی مطابقت دارد یا خیر. برای امتیاز بیشتر، متن را به دو قسمت تقسیم کنید و دقت و فراخوانی را برای معیار `rouge2` مقایسه کنید.
+
+ما از این نمرات ROUGE برای ردیابی عملکرد مدل خود استفاده خواهیم کرد، اما قبل از انجام این کار، بیایید کاری را انجام دهیم که هر متخصص خوب NLP باید انجام دهد: ایجاد یک خط پایه قوی و در عین حال ساده!
+
+### ایجاد یک خط مبنای قوی[[creating-a-strong-baseline]]
+
+یک خط پایه‌ی رایج برای خلاصه‌سازی متن، گرفتن سه جمله‌ی نخست مقاله است که معمولاً خط پایه‌ی _lead-3_ نامیده می‌شود. می‌توانیم با نقطه پایان جمله‌ها را پیدا کنیم، اما این روش برای سرواژه‌هایی مانند «U.S.» یا «U.N.» شکست می‌خورد؛ بنابراین از کتابخانه‌ی `nltk` استفاده می‌کنیم که الگوریتم بهتری برای این موارد دارد. بسته را با `pip` نصب کنید:
+
+```python
+!pip install nltk
+```
+
+و سپس قواعد نشانه‌گذاری را دانلود می‌کنیم:
+
+```python
+import nltk
+
+nltk.download("punkt")
+```
+
+در مرحله بعد، توکن‌ساز جمله را از `nltk` وارد می‌کنیم و یک تابع ساده برای استخراج سه جمله اول در یک بررسی ایجاد می‌کنیم. رسم در خلاصه‌سازی متن این است که هر خلاصه را با یک خط جدید جدا کنیم، بنابراین بیایید این را نیز لحاظ کنیم و آن را روی یک مثال آموزشی آزمایش کنیم:
+
+```python
+from nltk.tokenize import sent_tokenize
+
+
+def three_sentence_summary(text):
+    return "\n".join(sent_tokenize(text)[:3])
+
+
+print(three_sentence_summary(books_dataset["train"][1]["review_body"]))
+```
+
+```python out
+'I grew up reading Koontz, and years ago, I stopped,convinced i had "outgrown" him.'
+'Still,when a friend was looking for something suspenseful too read, I suggested Koontz.'
+'She found Strangers.'
+```
+
+به نظر می‌رسد که این روش جواب می‌دهد، بنابراین بیایید تابعی پیاده‌سازی کنیم که این «خلاصه‌ها» را از یک دیتاسِت استخراج کرده و امتیازات ROUGE را برای خط مبنا محاسبه کند:
+
+```python
+def evaluate_baseline(dataset, metric):
+    summaries = [three_sentence_summary(text) for text in dataset["review_body"]]
+    return metric.compute(predictions=summaries, references=dataset["review_title"])
+```
+
+سپس با این تابع امتیازهای ROUGE را روی مجموعه‌ی اعتبارسنجی محاسبه و با Pandas کمی مرتب می‌کنیم:
+
+```python
+import pandas as pd
+
+score = evaluate_baseline(books_dataset["validation"], rouge_score)
+rouge_names = ["rouge1", "rouge2", "rougeL", "rougeLsum"]
+rouge_dict = dict((rn, round(score[rn].mid.fmeasure * 100, 2)) for rn in rouge_names)
+rouge_dict
+```
+
+```python out
+{'rouge1': 16.74, 'rouge2': 8.83, 'rougeL': 15.6, 'rougeLsum': 15.96}
+```
+
+می‌توانیم ببینیم که امتیاز `rouge2` به طور قابل توجهی کمتر از بقیه است؛ این احتمالاً نشان دهنده این واقعیت است که عناوین نقد و بررسی معمولاً مختصر هستند و بنابراین خط پایه لید ۳ بیش از حد طولانی است. حالا که یک خط پایه خوب برای کار داریم، بیایید توجه خود را به کوک کردن mT5 معطوف کنیم!
+
+{#if fw === 'pt'}
+
+## کوک کردن mT5 با رابط برنامه‌نویسی کاربردی `Trainer`[[fine-tuning-mt5-with-the-trainer-api]]
+
+کوک کردن مدل برای خلاصه‌سازی بسیار شبیه وظایف دیگر این فصل است. ابتدا مدل از پیش تعلیم‌دیده را از نقطه‌ی بررسی `mt5-small` بارگذاری می‌کنیم. چون خلاصه‌سازی وظیفه‌ای دنباله‌به‌دنباله است، می‌توانیم مدل را با کلاس `AutoModelForSeq2SeqLM` بارگذاری کنیم؛ این کلاس وزن‌ها را خودکار دانلود و در کش ذخیره می‌کند:
+
+```python
+from transformers import AutoModelForSeq2SeqLM
+
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+{:else}
+
+## کوک دقیق mT5 با Keras[[fine-tuning-mt5-with-keras]]
+
+کوک کردن یک مدل برای خلاصه‌سازی بسیار شبیه به سایر کارهایی است که در این فصل پوشش داده‌ایم. اولین کاری که باید انجام دهیم بارگذاری مدل از پیش تعلیم‌دیده از نقطه بررسی `mt5-small` است. از آنجایی که خلاصه‌سازی یک کار توالی به توالی است، می‌توانیم مدل را با کلاس `TFAutoModelForSeq2SeqLM` بارگذاری کنیم که به طور خودکار وزن‌ها را دانلود و ذخیره می‌کند:
+
+```python
+from transformers import TFAutoModelForSeq2SeqLM
+
+model = TFAutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+{/if}
+
+> نکته
+> 💡 اگر از خود می‌پرسید که چرا هیچ هشداری در مورد کوک کردن مدل در یک وظیفه پایین‌دستی نمی‌بینید، به این دلیل است که برای وظایف توالی به توالی، ما تمام وزن‌های شبکه را نگه می‌داریم. این را با مدل طبقه‌بندی متن ما در [فصل 3](/course/chapter3) مقایسه کنید، که در آن سر مدل از پیش تعلیم‌دیده با یک شبکه با مقداردهی اولیه تصادفی جایگزین شده است.
+
+کار بعدی که باید انجام دهیم این است که به هاگینگ‌فِیس هاب وارد شویم. اگر این کد را در یک نوت‌بوک اجرا می‌کنید، می‌توانید این کار را با تابع کاربردی زیر انجام دهید:
+
+```python
+from huggingface_hub import notebook_login
+
+notebook_login()
+```
+
+که یک ویجت نمایش می‌دهد که می‌توانید اطلاعات کاربری خود را در آن وارد کنید. همچنین می‌توانید این دستور را در ترمینال خود اجرا کنید و از آنجا وارد سیستم شوید:
+
+```
+huggingface-cli login
+```
+
+{#if fw === 'pt'}
+
+برای محاسبه‌ی امتیازهای ROUGE هنگام تعلیم باید خلاصه تولید کنیم. خوشبختانه 🤗 Transformers کلاس‌های اختصاصی `Seq2SeqTrainingArguments` و `Seq2SeqTrainer` را دارد که این کار را خودکار انجام می‌دهند! ابتدا ابرپارامترها و آرگومان‌های آزمایش را تعریف می‌کنیم:
+
+```python
+from transformers import Seq2SeqTrainingArguments
+
+batch_size = 8
+num_train_epochs = 8
+# Show the training loss with every epoch
+logging_steps = len(tokenized_datasets["train"]) // batch_size
+model_name = model_checkpoint.split("/")[-1]
+
+args = Seq2SeqTrainingArguments(
+    output_dir=f"{model_name}-finetuned-amazon-en-es",
+    evaluation_strategy="epoch",
+    learning_rate=5.6e-5,
+    per_device_train_batch_size=batch_size,
+    per_device_eval_batch_size=batch_size,
+    weight_decay=0.01,
+    save_total_limit=3,
+    num_train_epochs=num_train_epochs,
+    predict_with_generate=True,
+    logging_steps=logging_steps,
+    push_to_hub=True,
+)
+```
+
+در اینجا، آرگومان `predict_with_generate` طوری تنظیم شده است که نشان دهد ما باید در طول ارزیابی خلاصه‌هایی تولید کنیم تا بتوانیم نمرات ROUGE را برای هر دوره محاسبه کنیم. همانطور که در [فصل 1](/course/chapter1) بحث شد، رمزگشا با پیش‌بینی توکن‌ها به صورت یک به یک، استنتاج را انجام می‌دهد و این توسط روش `generate()` مدل پیاده‌سازی می‌شود. تنظیم `predict_with_generate=True` به `Seq2SeqTrainer` می‌گوید که از آن روش برای ارزیابی استفاده کند. همچنین ابرپارامترهای پیش‌فرضی مانند نرخ یادگیری، تعداد دوره‌ها و کاهش وزن را تنظیم کرده‌ایم و گزینه‌ی `save_total_limit` را طوری تنظیم کرده‌ایم که حداکثر ۳ نقطه‌ی بررسی را در طول تعلیم ذخیره کند؛ زیرا حتی نسخه‌ی «کوچک» mT5 حدود یک گیگابایت از فضای دیسک را مصرف می‌کند و با محدود کردن تعداد نسخه‌های ذخیره‌شده، کمی فضا آزاد می‌کنیم.
+
+آرگومان `push_to_hub=True` به ما این امکان را می‌دهد که مدل را پس از آموزش به هاب ارسال کنیم؛ مخزن را در زیر پروفایل کاربری خود، در مکانی که توسط `output_dir` تعریف شده است، خواهید یافت. توجه داشته باشید که می‌توانید نام مخزنی را که می‌خواهید به آن ارسال کنید، با آرگومان `hub_model_id` مشخص کنید (به طور خاص، برای ارسال به یک سازمان باید از این آرگومان استفاده کنید). به عنوان مثال، وقتی مدل را به سازمان [`huggingface-course`](https://huggingface.co/huggingface-course) ارسال کردیم، ما `hub_model_id="huggingface-course/mt5-finetuned-amazon-en-es"` به `Seq2SeqTrainingArguments` اضافه شد.
+
+کار بعدی که باید انجام دهیم این است که یک تابع `compute_metrics()` به مربی ارائه دهیم تا بتوانیم مدل خود را در طول آموزش ارزیابی کنیم. به طور خلاصه، این کار کمی پیچیده‌تر از فراخوانی ساده `rouge_score.compute()` روی پیش‌بینی‌های مدل است، زیرا قبل از محاسبه امتیازات ROUGE، باید خروجی‌ها و برچسب‌ها را به متن _رمزگشایی_ کنیم. تابع زیر دقیقاً همین کار را انجام می‌دهد و همچنین از تابع `sent_tokenize()` از `nltk` برای جدا کردن جمله‌های خلاصه با خط‌های جدید استفاده می‌کند:
+
+```python
+import numpy as np
+
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    # Decode generated summaries into text
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    # Replace -100 in the labels as we can't decode them
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    # Decode reference summaries into text
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    # ROUGE expects a newline after each sentence
+    decoded_preds = ["\n".join(sent_tokenize(pred.strip())) for pred in decoded_preds]
+    decoded_labels = ["\n".join(sent_tokenize(label.strip())) for label in decoded_labels]
+    # Compute ROUGE scores
+    result = rouge_score.compute(
+        predictions=decoded_preds, references=decoded_labels, use_stemmer=True
+    )
+    # Extract the median scores
+    result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+    return {k: round(v, 4) for k, v in result.items()}
+```
+
+{/if}
+
+در مرحله بعد، باید یک تطبیق‌دهنده داده برای وظیفه توالی به توالی خود تعریف کنیم. از آنجایی که mT5 یک مدل تبدیل‌کننده رمزگذار-رمزگشا است، یک نکته ظریف در آماده‌سازی دسته‌های ما این است که در طول رمزگشایی باید برچسب‌ها را یکی یکی به سمت راست جابجا کنیم. این کار برای اطمینان از این لازم است که رمزگشا فقط برچسب‌های حقیقت پایه قبلی را می‌بیند و نه برچسب‌های فعلی یا آینده را، که به خاطر سپردن آن برای مدل آسان خواهد بود. این شبیه نحوه‌ی اعمال توجهِ خودیِ ماسک‌شده بر ورودی‌ها در مسئله‌ای مانند [مدل‌سازی زبان علّی](/course/chapter7/6) است.
+
+خوشبختانه، 🤗 ترنسفورمرز یک کامپایلر `DataCollatorForSeq2Seq` ارائه می‌دهد که به صورت پویا ورودی‌ها و برچسب‌ها را برای ما لایه‌گذاری می‌کند. برای نمونه‌سازی این کامپایلر، کافی است `tokenizer` و `model` را ارائه دهیم:
+
+{#if fw === 'pt'}
+
+```python
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+```
+
+{:else}
+
+```python
+from transformers import DataCollatorForSeq2Seq
+
+data_collator = DataCollatorForSeq2Seq(tokenizer, model=model, return_tensors="tf")
+```
+
+{/if}
+
+بیایید ببینیم این جمع‌کننده وقتی به یک دسته کوچک از مثال‌ها داده می‌شود چه چیزی تولید می‌کند. ابتدا، باید ستون‌های دارای رشته را حذف کنیم زیرا جمع‌کننده نمی‌داند چگونه این عناصر را لایه‌گذاری کند:
+
+```python
+tokenized_datasets = tokenized_datasets.remove_columns(
+    books_dataset["train"].column_names
+)
+```
+
+چون جمع‌کننده فهرستی از `dict`ها می‌خواهد و هر `dict` یک نمونه از دیتاسِت است، پیش از فرستادن داده به جمع‌کننده باید آن را به قالب مورد انتظار تبدیل کنیم:
+
+```python
+features = [tokenized_datasets["train"][i] for i in range(2)]
+data_collator(features)
+```
+
+```python out
+{'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]), 'input_ids': tensor([[  1494,    259,   8622,    390,    259,    262,   2316,   3435,    955,
+            772,    281,    772,   1617,    263,    305,  14701,    260,   1385,
+           3031,    259,  24146,    332,   1037,    259,  43906,    305,    336,
+            260,      1,      0,      0,      0,      0,      0,      0],
+        [   259,  27531,  13483,    259,   7505,    260, 112240,  15192,    305,
+          53198,    276,    259,  74060,    263,    260,    459,  25640,    776,
+           2119,    336,    259,   2220,    259,  18896,    288,   4906,    288,
+           1037,   3931,    260,   7083, 101476,   1143,    260,      1]]), 'labels': tensor([[ 7483,   259,  2364, 15695,     1,  -100],
+        [  259, 27531, 13483,   259,  7505,     1]]), 'decoder_input_ids': tensor([[    0,  7483,   259,  2364, 15695,     1],
+        [    0,   259, 27531, 13483,   259,  7505]])}
+```
+
+نکته‌ی اصلی این است که نمونه‌ی اول از دوم طولانی‌تر است؛ بنابراین `input_ids` و `attention_mask` نمونه‌ی دوم در سمت راست با توکِن `[PAD]` (با شناسه‌ی `0`) هم‌طول شده‌اند. همچنین `labels` با `-100`ها پر شده‌اند تا توکِن‌های padding در تابع هزینه نادیده گرفته شوند. در پایان `decoder_input_ids` تازه‌ای می‌بینیم که با قرار دادن توکِن `[PAD]` در ابتدای ورودی، برچسب‌ها را به راست منتقل کرده است.
+
+{#if fw === 'pt'}
+
+بالاخره تمام مواد لازم برای آموزش را داریم! حالا فقط باید مربی را با آرگومان‌های استاندارد نمونه‌سازی کنیم:
+
+```python
+from transformers import Seq2SeqTrainer
+
+trainer = Seq2SeqTrainer(
+    model,
+    args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+و دوره آموزشی خود را آغاز کنیم:
+
+```python
+trainer.train()
+```
+
+در طول آموزش، باید شاهد کاهش تلفات آموزش و افزایش امتیازات ROUGE با هر دوره باشید. پس از اتمام آموزش، می‌توانید امتیازات نهایی ROUGE را با اجرای `Trainer.evaluate()` مشاهده کنید:
+
+```python
+trainer.evaluate()
+```
+
+```python out
+{'eval_loss': 3.028524398803711,
+ 'eval_rouge1': 16.9728,
+ 'eval_rouge2': 8.2969,
+ 'eval_rougeL': 16.8366,
+ 'eval_rougeLsum': 16.851,
+ 'eval_gen_len': 10.1597,
+ 'eval_runtime': 6.1054,
+ 'eval_samples_per_second': 38.982,
+ 'eval_steps_per_second': 4.914}
+```
+
+از روی امتیازات می‌توانیم ببینیم که مدل ما به راحتی از خط پایه‌ی سوم خود بهتر عمل کرده است -- عالی! آخرین کاری که باید انجام دهیم این است که وزن‌های مدل را به صورت زیر به هاب منتقل کنیم:
+
+```
+trainer.push_to_hub(commit_message="Training complete", tags="summarization")
+```
+
+```python out
+'https://huggingface.co/huggingface-course/mt5-finetuned-amazon-en-es/commit/aa0536b829b28e73e1e4b94b8a5aacec420d40e0'
+```
+
+این کار، فایل‌های Checkpoint و پیکربندی را قبل از آپلود همه فایل‌ها در هاب، در `output_dir` ذخیره می‌کند. با مشخص کردن آرگومان `tags`، همچنین اطمینان حاصل می‌کنیم که ویجت روی هاب، به جای خط تولید متن پیش‌فرض مرتبط با معماری mT5، ​​برای خط تولید خلاصه‌سازی خواهد بود (برای اطلاعات بیشتر در مورد تگ‌های مدل، به [🤗 مستندات هاب](https://huggingface.co/docs/hub/main#how-is-a-models-type-of-inference-api-and-widget-determined) مراجعه کنید). خروجی `trainer.push_to_hub()` یک URL به ... است. هش کامیت گیت، بنابراین می‌توانید به راحتی تغییراتی که در مخزن مدل ایجاد شده است را مشاهده کنید!
+
+برای پایان این بخش، ببینیم چگونه می‌توانیم mT5 را با قابلیت‌های سطح پایین 🤗 Accelerate نیز کوک کنیم.
+
+{:else}
+
+تقریباً آماده آموزش هستیم! فقط باید دیتاسِت‌های خود را با استفاده از گردآوری‌کننده داده‌ای که در بالا تعریف کردیم به `tf.data.Dataset` تبدیل کنیم و سپس مدل را به `compile()` و `fit()` تبدیل کنیم. ابتدا، دیتاسِت‌ها:
+
+```python
+tf_train_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["train"],
+    collate_fn=data_collator,
+    shuffle=True,
+    batch_size=8,
+)
+tf_eval_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
+    collate_fn=data_collator,
+    shuffle=False,
+    batch_size=8,
+)
+```
+
+حالا ابرپارامترهای تعلیم را تعریف و مدل را کامپایل می‌کنیم:
+
+```python
+from transformers import create_optimizer
+import tensorflow as tf
+
+# The number of training steps is the number of samples in the dataset, divided by the batch size then multiplied
+# by the total number of epochs. Note that the tf_train_dataset here is a batched tf.data.Dataset,
+# not the original Hugging Face Dataset, so its len() is already num_samples // batch_size.
+num_train_epochs = 8
+num_train_steps = len(tf_train_dataset) * num_train_epochs
+model_name = model_checkpoint.split("/")[-1]
+
+optimizer, schedule = create_optimizer(
+    init_lr=5.6e-5,
+    num_warmup_steps=0,
+    num_train_steps=num_train_steps,
+    weight_decay_rate=0.01,
+)
+
+model.compile(optimizer=optimizer)
+
+# Train in mixed-precision float16
+tf.keras.mixed_precision.set_global_policy("mixed_float16")
+```
+
+و در نهایت، مدل را برازش می‌دهیم. ما از یک `PushToHubCallback` برای ذخیره مدل در هاب پس از هر دوره استفاده می‌کنیم که به ما امکان می‌دهد بعداً از آن برای استنتاج استفاده کنیم:
+
+```python
+from transformers.keras_callbacks import PushToHubCallback
+
+callback = PushToHubCallback(
+    output_dir=f"{model_name}-finetuned-amazon-en-es", tokenizer=tokenizer
+)
+
+model.fit(
+    tf_train_dataset, validation_data=tf_eval_dataset, callbacks=[callback], epochs=8
+)
+```
+
+در طول تعلیم چند مقدار هزینه گرفتیم، اما می‌خواهیم معیارهای ROUGE قبلی را ببینیم. برای این کار باید خروجی‌های مدل را تولید و به رشته تبدیل کنیم و فهرست‌هایی از برچسب‌ها و پیش‌بینی‌ها برای مقایسه بسازیم؛ اگر در این بخش خطای import گرفتید، شاید به `!pip install tqdm` نیاز داشته باشید. برای افزایش چشمگیر عملکرد، کد تولید را با [XLA](https://www.tensorflow.org/xla)، کامپایلر جبر خطی شتاب‌یافته‌ی TensorFlow، کامپایل می‌کنیم. XLA نمودار محاسباتی مدل را بهینه می‌کند و سرعت و مصرف حافظه را بهتر می‌کند. طبق توضیح [وبلاگ](https://huggingface.co/blog/tf-xla-generate)، چون XLA با شکل‌های ورودی مشابه بهتر کار می‌کند، ورودی‌ها را به مضرب‌های ۱۲۸ هم‌طول می‌کنیم و جمع‌کننده‌ی padding تازه‌ای می‌سازیم و دکوراتور `@tf.function(jit_compile=True)` را روی تابع تولید می‌گذاریم.
+
+```python
+from tqdm import tqdm
+import numpy as np
+
+generation_data_collator = DataCollatorForSeq2Seq(
+    tokenizer, model=model, return_tensors="tf", pad_to_multiple_of=320
+)
+
+tf_generate_dataset = model.prepare_tf_dataset(
+    tokenized_datasets["validation"],
+    collate_fn=generation_data_collator,
+    shuffle=False,
+    batch_size=8,
+    drop_remainder=True,
+)
+
+
+@tf.function(jit_compile=True)
+def generate_with_xla(batch):
+    return model.generate(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        max_new_tokens=32,
+    )
+
+
+all_preds = []
+all_labels = []
+for batch, labels in tqdm(tf_generate_dataset):
+    predictions = generate_with_xla(batch)
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    labels = labels.numpy()
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    decoded_preds = ["\n".join(sent_tokenize(pred.strip())) for pred in decoded_preds]
+    decoded_labels = ["\n".join(sent_tokenize(label.strip())) for label in decoded_labels]
+    all_preds.extend(decoded_preds)
+    all_labels.extend(decoded_labels)
+```
+
+زمانی که لیست‌های برچسب و رشته‌های پیش‌بینی خود را داشته باشیم، محاسبه امتیاز ROUGE آسان است:
+
+```python
+result = rouge_score.compute(
+    predictions=decoded_preds, references=decoded_labels, use_stemmer=True
+)
+result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+{k: round(v, 4) for k, v in result.items()}
+```
+
+```
+{'rouge1': 31.4815, 'rouge2': 25.4386, 'rougeL': 31.4815, 'rougeLsum': 31.4815}
+```
+
+
+{/if}
+
+{#if fw === 'pt'}
+
+## کوک کردن mT5 با 🤗 شتاب‌دهی[[fine-tuning-mt5-with-accelerate]]
+
+کوک کردن مدل با 🤗 Accelerate بسیار شبیه به مثال طبقه‌بندی متن است که در [فصل ۳](/course/chapter3) با آن مواجه شدیم. تفاوت‌های اصلی، نیاز به تولید صریح خلاصه‌های ما در طول آموزش و تعریف نحوه محاسبه امتیازات ROUGE خواهد بود (به یاد داشته باشید که `Seq2SeqTrainer` تولید را برای ما انجام داد). بیایید نگاهی به نحوه پیاده‌سازی این دو الزام در 🤗 Accelerate بیندازیم!
+
+### آماده‌سازی همه‌چیز برای آموزش[[preparing-everything-for-training]]
+
+اولین کاری که باید انجام دهیم این است که برای هر یک از تقسیم‌بندی‌هایمان یک `DataLoader` ایجاد کنیم. از آنجایی که بارگذارهای داده PyTorch انتظار دسته‌هایی از تانسورها را دارند، باید قالب را در دیتاسِت‌های خود روی `"torch"` تنظیم کنیم:
+
+```python
+tokenized_datasets.set_format("torch")
+```
+
+حالا که دیتاسِت‌هایی داریم که فقط از تانسورها تشکیل شده‌اند، کار بعدی که باید انجام دهیم، نمونه‌سازی مجدد `DataCollatorForSeq2Seq` است. برای این کار باید نسخه جدیدی از مدل را ارائه دهیم، بنابراین بیایید دوباره آن را از حافظه پنهان خود بارگذاری کنیم:
+
+```python
+model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+```
+
+سپس می‌توانیم از گردآورنده‌ی داده‌ها نمونه‌سازی کنیم و از آن برای تعریف بارگذارهای داده‌ی خود استفاده کنیم:
+
+```python
+from torch.utils.data import DataLoader
+
+batch_size = 8
+train_dataloader = DataLoader(
+    tokenized_datasets["train"],
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=batch_size,
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], collate_fn=data_collator, batch_size=batch_size
+)
+```
+
+کار بعدی که باید انجام دهیم، تعریف بهینه‌ساز مورد نظرمان است. همانند مثال‌های دیگرمان، از `AdamW` استفاده خواهیم کرد که برای اکثر مسائل به خوبی کار می‌کند:
+
+```python
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=2e-5)
+```
+
+در نهایت، مدل، بهینه‌ساز و بارگذارهای داده خود را به متد `accelerator.prepare()` می‌دهیم:
+
+```python
+from accelerate import Accelerator
+
+accelerator = Accelerator()
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+```
+
+> نکته
+> 🚨 اگر روی یک TPU آموزش می‌بینید، باید تمام کد بالا را به یک تابع آموزش اختصاصی منتقل کنید. برای جزئیات بیشتر به [فصل ۳](/course/chapter3) مراجعه کنید.
+
+حالا که اشیاء خود را آماده کرده‌ایم، سه کار دیگر باقی مانده است:
+
+* جدول نرخ یادگیری را تعریف کنید.
+* تابعی را برای پس‌پردازش خلاصه‌ها جهت ارزیابی پیاده‌سازی کنید.
+* مخزنی در هاب ایجاد کنید تا بتوانیم مدل خود را در آن بارگذاری کنیم.
+
+برای زمانبندی نرخ یادگیری، از زمانبندی خطی استاندارد بخش‌های قبلی استفاده خواهیم کرد:
+
+```python
+from transformers import get_scheduler
+
+num_train_epochs = 10
+num_update_steps_per_epoch = len(train_dataloader)
+num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+```
+
+برای پس‌پردازش، به تابعی نیاز داریم که خلاصه‌های تولید شده را به جملاتی تقسیم کند که با خط جدید از هم جدا شده‌اند. این فرمتی است که معیار ROUGE انتظار دارد و می‌توانیم با قطعه کد زیر به آن دست یابیم:
+
+```python
+def postprocess_text(preds, labels):
+    preds = [pred.strip() for pred in preds]
+    labels = [label.strip() for label in labels]
+
+    # ROUGE expects a newline after each sentence
+    preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
+    labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
+
+    return preds, labels
+```
+
+اگر به یاد داشته باشید که چگونه تابع `compute_metrics()` مربوط به `Seq2SeqTrainer` را تعریف کردیم، این باید برای شما آشنا به نظر برسد.
+
+در نهایت، باید یک مخزن مدل در هاگینگ‌فِیس هاب ایجاد کنیم. برای این کار، می‌توانیم از کتابخانه هاب با عنوان مناسب 🤗 استفاده کنیم. فقط باید یک نام برای مخزن خود تعریف کنیم و کتابخانه یک تابع کاربردی برای ترکیب شناسه مخزن با پروفایل کاربر دارد:
+
+```python
+from huggingface_hub import get_full_repo_name
+
+model_name = "test-bert-finetuned-squad-accelerate"
+repo_name = get_full_repo_name(model_name)
+repo_name
+```
+
+```python out
+'lewtun/mt5-finetuned-amazon-en-es-accelerate'
+```
+
+اکنون می‌توانیم از این نام مخزن برای کلون کردن یک نسخه محلی در دایرکتوری نتایج خود استفاده کنیم که مصنوعات آموزشی را ذخیره می‌کند:
+
+```python
+from huggingface_hub import Repository
+
+output_dir = "results-mt5-finetuned-squad-accelerate"
+repo = Repository(output_dir, clone_from=repo_name)
+```
+
+این به ما امکان می‌دهد تا با فراخوانی متد `repo.push_to_hub()` در طول آموزش، مصنوعات را به هاب برگردانیم! حال بیایید تحلیل خود را با نوشتن حلقه آموزش به پایان برسانیم.
+
+### حلقه آموزشی[[training-loop]]
+
+حلقه آموزشی برای خلاصه‌سازی کاملاً شبیه به سایر مثال‌های Accelerate 🤗 است که با آنها مواجه شده‌ایم و تقریباً به چهار مرحله اصلی تقسیم می‌شود:
+
+۱. مدل را با تکرار روی تمام مثال‌های موجود در `train_dataloader` برای هر دوره، آموزش دهید.
+۲. در پایان هر دوره خلاصه‌های مدل را تولید کنید؛ ابتدا توکن‌ها و سپس آن‌ها (و خلاصه‌های مرجع) را به متن تبدیل کنید.
+۳. امتیازهای ROUGE را با همان روش‌هایی که پیش‌تر دیدیم محاسبه کنید.
+۴. چک‌پوینت‌ها را ذخیره کنید و همه چیز را به هاب ارسال کنید. در اینجا ما به آرگومان `blocking=False` از شیء `Repository` تکیه می‌کنیم تا بتوانیم چک‌پوینت‌ها را در هر دوره _به صورت ناهمگام_ ارسال کنیم. این به ما امکان می‌دهد بدون نیاز به انتظار برای آپلود نسبتاً کند مربوط به یک مدل با اندازه GB، به آموزش ادامه دهیم!
+
+این مراحل را می‌توانید در بلوک کد زیر مشاهده کنید:
+
+```python
+from tqdm.auto import tqdm
+import torch
+import numpy as np
+
+progress_bar = tqdm(range(num_training_steps))
+
+for epoch in range(num_train_epochs):
+    # Training
+    model.train()
+    for step, batch in enumerate(train_dataloader):
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+
+    # Evaluation
+    model.eval()
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            generated_tokens = accelerator.unwrap_model(model).generate(
+                batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+            )
+
+            generated_tokens = accelerator.pad_across_processes(
+                generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
+            )
+            labels = batch["labels"]
+
+            # If we did not pad to max length, we need to pad the labels too
+            labels = accelerator.pad_across_processes(
+                batch["labels"], dim=1, pad_index=tokenizer.pad_token_id
+            )
+
+            generated_tokens = accelerator.gather(generated_tokens).cpu().numpy()
+            labels = accelerator.gather(labels).cpu().numpy()
+
+            # Replace -100 in the labels as we can't decode them
+            labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+            if isinstance(generated_tokens, tuple):
+                generated_tokens = generated_tokens[0]
+            decoded_preds = tokenizer.batch_decode(
+                generated_tokens, skip_special_tokens=True
+            )
+            decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+            decoded_preds, decoded_labels = postprocess_text(
+                decoded_preds, decoded_labels
+            )
+
+            rouge_score.add_batch(predictions=decoded_preds, references=decoded_labels)
+
+    # Compute metrics
+    result = rouge_score.compute()
+    # Extract the median ROUGE scores
+    result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+    result = {k: round(v, 4) for k, v in result.items()}
+    print(f"Epoch {epoch}:", result)
+
+    # Save and upload
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(output_dir, save_function=accelerator.save)
+    if accelerator.is_main_process:
+        tokenizer.save_pretrained(output_dir)
+        repo.push_to_hub(
+            commit_message=f"Training in progress epoch {epoch}", blocking=False
+        )
+```
+
+```python out
+Epoch 0: {'rouge1': 5.6351, 'rouge2': 1.1625, 'rougeL': 5.4866, 'rougeLsum': 5.5005}
+Epoch 1: {'rouge1': 9.8646, 'rouge2': 3.4106, 'rougeL': 9.9439, 'rougeLsum': 9.9306}
+Epoch 2: {'rouge1': 11.0872, 'rouge2': 3.3273, 'rougeL': 11.0508, 'rougeLsum': 10.9468}
+Epoch 3: {'rouge1': 11.8587, 'rouge2': 4.8167, 'rougeL': 11.7986, 'rougeLsum': 11.7518}
+Epoch 4: {'rouge1': 12.9842, 'rouge2': 5.5887, 'rougeL': 12.7546, 'rougeLsum': 12.7029}
+Epoch 5: {'rouge1': 13.4628, 'rouge2': 6.4598, 'rougeL': 13.312, 'rougeLsum': 13.2913}
+Epoch 6: {'rouge1': 12.9131, 'rouge2': 5.8914, 'rougeL': 12.6896, 'rougeLsum': 12.5701}
+Epoch 7: {'rouge1': 13.3079, 'rouge2': 6.2994, 'rougeL': 13.1536, 'rougeLsum': 13.1194}
+Epoch 8: {'rouge1': 13.96, 'rouge2': 6.5998, 'rougeL': 13.9123, 'rougeLsum': 13.7744}
+Epoch 9: {'rouge1': 14.1192, 'rouge2': 7.0059, 'rougeL': 14.1172, 'rougeLsum': 13.9509}
+```
+
+و تمام! وقتی این را اجرا کنید، مدل و نتایجی خواهید داشت که بسیار شبیه به نتایجی است که با `Trainer` به دست آوردیم.
+
+{/if}
+
+## با استفاده از مدل تنظیم‌شده‌ی دقیق شما[[using-your-fine-tuned-model]]
+
+وقتی مدل را به هاب ارسال کردید، می‌توانید از طریق ویجت استنتاج یا با یک شیء `pipeline` به صورت زیر با آن کار کنید:
+
+```python
+from transformers import pipeline
+
+hub_model_id = "huggingface-course/mt5-small-finetuned-amazon-en-es"
+summarizer = pipeline("summarization", model=hub_model_id)
+```
+
+می‌توانیم چند مثال از مجموعه تست (که مدل ندیده است) را به خط تولید خود وارد کنیم تا کیفیت خلاصه‌ها را ارزیابی کنیم. ابتدا بیایید یک تابع ساده برای نمایش نقد، عنوان و خلاصه تولید شده با هم پیاده‌سازی کنیم:
+
+```python
+def print_summary(idx):
+    review = books_dataset["test"][idx]["review_body"]
+    title = books_dataset["test"][idx]["review_title"]
+    summary = summarizer(books_dataset["test"][idx]["review_body"])[0]["summary_text"]
+    print(f"'>>> Review: {review}'")
+    print(f"\n'>>> Title: {title}'")
+    print(f"\n'>>> Summary: {summary}'")
+```
+
+بیایید نگاهی به یکی از مثال‌های انگلیسی که به دست می‌آوریم بیندازیم:
+
+```python
+print_summary(100)
+```
+
+```python out
+'>>> Review: Nothing special at all about this product... the book is too small and stiff and hard to write in. The huge sticker on the back doesn’t come off and looks super tacky. I would not purchase this again. I could have just bought a journal from the dollar store and it would be basically the same thing. It’s also really expensive for what it is.'
+
+'>>> Title: Not impressed at all... buy something else'
+
+'>>> Summary: Nothing special at all about this product'
+```
+
+بد نیست! می‌بینیم مدل ما توانسته با افزودن کلمات تازه به بخش‌هایی از مرور، خلاصه‌سازی _انتزاعی_ انجام دهد. شاید جالب‌ترین ویژگی مدل دوزبانه بودن آن باشد؛ بنابراین می‌توانیم مرورهای اسپانیایی را هم خلاصه کنیم:
+
+```python
+print_summary(0)
+```
+
+```python out
+'>>> Review: Es una trilogia que se hace muy facil de leer. Me ha gustado, no me esperaba el final para nada'
+
+'>>> Title: Buena literatura para adolescentes'
+
+'>>> Summary: Muy facil de leer'
+```
+
+این خلاصه در انگلیسی به «Very easy to read» ترجمه می‌شود و می‌بینیم که در این مورد مستقیماً از مرور استخراج شده است. بااین‌حال، این مثال انعطاف‌پذیری مدل mT5 و تجربه‌ی کار با پیکره‌ای چندزبانه را نشان می‌دهد!
+
+در ادامه، توجه خود را به یک کار کمی پیچیده‌تر معطوف خواهیم کرد: آموزش یک مدل زبانی از ابتدا.
+</div>
