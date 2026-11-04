@@ -1,0 +1,392 @@
+<FrameworkSwitchCourse {fw} />
+
+# Fine-tuning Model dengan Trainer API[[fine-tuning-a-model-with-the-trainer-api]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section3.ipynb"},
+]} />
+
+<Youtube id="nvBXf7s7vTI"/>
+
+🤗 Transformers menyediakan kelas `Trainer` untuk membantu Anda melakukan fine-tuning model pralatih apa pun pada dataset Anda menggunakan praktik terbaik modern. Setelah semua praproses data selesai di bagian sebelumnya, hanya ada beberapa langkah lagi untuk mendefinisikan `Trainer`. Bagian yang paling menantang kemungkinan besar adalah menyiapkan lingkungan untuk menjalankan `Trainer.train()`, karena akan berjalan sangat lambat di CPU. Jika Anda tidak memiliki GPU, Anda bisa menggunakan GPU atau TPU gratis di [Google Colab](https://colab.research.google.com/).
+
+<Tip>
+
+📚 **Sumber Latihan**: Sebelum mulai melatih, kenali terlebih dahulu [panduan pelatihan 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/training) dan contoh praktiknya di [cookbook fine-tuning](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu).
+
+</Tip>
+
+Contoh kode di bawah mengasumsikan bahwa Anda telah menjalankan contoh di bagian sebelumnya. Berikut ringkasan singkat apa yang Anda perlukan:
+
+```py
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### Pelatihan[[training]]
+
+Langkah pertama sebelum kita dapat mendefinisikan `Trainer` adalah membuat kelas `TrainingArguments` yang akan menyimpan semua hyperparameter yang digunakan `Trainer` untuk pelatihan dan evaluasi. Satu-satunya argumen wajib adalah direktori tempat model hasil pelatihan akan disimpan, termasuk checkpoint-checkpoint selama pelatihan. Sisanya bisa dibiarkan default, yang sudah cukup baik untuk fine-tuning dasar.
+
+```py
+from transformers import TrainingArguments
+
+training_args = TrainingArguments("test-trainer")
+```
+
+Jika Anda ingin model Anda secara otomatis diunggah ke Hub selama pelatihan, tambahkan `push_to_hub=True` dalam `TrainingArguments`. Kita akan mempelajari lebih lanjut tentang ini di [Bab 4](/course/chapter4/3)
+
+<Tip>
+
+🚀 **Konfigurasi Lanjutan**: Untuk detail lengkap semua argumen pelatihan dan strategi optimasi, lihat [dokumentasi TrainingArguments](https://huggingface.co/docs/transformers/main/en/main_classes/trainer#transformers.TrainingArguments) dan [cookbook konfigurasi pelatihan](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu).
+
+</Tip>
+
+Langkah kedua adalah mendefinisikan model. Seperti di [bab sebelumnya](/course/chapter2), kita akan menggunakan `AutoModelForSequenceClassification` dengan dua label:
+
+```py
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+Anda akan melihat bahwa, tidak seperti di [Bab 2](/course/chapter2), Anda akan mendapatkan peringatan setelah menginstansiasi model pretrained ini. Hal ini terjadi karena BERT tidak dilatih sebelumnya untuk mengklasifikasikan pasangan kalimat, sehingga kepala (head) dari model pretrained telah dibuang dan diganti dengan kepala baru yang sesuai untuk tugas klasifikasi sekuens. Peringatan tersebut menunjukkan bahwa beberapa bobot tidak digunakan (yaitu yang terkait dengan kepala pretraining yang dihapus), dan beberapa lainnya diinisialisasi secara acak (yaitu yang digunakan untuk kepala baru). Peringatan ini diakhiri dengan anjuran untuk melatih model tersebut — dan itulah yang akan kita lakukan sekarang.
+
+Setelah kita memiliki model, kita bisa mendefinisikan `Trainer` dengan memberikan semua objek yang sudah kita buat sejauh ini — `model`, `training_args`, dataset pelatihan dan validasi, `data_collator`, serta `processing_class`. Parameter `processing_class` adalah fitur baru yang memberi tahu Trainer tokenizer mana yang digunakan:
+
+```py
+from transformers import Trainer
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    processing_class=tokenizer,
+)
+```
+
+Jika Anda memberikan tokenizer sebagai `processing_class`, `Trainer` akan secara otomatis menggunakan `DataCollatorWithPadding`. Baris `data_collator=...` bisa diabaikan, tapi kami sertakan di sini untuk menunjukkan bagian penting dari pipeline ini.
+
+<Tip>
+
+📖 **Pelajari Lebih Lanjut**: Untuk detail lengkap tentang kelas Trainer dan parameternya, kunjungi [dokumentasi Trainer API](https://huggingface.co/docs/transformers/main/en/main_classes/trainer) dan contoh lanjutan di [cookbook pelatihan](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu).
+
+</Tip>
+
+Untuk melakukan fine-tuning, kita cukup memanggil metode `train()`:
+
+```py
+trainer.train()
+```
+
+Ini akan memulai pelatihan dan melaporkan loss setiap 500 langkah. Namun, ini tidak akan menunjukkan seberapa baik model Anda karena:
+
+1. Kita belum memberi tahu `Trainer` untuk melakukan evaluasi selama pelatihan dengan mengatur `eval_strategy` di `TrainingArguments` ke salah satu dari `"steps"` (melakukan evaluasi setiap `eval_steps`) atau `"epoch"` (melakukan evaluasi di akhir setiap epoch).
+2. Kita juga belum memberikan fungsi `compute_metrics()` ke `Trainer` untuk menghitung metrik selama evaluasi tersebut (jika tidak, evaluasi hanya akan mencetak nilai loss, yang bukan angka yang mudah diinterpretasikan).
+
+### Evaluasi[[evaluation]]
+
+Mari kita lihat bagaimana cara membangun fungsi `compute_metrics()` yang berguna dan menggunakannya saat kita melatih model berikutnya. Fungsi ini harus menerima objek `EvalPrediction` (yang merupakan tuple bernama dengan field `predictions` dan `label_ids`) dan mengembalikan dictionary yang memetakan string ke angka desimal (string adalah nama metrik yang dikembalikan, dan angka desimal adalah nilai metrik tersebut). Untuk mendapatkan prediksi dari model kita, kita dapat menggunakan perintah `Trainer.predict()`:
+
+```py
+predictions = trainer.predict(tokenized_datasets["validation"])
+print(predictions.predictions.shape, predictions.label_ids.shape)
+```
+
+```python out
+(408, 2) (408,)
+```
+
+Output dari metode `predict()` adalah tuple bernama lain yang memiliki tiga field: `predictions`, `label_ids`, dan `metrics`. Field `metrics` hanya akan berisi loss pada dataset yang diberikan, serta metrik waktu (berapa lama waktu yang dibutuhkan untuk melakukan prediksi, secara total dan rata-rata). Setelah kita melengkapi fungsi `compute_metrics()` dan memberikannya ke `Trainer`, field tersebut juga akan berisi metrik yang dikembalikan oleh `compute_metrics()`.
+
+Seperti yang bisa kamu lihat, `predictions` adalah array dua dimensi dengan bentuk 408 x 2 (408 adalah jumlah elemen dalam dataset yang kita gunakan). Ini adalah nilai logit untuk setiap elemen dari dataset yang kita berikan ke `predict()` (seperti yang telah kamu lihat di [bab sebelumnya](/course/chapter2), semua model Transformer mengembalikan logit). Untuk mengubahnya menjadi prediksi yang dapat kita bandingkan dengan label kita, kita perlu mengambil indeks dengan nilai maksimum pada sumbu kedua:
+
+```py
+import numpy as np
+
+preds = np.argmax(predictions.predictions, axis=-1)
+```
+
+Sekarang kita bisa membandingkan `preds` tersebut dengan label yang sebenarnya. Untuk membangun fungsi `compute_metrics()`, kita akan menggunakan metrik dari pustaka 🤗 [Evaluate](https://github.com/huggingface/evaluate/). Kita bisa memuat metrik yang digunakan untuk dataset MRPC semudah kita memuat dataset-nya, kali ini dengan fungsi `evaluate.load()`. Objek yang dikembalikan memiliki metode `compute()` yang bisa kita gunakan untuk menghitung metrik evaluasi:
+
+```py
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+metric.compute(predictions=preds, references=predictions.label_ids)
+```
+
+```python out
+{'accuracy': 0.8578431372549019, 'f1': 0.8996539792387542}
+```
+
+<Tip>
+
+Pelajari metrik evaluasi lebih lanjut di [dokumentasi 🤗 Evaluate](https://huggingface.co/docs/evaluate/).
+
+</Tip>
+
+Hasil yang Anda peroleh bisa berbeda-beda, karena inisialisasi acak pada kepala model dapat memengaruhi metrik yang dicapai. Di sini, kita dapat melihat bahwa model kita memiliki akurasi sebesar 85,78% pada set validasi dan skor F1 sebesar 89,97. Kedua metrik tersebut digunakan untuk mengevaluasi hasil pada dataset MRPC dalam benchmark GLUE. Tabel pada [makalah BERT](https://arxiv.org/pdf/1810.04805.pdf) melaporkan skor F1 sebesar 88,9 untuk model dasar. Model tersebut adalah model `uncased`, sementara kita saat ini menggunakan model `cased`, yang menjelaskan hasil yang lebih baik.
+
+
+Menggabungkan semuanya, kita mendapatkan fungsi `compute_metrics()` kita:
+
+```py
+def compute_metrics(eval_preds):
+    metric = evaluate.load("glue", "mrpc")
+    logits, labels = eval_preds
+    predictions = np.argmax(logits, axis=-1)
+    return metric.compute(predictions=predictions, references=labels)
+```
+
+Dan untuk melihatnya digunakan secara langsung dalam melaporkan metrik di akhir setiap epoch, berikut adalah cara kita mendefinisikan `Trainer` baru dengan fungsi `compute_metrics()` ini:
+
+```py
+training_args = TrainingArguments("test-trainer", eval_strategy="epoch")
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+
+trainer = Trainer(
+    model,
+    training_args,
+    train_dataset=tokenized_datasets["train"],
+    eval_dataset=tokenized_datasets["validation"],
+    data_collator=data_collator,
+    processing_class=tokenizer,
+    compute_metrics=compute_metrics,
+)
+```
+
+Perlu dicatat bahwa kita membuat objek `TrainingArguments` baru dengan `eval_strategy` diatur ke `"epoch"` dan juga model baru — jika tidak, kita hanya akan melanjutkan pelatihan dari model yang sudah kita latih sebelumnya. Untuk memulai proses pelatihan baru, kita jalankan:
+
+```python
+trainer.train()
+```
+
+Kali ini, proses pelatihan akan melaporkan *validation loss* dan metrik evaluasi di akhir setiap epoch, selain *training loss*. Sekali lagi, akurasi atau skor F1 yang Anda dapatkan mungkin sedikit berbeda karena inisialisasi acak pada kepala model, namun tetap akan berada di kisaran yang serupa.
+
+### Fitur Pelatihan Lanjutan[[advanced-training-features]]
+
+`Trainer` memiliki banyak fitur bawaan yang membuat praktik terbaik deep learning modern lebih mudah diakses:
+
+**Pelatihan dengan Presisi Campuran (Mixed Precision)**: Gunakan `fp16=True` dalam training arguments untuk pelatihan yang lebih cepat dan penggunaan memori yang lebih rendah:
+
+```python
+training_args = TrainingArguments(
+    "test-trainer",
+    eval_strategy="epoch",
+    fp16=True,  # Aktifkan pelatihan dengan presisi campuran
+)
+```
+
+**Akumulasi Gradien (Gradient Accumulation)**: Berguna untuk mendapatkan ukuran batch efektif yang lebih besar saat memori GPU terbatas:
+
+```python
+training_args = TrainingArguments(
+    "test-trainer",
+    eval_strategy="epoch",
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,  # Ukuran batch efektif = 4 * 4 = 16
+)
+```
+
+**Pengaturan Learning Rate**: `Trainer` secara default menggunakan peluruhan linear (linear decay), tetapi Anda bisa menyesuaikannya:
+
+```python
+training_args = TrainingArguments(
+    "test-trainer",
+    eval_strategy="epoch",
+    learning_rate=2e-5,
+    lr_scheduler_type="cosine",  # Coba scheduler lain
+)
+```
+
+<Tip>
+
+🎯 **Optimasi Performa**: Untuk teknik pelatihan lanjutan seperti pelatihan terdistribusi, optimasi memori, dan optimasi spesifik perangkat keras, jelajahi [panduan performa 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/performance).
+
+</Tip>
+
+`Trainer` langsung dapat digunakan di beberapa GPU atau TPU, dan menyediakan banyak opsi untuk pelatihan terdistribusi. Kita akan membahas semua fitur tersebut di Bab 10.
+
+Ini menutup pengenalan tentang fine-tuning menggunakan API `Trainer`. Contoh penerapan fine-tuning pada berbagai tugas NLP umum akan dijelaskan di [Bab 7](/course/chapter7), tetapi untuk sekarang mari kita lihat bagaimana melakukan hal yang sama menggunakan *training loop* PyTorch murni.
+
+<Tip>
+
+📝 **Lebih Banyak Contoh**: Lihat koleksi lengkap [notebook 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/notebooks).
+
+</Tip>
+
+## Kuis Bagian[[section-quiz]]
+
+Uji pemahaman Anda tentang API `Trainer` dan konsep fine-tuning:
+
+### 1. Apa tujuan dari parameter <code>processing_class</code> dalam Trainer?
+
+<Question
+  choices={[
+    {
+      text: "Ini menentukan arsitektur model yang digunakan.",
+      explain: "Arsitektur model ditentukan saat memuat model, bukan di dalam Trainer."
+    },
+    {
+      text: "Ini memberi tahu Trainer tokenizer mana yang digunakan untuk memproses data.",
+      explain: "Benar! Parameter processing_class adalah penambahan baru yang membantu Trainer mengetahui tokenizer yang akan digunakan.",
+      correct: true
+    },
+    {
+      text: "Ini menentukan ukuran batch untuk pelatihan.",
+      explain: "Ukuran batch diatur dalam TrainingArguments, bukan melalui processing_class."
+    },
+    {
+      text: "Ini mengontrol frekuensi evaluasi.",
+      explain: "Frekuensi evaluasi dikontrol oleh eval_strategy dalam TrainingArguments."
+    }
+  ]}
+/>
+
+### 2. Parameter TrainingArguments mana yang mengontrol seberapa sering evaluasi dilakukan saat pelatihan?
+
+<Question
+  choices={[
+    {
+      text: "eval_frequency",
+      explain: "Tidak ada parameter bernama eval_frequency dalam TrainingArguments."
+    },
+    {
+      text: "eval_strategy",
+      explain: "Benar! eval_strategy bisa diatur ke 'epoch', 'steps', atau 'no' untuk mengontrol waktu evaluasi.",
+      correct: true
+    },
+    {
+      text: "evaluation_steps",
+      explain: "eval_steps mengatur jumlah langkah antar evaluasi, tetapi eval_strategy menentukan apakah evaluasi dilakukan."
+    },
+    {
+      text: "do_eval",
+      explain: "Tidak ada parameter do_eval dalam TrainingArguments versi modern."
+    }
+  ]}
+/>
+
+### 3. Apa yang diaktifkan oleh <code>fp16=True</code> dalam TrainingArguments?
+
+<Question
+  choices={[
+    {
+      text: "Presisi integer 16-bit untuk pelatihan yang lebih cepat.",
+      explain: "fp16 mengacu pada floating-point, bukan integer."
+    },
+    {
+      text: "Pelatihan dengan presisi campuran menggunakan angka floating-point 16-bit untuk pelatihan lebih cepat dan penggunaan memori lebih rendah.",
+      explain: "Benar! Pelatihan presisi campuran menggunakan float 16-bit untuk forward pass dan float 32-bit untuk gradien.",
+      correct: true
+    },
+    {
+      text: "Pelatihan selama tepat 16 epoch.",
+      explain: "fp16 tidak ada hubungannya dengan jumlah epoch."
+    },
+    {
+      text: "Menggunakan 16 GPU untuk pelatihan terdistribusi.",
+      explain: "Jumlah GPU tidak dikontrol oleh parameter fp16."
+    }
+  ]}
+/>
+
+### 4. Apa peran fungsi <code>compute_metrics</code> dalam Trainer?
+
+<Question
+  choices={[
+    {
+      text: "Ia menghitung loss selama pelatihan.",
+      explain: "Perhitungan loss ditangani langsung oleh model, bukan oleh compute_metrics."
+    },
+    {
+      text: "Ia mengubah logit menjadi prediksi dan menghitung metrik evaluasi seperti akurasi dan F1.",
+      explain: "Benar! compute_metrics mengambil prediksi dan label, lalu mengembalikan metrik evaluasi.",
+      correct: true
+    },
+    {
+      text: "Ia menentukan optimizer mana yang akan digunakan.",
+      explain: "Pemilihan optimizer tidak ditangani oleh compute_metrics."
+    },
+    {
+      text: "Ia memproses data pelatihan.",
+      explain: "Pra-pemrosesan data dilakukan sebelum pelatihan, bukan oleh compute_metrics selama evaluasi."
+    }
+  ]}
+/>
+
+### 5. Apa yang terjadi jika Anda tidak menyediakan <code>eval_dataset</code> ke Trainer?
+
+<Question
+  choices={[
+    {
+      text: "Pelatihan akan gagal dengan error.",
+      explain: "Pelatihan tetap bisa berjalan tanpa eval_dataset, hanya saja Anda tidak akan mendapatkan metrik evaluasi."
+    },
+    {
+      text: "Trainer akan secara otomatis membagi data pelatihan untuk evaluasi.",
+      explain: "Trainer tidak secara otomatis membuat pembagian validasi."
+    },
+    {
+      text: "Anda tidak akan mendapatkan metrik evaluasi selama pelatihan, tapi pelatihan tetap akan berjalan.",
+      explain: "Benar! Evaluasi bersifat opsional — Anda bisa melatih tanpa itu, tapi tidak akan melihat metrik validasi.",
+      correct: true
+    },
+    {
+      text: "Model akan menggunakan data pelatihan untuk evaluasi.",
+      explain: "Trainer tidak secara otomatis menggunakan data pelatihan untuk evaluasi — ia hanya tidak mengevaluasi."
+    }
+  ]}
+/>
+
+### 6. Apa itu gradient accumulation dan bagaimana cara mengaktifkannya?
+
+<Question
+  choices={[
+    {
+      text: "Ia menyimpan gradien ke disk, diaktifkan dengan save_gradients=True.",
+      explain: "Gradient accumulation tidak melibatkan penyimpanan gradien ke disk."
+    },
+    {
+      text: "Ia mengakumulasi gradien dari beberapa batch sebelum melakukan update, diaktifkan dengan gradient_accumulation_steps.",
+      explain: "Benar! Ini memungkinkan Anda mensimulasikan batch yang lebih besar dengan mengakumulasi gradien dari beberapa forward pass.",
+      correct: true
+    },
+    {
+      text: "Ia mempercepat perhitungan gradien, diaktifkan otomatis dengan fp16.",
+      explain: "fp16 memang dapat mempercepat pelatihan, tetapi gradient accumulation adalah teknik yang berbeda."
+    },
+    {
+      text: "Ia mencegah overflow gradien, diaktifkan dengan gradient_clipping=True.",
+      explain: "Itu adalah deskripsi gradient clipping, bukan accumulation."
+    }
+  ]}
+/>
+
+<Tip>
+
+💡 **Inti Penting:**
+- API `Trainer` menyediakan antarmuka tingkat tinggi yang menangani sebagian besar kompleksitas pelatihan
+- Gunakan `processing_class` untuk menentukan tokenizer yang tepat dalam pemrosesan data
+- `TrainingArguments` mengontrol semua aspek pelatihan: learning rate, batch size, strategi evaluasi, dan optimasi
+- `compute_metrics` memungkinkan evaluasi dengan metrik khusus, bukan hanya loss pelatihan
+- Fitur modern seperti presisi campuran (`fp16=True`) dan gradient accumulation bisa secara signifikan meningkatkan efisiensi pelatihan
+
+</Tip>

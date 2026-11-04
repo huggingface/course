@@ -1,0 +1,646 @@
+<FrameworkSwitchCourse {fw} />
+
+# Kekuatan Tokenizer Cepat dalam Pipeline QA[[fast-tokenizers-in-the-qa-pipeline]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={6}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter6/section3b_tf.ipynb"},
+]} />
+
+{/if}
+
+Sekarang kita akan menyelami pipeline `question-answering` dan melihat bagaimana memanfaatkan offset untuk mengambil jawaban dari konteks, mirip seperti yang kita lakukan saat mengelompokkan entitas pada bagian sebelumnya. Setelah itu, kita juga akan melihat bagaimana menangani konteks yang sangat panjang hingga perlu dipotong. Anda bisa melewati bagian ini jika tidak tertarik dengan tugas question answering.
+
+{#if fw === 'pt'}
+
+<Youtube id="_wxyB3j3mk4"/>
+
+{:else}
+
+<Youtube id="b3u8RzBCX9Y"/>
+
+{/if}
+
+## Menggunakan Pipeline `question-answering`[[using-the-question-answering-pipeline]]
+
+Seperti yang kita lihat di [Bab 1](/course/chapter1), kita bisa menggunakan pipeline `question-answering` seperti ini untuk mendapatkan jawaban atas sebuah pertanyaan:
+
+```py
+from transformers import pipeline
+
+question_answerer = pipeline("question-answering")
+context = """
+🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch, and TensorFlow — with a seamless integration
+between them. It's straightforward to train your models with one before loading them for inference with the other.
+"""
+question = "Which deep learning libraries back 🤗 Transformers?"
+question_answerer(question=question, context=context)
+```
+
+```python out
+{'score': 0.97773,
+ 'start': 78,
+ 'end': 105,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+Berbeda dengan pipeline lain yang tidak bisa menangani input lebih panjang dari batas maksimum model (sehingga bisa melewatkan informasi penting di akhir dokumen), pipeline ini dapat menangani konteks yang sangat panjang dan tetap mengembalikan jawaban walaupun berada di bagian paling akhir:
+
+```py
+long_context = """ 
+🤗 Transformers: NLP Mutakhir
+
+🤗 Transformers menyediakan ribuan model pralatih untuk melakukan berbagai tugas pada teks seperti klasifikasi, ekstraksi informasi, 
+penjawaban pertanyaan, peringkasan, terjemahan, pembuatan teks, dan lainnya dalam lebih dari 100 bahasa. 
+Tujuannya adalah untuk mempermudah penggunaan NLP mutakhir bagi semua orang.
+
+🤗 Transformers menyediakan API untuk dengan cepat mengunduh dan menggunakan model-model pralatih tersebut pada teks tertentu, 
+menyesuaikannya (fine-tune) dengan dataset milik Anda sendiri, dan kemudian membagikannya dengan komunitas di model hub kami. 
+Pada saat yang sama, setiap modul Python yang mendefinisikan sebuah arsitektur bersifat mandiri sepenuhnya dan dapat dimodifikasi 
+untuk mendukung eksperimen penelitian dengan cepat.
+
+Mengapa saya harus menggunakan Transformers?
+
+1. Model mutakhir yang mudah digunakan:
+  - Performa tinggi untuk tugas NLU dan NLG.
+  - Hambatan masuk yang rendah bagi pendidik dan praktisi.
+  - Abstraksi minimal dengan hanya tiga kelas yang perlu dipelajari.
+  - API terpadu untuk menggunakan semua model pralatih kami.
+  - Biaya komputasi lebih rendah, jejak karbon lebih kecil.
+
+2. Peneliti dapat membagikan model yang telah dilatih alih-alih selalu melatih dari awal.
+  - Praktisi dapat mengurangi waktu komputasi dan biaya produksi.
+  - Puluhan arsitektur dengan lebih dari 10.000 model pralatih, beberapa dalam lebih dari 100 bahasa.
+
+3. Pilih kerangka kerja yang tepat untuk setiap tahap siklus hidup model:
+  - Latih model mutakhir hanya dengan 3 baris kode.
+  - Pindahkan satu model antar kerangka kerja TF2.0/PyTorch secara fleksibel.
+  - Pilih kerangka kerja yang sesuai untuk pelatihan, evaluasi, dan produksi dengan mudah.
+
+4. Mudah menyesuaikan model atau contoh sesuai kebutuhan Anda:
+  - Kami menyediakan contoh untuk setiap arsitektur guna mereproduksi hasil yang diterbitkan oleh penulis aslinya.
+  - Internal model diekspos se-konsisten mungkin.
+  - File model dapat digunakan secara independen dari pustaka untuk eksperimen cepat.
+
+🤗 Transformers didukung oleh tiga pustaka pembelajaran mendalam paling populer — Jax, PyTorch, dan TensorFlow — 
+dengan integrasi yang mulus di antara ketiganya. 
+Sangat mudah untuk melatih model Anda dengan salah satunya, lalu memuatnya untuk inferensi dengan yang lain.
+"""
+question_answerer(question=question, context=long_context)
+```
+
+```python out
+{'score': 0.97149,
+ 'start': 1892,
+ 'end': 1919,
+ 'answer': 'Jax, PyTorch and TensorFlow'}
+```
+
+Mari kita lihat bagaimana semua ini dilakukan!
+
+## Menggunakan Model untuk Question Answering[[using-a-model-for-question-answering]]
+
+Seperti pipeline lainnya, kita mulai dengan men-tokenisasi input dan mengirimkannya ke dalam model. Checkpoint default yang digunakan oleh pipeline `question-answering` adalah [`distilbert-base-cased-distilled-squad`](https://huggingface.co/distilbert-base-cased-distilled-squad) (nama "squad" berasal dari dataset tempat model ini di-*fine-tune*, yang akan dibahas lebih lanjut di [Bab 7](/course/chapter7/7)).
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="pt")
+outputs = model(**inputs)
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFAutoModelForQuestionAnswering
+
+model_checkpoint = "distilbert-base-cased-distilled-squad"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = TFAutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+
+inputs = tokenizer(question, context, return_tensors="tf")
+outputs = model(**inputs)
+```
+
+{/if}
+
+Perhatikan bahwa kita men-tokenisasi pertanyaan dan konteks sebagai sepasang input, dengan pertanyaan berada di awal.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens.svg" alt="Contoh tokenisasi pertanyaan dan konteks"/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter6/question_tokens-dark.svg" alt="Contoh tokenisasi pertanyaan dan konteks"/>
+</div>
+
+Model untuk question answering bekerja sedikit berbeda dari model yang kita lihat sebelumnya. Model ini dilatih untuk memprediksi indeks token tempat jawaban **dimulai** (misalnya 21) dan tempat jawaban **berakhir** (misalnya 24). Oleh karena itu, model ini mengembalikan dua tensor logits: satu untuk posisi awal, satu untuk posisi akhir. Misalnya, jika input memiliki 66 token:
+
+```py
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([1, 66]) torch.Size([1, 66])
+```
+
+{:else}
+
+```python out
+(1, 66) (1, 66)
+```
+
+{/if}
+
+Untuk mengubah logit menjadi probabilitas, kita akan menerapkan fungsi softmax — tetapi sebelum itu, kita perlu memastikan bahwa kita melakukan masking terhadap indeks-indeks yang bukan bagian dari konteks. Input kita berbentuk `[CLS] question [SEP] context [SEP]`, jadi kita perlu melakukan masking terhadap token-token dari pertanyaan serta token `[SEP]`. Namun, kita akan tetap menyertakan token `[CLS]`, karena beberapa model menggunakannya untuk menunjukkan bahwa jawaban tidak terdapat dalam konteks.
+
+Karena kita akan menerapkan softmax setelahnya, kita cukup mengganti nilai logits pada posisi yang ingin dimask dengan angka negatif yang sangat besar, misalnya `-10000`.
+
+{#if fw === 'pt'}
+
+```py
+import torch
+
+sequence_ids = inputs.sequence_ids()
+# Mask semua kecuali token dari konteks
+mask = [i != 1 for i in sequence_ids]
+# Jangan mask token [CLS]
+mask[0] = False
+mask = torch.tensor(mask)[None]
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+{:else}
+
+```py
+import tensorflow as tf
+
+sequence_ids = inputs.sequence_ids()
+# Mask semua kecuali token dari konteks
+mask = [i != 1 for i in sequence_ids]
+# Jangan mask token [CLS]
+mask[0] = False
+mask = tf.constant(mask)[None]
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+{/if}
+
+Sekarang kita bisa menerapkan softmax:
+
+{#if fw === 'pt'}
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)[0]
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)[0]
+```
+
+{:else}
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1)[0].numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1)[0].numpy()
+```
+
+{/if}
+
+Pada tahap ini, kita sebenarnya bisa mengambil argmax dari probabilitas indeks awal dan akhir — tetapi kita mungkin saja mendapatkan indeks awal yang lebih besar dari indeks akhir, jadi kita perlu mengambil beberapa langkah tambahan. Kita akan menghitung probabilitas untuk setiap kemungkinan pasangan `start_index` dan `end_index` di mana `start_index <= end_index`, lalu memilih pasangan `(start_index, end_index)` dengan probabilitas tertinggi.
+
+Dengan mengasumsikan bahwa kejadian "Jawaban dimulai pada `start_index`" dan "Jawaban berakhir pada `end_index`" bersifat independen, maka probabilitas bahwa jawaban dimulai pada `start_index` dan berakhir pada `end_index` adalah:
+
+$$\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]$$
+
+Jadi, untuk menghitung semua skor, kita hanya perlu menghitung semua hasil perkalian \\(\mathrm{start\_probabilities}[\mathrm{start\_index}] \times \mathrm{end\_probabilities}[\mathrm{end\_index}]\\) di mana `start_index <= end_index`.
+
+Pertama, mari kita hitung semua kemungkinan hasil perkaliannya:
+
+```py
+scores = start_probabilities[:, None] * end_probabilities[None, :]
+```
+
+{#if fw === 'pt'}
+
+Kemudian kita akan melakukan masking terhadap nilai-nilai di mana `start_index > end_index` dengan mengaturnya menjadi `0` (karena probabilitas lainnya semuanya bernilai positif). Fungsi `torch.triu()` akan mengembalikan bagian segitiga atas dari tensor 2D yang diberikan sebagai argumen, sehingga fungsi ini akan melakukan masking tersebut untuk kita:
+
+```py
+scores = torch.triu(scores)
+```
+
+{:else}
+
+Then we'll mask the values where `start_index > end_index` by setting them to `0` (the other probabilities are all positive numbers). The `np.triu()` function returns the upper triangular part of the 2D tensor passed as an argument, so it will do that masking for us:
+
+```py
+import numpy as np
+
+scores = np.triu(scores)
+```
+
+{/if}
+
+Sekarang kita hanya perlu mengambil indeks dengan nilai maksimum. Karena PyTorch akan mengembalikan indeks dalam bentuk tensor datar (flattened), kita perlu menggunakan operasi pembagian bulat `//` dan modulus `%` untuk mendapatkan `start_index` dan `end_index`:
+
+```py
+max_index = scores.argmax().item()
+start_index = max_index // scores.shape[1]
+end_index = max_index % scores.shape[1]
+print(scores[start_index, end_index])
+```
+
+Kita belum benar-benar selesai, tetapi setidaknya kita sudah mendapatkan skor yang benar untuk jawabannya (Anda bisa memverifikasinya dengan membandingkannya dengan hasil pertama di bagian sebelumnya):
+
+```python out
+0.97773
+```
+
+<Tip>
+
+✏️ **Coba sendiri!** Hitung indeks `start` dan `end` untuk lima jawaban yang paling mungkin.
+
+</Tip>
+
+Kita sudah memiliki `start_index` dan `end_index` jawaban dalam bentuk indeks token, sekarang kita hanya perlu mengubahnya ke indeks karakter dalam konteks. Di sinilah offset sangat berguna, seperti yang kita lakukan di tugas klasifikasi token:
+
+```py
+inputs_with_offsets = tokenizer(question, context, return_offsets_mapping=True)
+offsets = inputs_with_offsets["offset_mapping"]
+
+start_char, _ = offsets[start_index]
+_, end_char = offsets[end_index]
+answer = context[start_char:end_char]
+```
+
+Sekarang kita hanya perlu menyusun hasilnya:
+
+```py
+result = {
+    "answer": answer,
+    "start": start_char,
+    "end": end_char,
+    "score": scores[start_index, end_index],
+}
+print(result)
+```
+
+```python out
+{'answer': 'Jax, PyTorch and TensorFlow',
+ 'start': 78,
+ 'end': 105,
+ 'score': 0.97773}
+```
+
+Hebat! Ini adalah hasil yang sama dengan pipeline pertama kita!
+
+<Tip>
+
+✏️ **Coba sendiri!** Gunakan skor terbaik yang sudah dihitung sebelumnya untuk menampilkan lima jawaban yang paling mungkin. Untuk membandingkan hasilnya, jalankan kembali pipeline pertama dan atur `top_k=5`.
+
+</Tip>
+
+## Menangani K konteks panjang[[handling-long-contexts]]
+
+Jika kita mencoba men-tokenisasi pertanyaan dan konteks panjang yang digunakan sebelumnya, hasilnya akan melebihi panjang maksimum yang digunakan dalam pipeline `question-answering` (yaitu 384 token):
+
+```py
+inputs = tokenizer(question, long_context)
+print(len(inputs["input_ids"]))
+```
+
+```python out
+461
+```
+
+Jadi, kita perlu memangkas input pada panjang maksimum tersebut. Ada beberapa cara untuk melakukannya, tetapi kita **tidak ingin memotong pertanyaannya**, hanya konteksnya. Karena konteks adalah kalimat kedua, kita bisa menggunakan strategi pemangkasan `"only_second"`. Masalahnya: jawaban dari pertanyaan mungkin tidak ada dalam konteks yang sudah dipotong. Sebagai contoh, pertanyaan kita memiliki jawaban di akhir konteks. Ketika konteks tersebut dipotong, jawaban tidak lagi ada di dalamnya:
+
+```py
+inputs = tokenizer(question, long_context, max_length=384, truncation="only_second")
+print(tokenizer.decode(inputs["input_ids"]))
+```
+
+```python out
+"""
+[CLS] Pustaka deep learning apa yang mendukung [UNK] Transformers? [SEP] [UNK] Transformers: NLP Mutakhir
+
+[UNK] Transformers menyediakan ribuan model pralatih untuk melakukan tugas pada teks seperti klasifikasi, ekstraksi informasi,
+penjawaban pertanyaan, peringkasan, terjemahan, pembuatan teks, dan lainnya dalam lebih dari 100 bahasa.
+Tujuannya adalah untuk mempermudah penggunaan NLP mutakhir bagi semua orang.
+
+[UNK] Transformers menyediakan API untuk dengan cepat mengunduh dan menggunakan model-model pralatih tersebut pada teks tertentu, 
+melakukan fine-tune dengan dataset milik Anda sendiri, dan kemudian membagikannya dengan komunitas di model hub kami. 
+Pada saat yang sama, setiap modul Python yang mendefinisikan sebuah arsitektur bersifat mandiri sepenuhnya dan dapat dimodifikasi 
+untuk mendukung eksperimen penelitian secara cepat.
+
+Mengapa saya harus menggunakan Transformers?
+
+1. Model mutakhir yang mudah digunakan:
+  - Performa tinggi untuk tugas NLU dan NLG.
+  - Hambatan masuk yang rendah bagi pendidik dan praktisi.
+  - Hanya sedikit abstraksi yang perlu dipahami oleh pengguna, cukup dengan mempelajari tiga kelas.
+  - API terpadu untuk menggunakan semua model pralatih kami.
+  - Biaya komputasi lebih rendah, jejak karbon lebih kecil.
+
+2. Peneliti dapat membagikan model yang telah dilatih alih-alih selalu melatih ulang dari awal.
+  - Praktisi dapat mengurangi waktu komputasi dan biaya produksi.
+  - Puluhan arsitektur dengan lebih dari 10.000 model pralatih, beberapa tersedia dalam lebih dari 100 bahasa.
+
+3. Pilih kerangka kerja yang tepat untuk setiap tahap siklus hidup model:
+  - Latih model mutakhir hanya dengan 3 baris kode.
+  - Pindahkan satu model antar kerangka kerja TF2.0/PyTorch secara fleksibel.
+  - Pilih kerangka kerja yang sesuai untuk pelatihan, evaluasi, dan produksi dengan mulus.
+
+4. Mudah menyesuaikan model atau contoh sesuai kebutuhan Anda:
+  - Kami menyediakan contoh untuk setiap arsitektur guna mereproduksi hasil yang diterbitkan oleh penulis aslinya.
+  - Internal model [SEP]
+"""
+```
+
+Ini berarti model akan kesulitan dalam memilih jawaban yang benar. Untuk mengatasi hal ini, pipeline `question-answering` memungkinkan kita untuk membagi konteks menjadi potongan-potongan yang lebih kecil, dengan menentukan panjang maksimum. Agar kita tidak membagi konteks tepat di tempat yang salah yang membuat jawaban menjadi tidak dapat ditemukan, pipeline ini juga menyertakan sedikit tumpang tindih antar potongan.
+
+Kita bisa meminta tokenizer (baik yang cepat maupun yang lambat) untuk melakukan ini dengan menambahkan `return_overflowing_tokens=True`, dan kita bisa menentukan jumlah tumpang tindih yang diinginkan dengan argumen `stride`. Berikut adalah contohnya, menggunakan kalimat yang lebih pendek:
+
+
+```py
+sentence = "This sentence is not too long but we are going to split it anyway."
+inputs = tokenizer(
+    sentence, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+for ids in inputs["input_ids"]:
+    print(tokenizer.decode(ids))
+```
+
+```python out
+'[CLS] This sentence is not [SEP]'
+'[CLS] is not too long [SEP]'
+'[CLS] too long but we [SEP]'
+'[CLS] but we are going [SEP]'
+'[CLS] are going to split [SEP]'
+'[CLS] to split it anyway [SEP]'
+'[CLS] it anyway. [SEP]'
+```
+
+Seperti yang bisa kita lihat, kalimat telah dibagi menjadi beberapa potongan sedemikian rupa sehingga setiap entri dalam `inputs["input_ids"]` memiliki maksimal 6 token (kita perlu menambahkan padding agar entri terakhir memiliki ukuran yang sama dengan yang lainnya), dan terdapat tumpang tindih sebanyak 2 token antara setiap entri.
+
+Mari kita lihat lebih dalam hasil tokenisasi:
+
+```py
+print(inputs.keys())
+```
+
+```python out
+dict_keys(['input_ids', 'attention_mask', 'overflow_to_sample_mapping'])
+```
+
+Seperti yang diharapkan, kita mendapatkan `input_ids` dan `attention_mask`. Kunci terakhir, `overflow_to_sample_mapping`, adalah peta yang menunjukkan **dari kalimat ke berapa** setiap hasil berasal — dalam kasus ini, ketujuh hasil berasal dari satu kalimat:
+
+```py
+print(inputs["overflow_to_sample_mapping"])
+```
+
+```python out
+[0, 0, 0, 0, 0, 0, 0]
+```
+
+Ini akan menjadi lebih berguna ketika kita men-tokenisasi **beberapa** kalimat sekaligus. Misalnya, pada kasus berikut:
+
+```py
+sentences = [
+    "This sentence is not too long but we are going to split it anyway.",
+    "This sentence is shorter but will still get split.",
+]
+inputs = tokenizer(
+    sentences, truncation=True, return_overflowing_tokens=True, max_length=6, stride=2
+)
+
+print(inputs["overflow_to_sample_mapping"])
+```
+
+Hasilnya:
+
+```python out
+[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+```
+
+Artinya, kalimat pertama dipecah menjadi 7 bagian seperti sebelumnya, dan 4 bagian selanjutnya berasal dari kalimat kedua.
+
+Sekarang mari kita kembali ke konteks panjang kita. Secara default, pipeline `question-answering` menggunakan panjang maksimum 384 token dan `stride` sebesar 128 — sesuai dengan cara model di-*fine-tune*. (Parameter ini bisa disesuaikan lewat `max_seq_len` dan `stride` saat memanggil pipeline). Maka, kita akan menggunakan parameter tersebut saat melakukan tokenisasi. Kita juga akan menambahkan padding agar semua sampel memiliki panjang yang sama, dan meminta offset:
+
+```py
+inputs = tokenizer(
+    question,
+    long_context,
+    stride=128,
+    max_length=384,
+    padding="longest",
+    truncation="only_second",
+    return_overflowing_tokens=True,
+    return_offsets_mapping=True,
+)
+```
+
+`inputs` tersebut akan berisi input ID dan attention mask yang dibutuhkan oleh model, serta offset dan `overflow_to_sample_mapping` yang baru saja kita bahas. Karena dua elemen terakhir tersebut bukan parameter yang digunakan oleh model, kita akan menghapusnya dari `inputs` (dan kita tidak akan menyimpan mapping-nya, karena tidak berguna di sini) sebelum mengonversinya menjadi tensor:
+
+{#if fw === 'pt'}
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("pt")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+torch.Size([2, 384])
+```
+
+{:else}
+
+```py
+_ = inputs.pop("overflow_to_sample_mapping")
+offsets = inputs.pop("offset_mapping")
+
+inputs = inputs.convert_to_tensors("tf")
+print(inputs["input_ids"].shape)
+```
+
+```python out
+(2, 384)
+```
+
+{/if}
+
+Konteks panjang kita dipecah menjadi 2 bagian, artinya setelah melalui model, kita akan memiliki dua set `start_logits` dan `end_logits`:
+
+```py
+outputs = model(**inputs)
+
+start_logits = outputs.start_logits
+end_logits = outputs.end_logits
+print(start_logits.shape, end_logits.shape)
+```
+
+{#if fw === 'pt'}
+
+```python out
+torch.Size([2, 384]) torch.Size([2, 384])
+```
+
+{:else}
+
+```python out
+(2, 384) (2, 384)
+```
+
+{/if}
+
+Seperti sebelumnya, kita mask token yang bukan bagian dari konteks **dan** token padding sebelum menerapkan softmax:
+
+{#if fw === 'pt'}
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Masking semua token kecuali token dari konteks
+mask = [i != 1 for i in sequence_ids]
+# Jangan masking token [CLS]
+mask[0] = False
+# Masking semua token [PAD]
+mask = torch.logical_or(torch.tensor(mask)[None], (inputs["attention_mask"] == 0))
+
+start_logits[mask] = -10000
+end_logits[mask] = -10000
+```
+
+{:else}
+
+```py
+sequence_ids = inputs.sequence_ids()
+# Masking semua token kecuali token dari konteks
+mask = [i != 1 for i in sequence_ids]
+# Jangan masking token [CLS]
+mask[0] = False
+# Masking semua token [PAD]
+mask = tf.math.logical_or(tf.constant(mask)[None], inputs["attention_mask"] == 0)
+
+start_logits = tf.where(mask, -10000, start_logits)
+end_logits = tf.where(mask, -10000, end_logits)
+```
+
+{/if}
+
+Kemudian kita ubah `logits` menjadi probabilitas:
+
+{#if fw === 'pt'}
+
+```py
+start_probabilities = torch.nn.functional.softmax(start_logits, dim=-1)
+end_probabilities = torch.nn.functional.softmax(end_logits, dim=-1)
+```
+
+{:else}
+
+```py
+start_probabilities = tf.math.softmax(start_logits, axis=-1).numpy()
+end_probabilities = tf.math.softmax(end_logits, axis=-1).numpy()
+```
+
+{/if}
+
+Langkah berikutnya mirip seperti pada konteks pendek, tapi diulang untuk setiap bagian. Kita hitung skor untuk semua pasangan `(start, end)` dan pilih span dengan skor terbaik:
+
+{#if fw === 'pt'}
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = torch.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+{:else}
+
+```py
+candidates = []
+for start_probs, end_probs in zip(start_probabilities, end_probabilities):
+    scores = start_probs[:, None] * end_probs[None, :]
+    idx = np.triu(scores).argmax().item()
+
+    start_idx = idx // scores.shape[1]
+    end_idx = idx % scores.shape[1]
+    score = scores[start_idx, end_idx].item()
+    candidates.append((start_idx, end_idx, score))
+
+print(candidates)
+```
+
+{/if}
+
+```python out
+[(0, 18, 0.33867), (173, 184, 0.97149)]
+```
+
+Kedua kandidat tersebut merupakan jawaban terbaik yang berhasil ditemukan model di masing-masing potongan konteks. Model jauh lebih yakin bahwa jawaban yang benar ada di bagian kedua (dan itu pertanda baik!). Sekarang kita hanya perlu memetakan kedua rentang token tersebut ke rentang karakter dalam konteks (kita sebenarnya hanya perlu memetakan bagian kedua untuk mendapatkan jawabannya, tetapi menarik juga untuk melihat apa yang dipilih model pada potongan pertama).
+
+<Tip>
+
+✏️ **Coba sendiri!** Sesuaikan kode di atas untuk mengembalikan 5 kandidat jawaban paling mungkin dari seluruh konteks (bukan per bagian).
+
+</Tip>
+
+Objek `offsets` adalah daftar offset, satu untuk setiap bagian konteks:
+
+```py
+for candidate, offset in zip(candidates, offsets):
+    start_token, end_token, score = candidate
+    start_char, _ = offset[start_token]
+    _, end_char = offset[end_token]
+    answer = long_context[start_char:end_char]
+    result = {"answer": answer, "start": start_char, "end": end_char, "score": score}
+    print(result)
+```
+
+```python out
+{'answer': '\n🤗 Transformers: State of the Art NLP', 'start': 0, 'end': 37, 'score': 0.33867}
+{'answer': 'Jax, PyTorch and TensorFlow', 'start': 1892, 'end': 1919, 'score': 0.97149}
+```
+
+Jika kita abaikan hasil pertama, kita mendapatkan jawaban **yang sama persis** dengan pipeline untuk konteks panjang ini — keren!
+
+<Tip>
+
+✏️ **Coba sendiri!** Gunakan skor terbaik yang sudah dihitung sebelumnya untuk menampilkan lima jawaban paling mungkin dari seluruh konteks. Untuk membandingkan hasil, gunakan pipeline dengan `top_k=5`.
+
+</Tip>
+
+Dengan ini, kita selesai membahas secara mendalam kemampuan tokenizer. Semua yang telah Anda pelajari di bab ini akan kita praktikkan lagi di bab berikutnya, ketika kita menunjukkan cara *fine-tuning* model untuk berbagai tugas NLP umum.

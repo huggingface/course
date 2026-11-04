@@ -1,0 +1,570 @@
+# *Training loop* Lengkap[[a-full-training]]
+
+<CourseFloatingBanner chapter={3}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter3/section4.ipynb"},
+]} />
+
+<Youtube id="Dh9CL8fyG80" />
+
+Sekarang kita akan melihat bagaimana mencapai hasil yang sama seperti di bagian sebelumnya *tanpa* menggunakan kelas `Trainer`, dengan mengimplementasikan *training loop* dari nol menggunakan praktik terbaik PyTorch modern. Sekali lagi, kita asumsikan Anda telah menyelesaikan pemrosesan data di bagian 2. Berikut ringkasan singkat yang mencakup semua yang akan Anda butuhkan:
+
+<Tip>
+
+🏗️ **Pelatihan dari Nol**: Bagian ini membangun dari konten sebelumnya. Untuk panduan menyeluruh mengenai *training loop* PyTorch dan praktik terbaik, lihat [dokumentasi pelatihan 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/training#train-in-native-pytorch) dan [custom training cookbook](https://huggingface.co/learn/cookbook/en/fine_tuning_code_llm_on_single_gpu#model).
+
+</Tip>
+
+```python
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+
+raw_datasets = load_dataset("glue", "mrpc")
+checkpoint = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+def tokenize_function(example):
+    return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+
+
+tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+```
+
+### Persiapan untuk Pelatihan[[prepare-for-training]]
+
+Sebelum menulis *training loop*, kita perlu mendefinisikan beberapa objek. Yang pertama adalah *dataloader* yang akan kita gunakan untuk melakukan iterasi per batch. Tapi sebelum itu, kita harus melakukan sedikit pasca-pemrosesan pada `tokenized_datasets` untuk menangani beberapa hal yang sebelumnya dilakukan otomatis oleh `Trainer`. Secara spesifik, kita perlu:
+
+- Menghapus kolom yang tidak dibutuhkan model (seperti `sentence1` dan `sentence2`).
+- Mengganti nama kolom `label` menjadi `labels` (karena model mengharapkan argumen bernama `labels`).
+- Mengatur format dataset agar mengembalikan tensor PyTorch, bukan list biasa.
+
+Langkah-langkah ini dapat dilakukan seperti berikut:
+
+```python
+tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+tokenized_datasets.set_format("torch")
+tokenized_datasets["train"].column_names
+```
+
+Kita bisa periksa bahwa hasil akhirnya hanya memiliki kolom yang dapat diterima oleh model:
+
+```python
+["attention_mask", "input_ids", "labels", "token_type_ids"]
+```
+
+Sekarang kita bisa mendefinisikan *dataloader*:
+
+```python
+from torch.utils.data import DataLoader
+
+train_dataloader = DataLoader(
+    tokenized_datasets["train"], shuffle=True, batch_size=8, collate_fn=data_collator
+)
+eval_dataloader = DataLoader(
+    tokenized_datasets["validation"], batch_size=8, collate_fn=data_collator
+)
+```
+
+Untuk memastikan tidak ada kesalahan, kita bisa lihat isi satu batch:
+
+```python
+for batch in train_dataloader:
+    break
+{k: v.shape for k, v in batch.items()}
+```
+
+```python
+{
+    "attention_mask": torch.Size([8, 65]),
+    "input_ids": torch.Size([8, 65]),
+    "labels": torch.Size([8]),
+    "token_type_ids": torch.Size([8, 65]),
+}
+```
+
+Catatan: bentuk tensor (shape) mungkin akan sedikit berbeda karena `shuffle=True` dan padding dilakukan hingga panjang maksimum dalam setiap batch.
+
+Sekarang setelah kita benar-benar selesai dengan praproses data (sebuah tujuan yang memuaskan namun sering kali sulit dicapai bagi praktisi ML), mari kita beralih ke model. Kita menginisialisasinya persis seperti yang kita lakukan di bagian sebelumnya:
+
+```python
+from transformers import AutoModelForSequenceClassification
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+```
+
+Untuk memastikan bahwa semuanya berjalan lancar selama pelatihan, kita memasukkan batch kita ke dalam model ini:
+
+```python
+outputs = model(**batch)
+print(outputs.loss, outputs.logits.shape)
+```
+
+```python out
+tensor(0.5441, grad_fn=<NllLossBackward>) torch.Size([8, 2])
+```
+
+Semua model 🤗 Transformers akan mengembalikan nilai loss ketika `labels` diberikan, dan kita juga akan mendapatkan logits (dua untuk setiap input dalam batch kita, sehingga menghasilkan tensor berukuran 8 x 2).
+
+Sekarang kita hampir siap menulis *training loop*! Yang tersisa hanyalah optimizer dan scheduler. Kita akan meniru pengaturan default dari `Trainer`. Optimizer yang digunakan adalah `AdamW`:
+
+```python
+from torch.optim import AdamW
+
+optimizer = AdamW(model.parameters(), lr=5e-5)
+```
+
+<Tip>
+
+💡 **Tips Optimasi Modern**: Untuk performa lebih baik, Anda bisa coba:
+- **AdamW dengan weight decay**: `AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)`
+- **Adam 8-bit**: Gunakan `bitsandbytes` untuk optimasi yang hemat memori
+- **Learning rate berbeda**: Biasanya 1e-5 hingga 3e-5 lebih baik untuk model besar
+
+🚀 **Sumber Optimasi**: Pelajari lebih lanjut di [panduan optimasi 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/performance#optimizer)
+
+</Tip>
+
+Akhirnya, scheduler laju pembelajaran (learning rate scheduler) yang digunakan secara default adalah penurunan linier dari nilai maksimum (5e-5) ke 0. Untuk mendefinisikannya dengan benar, kita perlu mengetahui jumlah langkah pelatihan (training steps) yang akan dilakukan, yaitu jumlah epoch yang ingin dijalankan dikalikan dengan jumlah batch pelatihan (yang merupakan panjang dari dataloader pelatihan kita). `Trainer` menggunakan tiga epoch secara default, jadi kita akan mengikuti pengaturan tersebut:
+
+```python
+from transformers import get_scheduler
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+print(num_training_steps)
+```
+
+```python
+1377
+```
+
+### *Training Loop*[[the-training-loop]]
+
+Satu hal terakhir: kita akan ingin menggunakan GPU jika tersedia (karena pada CPU, pelatihan bisa memakan waktu beberapa jam dibandingkan hanya beberapa menit di GPU). Untuk melakukan ini, kita mendefinisikan sebuah `device` tempat kita akan menempatkan model dan batch kita:
+
+```python
+import torch
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model.to(device)
+device
+```
+
+```python
+device(type="cuda")
+```
+
+Sekarang kita siap untuk melakukan pelatihan! Untuk mengetahui sejauh mana proses pelatihan telah berlangsung, kita menambahkan progress bar berdasarkan jumlah langkah pelatihan kita, menggunakan pustaka `tqdm`:
+
+```python
+from tqdm.auto import tqdm
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+<Tip>
+
+💡 **Optimasi Pelatihan Modern**: Untuk efisiensi pelatihan yang lebih baik, pertimbangkan:
+
+- **Gradient Clipping**: Tambahkan `torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)` sebelum `optimizer.step()`
+- **Presisi Campuran (Mixed Precision)**: Gunakan `torch.cuda.amp.autocast()` dan `GradScaler`
+- **Gradient Accumulation**: Kumpulkan gradien dari beberapa batch sebelum melakukan update
+- **Checkpointing**: Simpan model secara berkala untuk mencegah kehilangan data jika pelatihan terputus
+
+🔧 **Panduan Implementasi**: Lihat contoh di [efisiensi pelatihan 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_one) dan [daftar optimizer](https://huggingface.co/docs/transformers/main/en/optimizers)
+
+</Tip>
+
+Anda dapat melihat bahwa inti dari *training loop* ini mirip seperti yang diperkenalkan di awal. Karena kita belum menambahkan evaluasi atau logging, loop ini tidak akan memberi tahu performa model. Untuk itu, kita perlu menambahkan *evaluation loop*.
+
+### Loop Evaluasi[[the-evaluation-loop]]
+
+Seperti yang telah kita lakukan sebelumnya, kita akan menggunakan metrik dari pustaka 🤗 Evaluate. Kita sudah melihat metode `metric.compute()`, tetapi metrik sebenarnya bisa mengakumulasi batch secara bertahap menggunakan metode `add_batch()`. Setelah semua batch dikumpulkan, kita bisa menghitung hasil akhirnya dengan `metric.compute()`. Berikut implementasi lengkap dalam loop evaluasi:
+
+<Tip>
+
+📊 **Praktik Terbaik Evaluasi**: Untuk strategi evaluasi dan metrik yang lebih canggih, jelajahi [dokumentasi 🤗 Evaluate](https://huggingface.co/docs/evaluate/) dan [evaluation cookbook komprehensif](https://github.com/huggingface/evaluation-guidebook).
+
+</Tip>
+
+```python
+import evaluate
+
+metric = evaluate.load("glue", "mrpc")
+model.eval()
+for batch in eval_dataloader:
+    batch = {k: v.to(device) for k, v in batch.items()}
+    with torch.no_grad():
+        outputs = model(**batch)
+
+    logits = outputs.logits
+    predictions = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=predictions, references=batch["labels"])
+
+metric.compute()
+```
+
+```python out
+{'accuracy': 0.8431372549019608, 'f1': 0.8907849829351535}
+```
+
+Hasil Anda mungkin sedikit berbeda karena inisialisasi acak pada kepala model dan *shuffling* data, tetapi seharusnya berada pada kisaran yang sama.
+
+<Tip>
+
+✏️ **Coba Sendiri!** Modifikasi training loop sebelumnya untuk melakukan fine-tuning pada dataset SST-2.
+
+</Tip>
+
+### Percepat Training Loop Anda dengan 🤗 Accelerate[[supercharge-your-training-loop-with-accelerate]]
+
+<Youtube id="s7dy8QRgjJ0" />
+
+Loop pelatihan yang kita definisikan sebelumnya bekerja dengan baik pada satu CPU atau GPU. Namun, dengan menggunakan pustaka [🤗 Accelerate](https://github.com/huggingface/accelerate), hanya dengan beberapa penyesuaian kita dapat mengaktifkan pelatihan terdistribusi pada beberapa GPU atau TPU. 🤗 Accelerate secara otomatis menangani kompleksitas pelatihan terdistribusi, mixed precision, dan penempatan perangkat (device placement). Dimulai dari pembuatan dataloader untuk pelatihan dan validasi, berikut adalah tampilan loop pelatihan manual kita:
+
+<Tip>
+
+⚡ **Pendalaman Accelerate**: Pelajari semua tentang pelatihan terdistribusi, presisi campuran, dan optimasi perangkat keras di [dokumentasi 🤗 Accelerate](https://huggingface.co/docs/accelerate/) serta contoh praktis di [dokumentasi Transformers](https://huggingface.co/docs/transformers/main/en/accelerate).
+
+</Tip>
+
+```python
+from accelerate import Accelerator
+from torch.optim import AdamW
+from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+Langkah pertama adalah mengimpor dan membuat objek `Accelerator`, yang akan secara otomatis mengatur konfigurasi pelatihan terdistribusi sesuai lingkungan Anda. 🤗 Accelerate akan menangani semua penempatan perangkat, jadi Anda tidak perlu lagi menggunakan `model.to(device)` — meskipun jika ingin, Anda bisa ganti dengan `accelerator.device`.
+
+Kemudian, sebagian besar pekerjaan dilakukan pada baris yang mengirimkan dataloader, model, dan optimizer ke `accelerator.prepare()`. Baris ini akan membungkus objek-objek tersebut dalam kontainer yang sesuai untuk memastikan bahwa pelatihan terdistribusi Anda berjalan sebagaimana mestinya. Perubahan lain yang perlu dilakukan adalah menghapus baris yang memindahkan batch ke `device` (jika Anda ingin tetap menggunakannya, Anda bisa menggantinya dengan `accelerator.device`) dan mengganti `loss.backward()` dengan `accelerator.backward(loss)`.
+
+<Tip>
+⚠️ Untuk mendapatkan kecepatan maksimum pada Cloud TPU, sebaiknya Anda melakukan padding ke panjang tetap dengan `padding="max_length"` dan `max_length` saat menggunakan tokenizer.
+</Tip>
+
+Jika ingin mencoba langsung, berikut versi lengkap training loop menggunakan 🤗 Accelerate:
+
+```python
+from accelerate import Accelerator
+from torch.optim import AdamW
+from transformers import AutoModelForSequenceClassification, get_scheduler
+
+accelerator = Accelerator()
+
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+optimizer = AdamW(model.parameters(), lr=3e-5)
+
+train_dl, eval_dl, model, optimizer = accelerator.prepare(
+    train_dataloader, eval_dataloader, model, optimizer
+)
+
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dl)
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=0,
+    num_training_steps=num_training_steps,
+)
+
+progress_bar = tqdm(range(num_training_steps))
+
+model.train()
+for epoch in range(num_epochs):
+    for batch in train_dl:
+        outputs = model(**batch)
+        loss = outputs.loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        progress_bar.update(1)
+```
+
+Meletakkan ini dalam sebuah skrip `train.py` akan membuat skrip tersebut dapat dijalankan pada jenis setup terdistribusi apa pun. Untuk mencobanya di setup terdistribusi Anda, jalankan perintah berikut:
+
+```bash
+accelerate config
+```
+
+yang akan meminta Anda menjawab beberapa pertanyaan dan menyimpan jawaban Anda dalam sebuah file konfigurasi yang digunakan oleh perintah berikut:
+
+```bash
+accelerate launch train.py
+```
+
+yang akan menjalankan pelatihan terdistribusi.
+
+Jika Anda ingin mencoba ini di sebuah Notebook (misalnya, untuk menguji dengan TPU di Colab), cukup tempelkan kodenya ke dalam sebuah `training_function()` dan jalankan sel terakhir dengan:
+
+```python
+from accelerate import notebook_launcher
+
+notebook_launcher(training_function)
+```
+
+Contoh lainnya tersedia di [repo 🤗 Accelerate](https://github.com/huggingface/accelerate/tree/main/examples).
+
+<Tip>
+
+🌐 **Pelatihan Terdistribusi**: Untuk panduan menyeluruh tentang pelatihan multi-GPU dan multi-node, lihat [panduan pelatihan terdistribusi 🤗 Transformers](https://huggingface.co/docs/transformers/main/en/perf_train_gpu_many) dan [scaling training cookbook](https://huggingface.co/docs/transformers/main/en/accelerate).
+
+</Tip>
+
+### Langkah Selanjutnya dan Praktik Terbaik[[next-steps-and-best-practices]]
+
+Setelah Anda mempelajari cara melakukan pelatihan dari awal, berikut beberapa pertimbangan tambahan untuk digunakan dalam produksi:
+
+**Evaluasi Model**: Jangan hanya bergantung pada akurasi. Gunakan pustaka 🤗 Evaluate untuk evaluasi yang komprehensif.
+
+**Tuning Hyperparameter**: Gunakan pustaka seperti Optuna atau Ray Tune untuk optimasi sistematis.
+
+**Pemantauan Model**: Pantau metrik pelatihan, kurva pembelajaran, dan performa validasi.
+
+**Berbagi Model**: Setelah pelatihan selesai, unggah ke Hugging Face Hub agar bisa digunakan komunitas.
+
+**Efisiensi**: Untuk model besar, gunakan teknik seperti *gradient checkpointing*, fine-tuning parameter-efisien (LoRA, AdaLoRA), atau metode kuantisasi.
+
+Ini mengakhiri pembahasan mendalam kita tentang fine-tuning menggunakan *training loop* kustom. Keterampilan yang Anda pelajari di sini akan sangat berguna ketika Anda butuh kontrol penuh atas proses pelatihan atau ingin menerapkan logika pelatihan khusus yang tidak didukung oleh API `Trainer`.
+
+## Kuis Bagian[[section-quiz]]
+
+Uji pemahaman Anda tentang *custom training loop* dan teknik pelatihan lanjutan:
+
+### 1. Apa perbedaan utama antara optimizer Adam dan AdamW?
+
+<Question
+  choices={[
+    {
+      text: "AdamW menggunakan jadwal laju pembelajaran yang berbeda.",
+      explain: "Penjadwalan learning rate adalah proses terpisah dari pemilihan optimizer."
+    },
+    {
+      text: "AdamW menyertakan regularisasi weight decay yang dipisahkan.",
+      explain: "Benar! AdamW memisahkan weight decay dari pembaruan parameter berbasis gradien, menghasilkan regularisasi yang lebih baik.",
+      correct: true
+    },
+    {
+      text: "AdamW hanya bekerja dengan model transformer.",
+      explain: "AdamW bisa digunakan untuk semua arsitektur model, bukan hanya transformer."
+    },
+    {
+      text: "AdamW membutuhkan lebih sedikit memori dibanding Adam.",
+      explain: "Keduanya memiliki kebutuhan memori yang serupa."
+    }
+  ]}
+/>
+
+### 2. Apa urutan operasi yang benar dalam training loop?
+
+<Question
+  choices={[
+    {
+      text: "Forward pass → Backward pass → Optimizer step → Zero gradients",
+      explain: "Hampir benar, tapi Anda sebaiknya melakukan zero gradients sebelum forward pass berikutnya agar tidak menumpuk gradien lama."
+    },
+    {
+      text: "Forward pass → Backward pass → Optimizer step → Scheduler step → Zero gradients",
+      explain: "Benar! Ini urutan yang tepat: hitung loss, backward, update parameter, update scheduler, lalu hapus gradien.",
+      correct: true
+    },
+    {
+      text: "Zero gradients → Forward pass → Optimizer step → Backward pass",
+      explain: "Backward pass harus dilakukan setelah forward pass untuk menghitung gradien dari loss."
+    },
+    {
+      text: "Forward pass → Zero gradients → Backward pass → Optimizer step",
+      explain: "Menghapus gradien sebelum backward pass akan menghapus gradien yang baru saja Anda hitung."
+    }
+  ]}
+/>
+
+### 3. Apa fungsi utama dari pustaka 🤗 Accelerate?
+
+<Question
+  choices={[
+    {
+      text: "Membuat model Anda lebih cepat dengan mengoptimalkan forward pass.",
+      explain: "Accelerate tidak mengoptimalkan arsitektur model secara langsung."
+    },
+    {
+      text: "Secara otomatis memilih hyperparameter terbaik.",
+      explain: "Accelerate tidak melakukan optimasi hyperparameter."
+    },
+    {
+      text: "Memungkinkan pelatihan terdistribusi di banyak GPU/TPU dengan perubahan kode minimal.",
+      explain: "Benar! Accelerate menangani kompleksitas pelatihan terdistribusi dan memungkinkan kode Anda berjalan mulus di satu atau banyak perangkat.",
+      correct: true
+    },
+    {
+      text: "Mengkonversi model ke framework lain seperti TensorFlow.",
+      explain: "Accelerate hanya bekerja dalam ekosistem PyTorch."
+    }
+  ]}
+/>
+
+### 4. Mengapa kita memindahkan batch ke `device` dalam training loop?
+
+<Question
+  choices={[
+    {
+      text: "Untuk mempercepat pelatihan.",
+      explain: "Meskipun itu efek sampingnya, alasan utama adalah kompatibilitas."
+    },
+    {
+      text: "Karena model dan data harus berada di perangkat (CPU/GPU) yang sama untuk komputasi.",
+      explain: "Benar! PyTorch mensyaratkan tensor berada di perangkat yang sama untuk operasi matematis.",
+      correct: true
+    },
+    {
+      text: "Untuk menghemat memori.",
+      explain: "Memindahkan ke perangkat tidak secara otomatis menghemat memori."
+    },
+    {
+      text: "Karena itu diwajibkan oleh DataLoader.",
+      explain: "DataLoader tidak membutuhkan data berada di device tertentu."
+    }
+  ]}
+/>
+
+### 5. Apa yang dilakukan `model.eval()` sebelum evaluasi?
+
+<Question
+  choices={[
+    {
+      text: "Membekukan parameter model agar tidak bisa diperbarui.",
+      explain: "`model.eval()` tidak membekukan parameter. Itu dilakukan dengan `requires_grad=False`."
+    },
+    {
+      text: "Mengubah perilaku layer seperti dropout dan batch normalization agar sesuai untuk inferensi.",
+      explain: "Benar! `eval()` menonaktifkan dropout dan menggunakan statistik tetap untuk batch norm.",
+      correct: true
+    },
+    {
+      text: "Mengaktifkan perhitungan gradien untuk metrik evaluasi.",
+      explain: "Kita justru menggunakan `torch.no_grad()` saat evaluasi untuk menonaktifkan gradien."
+    },
+    {
+      text: "Secara otomatis menghitung metrik evaluasi.",
+      explain: "`model.eval()` hanya mengubah perilaku layer, bukan menghitung metrik."
+    }
+  ]}
+/>
+
+### 6. Apa tujuan penggunaan `torch.no_grad()` saat evaluasi?
+
+<Question
+  choices={[
+    {
+      text: "Untuk mencegah model membuat prediksi.",
+      explain: "`torch.no_grad()` tidak mencegah prediksi, hanya menonaktifkan pelacakan gradien."
+    },
+    {
+      text: "Untuk menghemat memori dan mempercepat komputasi dengan menonaktifkan pelacakan gradien.",
+      explain: "Benar! Karena kita tidak membutuhkan gradien saat evaluasi, ini menghemat sumber daya.",
+      correct: true
+    },
+    {
+      text: "Untuk mengaktifkan mode evaluasi pada model.",
+      explain: "Mode evaluasi diaktifkan dengan `model.eval()`, bukan `torch.no_grad()`."
+    },
+    {
+      text: "Untuk memastikan hasil yang konsisten.",
+      explain: "Reproduksibilitas ditentukan oleh seed acak, bukan oleh `torch.no_grad()`."
+    }
+  ]}
+/>
+
+### 7. Apa yang berubah ketika Anda menggunakan 🤗 Accelerate dalam training loop?
+
+<Question
+  choices={[
+    {
+      text: "Anda harus menulis ulang seluruh training loop dari awal.",
+      explain: "Accelerate hanya membutuhkan sedikit perubahan dari kode PyTorch yang sudah ada."
+    },
+    {
+      text: "Anda membungkus objek penting dengan `accelerator.prepare()` dan menggunakan `accelerator.backward()`.",
+      explain: "Benar! Inilah perubahan utama: bungkus objek penting dan gunakan `accelerator.backward()` untuk kompatibilitas pelatihan terdistribusi.",
+      correct: true
+    },
+    {
+      text: "Anda harus menentukan jumlah GPU secara eksplisit dalam kode.",
+      explain: "Accelerate secara otomatis mendeteksi perangkat yang tersedia."
+    },
+    {
+      text: "Anda harus menggunakan optimizer dan scheduler yang berbeda.",
+      explain: "Anda tetap bisa menggunakan optimizer dan scheduler yang sama seperti biasa."
+    }
+  ]}
+/>
+
+<Tip>
+
+💡 **Poin Penting:**
+
+- Training loop manual memberi Anda kontrol penuh, tapi perlu memahami urutan operasi yang tepat: forward → backward → optimizer step → scheduler step → zero gradients
+- Gunakan AdamW dengan regularisasi weight decay sebagai optimizer utama untuk model transformer
+- Selalu gunakan `model.eval()` dan `torch.no_grad()` saat evaluasi untuk hasil yang benar dan efisien
+- 🤗 Accelerate memungkinkan pelatihan terdistribusi dengan perubahan kode minimal
+- Manajemen device sangat penting untuk operasi PyTorch yang sukses
+- Teknik modern seperti mixed precision, akumulasi gradien, dan gradient clipping dapat meningkatkan efisiensi pelatihan secara signifikan
+
+</Tip>
